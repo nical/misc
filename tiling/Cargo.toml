@@ -1,0 +1,9 @@
+[package]
+name = "tiling"
+version = "0.1.0"
+authors = ["Nicolas Silva <nical@fastmail.com>"]
+edition = "2018"
+
+[dependencies]
+lyon_path = "0.13.1"
+svg_fmt = "0.4"
