@@ -1,7 +1,0 @@
-[package]
-name = "math_api_experiments"
-version = "0.1.0"
-authors = ["Nicolas Silva <nical@fastmail.com>"]
-
-[dependencies]
-num = "0.1.33"

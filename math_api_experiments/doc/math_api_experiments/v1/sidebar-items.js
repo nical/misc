@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["Matrix4x4","A 4 by 4 matrix that can represent a transformation from a space to another."],["Point3D","A 3d vector."],["Screen",""],["Untyped",""],["World",""]]});
