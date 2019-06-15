@@ -1,5 +1,5 @@
 use lyon_path::PathEvent;
-use lyon_path::geom::euclid::{Box2D, Size2D, vec2};
+use lyon_path::geom::euclid::{Box2D, Size2D, vec2, Transform2D};
 use lyon_path::math::{Point, point};
 use lyon_path::geom::{Line, LineSegment, QuadraticBezierSegment};
 
@@ -137,7 +137,7 @@ impl ActiveEdge {
 pub struct TileInfo {
     pub x: u32,
     pub y: u32,
-    pub z_index: u16,
+    pub path_id: u16,
     pub backdrop_winding: i16,
     pub inner_rect: Box2D<f32>,
     pub outer_rect: Box2D<f32>,
@@ -192,16 +192,40 @@ impl Tiler {
         self.flatten = flatten;
     }
 
-    pub fn tile_path(&self, path_ctx: &mut PathCtx, path: impl Iterator<Item = PathEvent>, encoder: &mut dyn TileEncoder) {
+    pub fn tile_path(
+        &self,
+        path: impl Iterator<Item = PathEvent>,
+        transform: Option<&Transform2D<f32>>,
+        path_ctx: &mut PathCtx,
+        encoder: &mut dyn TileEncoder,
+    ) {
         self.prepare_path_ctx(path_ctx);
 
-        if self.flatten {
-            self.assign_rows_linear(path_ctx, path);
-        } else {
-            self.assign_rows_quadratic(path_ctx, path);
+        let t0 = time::precise_time_ns();
+
+        match (transform, self.flatten) {
+            (None, true) => {
+                self.assign_rows_linear(path_ctx, path);
+            }
+            (None, false) => {
+                self.assign_rows_quadratic(path_ctx, path);
+            }
+            (Some(transform), true) => {
+                self.assign_rows_linear_transformed(path_ctx, transform, path);
+            }
+            (Some(transform), false) => {
+                self.assign_rows_quadratic_transformed(path_ctx, transform, path);
+            }
         }
 
+        let t1 = time::precise_time_ns();
+
         self.process_rows(path_ctx, encoder);
+
+        let t2 = time::precise_time_ns();
+
+        path_ctx.row_decomposition_time_ns = t1 - t0;
+        path_ctx.tile_decomposition_time_ns = t2 - t1;
     }
 
     fn prepare_path_ctx(&self, path_ctx: &mut PathCtx) {
@@ -270,15 +294,85 @@ impl Tiler {
         }
     }
 
+    fn assign_rows_quadratic_transformed(
+        &self,
+        path_ctx: &mut PathCtx,
+        transform: &Transform2D<f32>,
+        path: impl Iterator<Item = PathEvent>,
+    ) {
+        for evt in path {
+            match evt {
+                PathEvent::MoveTo(..) => {}
+                PathEvent::Line(segment) | PathEvent::Close(segment) => {
+                    let edge = Edge::linear(segment);
+                    self.add_y_monotonic_edge(path_ctx, &edge);
+                }
+                PathEvent::Quadratic(segment) => {
+                    segment.for_each_monotonic(&mut|monotonic| {
+                        let edge = Edge::quadratic(*monotonic.segment());
+                        self.add_y_monotonic_edge(path_ctx, &edge);
+                    });
+                }
+                PathEvent::Cubic(segment) => {
+                    segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
+                        segment.for_each_monotonic(&mut|monotonic| {
+                            let edge = Edge::quadratic(*monotonic.segment());
+                            self.add_y_monotonic_edge(path_ctx, &edge);
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    fn assign_rows_linear_transformed(
+        &self,
+        path_ctx: &mut PathCtx,
+        transform: &Transform2D<f32>,
+        path: impl Iterator<Item = PathEvent>,
+    ) {
+        for evt in path {
+            match evt {
+                PathEvent::MoveTo(..) => {}
+                PathEvent::Line(segment) | PathEvent::Close(segment) => {
+                    let segment = segment.transform(transform);
+                    let edge = Edge::linear(segment);
+                    self.add_y_monotonic_edge(path_ctx, &edge);
+                }
+                PathEvent::Quadratic(segment) => {
+                    let segment = segment.transform(transform);
+                    let mut from = segment.from;
+                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                        let edge = Edge::linear(LineSegment { from, to });
+                        from = to;
+                        self.add_y_monotonic_edge(path_ctx, &edge);
+                    });
+                }
+                PathEvent::Cubic(segment) => {
+                    let segment = segment.transform(transform);
+                    let mut from = segment.from;
+                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                        let edge = Edge::linear(LineSegment { from, to });
+                        from = to;
+                        self.add_y_monotonic_edge(path_ctx, &edge);
+                    });
+                }
+            }
+        }
+    }
+
     fn add_y_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &Edge) {
-        assert!(edge.from.y <= edge.to.y);
+        debug_assert!(edge.from.y <= edge.to.y);
+
+        let min = -self.tile_padding;
+        let max = self.num_tiles_y as f32 * self.tile_size.height + self.tile_padding;
+
+        if edge.from.y > max || edge.to.y < min {
+            return;
+        }
 
         let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) / self.tile_size.height).max(0.0);
         let y_end_tile = f32::ceil((edge.to.y + self.tile_offset_y - self.tile_padding) / self.tile_size.height).min(self.num_tiles_y as f32);
-
-        if y_end_tile - y_start_tile < 0.001 {
-            return;
-        }
 
         let mut row_f = y_start_tile;
         let mut y_min = self.tile_offset_y + row_f * self.tile_size.height - self.tile_padding;
@@ -307,11 +401,11 @@ impl Tiler {
                 row_f += 1.0;
             }
             EdgeKind::Quadratic => for row in &mut path_ctx.rows[start_idx .. end_idx] {
-                let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
-                let t0 = *segment.line_intersections_t(&Line { point: point(0.0, y_min), vector: vec2(1.0, 0.0) }).first().unwrap_or(&0.0);
-                let t1 = *segment.line_intersections_t(&Line { point: point(0.0, y_max), vector: vec2(1.0, 0.0) }).first().unwrap_or(&1.0);
 
-                let segment = segment.split_range(t0..t1);
+                let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
+                let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
+
+                let segment = segment.split_range(range);
 
                 row.push(RowEdge {
                     from: segment.from,
@@ -334,7 +428,9 @@ impl Tiler {
         let mut tile_y = 0;
         let mut active_edges = Vec::new();
         for row in &mut path_ctx.rows {
-            self.process_row(tile_y, path_ctx.z_index, &mut row[..], &mut active_edges, encoder);
+            if !row.is_empty() {
+                self.process_row(tile_y, path_ctx.path_id, &mut row[..], &mut active_edges, encoder);
+            }
             tile_y += 1;
         }
     }
@@ -342,12 +438,12 @@ impl Tiler {
     fn process_row(
         &self,
         tile_y: u32,
-        z_index: u16,
+        path_id: u16,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         encoder: &mut dyn TileEncoder,
     ) {
-        println!("\n<!-- row {} -->", tile_y);
+        //println!("\n<!-- row {} -->", tile_y);
 
         row.sort_by(|a, b| a.min_x.partial_cmp(&b.min_x).unwrap());
 
@@ -367,7 +463,7 @@ impl Tiler {
         let mut tile = TileInfo {
             x: 0,
             y: tile_y,
-            z_index,
+            path_id,
             backdrop_winding: 0,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
@@ -390,7 +486,7 @@ impl Tiler {
             let max_x = edge.from.x.max(edge.to.x);
 
             if max_x >= tile.outer_rect.min.x {
-                println!("  <!-- push active edge in phase 1 -->");
+                //println!("  <!-- push active edge in phase 1 -->");
                 active_edges.push(ActiveEdge {
                     from: edge.from,
                     to: edge.to,
@@ -404,14 +500,14 @@ impl Tiler {
             current_edge += 1;
         }
 
-        println!("  <!-- Phase 2 -->");
+        //println!("  <!-- Phase 2 -->");
         // Iterate over edges in the tiling area.
         // Now we produce actual tiles.
         //
         // Each time we get to a new tile, we remove all active edges that end left of the tile.
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
-            println!("  <!-- edge {:?} -->", edge);
+            //println!("  <!-- edge {:?} -->", edge);
             while edge.min_x > tile.outer_rect.max.x {
                 self.finish_tile(&mut tile, active_edges, encoder);
             }
@@ -436,7 +532,7 @@ impl Tiler {
             current_edge += 1;
         }
 
-        println!("  <!-- Phase 3 -->");
+        //println!("  <!-- Phase 3 -->");
         // At this point we visited all edges but not necessarily all tiles.
         while tile.x < self.num_tiles_x {
             self.finish_tile(&mut tile, active_edges, encoder);
@@ -448,7 +544,7 @@ impl Tiler {
     }
 
     fn finish_tile(&self, tile: &mut TileInfo, active_edges: &mut Vec<ActiveEdge>, encoder: &mut dyn TileEncoder) {
-        println!("  <!-- tile {} {} -->", tile.x, tile.y);
+        //println!("  <!-- tile {} {} -->", tile.x, tile.y);
         encoder.encode_tile(tile, active_edges);
 
         tile.inner_rect.min.x += self.tile_size.width;
@@ -463,14 +559,26 @@ impl Tiler {
 
 pub struct PathCtx {
     rows: Vec<Vec<RowEdge>>,    
-    z_index: u16,
+    pub path_id: u16,
+
+    pub row_decomposition_time_ns: u64,
+    pub tile_decomposition_time_ns: u64,
 }
 
 impl PathCtx {
-    pub fn new(z_index: u16) -> Self {
+    pub fn new(path_id: u16) -> Self {
         PathCtx {
             rows: Vec::new(),
-            z_index,
+            path_id,
+
+            row_decomposition_time_ns: 0,
+            tile_decomposition_time_ns: 0,
+        }
+    }
+
+    pub fn reset_rows(&mut self) {
+        for row in &mut self.rows {
+            row.clear();
         }
     }
 }
@@ -508,9 +616,218 @@ impl ZBuffer {
         self.data[self.index(x, y)]
     }
 
+    pub fn test(&mut self, x: u32, y: u32, z_index: u16, write: bool) -> bool {
+        let idx = self.index(x, y);
+        let z = &mut self.data[idx];
+        let result = *z < z_index;
+
+        if write && result {
+            *z = z_index;
+        }
+
+        result
+    }
+
     #[inline]
     pub fn index(&self, x: u32, y: u32) -> usize {
         self.w * (y as usize) + (x as usize)
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct EdgeInstance {
+    pub from: [f32; 2],
+    pub ctrl: [f32; 2],
+    pub to: [f32; 2],
+    pub tile_index: u16
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct SolidTile {
+    pub position: [f32; 2],
+    pub path_id: u16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct AlphaTile {
+    pub position: [f32; 2],
+    pub tile_index: u16,
+    pub path_id: u16,
+}
+
+pub struct PathfinderLikeEncoder<'l> {
+    pub edges: Vec<EdgeInstance>,
+    pub solid_tiles: Vec<SolidTile>,
+    pub alpha_tiles: Vec<AlphaTile>,
+    pub next_tile_index: u16,
+    pub z_buffer: &'l mut ZBuffer,
+}
+
+impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
+    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
+
+        let mut solid = false;
+        if active_edges.is_empty() {
+            if tile.backdrop_winding % 2 != 0 {
+                solid = true;
+                //println!("solid tile");
+            } else {
+                //println!("empty tile");
+                return;
+            }
+        }
+
+        if !self.z_buffer.test(tile.x, tile.y, tile.path_id, solid) {
+            // Culled by a solid tile.
+            //println!("z-culled {} at ({} {}) : {}", tile.path_id, tile.x, tile.y, self.z_buffer.get(tile.x, tile.y));
+            return;
+        }
+
+        if solid {
+            self.solid_tiles.push(SolidTile {
+                position: [tile.x as f32, tile.y as f32],
+                path_id: tile.path_id,
+            });
+            return;
+        }
+
+        let tile_index = self.next_tile_index;
+        self.next_tile_index += 1;
+        self.alpha_tiles.push(AlphaTile {
+            position: [tile.x as f32, tile.y as f32],
+            tile_index,
+            path_id: tile.path_id,
+        });
+
+        let min_x = tile.outer_rect.min.x;
+        let max_x = tile.outer_rect.max.x;
+        for edge in active_edges {
+            let range = clip_quadratic_bezier_1d(edge.from.x, edge.ctrl.x, edge.to.x, min_x, max_x);
+            let segment = QuadraticBezierSegment {
+                from: edge.from,
+                ctrl: edge.ctrl,
+                to: edge.to,
+            }.split_range(range);
+            self.edges.push(EdgeInstance {
+                from: segment.from.to_array(),
+                to: segment.to.to_array(),
+                ctrl: segment.ctrl.to_array(),
+                tile_index,
+            });
+        }
+    }
+}
+
+pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
+    let opt = usvg::Options::default();
+    let rtree = usvg::Tree::from_file(filename, &opt).unwrap();
+    let mut paths = Vec::new();
+
+    let view_box = rtree.svg_node().view_box;
+    for node in rtree.root().descendants() {
+        if let usvg::NodeKind::Path(ref usvg_path) = *node.borrow() {
+
+            let mut builder = lyon_path::Path::builder();
+            for segment in &usvg_path.segments {
+                match *segment {
+                    usvg::PathSegment::MoveTo { x, y } => {
+                        builder.move_to(point(x as f32, y as f32));
+                    }
+                    usvg::PathSegment::LineTo { x, y } => {
+                        builder.line_to(point(x as f32, y as f32));
+                    }
+                    usvg::PathSegment::CurveTo { x1, y1, x2, y2, x, y, } => {
+                        builder.cubic_bezier_to(
+                            point(x1 as f32, y1 as f32),
+                            point(x2 as f32, y2 as f32),
+                            point(x as f32, y as f32),
+                        );
+                    }
+                    usvg::PathSegment::ClosePath => {
+                        builder.close();
+                    }
+                }
+            }
+            let path = builder.build();
+
+            paths.push(path);
+        }
+    }
+
+    let vb = Box2D {
+        min: point(
+            view_box.rect.x as f32,
+            view_box.rect.y as f32,
+        ),
+        max: point(
+            view_box.rect.x as f32 + view_box.rect.width as f32,
+            view_box.rect.y as f32 + view_box.rect.height as f32,
+        ),
+    };
+
+    (vb, paths)
+}
+
+pub fn clip_quadratic_bezier_1d(
+    from: f32,
+    ctrl: f32,
+    to: f32,
+    min: f32,
+    max: f32,
+) -> std::ops::Range<f32> {
+    debug_assert!(max >= min);
+
+    let a = from + 2.0 * to - 2.0 * ctrl;
+    let b = -2.0 * from + 2.0 * ctrl;
+    let c1 = from - min;
+    let c2 = from - max;
+
+    let delta1 = b * b - 4.0 * a * c1;
+    let delta2 = b * b - 4.0 * a * c2;
+
+    let sign = a.signum();
+    let two_a = 2.0 * a * sign;
+
+    let mut t1 = None;
+    if delta1 >= 0.0 {
+        let sqrt_delta = delta1.sqrt();
+        let root1 = (-b - sqrt_delta) * sign;
+        let root2 = (-b + sqrt_delta) * sign;
+        if root1 > 0.0 && root1 < two_a {
+            t1 = Some(root1 / two_a);
+        } else if root2 > 0.0 && root2 < two_a {
+            t1 = Some(root2 / two_a);
+        }
+    }
+
+    let mut t2 = None;
+    if delta2 >= 0.0 {
+        let sqrt_delta = delta2.sqrt();
+        let root1 = (-b - sqrt_delta) * sign;
+        let root2 = (-b + sqrt_delta) * sign;
+        if root1 > 0.0 && root1 < two_a {
+            t2 = Some(root1 / two_a);
+        } else if root2 > 0.0 && root2 < two_a {
+            t2 = Some(root2 / two_a);
+        }
+    }
+
+    match (t1, t2) {
+        (None, None) => { 0.0 .. 1.0 }
+        (Some(t1), Some(t2)) => {
+            let t1 = t1.min(t2);
+            let t2 = t1.max(t2);
+            t1 .. t2
+        }
+        (Some(t1), None) => {
+            t1 .. 1.0
+        }
+        (None, Some(t2)) => {
+            0.0 .. t2
+        }
     }
 }
 
@@ -591,7 +908,7 @@ fn test() {
         }
     }
 
-    tiler.tile_path(&mut ctx, path.iter(), &mut Encoder);
+    tiler.tile_path(path.iter(), None, &mut ctx, &mut Encoder);
 
     println!("{}", svg_fmt::EndSvg);
 
