@@ -93,10 +93,10 @@ impl ActiveEdge {
                 if swap {
                     std::mem::swap(&mut segment.from, &mut segment.to);
                 }
-                let t0 = segment.line_intersection_t(&Line { point: point(x_range.start, 0.0), vector: vec2(0.0, 1.0) }).unwrap_or(0.0);
-                let t1 = segment.line_intersection_t(&Line { point: point(x_range.end, 0.0), vector: vec2(0.0, 1.0) }).unwrap_or(1.0);
 
-                let mut segment = segment.split_range(t0..t1);
+                let range = clip_line_segment_1d(segment.from.x, segment.to.x, x_range.start, x_range.end);
+                let mut segment = segment.split_range(range);
+
                 if swap {
                     std::mem::swap(&mut segment.from, &mut segment.to);
                 }
@@ -111,15 +111,24 @@ impl ActiveEdge {
                 }
             }
             EdgeKind::Quadratic => {
-                let segment = QuadraticBezierSegment {
+                let mut segment = QuadraticBezierSegment {
                     from: self.from,
                     to: self.to,
                     ctrl: self.ctrl,
                 };
-                let t0 = *segment.line_intersections_t(&Line { point: point(x_range.start, 0.0), vector: vec2(0.0, 1.0) }).first().unwrap_or(&0.0);
-                let t1 = *segment.line_intersections_t(&Line { point: point(x_range.end, 0.0), vector: vec2(0.0, 1.0) }).first().unwrap_or(&1.0);
 
-                let segment = segment.split_range(t0..t1);
+                let swap = segment.from.x > segment.to.x;
+                if swap {
+                    std::mem::swap(&mut segment.from, &mut segment.to);
+                }
+
+                let range = clip_quadratic_bezier_1d(segment.from.x, segment.ctrl.x, segment.to.x, x_range.start, x_range.end);
+
+                let mut segment = segment.split_range(range);
+
+                if swap {
+                    std::mem::swap(&mut segment.from, &mut segment.to);
+                }
 
                 ActiveEdge {
                     from: segment.from,
@@ -383,10 +392,8 @@ impl Tiler {
         match edge.kind {
             EdgeKind::Linear => for row in &mut path_ctx.rows[start_idx .. end_idx] {
                 let segment = LineSegment { from: edge.from, to: edge.to };
-                let t0 = segment.line_intersection_t(&Line { point: point(0.0, y_min), vector: vec2(1.0, 0.0) }).unwrap_or(0.0);
-                let t1 = segment.line_intersection_t(&Line { point: point(0.0, y_max), vector: vec2(1.0, 0.0) }).unwrap_or(1.0);
-
-                let segment = segment.split_range(t0..t1);
+                let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
+                let segment = segment.split_range(range);
 
                 row.push(RowEdge {
                     from: segment.from,
@@ -402,10 +409,8 @@ impl Tiler {
                 row_f += 1.0;
             }
             EdgeKind::Quadratic => for row in &mut path_ctx.rows[start_idx .. end_idx] {
-
                 let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
-
                 let segment = segment.split_range(range);
 
                 row.push(RowEdge {
@@ -780,6 +785,7 @@ pub fn clip_quadratic_bezier_1d(
     max: f32,
 ) -> std::ops::Range<f32> {
     debug_assert!(max >= min);
+    debug_assert!(to >= from);
 
     let a = from + 2.0 * to - 2.0 * ctrl;
     let b = -2.0 * from + 2.0 * ctrl;
@@ -792,44 +798,50 @@ pub fn clip_quadratic_bezier_1d(
     let sign = a.signum();
     let two_a = 2.0 * a * sign;
 
-    let mut t1 = None;
+    let mut t1 = 0.0;
     if delta1 >= 0.0 {
         let sqrt_delta = delta1.sqrt();
         let root1 = (-b - sqrt_delta) * sign;
         let root2 = (-b + sqrt_delta) * sign;
         if root1 > 0.0 && root1 < two_a {
-            t1 = Some(root1 / two_a);
+            t1 = root1 / two_a;
         } else if root2 > 0.0 && root2 < two_a {
-            t1 = Some(root2 / two_a);
+            t1 = root2 / two_a;
         }
     }
 
-    let mut t2 = None;
+    let mut t2 = 1.0;
     if delta2 >= 0.0 {
         let sqrt_delta = delta2.sqrt();
         let root1 = (-b - sqrt_delta) * sign;
         let root2 = (-b + sqrt_delta) * sign;
         if root1 > 0.0 && root1 < two_a {
-            t2 = Some(root1 / two_a);
+            t2 = root1 / two_a;
         } else if root2 > 0.0 && root2 < two_a {
-            t2 = Some(root2 / two_a);
+            t2 = root2 / two_a;
         }
     }
 
-    match (t1, t2) {
-        (None, None) => { 0.0 .. 1.0 }
-        (Some(t1), Some(t2)) => {
-            let t1 = t1.min(t2);
-            let t2 = t1.max(t2);
-            t1 .. t2
-        }
-        (Some(t1), None) => {
-            t1 .. 1.0
-        }
-        (None, Some(t2)) => {
-            0.0 .. t2
-        }
+    t1 .. t2
+}
+
+pub fn clip_line_segment_1d(
+    from: f32,
+    to: f32,
+    min: f32,
+    max: f32,
+) -> std::ops::Range<f32> {
+    let d = to - from;
+    if d == 0.0 {
+        return 1.0 .. 0.0;
     }
+
+    let inv_d = 1.0 / d;
+
+    let t0 = ((min - from) * inv_d).max(0.0);
+    let t1 = ((max - from) * inv_d).min(1.0);
+
+    t0 .. t1
 }
 
 #[test]
