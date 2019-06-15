@@ -164,7 +164,7 @@ pub struct Tiler {
     tile_padding: f32,
 
     num_tiles_x: u32,
-    num_tiles_y: u32,
+    num_tiles_y: f32,
 
     tolerance: f32,
     flatten: bool,
@@ -178,7 +178,7 @@ impl Tiler {
             tile_offset_y: rect.min.y,
             tile_padding,
             num_tiles_x: f32::ceil(rect.size().width / tile_size.width) as u32,
-            num_tiles_y: f32::ceil(rect.size().height / tile_size.height) as u32,
+            num_tiles_y: f32::ceil(rect.size().height / tile_size.height),
             tolerance: 0.01,
             flatten: false,
         }
@@ -364,15 +364,16 @@ impl Tiler {
     fn add_y_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &Edge) {
         debug_assert!(edge.from.y <= edge.to.y);
 
-        let min = -self.tile_padding;
-        let max = self.num_tiles_y as f32 * self.tile_size.height + self.tile_padding;
+        let min = self.tile_offset_y - self.tile_padding;
+        let max = self.tile_offset_y + self.num_tiles_y * self.tile_size.height + self.tile_padding;
 
         if edge.from.y > max || edge.to.y < min {
             return;
         }
 
-        let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) / self.tile_size.height).max(0.0);
-        let y_end_tile = f32::ceil((edge.to.y + self.tile_offset_y - self.tile_padding) / self.tile_size.height).min(self.num_tiles_y as f32);
+        let inv_tile_height = 1.0 / self.tile_size.height;
+        let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) * inv_tile_height).max(0.0);
+        let y_end_tile = f32::ceil((edge.to.y - self.tile_offset_y + self.tile_padding) * inv_tile_height).min(self.num_tiles_y);
 
         let mut row_f = y_start_tile;
         let mut y_min = self.tile_offset_y + row_f * self.tile_size.height - self.tile_padding;
