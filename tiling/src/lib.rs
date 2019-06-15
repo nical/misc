@@ -372,6 +372,7 @@ impl Tiler {
 
     fn add_y_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &Edge) {
         debug_assert!(edge.from.y <= edge.to.y);
+        //println!("<!-- add edge {} {} -> {} {}  -->", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
 
         let min = self.tile_offset_y - self.tile_padding;
         let max = self.tile_offset_y + self.num_tiles_y * self.tile_size.height + self.tile_padding;
@@ -379,6 +380,11 @@ impl Tiler {
         if edge.from.y > max || edge.to.y < min {
             return;
         }
+
+        // TODO: probably need to snap edges that are very close to the outer tile boundary so that
+        // we don't get an edge that very slightly overlaps the tile but isn't assigned to it (and
+        // ends up messing up winding numbers).
+        // It would also help with avoiding unnecessary tiny edges.
 
         let inv_tile_height = 1.0 / self.tile_size.height;
         let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) * inv_tile_height).max(0.0);
@@ -449,14 +455,15 @@ impl Tiler {
         active_edges: &mut Vec<ActiveEdge>,
         encoder: &mut dyn TileEncoder,
     ) {
-        //println!("\n<!-- row {} -->", tile_y);
 
         row.sort_by(|a, b| a.min_x.partial_cmp(&b.min_x).unwrap());
 
         active_edges.clear();
 
         let row_y = tile_y as f32 * self.tile_size.height + self.tile_offset_x;
-        let y_baseline = row_y - self.tile_padding;
+        let y_baseline = row_y - self.tile_padding + 1e-6;
+
+        println!("\n\n<!-- row {}   baseline {}-->", tile_y, y_baseline);
 
         let inner_rect = Box2D {
             min: point(self.tile_offset_x, row_y),
@@ -485,14 +492,16 @@ impl Tiler {
                 break;
             }
 
+            println!("<!-- edge: {:?}-->", edge);
+
             if edge.from.y <= y_baseline {
                 tile.backdrop_winding += edge.winding;
+                println!("<!-- (A) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
             }
 
             let max_x = edge.from.x.max(edge.to.x);
 
             if max_x >= tile.outer_rect.min.x {
-                //println!("  <!-- push active edge in phase 1 -->");
                 active_edges.push(ActiveEdge {
                     from: edge.from,
                     to: edge.to,
@@ -506,7 +515,6 @@ impl Tiler {
             current_edge += 1;
         }
 
-        //println!("  <!-- Phase 2 -->");
         // Iterate over edges in the tiling area.
         // Now we produce actual tiles.
         //
@@ -522,8 +530,12 @@ impl Tiler {
                 break;
             }
 
+            println!("<!-- edge: {:?}-->", edge);
+
             if edge.from.y <= y_baseline {
                 tile.backdrop_winding += edge.winding;
+                println!("        <!-- (B) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
+                println!("        {}", svg_fmt::Circle { x: edge.from.x, y: edge.from.y, radius: 0.1, style: svg_fmt::Style::default() });
             }
 
             active_edges.push(ActiveEdge {
@@ -538,7 +550,6 @@ impl Tiler {
             current_edge += 1;
         }
 
-        //println!("  <!-- Phase 3 -->");
         // At this point we visited all edges but not necessarily all tiles.
         while tile.x < self.num_tiles_x {
             self.finish_tile(&mut tile, active_edges, encoder);
@@ -594,6 +605,7 @@ impl PathCtx {
 pub struct ZBuffer {
     data: Vec<u16>,
     w: usize,
+    h: usize,
 }
 
 impl ZBuffer {
@@ -601,21 +613,23 @@ impl ZBuffer {
         ZBuffer {
             data: Vec::new(),
             w: 0,
+            h: 0,
         }
     }
 
     pub fn init(&mut self, w: usize, h: usize) {
         let size = w * h;
-        if self.data.len() < size {
-            self.data = vec![0; size];
-            return;
-        }
-
-        for elt in &mut self.data[0..size] {
-            *elt = 0;
-        }
 
         self.w = w;
+        self.h = h;
+
+        if self.data.len() < size {
+            self.data = vec![0; size];
+        } else {
+            for elt in &mut self.data[0..size] {
+                *elt = 0;
+            }
+        }
     }
 
     pub fn get(&self, x: u32, y: u32) -> u16 {
@@ -623,6 +637,9 @@ impl ZBuffer {
     }
 
     pub fn test(&mut self, x: u32, y: u32, z_index: u16, write: bool) -> bool {
+        debug_assert!(x < self.w as u32);
+        debug_assert!(y < self.h as u32);
+
         let idx = self.index(x, y);
         let z = &mut self.data[idx];
         let result = *z < z_index;
@@ -679,16 +696,14 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         if active_edges.is_empty() {
             if tile.backdrop_winding % 2 != 0 {
                 solid = true;
-                //println!("solid tile");
             } else {
-                //println!("empty tile");
+                // Empty tile.
                 return;
             }
         }
 
         if !self.z_buffer.test(tile.x, tile.y, tile.path_id, solid) {
             // Culled by a solid tile.
-            //println!("z-culled {} at ({} {}) : {}", tile.path_id, tile.x, tile.y, self.z_buffer.get(tile.x, tile.y));
             return;
         }
 
@@ -711,16 +726,12 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         let min_x = tile.outer_rect.min.x;
         let max_x = tile.outer_rect.max.x;
         for edge in active_edges {
-            let range = clip_quadratic_bezier_1d(edge.from.x, edge.ctrl.x, edge.to.x, min_x, max_x);
-            let segment = QuadraticBezierSegment {
-                from: edge.from,
-                ctrl: edge.ctrl,
-                to: edge.to,
-            }.split_range(range);
+            let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
+
             self.edges.push(EdgeInstance {
-                from: segment.from.to_array(),
-                to: segment.to.to_array(),
-                ctrl: segment.ctrl.to_array(),
+                from: edge.from.to_array(),
+                to: edge.to.to_array(),
+                ctrl: edge.ctrl.to_array(),
                 tile_index,
             });
         }
@@ -734,22 +745,30 @@ pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
 
     let view_box = rtree.svg_node().view_box;
     for node in rtree.root().descendants() {
+        use usvg::NodeExt;
+        let t = node.transform();
+        let transform = Transform2D::row_major(
+            t.a as f32, t.b as f32,
+            t.c as f32, t.d as f32,
+            t.e as f32, t.f as f32,
+        );
+
         if let usvg::NodeKind::Path(ref usvg_path) = *node.borrow() {
 
             let mut builder = lyon_path::Path::builder();
             for segment in &usvg_path.segments {
                 match *segment {
                     usvg::PathSegment::MoveTo { x, y } => {
-                        builder.move_to(point(x as f32, y as f32));
+                        builder.move_to(transform.transform_point(&point(x as f32, y as f32)));
                     }
                     usvg::PathSegment::LineTo { x, y } => {
-                        builder.line_to(point(x as f32, y as f32));
+                        builder.line_to(transform.transform_point(&point(x as f32, y as f32)));
                     }
                     usvg::PathSegment::CurveTo { x1, y1, x2, y2, x, y, } => {
                         builder.cubic_bezier_to(
-                            point(x1 as f32, y1 as f32),
-                            point(x2 as f32, y2 as f32),
-                            point(x as f32, y as f32),
+                            transform.transform_point(&point(x1 as f32, y1 as f32)),
+                            transform.transform_point(&point(x2 as f32, y2 as f32)),
+                            transform.transform_point(&point(x as f32, y as f32)),
                         );
                     }
                     usvg::PathSegment::ClosePath => {
@@ -842,88 +861,4 @@ pub fn clip_line_segment_1d(
     let t1 = ((max - from) * inv_d).min(1.0);
 
     t0 .. t1
-}
-
-#[test]
-fn test() {
-    use lyon_path::geom::euclid::size2;
-
-    let mut builder = lyon_path::Path::builder();
-
-    builder.move_to(point(30.0, 10.0));
-    builder.line_to(point(90.0, 40.0));
-    builder.line_to(point(10.0, 90.0));
-    builder.close();
-
-    builder.move_to(point(40.0, 50.0));
-    builder.line_to(point(60.0, 55.0));
-    builder.line_to(point(40.0, 60.0));
-    builder.close();
-
-    let path = builder.build();
-
-    let tiler = Tiler::new(&Box2D { min: point(0.0, 0.0), max: point(100.0, 100.0) }, size2(10.0, 10.0), 1.0);
-    let mut ctx = PathCtx::new(0);
-
-    println!("{}", svg_fmt::BeginSvg { w: 100.0, h: 100.0 });
-
-    struct Encoder;
-    impl TileEncoder for Encoder {
-        fn encode_tile(&mut self, tile: &TileInfo, edges: &[ActiveEdge]) {
-            for edge in edges {
-                let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
-                let color = if edge.winding > 0 {
-                    svg_fmt::Color { r: 0, g: 0, b: 255 }                
-                } else{
-                    svg_fmt::Color { r: 255, g: 0, b: 0 }                
-                };
-                println!("  {}", svg_fmt::line_segment(edge.from.x, edge.from.y, edge.to.x, edge.to.y).color(color));
-            }
-            if edges.is_empty() {
-                if tile.backdrop_winding == 0 {
-                    return;
-                }
-
-                if tile.backdrop_winding % 2 != 0 {
-                    println!("  {}",
-                        svg_fmt::rectangle(
-                            tile.inner_rect.min.x,
-                            tile.inner_rect.min.y,
-                            tile.inner_rect.size().width,
-                            tile.inner_rect.size().height,
-                        )
-                        .fill(svg_fmt::blue())
-                        .opacity(0.3)
-                    );
-
-                }
-            } 
-            println!("  {}",
-                svg_fmt::rectangle(
-                    tile.inner_rect.min.x,
-                    tile.inner_rect.min.y,
-                    tile.inner_rect.size().width,
-                    tile.inner_rect.size().height,
-                )
-                .fill(svg_fmt::Fill::None)
-                .stroke(svg_fmt::Stroke::Color(svg_fmt::black(), 0.1))
-            );
-            println!("  {}",
-                svg_fmt::rectangle(
-                    tile.outer_rect.min.x,
-                    tile.outer_rect.min.y,
-                    tile.outer_rect.size().width,
-                    tile.outer_rect.size().height,
-                )
-                .fill(svg_fmt::Fill::None)
-                .stroke(svg_fmt::Stroke::Color(svg_fmt::green(), 0.1))
-            );
-        }
-    }
-
-    tiler.tile_path(path.iter(), None, &mut ctx, &mut Encoder);
-
-    println!("{}", svg_fmt::EndSvg);
-
-    panic!();
 }
