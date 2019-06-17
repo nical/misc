@@ -1,7 +1,7 @@
 use lyon_path::PathEvent;
-use lyon_path::geom::euclid::{Box2D, Size2D, vec2, Transform2D};
+use lyon_path::geom::euclid::{Box2D, Size2D, Transform2D};
 use lyon_path::math::{Point, point};
-use lyon_path::geom::{Line, LineSegment, QuadraticBezierSegment};
+use lyon_path::geom::{LineSegment, QuadraticBezierSegment};
 
 //use std::ops::Range;
 
@@ -21,10 +21,6 @@ struct Edge {
 }
 
 impl Edge {
-    fn min_x(&self) -> f32 {
-        self.from.x.min(self.to.x)
-    }
-
     fn linear(mut segment: LineSegment<f32>) -> Self {
         let winding = if segment.from.y > segment.to.y {
             std::mem::swap(&mut segment.from, &mut segment.to);
@@ -68,6 +64,7 @@ struct RowEdge {
     kind: EdgeKind,
     winding: i16,
     min_x: f32,
+    intersects_tile_top: bool,
 }
 
 
@@ -255,19 +252,19 @@ impl Tiler {
                 PathEvent::MoveTo(..) => {}
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let edge = Edge::linear(segment);
-                    self.add_y_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(path_ctx, &edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     segment.for_each_monotonic(&mut|monotonic| {
                         let edge = Edge::quadratic(*monotonic.segment());
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
                     segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = Edge::quadratic(*monotonic.segment());
-                            self.add_y_monotonic_edge(path_ctx, &edge);
+                            self.add_monotonic_edge(path_ctx, &edge);
                         });
                     });
                 }
@@ -281,14 +278,14 @@ impl Tiler {
                 PathEvent::MoveTo(..) => {}
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let edge = Edge::linear(segment);
-                    self.add_y_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(path_ctx, &edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     let mut from = segment.from;
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = Edge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
@@ -296,7 +293,7 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = Edge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
             }
@@ -313,20 +310,23 @@ impl Tiler {
             match evt {
                 PathEvent::MoveTo(..) => {}
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
+                    let segment = segment.transform(transform);
                     let edge = Edge::linear(segment);
-                    self.add_y_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(path_ctx, &edge);
                 }
                 PathEvent::Quadratic(segment) => {
+                    let segment = segment.transform(transform);
                     segment.for_each_monotonic(&mut|monotonic| {
                         let edge = Edge::quadratic(*monotonic.segment());
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
+                    let segment = segment.transform(transform);
                     segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = Edge::quadratic(*monotonic.segment());
-                            self.add_y_monotonic_edge(path_ctx, &edge);
+                            self.add_monotonic_edge(path_ctx, &edge);
                         });
                     });
                 }
@@ -346,7 +346,7 @@ impl Tiler {
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let segment = segment.transform(transform);
                     let edge = Edge::linear(segment);
-                    self.add_y_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(path_ctx, &edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     let segment = segment.transform(transform);
@@ -354,7 +354,7 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = Edge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
@@ -363,14 +363,14 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = Edge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_y_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(path_ctx, &edge);
                     });
                 }
             }
         }
     }
 
-    fn add_y_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &Edge) {
+    fn add_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &Edge) {
         debug_assert!(edge.from.y <= edge.to.y);
         //println!("<!-- add edge {} {} -> {} {}  -->", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
 
@@ -399,7 +399,11 @@ impl Tiler {
             EdgeKind::Linear => for row in &mut path_ctx.rows[start_idx .. end_idx] {
                 let segment = LineSegment { from: edge.from, to: edge.to };
                 let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
-                let segment = segment.split_range(range);
+                let mut segment = segment.split_range(range);
+                let intersects_tile_top = ((segment.from.y - y_min) / self.tolerance) as i32 == 0;
+                if intersects_tile_top {
+                    segment.from.y = y_min;
+                }
 
                 row.push(RowEdge {
                     from: segment.from,
@@ -408,6 +412,7 @@ impl Tiler {
                     kind: EdgeKind::Linear,
                     winding: edge.winding,
                     min_x: segment.from.x.min(segment.to.x),
+                    intersects_tile_top,
                 });
 
                 y_min += self.tile_size.height;
@@ -417,7 +422,11 @@ impl Tiler {
             EdgeKind::Quadratic => for row in &mut path_ctx.rows[start_idx .. end_idx] {
                 let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
-                let segment = segment.split_range(range);
+                let mut segment = segment.split_range(range);
+                let intersects_tile_top = ((segment.from.y - y_min) / self.tolerance) as i32 == 0;
+                if intersects_tile_top {
+                    segment.from.y = y_min;
+                }
 
                 row.push(RowEdge {
                     from: segment.from,
@@ -426,6 +435,7 @@ impl Tiler {
                     kind: EdgeKind::Quadratic,
                     winding: edge.winding,
                     min_x: segment.from.x.min(segment.to.x),
+                    intersects_tile_top,
                 });
 
                 y_min += self.tile_size.height;
@@ -461,9 +471,8 @@ impl Tiler {
         active_edges.clear();
 
         let row_y = tile_y as f32 * self.tile_size.height + self.tile_offset_x;
-        let y_baseline = row_y - self.tile_padding + 1e-6;
 
-        println!("\n\n<!-- row {}   baseline {}-->", tile_y, y_baseline);
+        //println!("\n\n<!-- row {}   baseline {}-->", tile_y, y_baseline);
 
         let inner_rect = Box2D {
             min: point(self.tile_offset_x, row_y),
@@ -492,11 +501,11 @@ impl Tiler {
                 break;
             }
 
-            println!("<!-- edge: {:?}-->", edge);
+            //println!("<!-- edge: {:?}-->", edge);
 
-            if edge.from.y <= y_baseline {
+            if edge.intersects_tile_top {
                 tile.backdrop_winding += edge.winding;
-                println!("<!-- (A) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
+                //println!("<!-- (A) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
             }
 
             let max_x = edge.from.x.max(edge.to.x);
@@ -530,12 +539,12 @@ impl Tiler {
                 break;
             }
 
-            println!("<!-- edge: {:?}-->", edge);
+            //println!("<!-- edge: {:?}-->", edge);
 
-            if edge.from.y <= y_baseline {
+            if edge.intersects_tile_top {
                 tile.backdrop_winding += edge.winding;
-                println!("        <!-- (B) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
-                println!("        {}", svg_fmt::Circle { x: edge.from.x, y: edge.from.y, radius: 0.1, style: svg_fmt::Style::default() });
+                //println!("        <!-- (B) winding {} -> {}     edge: {:?}-->", edge.winding, tile.backdrop_winding, edge);
+                //println!("        {}", svg_fmt::Circle { x: edge.from.x, y: edge.from.y, radius: 0.1, style: svg_fmt::Style::default() });
             }
 
             active_edges.push(ActiveEdge {
@@ -723,8 +732,6 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
             path_id: tile.path_id,
         });
 
-        let min_x = tile.outer_rect.min.x;
-        let max_x = tile.outer_rect.max.x;
         for edge in active_edges {
             let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
 
@@ -754,6 +761,9 @@ pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
         );
 
         if let usvg::NodeKind::Path(ref usvg_path) = *node.borrow() {
+            //if usvg_path.fill.is_none() {
+            //    continue;
+            //}
 
             let mut builder = lyon_path::Path::builder();
             for segment in &usvg_path.segments {

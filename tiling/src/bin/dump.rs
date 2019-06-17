@@ -1,14 +1,13 @@
 use tiling::*;
-use lyon_path::geom::euclid::{Box2D, Size2D, vec2, size2, Transform2D};
-use lyon_path::math::{Point, point};
+use lyon_path::geom::euclid::{size2};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = load_svg(&args[1]);
 
-    let ts = 10;
+    let ts = 16;
 
-    let mut tiler = Tiler::new(
+    let tiler = Tiler::new(
         &view_box,
         size2(ts as f32, ts as f32),
         0.0,
@@ -41,7 +40,7 @@ fn main() {
 }
 
 struct Encoder<'l> {
-    z_buffer: &'l mut ZBuffer,    
+    z_buffer: &'l mut ZBuffer,
 }
 
 impl<'l> TileEncoder for Encoder<'l> {
@@ -62,18 +61,9 @@ impl<'l> TileEncoder for Encoder<'l> {
 
         if solid {
             println!("<!-- solid tile {} {} path {}-->", tile.x, tile.y, tile.path_id);            
-        }
 
-        for edge in edges {
-            let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
-            let color = if edge.winding > 0 {
-                svg_fmt::Color { r: 0, g: 0, b: 255 }                
-            } else{
-                svg_fmt::Color { r: 255, g: 0, b: 0 }                
-            };
-            println!("  {}", svg_fmt::line_segment(edge.from.x, edge.from.y, edge.to.x, edge.to.y).color(color));
-        }
-        if solid {
+            use std::ops::Rem;
+            let solid_tile_color = svg_fmt::Color { r: 0, g: 0, b: (tile.path_id * 17).rem(150) as u8 + 100 };
             println!("  {}",
                 svg_fmt::rectangle(
                     tile.inner_rect.min.x,
@@ -81,10 +71,18 @@ impl<'l> TileEncoder for Encoder<'l> {
                     tile.inner_rect.size().width,
                     tile.inner_rect.size().height,
                 )
-                .fill(svg_fmt::blue())
-                .opacity(0.3)
+                .fill(solid_tile_color)
+                .opacity(0.4)
             );
-        } 
+        } else {
+            println!("<!-- regular tile {} {} path {}-->", tile.x, tile.y, tile.path_id);
+        }
+
+        for edge in edges {
+            let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
+            let color = if edge.winding > 0 { svg_fmt::white() } else { svg_fmt::red() };
+            println!("  {}", svg_fmt::line_segment(edge.from.x, edge.from.y, edge.to.x, edge.to.y).color(color));
+        }
         println!("  {}",
             svg_fmt::rectangle(
                 tile.inner_rect.min.x,
