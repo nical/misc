@@ -1,6 +1,7 @@
 use tiling::*;
-use lyon_path::geom::euclid::{Box2D, Size2D, vec2, size2, Transform2D};
-use lyon_path::math::{Point, point};
+use tiling::pathfinder_encoder::*;
+use tiling::load_svg::*;
+use lyon_path::geom::euclid::{size2, Transform2D};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -8,12 +9,12 @@ fn main() {
 
     let ts = 16;
 
-    let mut tiler = Tiler::new(
+    let tiler = Tiler::new(
         &view_box,
         size2(ts as f32, ts as f32),
         0.0,
     );
-    tiler.set_flattening(true);
+    //tiler.set_flattening(true);
 
     let mut path_ctx = PathCtx::new(0);
     let mut z_buffer = ZBuffer::new();
@@ -30,7 +31,6 @@ fn main() {
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
 
-    //let N = 1;
     let n = 1000;
     let t0 = time::precise_time_ns();
     let transform = Transform2D::create_translation(1.0, 1.0);

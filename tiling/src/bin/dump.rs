@@ -1,4 +1,5 @@
 use tiling::*;
+use tiling::load_svg::*;
 use lyon_path::geom::euclid::{size2};
 
 fn main() {
