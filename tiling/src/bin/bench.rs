@@ -9,7 +9,7 @@ fn main() {
 
     let ts = 16;
 
-    let tiler = Tiler::new(
+    let mut tiler = Tiler::new(
         &view_box,
         size2(ts as f32, ts as f32),
         0.0,
@@ -21,9 +21,9 @@ fn main() {
     z_buffer.init(view_box.max.x as usize / ts, view_box.max.y as usize / ts);
 
     let mut encoder = PathfinderLikeEncoder {
-        edges: Vec::new(),
-        solid_tiles: Vec::new(),
-        alpha_tiles: Vec::new(),
+        edges: Vec::with_capacity(42000),
+        solid_tiles: Vec::with_capacity(2000),
+        alpha_tiles: Vec::with_capacity(5000),
         next_tile_index: 0,
         z_buffer: &mut z_buffer,
     };

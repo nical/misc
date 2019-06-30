@@ -9,6 +9,7 @@ lyon_path = { path = "/home/nical/dev/rust/lyon/path" }
 svg_fmt = "0.4.1"
 usvg = "0.4"
 time = "0.1.42"
+ordered-float = "1.0.2"
 
 [profile.release]
 debug=true

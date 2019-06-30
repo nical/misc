@@ -2,6 +2,7 @@ use lyon_path::PathEvent;
 use lyon_path::geom::euclid::{Box2D, Size2D, Transform2D};
 use lyon_path::math::{Point, point};
 use lyon_path::geom::{LineSegment, QuadraticBezierSegment};
+use ordered_float::OrderedFloat;
 
 pub mod pathfinder_encoder;
 pub mod load_svg;
@@ -252,7 +253,7 @@ impl Tiler {
                 let segment = LineSegment { from: edge.from, to: edge.to };
                 let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
                 let mut segment = segment.split_range(range);
-                let intersects_tile_top = ((segment.from.y - y_min) / self.tolerance) as i32 == 0;
+                let intersects_tile_top = (segment.from.y - y_min).abs() < self.tolerance;
                 if intersects_tile_top {
                     segment.from.y = y_min;
                 }
@@ -263,7 +264,7 @@ impl Tiler {
                     ctrl: segment.to,
                     kind: EdgeKind::Linear,
                     winding: edge.winding,
-                    min_x: segment.from.x.min(segment.to.x),
+                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                     intersects_tile_top,
                 });
 
@@ -275,7 +276,7 @@ impl Tiler {
                 let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
                 let mut segment = segment.split_range(range);
-                let intersects_tile_top = ((segment.from.y - y_min) / self.tolerance) as i32 == 0;
+                let intersects_tile_top = (segment.from.y - y_min).abs() < self.tolerance;
                 if intersects_tile_top {
                     segment.from.y = y_min;
                 }
@@ -286,7 +287,7 @@ impl Tiler {
                     ctrl: segment.ctrl,
                     kind: EdgeKind::Quadratic,
                     winding: edge.winding,
-                    min_x: segment.from.x.min(segment.to.x),
+                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                     intersects_tile_top,
                 });
 
@@ -318,7 +319,7 @@ impl Tiler {
         encoder: &mut dyn TileEncoder,
     ) {
 
-        row.sort_by(|a, b| a.min_x.partial_cmp(&b.min_x).unwrap());
+        row.sort_by(|a, b| a.min_x.cmp(&b.min_x));
 
         active_edges.clear();
 
@@ -349,7 +350,7 @@ impl Tiler {
         // During this phase we only need to keep track of the backdrop winding number
         // and detect edges that end in the tiling area.
         for edge in &row[..] {
-            if edge.min_x >= self.tile_offset_x {
+            if edge.min_x.0 >= self.tile_offset_x {
                 break;
             }
 
@@ -382,7 +383,7 @@ impl Tiler {
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             //println!("  <!-- edge {:?} -->", edge);
-            while edge.min_x > tile.outer_rect.max.x {
+            while edge.min_x.0 > tile.outer_rect.max.x {
                 self.finish_tile(&mut tile, active_edges, encoder);
             }
 
@@ -520,7 +521,7 @@ struct RowEdge {
     ctrl: Point,
     kind: EdgeKind,
     winding: i16,
-    min_x: f32,
+    min_x: OrderedFloat<f32>,
     intersects_tile_top: bool,
 }
 
