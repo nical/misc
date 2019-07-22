@@ -66,15 +66,36 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
             path_id: tile.path_id,
         });
 
+        let tile_w = tile.outer_rect.max.x - tile.outer_rect.min.x;
+        let offset = lyon_path::geom::math::vector(-tile.outer_rect.min.x, 0.0);
         for edge in active_edges {
             let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
 
+            let from = (edge.from - offset).to_array();
+            let to = (edge.to - offset).to_array();
+            let ctrl = (edge.ctrl - offset).to_array();
+
             self.edges.push(EdgeInstance {
-                from: edge.from.to_array(),
-                to: edge.to.to_array(),
-                ctrl: edge.ctrl.to_array(),
+                from,
+                to,
+                ctrl,
                 tile_index,
             });
+
+            if edge.from.y == 0.0 {
+                let (from, to) = if (from[0] < to[0]) ^ (edge.winding < 0) {
+                    (from[0], tile_w)
+                } else {
+                    (tile_w, from[0])
+                };
+
+                self.edges.push(EdgeInstance {
+                    from: [from, 0.0],
+                    to: [to, 0.0],
+                    ctrl: [to, 0.0],
+                    tile_index,
+                });
+            }
         }
     }
 }

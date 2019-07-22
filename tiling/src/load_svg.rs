@@ -1,4 +1,4 @@
-use lyon_path::geom::euclid::{Box2D, Transform2D};
+use lyon_path::geom::euclid::default::{Box2D, Transform2D};
 use lyon_path::math::point;
 
 pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
@@ -25,16 +25,16 @@ pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
             for segment in &usvg_path.segments {
                 match *segment {
                     usvg::PathSegment::MoveTo { x, y } => {
-                        builder.move_to(transform.transform_point(&point(x as f32, y as f32)));
+                        builder.move_to(transform.transform_point(point(x as f32, y as f32)));
                     }
                     usvg::PathSegment::LineTo { x, y } => {
-                        builder.line_to(transform.transform_point(&point(x as f32, y as f32)));
+                        builder.line_to(transform.transform_point(point(x as f32, y as f32)));
                     }
                     usvg::PathSegment::CurveTo { x1, y1, x2, y2, x, y, } => {
                         builder.cubic_bezier_to(
-                            transform.transform_point(&point(x1 as f32, y1 as f32)),
-                            transform.transform_point(&point(x2 as f32, y2 as f32)),
-                            transform.transform_point(&point(x as f32, y as f32)),
+                            transform.transform_point(point(x1 as f32, y1 as f32)),
+                            transform.transform_point(point(x2 as f32, y2 as f32)),
+                            transform.transform_point(point(x as f32, y as f32)),
                         );
                     }
                     usvg::PathSegment::ClosePath => {

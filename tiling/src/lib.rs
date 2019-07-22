@@ -1,5 +1,5 @@
 use lyon_path::PathEvent;
-use lyon_path::geom::euclid::{Box2D, Size2D, Transform2D};
+use lyon_path::geom::euclid::default::{Box2D, Size2D, Transform2D};
 use lyon_path::math::{Point, point};
 use lyon_path::geom::{LineSegment, QuadraticBezierSegment};
 use ordered_float::OrderedFloat;
@@ -8,14 +8,22 @@ pub mod pathfinder_encoder;
 pub mod load_svg;
 
 pub trait TileEncoder {
-    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]);
+    fn encode_tile(
+        &mut self,
+        tile: &TileInfo,
+        active_edges: &[ActiveEdge],
+    );
 }
 
 impl<T> TileEncoder for T
 where
     T: FnMut(&TileInfo, &[ActiveEdge])
 {
-    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
+    fn encode_tile(
+        &mut self,
+        tile: &TileInfo,
+        active_edges: &[ActiveEdge],
+    ) {
         (*self)(tile, active_edges)
     }
 }
@@ -420,7 +428,12 @@ impl Tiler {
         }
     }
 
-    fn finish_tile(&self, tile: &mut TileInfo, active_edges: &mut Vec<ActiveEdge>, encoder: &mut dyn TileEncoder) {
+    fn finish_tile(
+        &self,
+        tile: &mut TileInfo,
+        active_edges: &mut Vec<ActiveEdge>,
+        encoder: &mut dyn TileEncoder,
+    ) {
         //println!("  <!-- tile {} {} -->", tile.x, tile.y);
         encoder.encode_tile(tile, active_edges);
 
@@ -536,6 +549,14 @@ pub struct ActiveEdge {
     pub winding: i16,
     max_x: f32,
 }
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SubTileFill {
+    pub x: f32,
+    pub winding: i16,
+}
+
+
 
 impl ActiveEdge {
     pub fn clip_horizontally(&self, x_range: std::ops::Range<f32>) -> Self {
