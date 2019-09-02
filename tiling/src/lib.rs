@@ -1,8 +1,10 @@
-use lyon_path::PathEvent;
 use lyon_path::geom::euclid::default::{Box2D, Size2D, Transform2D};
 use lyon_path::math::{Point, point};
 use lyon_path::geom::{LineSegment, QuadraticBezierSegment};
 use ordered_float::OrderedFloat;
+pub use lyon_path::geom::euclid;
+pub use lyon_path::PathEvent;
+pub use lyon_path::geom;
 
 pub mod pathfinder_encoder;
 pub mod load_svg;
