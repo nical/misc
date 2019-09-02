@@ -10,18 +10,20 @@ fn main() {
     let ts = 16;
 
     let mut tiler = Tiler::new(
-        &view_box,
-        size2(ts as f32, ts as f32),
-        0.0,
+        &TilerConfig {
+            view_box,
+            tile_size: size2(ts as f32, ts as f32),
+            tile_padding: 0.0,
+            tolerance: 0.1,
+            flatten: true,
+        }
     );
-    //tiler.set_flattening(true);
 
-    let mut path_ctx = PathCtx::new(0);
     let mut z_buffer = ZBuffer::new();
     z_buffer.init(view_box.max.x as usize / ts, view_box.max.y as usize / ts);
 
     let mut encoder = PathfinderLikeEncoder {
-        edges: Vec::with_capacity(42000),
+        edges: Vec::with_capacity(20000),
         solid_tiles: Vec::with_capacity(2000),
         alpha_tiles: Vec::with_capacity(5000),
         next_tile_index: 0,
@@ -31,7 +33,7 @@ fn main() {
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
 
-    let n = 1000;
+    let n = 100;
     let t0 = time::precise_time_ns();
     let transform = Transform2D::create_translation(1.0, 1.0);
     for _ in 0..n {
@@ -41,19 +43,23 @@ fn main() {
         encoder.alpha_tiles.clear();
         encoder.next_tile_index = 0;
 
-        let mut path_id = paths.len() as u16;
+        // Loop over the paths in front-to-back order to take advantage of
+        // occlusion culling.
+        let mut z_index = paths.len() as u16;
         for path in paths.iter().rev() {
-            path_ctx.path_id = path_id;
 
-            tiler.tile_path(path.iter(), Some(&transform), &mut path_ctx, &mut encoder);
+            tiler.tile_path(path.iter(), Some(&transform), z_index, &mut encoder);
 
-            path_ctx.reset_rows();
+            z_index -= 1;
 
-            path_id -= 1;
-
-            row_time += path_ctx.row_decomposition_time_ns;
-            tile_time += path_ctx.tile_decomposition_time_ns;
+            row_time += tiler.row_decomposition_time_ns;
+            tile_time += tiler.tile_decomposition_time_ns;
         }
+
+        // Since the paths were processed front-to-back we have to reverse
+        // the alpha tiles to render then back-to-front.
+        // This surprisingly doesn't show up in profiles.
+        encoder.alpha_tiles.reverse();
     }
     let t1 = time::precise_time_ns();
 

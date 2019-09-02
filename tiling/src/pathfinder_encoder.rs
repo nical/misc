@@ -45,7 +45,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
             }
         }
 
-        if !self.z_buffer.test(tile.x, tile.y, tile.path_id, solid) {
+        if !self.z_buffer.test(tile.x, tile.y, tile.z_index, solid) {
             // Culled by a solid tile.
             return;
         }
@@ -53,7 +53,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         if solid {
             self.solid_tiles.push(SolidTile {
                 position: [tile.x as f32, tile.y as f32],
-                path_id: tile.path_id,
+                path_id: tile.z_index,
             });
             return;
         }
@@ -63,7 +63,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         self.alpha_tiles.push(AlphaTile {
             position: [tile.x as f32, tile.y as f32],
             tile_index,
-            path_id: tile.path_id,
+            path_id: tile.z_index,
         });
 
         let tile_w = tile.outer_rect.max.x - tile.outer_rect.min.x;

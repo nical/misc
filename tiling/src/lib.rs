@@ -42,97 +42,121 @@ pub struct Tiler {
 
     tolerance: f32,
     flatten: bool,
+
+    rows: Vec<Vec<RowEdge>>,
+    pub row_decomposition_time_ns: u64,
+    pub tile_decomposition_time_ns: u64,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TilerConfig {
+    pub view_box: Box2D<f32>,
+    pub tile_size: Size2D<f32>,
+    pub tile_padding: f32,
+    pub tolerance: f32,
+    pub flatten: bool,
 }
 
 impl Tiler {
-    pub fn new(rect: &Box2D<f32>, tile_size: Size2D<f32>, tile_padding: f32) -> Self {
+    pub fn new(config: &TilerConfig) -> Self {
+        let rect = config.view_box;
         Tiler {
-            tile_size,
+            tile_size: config.tile_size,
             tile_offset_x: rect.min.x,
             tile_offset_y: rect.min.y,
-            tile_padding,
-            num_tiles_x: f32::ceil(rect.size().width / tile_size.width) as u32,
-            num_tiles_y: f32::ceil(rect.size().height / tile_size.height),
-            tolerance: 0.01,
-            flatten: false,
+            tile_padding: config.tile_padding,
+            num_tiles_x: f32::ceil(rect.size().width / config.tile_size.width) as u32,
+            num_tiles_y: f32::ceil(rect.size().height / config.tile_size.height),
+            tolerance: config.tolerance,
+            flatten: config.flatten,
+
+            row_decomposition_time_ns: 0,
+            tile_decomposition_time_ns: 0,
+
+            rows: Vec::new(),
         }
     }
 
-    pub fn set_tolerance(&mut self, tolerance: f32) {
-        self.tolerance = tolerance;
-    }
-
-    pub fn set_flattening(&mut self, flatten: bool) {
-        self.flatten = flatten;
+    pub fn init(&mut self, config: &TilerConfig) {
+        let rect = config.view_box;
+        self.tile_size = config.tile_size;
+        self.tile_offset_x = rect.min.x;
+        self.tile_offset_y = rect.min.y;
+        self.tile_padding = config.tile_padding;
+        self.num_tiles_x = f32::ceil(rect.size().width / config.tile_size.width) as u32;
+        self.num_tiles_y = f32::ceil(rect.size().height / config.tile_size.height);
+        self.tolerance = config.tolerance;
+        self.flatten = config.flatten;
     }
 
     pub fn tile_path(
-        &self,
+        &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        path_ctx: &mut PathCtx,
+        z_index: u16,
         encoder: &mut dyn TileEncoder,
     ) {
-        self.prepare_path_ctx(path_ctx);
-
         let t0 = time::precise_time_ns();
+
+        self.init_rows();
 
         match (transform, self.flatten) {
             (None, true) => {
-                self.assign_rows_linear(path_ctx, path);
+                self.assign_rows_linear(path);
             }
             (None, false) => {
-                self.assign_rows_quadratic(path_ctx, path);
+                self.assign_rows_quadratic(path);
             }
             (Some(transform), true) => {
-                self.assign_rows_linear_transformed(path_ctx, transform, path);
+                self.assign_rows_linear_transformed(transform, path);
             }
             (Some(transform), false) => {
-                self.assign_rows_quadratic_transformed(path_ctx, transform, path);
+                self.assign_rows_quadratic_transformed(transform, path);
             }
         }
 
         let t1 = time::precise_time_ns();
 
-        self.process_rows(path_ctx, encoder);
+        self.process_rows(z_index, encoder);
 
         let t2 = time::precise_time_ns();
 
-        path_ctx.row_decomposition_time_ns = t1 - t0;
-        path_ctx.tile_decomposition_time_ns = t2 - t1;
+        self.row_decomposition_time_ns = t1 - t0;
+        self.tile_decomposition_time_ns = t2 - t1;
     }
 
-    fn prepare_path_ctx(&self, path_ctx: &mut PathCtx) {
+    fn init_rows(&mut self) {
+
         let num_rows = self.num_tiles_y as usize;
-        path_ctx.rows.truncate(num_rows);
-        for _ in 0..(num_rows - path_ctx.rows.len()) {
-            path_ctx.rows.push(Vec::new());
+        self.rows.truncate(num_rows);
+        for _ in 0..(num_rows - self.rows.len()) {
+            self.rows.push(Vec::new());
         }
 
-        for row in &mut path_ctx.rows {
+        for row in &mut self.rows {
             row.clear();
         }
     }
 
-    fn assign_rows_quadratic(&self, path_ctx: &mut PathCtx, path: impl Iterator<Item = PathEvent>) {
+    fn assign_rows_quadratic(&mut self, path: impl Iterator<Item = PathEvent>) {
         for evt in path {
             match evt {
                 PathEvent::MoveTo(..) => {}
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(&edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     segment.for_each_monotonic(&mut|monotonic| {
                         let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
                     segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                            self.add_monotonic_edge(path_ctx, &edge);
+                            self.add_monotonic_edge(&edge);
                         });
                     });
                 }
@@ -140,20 +164,20 @@ impl Tiler {
         }
     }
 
-    fn assign_rows_linear(&self, path_ctx: &mut PathCtx, path: impl Iterator<Item = PathEvent>) {
+    fn assign_rows_linear(&mut self, path: impl Iterator<Item = PathEvent>) {
         for evt in path {
             match evt {
                 PathEvent::MoveTo(..) => {}
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(&edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     let mut from = segment.from;
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
@@ -161,7 +185,7 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
             }
@@ -169,8 +193,7 @@ impl Tiler {
     }
 
     fn assign_rows_quadratic_transformed(
-        &self,
-        path_ctx: &mut PathCtx,
+        &mut self,
         transform: &Transform2D<f32>,
         path: impl Iterator<Item = PathEvent>,
     ) {
@@ -180,13 +203,13 @@ impl Tiler {
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let segment = segment.transform(transform);
                     let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(&edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     let segment = segment.transform(transform);
                     segment.for_each_monotonic(&mut|monotonic| {
                         let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
@@ -194,7 +217,7 @@ impl Tiler {
                     segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                            self.add_monotonic_edge(path_ctx, &edge);
+                            self.add_monotonic_edge(&edge);
                         });
                     });
                 }
@@ -203,8 +226,7 @@ impl Tiler {
     }
 
     fn assign_rows_linear_transformed(
-        &self,
-        path_ctx: &mut PathCtx,
+        &mut self,
         transform: &Transform2D<f32>,
         path: impl Iterator<Item = PathEvent>,
     ) {
@@ -214,7 +236,7 @@ impl Tiler {
                 PathEvent::Line(segment) | PathEvent::Close(segment) => {
                     let segment = segment.transform(transform);
                     let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(path_ctx, &edge);
+                    self.add_monotonic_edge(&edge);
                 }
                 PathEvent::Quadratic(segment) => {
                     let segment = segment.transform(transform);
@@ -222,7 +244,7 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
                 PathEvent::Cubic(segment) => {
@@ -231,14 +253,14 @@ impl Tiler {
                     segment.for_each_flattened(self.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
-                        self.add_monotonic_edge(path_ctx, &edge);
+                        self.add_monotonic_edge(&edge);
                     });
                 }
             }
         }
     }
 
-    fn add_monotonic_edge(&self, path_ctx: &mut PathCtx, edge: &MonotonicEdge) {
+    fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
         debug_assert!(edge.from.y <= edge.to.y);
         //println!("<!-- add edge {} {} -> {} {}  -->", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
 
@@ -259,7 +281,7 @@ impl Tiler {
         let start_idx = y_start_tile as usize;
         let end_idx = y_end_tile as usize;
         match edge.kind {
-            EdgeKind::Linear => for row in &mut path_ctx.rows[start_idx .. end_idx] {
+            EdgeKind::Linear => for row in &mut self.rows[start_idx .. end_idx] {
                 let segment = LineSegment { from: edge.from, to: edge.to };
                 let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
                 let mut segment = segment.split_range(range);
@@ -282,7 +304,7 @@ impl Tiler {
                 y_max += self.tile_size.height;
                 row_f += 1.0;
             }
-            EdgeKind::Quadratic => for row in &mut path_ctx.rows[start_idx .. end_idx] {
+            EdgeKind::Quadratic => for row in &mut self.rows[start_idx .. end_idx] {
                 let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
                 let mut segment = segment.split_range(range);
@@ -309,27 +331,38 @@ impl Tiler {
     }
 
 
-    fn process_rows(&self, path_ctx: &mut PathCtx, encoder: &mut dyn TileEncoder) {
+    fn process_rows(&mut self, z_index: u16, encoder: &mut dyn TileEncoder) {
         let mut tile_y = 0;
         let mut active_edges = Vec::new();
-        for row in &mut path_ctx.rows {
+
+        // borrow-ck dance.
+        let mut rows = Vec::new();
+        std::mem::swap(&mut self.rows, &mut rows);
+
+        for row in &mut rows {
             if !row.is_empty() {
-                self.process_row(tile_y, path_ctx.path_id, &mut row[..], &mut active_edges, encoder);
+                self.process_row(tile_y, z_index, &mut row[..], &mut active_edges, encoder);
             }
             tile_y += 1;
+        }
+
+        std::mem::swap(&mut self.rows, &mut rows);
+
+        for row in &mut self.rows {
+            row.clear();
         }
     }
 
     fn process_row(
         &self,
         tile_y: u32,
-        path_id: u16,
+        z_index: u16,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         encoder: &mut dyn TileEncoder,
     ) {
 
-        row.sort_by(|a, b| a.min_x.cmp(&b.min_x));
+        row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
         active_edges.clear();
 
@@ -348,7 +381,7 @@ impl Tiler {
         let mut tile = TileInfo {
             x: 0,
             y: tile_y,
-            path_id,
+            z_index,
             backdrop_winding: 0,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
@@ -446,33 +479,6 @@ impl Tiler {
         tile.x += 1;
 
         active_edges.retain(|edge| edge.max_x > tile.outer_rect.min.x);
-    }
-}
-
-// Mutable state while tiling a path.
-pub struct PathCtx {
-    rows: Vec<Vec<RowEdge>>,    
-    pub path_id: u16,
-
-    pub row_decomposition_time_ns: u64,
-    pub tile_decomposition_time_ns: u64,
-}
-
-impl PathCtx {
-    pub fn new(path_id: u16) -> Self {
-        PathCtx {
-            rows: Vec::new(),
-            path_id,
-
-            row_decomposition_time_ns: 0,
-            tile_decomposition_time_ns: 0,
-        }
-    }
-
-    pub fn reset_rows(&mut self) {
-        for row in &mut self.rows {
-            row.clear();
-        }
     }
 }
 
@@ -625,7 +631,7 @@ impl ActiveEdge {
 pub struct TileInfo {
     pub x: u32,
     pub y: u32,
-    pub path_id: u16,
+    pub z_index: u16,
     pub backdrop_winding: i16,
     pub inner_rect: Box2D<f32>,
     pub outer_rect: Box2D<f32>,

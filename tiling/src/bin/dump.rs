@@ -8,10 +8,14 @@ fn main() {
 
     let ts = 16;
 
-    let tiler = Tiler::new(
-        &view_box,
-        size2(ts as f32, ts as f32),
-        0.0,
+    let mut tiler = Tiler::new(
+        &TilerConfig {
+            view_box,
+            tile_size: size2(ts as f32, ts as f32),
+            tile_padding: 0.0,
+            tolerance: 0.1,
+            flatten: true,
+        }
     );
 
     let mut z_buffer = ZBuffer::new();
@@ -21,20 +25,15 @@ fn main() {
         z_buffer: &mut z_buffer,
     };
 
-    let mut path_ctx = PathCtx::new(0);
-
     println!("{}", svg_fmt::BeginSvg { w: view_box.max.x, h: view_box.max.y });
 
     println!("<!-- {} paths -->", paths.len());
-    let mut path_id = paths.len() as u16;
+    let mut z_index = paths.len() as u16;
     for path in paths.iter().rev() {
-        path_ctx.path_id = path_id;
 
-        tiler.tile_path(path.iter(), None, &mut path_ctx, &mut encoder);
+        tiler.tile_path(path.iter(), None, z_index, &mut encoder);
 
-        path_ctx.reset_rows();
-
-        path_id -= 1;
+        z_index -= 1;
     }
 
     println!("{}", svg_fmt::EndSvg);
@@ -55,16 +54,16 @@ impl<'l> TileEncoder for Encoder<'l> {
             }
         }
 
-        if !self.z_buffer.test(tile.x, tile.y, tile.path_id, solid) {
-            println!("<!-- culled tile {} {} path {}-->", tile.x, tile.y, tile.path_id);
+        if !self.z_buffer.test(tile.x, tile.y, tile.z_index, solid) {
+            println!("<!-- culled tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
             return;
         }
 
         if solid {
-            println!("<!-- solid tile {} {} path {}-->", tile.x, tile.y, tile.path_id);            
+            println!("<!-- solid tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
 
             use std::ops::Rem;
-            let solid_tile_color = svg_fmt::Color { r: 0, g: 0, b: (tile.path_id * 17).rem(150) as u8 + 100 };
+            let solid_tile_color = svg_fmt::Color { r: 0, g: 0, b: (tile.z_index * 17).rem(150) as u8 + 100 };
             println!("  {}",
                 svg_fmt::rectangle(
                     tile.inner_rect.min.x,
@@ -76,7 +75,7 @@ impl<'l> TileEncoder for Encoder<'l> {
                 .opacity(0.4)
             );
         } else {
-            println!("<!-- regular tile {} {} path {}-->", tile.x, tile.y, tile.path_id);
+            println!("<!-- regular tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
         }
 
         for edge in edges {
