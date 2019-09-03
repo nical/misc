@@ -28,6 +28,7 @@ fn main() {
         alpha_tiles: Vec::with_capacity(5000),
         next_tile_index: 0,
         z_buffer: &mut z_buffer,
+        z_index: 0,
     };
 
     let mut row_time: u64 = 0;
@@ -41,16 +42,15 @@ fn main() {
         encoder.edges.clear();
         encoder.solid_tiles.clear();
         encoder.alpha_tiles.clear();
-        encoder.next_tile_index = 0;
+        encoder.next_tile_index = paths.len() as u16;
 
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
-        let mut z_index = paths.len() as u16;
         for path in paths.iter().rev() {
 
-            tiler.tile_path(path.iter(), Some(&transform), z_index, &mut encoder);
+            tiler.tile_path(path.iter(), Some(&transform), &mut encoder);
 
-            z_index -= 1;
+            encoder.z_index -= 1;
 
             row_time += tiler.row_decomposition_time_ns;
             tile_time += tiler.tile_decomposition_time_ns;

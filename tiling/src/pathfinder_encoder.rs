@@ -24,12 +24,14 @@ pub struct AlphaTile {
     pub path_id: u16,
 }
 
+/// An example encoder that encodes tiles in a similar format as pathfinder.
 pub struct PathfinderLikeEncoder<'l> {
     pub edges: Vec<EdgeInstance>,
     pub solid_tiles: Vec<SolidTile>,
     pub alpha_tiles: Vec<AlphaTile>,
     pub next_tile_index: u16,
     pub z_buffer: &'l mut ZBuffer,
+    pub z_index: u16,
 }
 
 impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
@@ -45,7 +47,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
             }
         }
 
-        if !self.z_buffer.test(tile.x, tile.y, tile.z_index, solid) {
+        if !self.z_buffer.test(tile.x, tile.y, self.z_index, solid) {
             // Culled by a solid tile.
             return;
         }
@@ -53,7 +55,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         if solid {
             self.solid_tiles.push(SolidTile {
                 position: [tile.x as f32, tile.y as f32],
-                path_id: tile.z_index,
+                path_id: self.z_index,
             });
             return;
         }
@@ -63,7 +65,7 @@ impl<'l> TileEncoder for PathfinderLikeEncoder<'l> {
         self.alpha_tiles.push(AlphaTile {
             position: [tile.x as f32, tile.y as f32],
             tile_index,
-            path_id: tile.z_index,
+            path_id: self.z_index,
         });
 
         let tile_w = tile.outer_rect.max.x - tile.outer_rect.min.x;

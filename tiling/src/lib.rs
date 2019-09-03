@@ -8,7 +8,13 @@ pub use lyon_path::geom;
 
 pub mod pathfinder_encoder;
 pub mod load_svg;
+mod z_buffer;
 
+pub use z_buffer::ZBuffer;
+
+/// The output of the tiler.
+///
+/// encode_tile will be called for each tile that isn't fully empty.
 pub trait TileEncoder {
     fn encode_tile(
         &mut self,
@@ -30,6 +36,27 @@ where
     }
 }
 
+/// A context object that can bin path edges into tile grids.
+///
+/// The simplest way to use it is through the tile_path method:
+///
+/// ```ignore
+/// let mut tiler = Tiler::new(&config);
+/// tiler.tile_path(path.iter(), Some(&transform, &mut encoder));
+/// ```
+///
+/// It is also possible to add edges manually between begin_path and
+/// end_path invocations:
+///
+/// ```ignore
+/// let mut tiler = Tiler::new(&config);
+///
+/// tiler.begin_path();
+/// for edge in &edges {
+///     tiler.add_line_segment(edge);
+/// }
+/// tiler.end_path(&mut encoder);
+/// ```
 pub struct Tiler {
     tile_size: Size2D<f32>,
     // offset of the first tile
@@ -44,6 +71,7 @@ pub struct Tiler {
     flatten: bool,
 
     rows: Vec<Vec<RowEdge>>,
+
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
 }
@@ -58,6 +86,7 @@ pub struct TilerConfig {
 }
 
 impl Tiler {
+    /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
         let rect = config.view_box;
         Tiler {
@@ -77,6 +106,8 @@ impl Tiler {
         }
     }
 
+    /// Using init instead of creating a new tiler allows recycling allocations from
+    /// a previous tiling run.
     pub fn init(&mut self, config: &TilerConfig) {
         let rect = config.view_box;
         self.tile_size = config.tile_size;
@@ -89,35 +120,34 @@ impl Tiler {
         self.flatten = config.flatten;
     }
 
+    /// Tile an entire path.
+    ///
+    /// This internally does all of the steps:
+    /// - begin_Path
+    /// - add_monotonic_edge
+    /// - end_path
     pub fn tile_path(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        z_index: u16,
         encoder: &mut dyn TileEncoder,
     ) {
         let t0 = time::precise_time_ns();
 
-        self.init_rows();
+        let identity = Transform2D::identity();
+        let transform = transform.unwrap_or(&identity);
 
-        match (transform, self.flatten) {
-            (None, true) => {
-                self.assign_rows_linear(path);
-            }
-            (None, false) => {
-                self.assign_rows_quadratic(path);
-            }
-            (Some(transform), true) => {
-                self.assign_rows_linear_transformed(transform, path);
-            }
-            (Some(transform), false) => {
-                self.assign_rows_quadratic_transformed(transform, path);
-            }
+        self.begin_path();
+
+        if self.flatten {
+            self.assign_rows_linear(transform, path);
+        } else {
+            self.assign_rows_quadratic(transform, path);
         }
 
         let t1 = time::precise_time_ns();
 
-        self.process_rows(z_index, encoder);
+        self.end_path(encoder);
 
         let t2 = time::precise_time_ns();
 
@@ -125,144 +155,18 @@ impl Tiler {
         self.tile_decomposition_time_ns = t2 - t1;
     }
 
-    fn init_rows(&mut self) {
-
-        let num_rows = self.num_tiles_y as usize;
-        self.rows.truncate(num_rows);
-        for _ in 0..(num_rows - self.rows.len()) {
-            self.rows.push(Vec::new());
-        }
-
-        for row in &mut self.rows {
-            row.clear();
-        }
+    /// Can be use to tile a path manually.
+    ///
+    /// Should only be called between begin_path and end_path.
+    pub fn add_line_segment(&mut self, edge: &LineSegment<f32>) {
+        self.add_monotonic_edge(&MonotonicEdge::linear(*edge));
     }
 
-    fn assign_rows_quadratic(&mut self, path: impl Iterator<Item = PathEvent>) {
-        for evt in path {
-            match evt {
-                PathEvent::MoveTo(..) => {}
-                PathEvent::Line(segment) | PathEvent::Close(segment) => {
-                    let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(&edge);
-                }
-                PathEvent::Quadratic(segment) => {
-                    segment.for_each_monotonic(&mut|monotonic| {
-                        let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-                PathEvent::Cubic(segment) => {
-                    segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
-                        segment.for_each_monotonic(&mut|monotonic| {
-                            let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                            self.add_monotonic_edge(&edge);
-                        });
-                    });
-                }
-            }
-        }
-    }
-
-    fn assign_rows_linear(&mut self, path: impl Iterator<Item = PathEvent>) {
-        for evt in path {
-            match evt {
-                PathEvent::MoveTo(..) => {}
-                PathEvent::Line(segment) | PathEvent::Close(segment) => {
-                    let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(&edge);
-                }
-                PathEvent::Quadratic(segment) => {
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-                PathEvent::Cubic(segment) => {
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-            }
-        }
-    }
-
-    fn assign_rows_quadratic_transformed(
-        &mut self,
-        transform: &Transform2D<f32>,
-        path: impl Iterator<Item = PathEvent>,
-    ) {
-        for evt in path {
-            match evt {
-                PathEvent::MoveTo(..) => {}
-                PathEvent::Line(segment) | PathEvent::Close(segment) => {
-                    let segment = segment.transform(transform);
-                    let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(&edge);
-                }
-                PathEvent::Quadratic(segment) => {
-                    let segment = segment.transform(transform);
-                    segment.for_each_monotonic(&mut|monotonic| {
-                        let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-                PathEvent::Cubic(segment) => {
-                    let segment = segment.transform(transform);
-                    segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
-                        segment.for_each_monotonic(&mut|monotonic| {
-                            let edge = MonotonicEdge::quadratic(*monotonic.segment());
-                            self.add_monotonic_edge(&edge);
-                        });
-                    });
-                }
-            }
-        }
-    }
-
-    fn assign_rows_linear_transformed(
-        &mut self,
-        transform: &Transform2D<f32>,
-        path: impl Iterator<Item = PathEvent>,
-    ) {
-        for evt in path {
-            match evt {
-                PathEvent::MoveTo(..) => {}
-                PathEvent::Line(segment) | PathEvent::Close(segment) => {
-                    let segment = segment.transform(transform);
-                    let edge = MonotonicEdge::linear(segment);
-                    self.add_monotonic_edge(&edge);
-                }
-                PathEvent::Quadratic(segment) => {
-                    let segment = segment.transform(transform);
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-                PathEvent::Cubic(segment) => {
-                    let segment = segment.transform(transform);
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
-                        self.add_monotonic_edge(&edge);
-                    });
-                }
-            }
-        }
-    }
-
-    fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
+    /// Can be use to tile a path manually.
+    ///
+    /// Should only be called between begin_path and end_path.
+    pub fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
         debug_assert!(edge.from.y <= edge.to.y);
-        //println!("<!-- add edge {} {} -> {} {}  -->", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
 
         let min = self.tile_offset_y - self.tile_padding;
         let max = self.tile_offset_y + self.num_tiles_y * self.tile_size.height + self.tile_padding;
@@ -330,8 +234,22 @@ impl Tiler {
         }
     }
 
+    /// Initialize the tiler before adding edges manually.
+    pub fn begin_path(&mut self) {
 
-    fn process_rows(&mut self, z_index: u16, encoder: &mut dyn TileEncoder) {
+        let num_rows = self.num_tiles_y as usize;
+        self.rows.truncate(num_rows);
+        for _ in 0..(num_rows - self.rows.len()) {
+            self.rows.push(Vec::new());
+        }
+
+        for row in &mut self.rows {
+            row.clear();
+        }
+    }
+
+    /// Process manually edges and encode them into the output TileEncoder.
+    pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
         let mut tile_y = 0;
         let mut active_edges = Vec::new();
 
@@ -339,9 +257,10 @@ impl Tiler {
         let mut rows = Vec::new();
         std::mem::swap(&mut self.rows, &mut rows);
 
+        // This could be done in parallel but it's already quite fast serially.
         for row in &mut rows {
             if !row.is_empty() {
-                self.process_row(tile_y, z_index, &mut row[..], &mut active_edges, encoder);
+                self.process_row(tile_y, &mut row[..], &mut active_edges, encoder);
             }
             tile_y += 1;
         }
@@ -353,10 +272,77 @@ impl Tiler {
         }
     }
 
+    fn assign_rows_quadratic(
+        &mut self,
+        transform: &Transform2D<f32>,
+        path: impl Iterator<Item = PathEvent>,
+    ) {
+        for evt in path {
+            match evt {
+                PathEvent::MoveTo(..) => {}
+                PathEvent::Line(segment) | PathEvent::Close(segment) => {
+                    let segment = segment.transform(transform);
+                    let edge = MonotonicEdge::linear(segment);
+                    self.add_monotonic_edge(&edge);
+                }
+                PathEvent::Quadratic(segment) => {
+                    let segment = segment.transform(transform);
+                    segment.for_each_monotonic(&mut|monotonic| {
+                        let edge = MonotonicEdge::quadratic(*monotonic.segment());
+                        self.add_monotonic_edge(&edge);
+                    });
+                }
+                PathEvent::Cubic(segment) => {
+                    let segment = segment.transform(transform);
+                    segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
+                        segment.for_each_monotonic(&mut|monotonic| {
+                            let edge = MonotonicEdge::quadratic(*monotonic.segment());
+                            self.add_monotonic_edge(&edge);
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    fn assign_rows_linear(
+        &mut self,
+        transform: &Transform2D<f32>,
+        path: impl Iterator<Item = PathEvent>,
+    ) {
+        for evt in path {
+            match evt {
+                PathEvent::MoveTo(..) => {}
+                PathEvent::Line(segment) | PathEvent::Close(segment) => {
+                    let segment = segment.transform(transform);
+                    let edge = MonotonicEdge::linear(segment);
+                    self.add_monotonic_edge(&edge);
+                }
+                PathEvent::Quadratic(segment) => {
+                    let segment = segment.transform(transform);
+                    let mut from = segment.from;
+                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                        let edge = MonotonicEdge::linear(LineSegment { from, to });
+                        from = to;
+                        self.add_monotonic_edge(&edge);
+                    });
+                }
+                PathEvent::Cubic(segment) => {
+                    let segment = segment.transform(transform);
+                    let mut from = segment.from;
+                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                        let edge = MonotonicEdge::linear(LineSegment { from, to });
+                        from = to;
+                        self.add_monotonic_edge(&edge);
+                    });
+                }
+            }
+        }
+    }
+
     fn process_row(
         &self,
         tile_y: u32,
-        z_index: u16,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         encoder: &mut dyn TileEncoder,
@@ -367,8 +353,6 @@ impl Tiler {
         active_edges.clear();
 
         let row_y = tile_y as f32 * self.tile_size.height + self.tile_offset_x;
-
-        //println!("\n\n<!-- row {}   baseline {}-->", tile_y, y_baseline);
 
         let inner_rect = Box2D {
             min: point(self.tile_offset_x, row_y),
@@ -381,7 +365,6 @@ impl Tiler {
         let mut tile = TileInfo {
             x: 0,
             y: tile_y,
-            z_index,
             backdrop_winding: 0,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
@@ -396,8 +379,6 @@ impl Tiler {
             if edge.min_x.0 >= self.tile_offset_x {
                 break;
             }
-
-            //println!("<!-- edge: {:?}-->", edge);
 
             if edge.intersects_tile_top {
                 tile.backdrop_winding += edge.winding;
@@ -425,7 +406,6 @@ impl Tiler {
         // Each time we get to a new tile, we remove all active edges that end left of the tile.
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
-            //println!("  <!-- edge {:?} -->", edge);
             while edge.min_x.0 > tile.outer_rect.max.x {
                 self.finish_tile(&mut tile, active_edges, encoder);
             }
@@ -434,11 +414,8 @@ impl Tiler {
                 break;
             }
 
-            //println!("<!-- edge: {:?}-->", edge);
-
             if edge.intersects_tile_top {
                 tile.backdrop_winding += edge.winding;
-                //println!("        {}", svg_fmt::Circle { x: edge.from.x, y: edge.from.y, radius: 0.1, style: svg_fmt::Style::default() });
             }
 
             active_edges.push(ActiveEdge {
@@ -488,9 +465,8 @@ pub enum EdgeKind {
     Quadratic,
 }
 
-/// This struct is mostly there to pass as argument to add_monotonic_edge
 #[derive(Copy, Clone, Debug, PartialEq)]
-struct MonotonicEdge {
+pub struct MonotonicEdge {
     from: Point,
     to: Point,
     ctrl: Point,
@@ -499,7 +475,7 @@ struct MonotonicEdge {
 }
 
 impl MonotonicEdge {
-    fn linear(mut segment: LineSegment<f32>) -> Self {
+    pub fn linear(mut segment: LineSegment<f32>) -> Self {
         let winding = if segment.from.y > segment.to.y {
             std::mem::swap(&mut segment.from, &mut segment.to);
             -1
@@ -516,7 +492,7 @@ impl MonotonicEdge {
         }
     }
 
-    fn quadratic(mut segment: QuadraticBezierSegment<f32>) -> Self {
+    pub fn quadratic(mut segment: QuadraticBezierSegment<f32>) -> Self {
         let winding = if segment.from.y > segment.to.y {
             std::mem::swap(&mut segment.from, &mut segment.to);
             -1
@@ -557,14 +533,6 @@ pub struct ActiveEdge {
     pub winding: i16,
     max_x: f32,
 }
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct SubTileFill {
-    pub x: f32,
-    pub winding: i16,
-}
-
-
 
 impl ActiveEdge {
     pub fn clip_horizontally(&self, x_range: std::ops::Range<f32>) -> Self {
@@ -629,70 +597,19 @@ impl ActiveEdge {
 }
 
 pub struct TileInfo {
+    /// X-offset in number of tiles.
     pub x: u32,
+    /// Y-offset in number of tiles.
     pub y: u32,
-    pub z_index: u16,
+    /// Winding number of the background of the tile.
     pub backdrop_winding: i16,
+    /// Rectangle of the tile aligned with the tile grid.
     pub inner_rect: Box2D<f32>,
+    /// Rectangle including the tile padding.
     pub outer_rect: Box2D<f32>,
 }
 
-pub struct ZBuffer {
-    data: Vec<u16>,
-    w: usize,
-    h: usize,
-}
-
-impl ZBuffer {
-    pub fn new() -> Self {
-        ZBuffer {
-            data: Vec::new(),
-            w: 0,
-            h: 0,
-        }
-    }
-
-    pub fn init(&mut self, w: usize, h: usize) {
-        let size = w * h;
-
-        self.w = w;
-        self.h = h;
-
-        if self.data.len() < size {
-            self.data = vec![0; size];
-        } else {
-            for elt in &mut self.data[0..size] {
-                *elt = 0;
-            }
-        }
-    }
-
-    pub fn get(&self, x: u32, y: u32) -> u16 {
-        self.data[self.index(x, y)]
-    }
-
-    pub fn test(&mut self, x: u32, y: u32, z_index: u16, write: bool) -> bool {
-        debug_assert!(x < self.w as u32);
-        debug_assert!(y < self.h as u32);
-
-        let idx = self.index(x, y);
-        let z = &mut self.data[idx];
-        let result = *z < z_index;
-
-        if write && result {
-            *z = z_index;
-        }
-
-        result
-    }
-
-    #[inline]
-    pub fn index(&self, x: u32, y: u32) -> usize {
-        self.w * (y as usize) + (x as usize)
-    }
-}
-
-pub fn clip_quadratic_bezier_1d(
+fn clip_quadratic_bezier_1d(
     from: f32,
     ctrl: f32,
     to: f32,

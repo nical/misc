@@ -23,17 +23,17 @@ fn main() {
 
     let mut encoder = Encoder {
         z_buffer: &mut z_buffer,
+        z_index: paths.len() as u16,
     };
 
     println!("{}", svg_fmt::BeginSvg { w: view_box.max.x, h: view_box.max.y });
 
     println!("<!-- {} paths -->", paths.len());
-    let mut z_index = paths.len() as u16;
     for path in paths.iter().rev() {
 
-        tiler.tile_path(path.iter(), None, z_index, &mut encoder);
+        tiler.tile_path(path.iter(), None, &mut encoder);
 
-        z_index -= 1;
+        encoder.z_index -= 1;
     }
 
     println!("{}", svg_fmt::EndSvg);
@@ -41,6 +41,7 @@ fn main() {
 
 struct Encoder<'l> {
     z_buffer: &'l mut ZBuffer,
+    z_index: u16,
 }
 
 impl<'l> TileEncoder for Encoder<'l> {
@@ -54,16 +55,16 @@ impl<'l> TileEncoder for Encoder<'l> {
             }
         }
 
-        if !self.z_buffer.test(tile.x, tile.y, tile.z_index, solid) {
-            println!("<!-- culled tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
+        if !self.z_buffer.test(tile.x, tile.y, self.z_index, solid) {
+            println!("<!-- culled tile {} {} path {}-->", tile.x, tile.y, self.z_index);
             return;
         }
 
         if solid {
-            println!("<!-- solid tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
+            println!("<!-- solid tile {} {} path {}-->", tile.x, tile.y, self.z_index);
 
             use std::ops::Rem;
-            let solid_tile_color = svg_fmt::Color { r: 0, g: 0, b: (tile.z_index * 17).rem(150) as u8 + 100 };
+            let solid_tile_color = svg_fmt::Color { r: 0, g: 0, b: (self.z_index * 17).rem(150) as u8 + 100 };
             println!("  {}",
                 svg_fmt::rectangle(
                     tile.inner_rect.min.x,
@@ -75,7 +76,7 @@ impl<'l> TileEncoder for Encoder<'l> {
                 .opacity(0.4)
             );
         } else {
-            println!("<!-- regular tile {} {} path {}-->", tile.x, tile.y, tile.z_index);
+            println!("<!-- regular tile {} {} path {}-->", tile.x, tile.y, self.z_index);
         }
 
         for edge in edges {
