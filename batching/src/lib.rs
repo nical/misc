@@ -26,66 +26,56 @@ pub struct BatchingConfig {
     pub max_lookback: usize,
 }
 
-/// Describes the requirements of a batch.
-///
-/// This is the means by which we decide how 
-pub trait BatchKey: Clone {
-    /// Create a dummy key.
-    fn invalid() -> Self;
+pub trait Batch {
+    type Key;
+    type Instance;
 
-    /// Combine this key with another compatible key.
-    fn combine(&mut self, other: &Self);
+    fn new(key: &Self::Key, instances: &[Self::Instance], rect: &Rect) -> Self;
 
-    /// Whether it is possible and relatively cheap to add to a certain batch.
-    fn should_add_to_batch(&self, batch_key: &Self) -> bool;
+    fn add_instances(&mut self, key: &Self::Key, instances: &[Self::Instance], rect: &Rect) -> bool;
 
-    /// Whether it is possible (even if somewhat costly) to merge the two batches
-    /// when attempting to reduce the number of draw calls.
-    fn can_merge_batches(a: &Self, b: &Self) -> bool;
+    fn can_merge(&self, _other: &Self) -> bool { false }
+
+    fn merge(&mut self, _other: &mut Self) -> bool { false }
+
+    fn num_instances(&self) -> usize;
 }
 
-
-struct Batch<Key, Instance> {
-    key: Key,
-    instances: Vec<Instance>,
-    cost: f32,
+#[derive(Copy, Clone, Debug)]
+pub struct Stats {
+    pub num_batches: u32,
+    pub num_instances: u32,
+    pub hit_lookback_limit: u32,
 }
 
-impl<Key: BatchKey, Instance> Batch<Key, Instance> {
-    fn with_key(key: Key) -> Self {
-        Batch {
-            key,
-            instances: Vec::new(),
-            cost: 0.0,
+impl Stats {
+    pub fn combine(&self, other: &Self) -> Self {
+        Stats {
+            num_batches: self.num_batches + other.num_batches,
+            num_instances: self.num_instances + other.num_instances,
+            hit_lookback_limit: self.hit_lookback_limit + other.hit_lookback_limit,
         }
     }
-
-    fn merge(&mut self, other: Self) {
-        self.instances.extend(other.instances);
-        self.key.combine(&other.key);
-        self.cost += other.cost;
-    }
 }
-
 
 #[test]
 fn simple() {
     use euclid::rect;
 
     /// Per-instance data to send to the GPU.
-    #[derive(Clone)]
+    #[derive(Copy, Clone)]
     struct Instance;
 
     /// Bit sets describing features that will be required of the shader.
     ///
     /// The general idea is to have a few "über-shaders" that we can fall back
     /// to and some specialized shaders that the render can select, if they match
-    /// the requested config
+    /// the requested config.
     #[derive(Copy, Clone, Debug, PartialEq, Hash)]
     pub struct ShaderFeatures {
         /// Features of the shader that are expensive to combine.
         ///
-        /// In other words don't mix primitves with different primary features in the same
+        /// In other words don't mix primitives with different primary features in the same
         /// batch unless we really need to reduce the number of draw calls.
         pub primary: u32,
 
@@ -96,6 +86,15 @@ fn simple() {
         pub secondary: u32,
     }
 
+    impl ShaderFeatures {
+        pub fn combined_with(&self, other: Self) -> Self {
+            ShaderFeatures {
+                primary: self.primary | other.primary,
+                secondary: self.secondary | other.secondary,
+            }
+        }
+    }
+
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
     pub enum BlendMode {
         None,
@@ -103,22 +102,14 @@ fn simple() {
         // etc.
     }
 
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    #[derive(Copy, Clone, Debug, PartialEq, Hash)]
     pub struct Key {
         shader: ShaderFeatures,
         blend_mode: BlendMode,
         textures: [u32; 4],
     }
 
-    impl BatchKey for Key {
-        fn invalid() -> Self {
-            Key {
-                shader: ShaderFeatures { primary: 0, secondary: 0 },
-                blend_mode: BlendMode::None,
-                textures: [0; 4],
-            }
-        }
-
+    impl Key {
         fn combine(&mut self, other: &Self) {
             debug_assert_eq!(self.blend_mode, other.blend_mode);
             debug_assert_eq!(self.textures, other.textures);
@@ -130,16 +121,58 @@ fn simple() {
                 && self.blend_mode == batch.blend_mode
                 && self.shader.primary == batch.shader.primary
         }
+    }
 
-        fn can_merge_batches(a: &Self, b: &Self) -> bool {
-            a.textures == b.textures
-                && a.blend_mode == b.blend_mode
-                && shader_configuration_exists(a.shader.combined_with(b.shader))
+    struct AlphaBatch {
+        key: Key,
+        instances: Vec<Instance>,
+    }
+
+
+    impl Batch for AlphaBatch {
+        type Key = Key;
+        type Instance = Instance;
+
+        fn new(key: &Key, instances: &[Instance], _rect: &Rect) -> Self {
+            AlphaBatch {
+                key: *key,
+                instances: instances.to_vec(),
+            }
+        }
+
+        fn add_instances(&mut self, key: &Key, instances: &[Instance], _rect: &Rect) -> bool {
+            if !key.should_add_to_batch(&self.key) {
+                return false;
+            }
+
+            self.instances.extend_from_slice(instances);
+            self.key.combine(&key);
+
+            true
+        }
+
+        fn can_merge(&self, other: &Self) -> bool {
+            self.key.textures == other.key.textures
+                && self.key.blend_mode == other.key.blend_mode
+                && shader_configuration_exists(self.key.shader.combined_with(other.key.shader))
+        }
+
+        fn num_instances(&self) -> usize { self.instances.len() }
+
+        fn merge(&mut self, other: &mut Self) -> bool {
+            if self.can_merge(other) {
+                self.instances.extend(other.instances.drain(..));
+                self.key.combine(&other.key);
+
+                return true
+            }
+
+            false
         }
     }
 
     fn shader_configuration_exists(_shader: ShaderFeatures) -> bool {
-        // In practive we'd need some logic here to avoid having to support every possible shader configuration.
+        // In practice we'd need some logic here to avoid having to support every possible shader configuration.
         true
     }
 
@@ -162,7 +195,7 @@ fn simple() {
         max_merge_cost: 1000.0,
     };
 
-    let mut batches = OrderedBatchList::new(&cfg);
+    let mut batches = OrderedBatchList::<AlphaBatch>::new(&cfg);
 
     batches.add_instance(&Key::solid(), Instance, &rect(0.0, 0.0, 100.0, 100.0));
     batches.add_instance(&Key::image(), Instance, &rect(100.0, 0.0, 100.0, 100.0));

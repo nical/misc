@@ -1,60 +1,104 @@
-use crate::{Batch, BatchingConfig, BatchKey, Rect};
+use crate::{Batch, BatchingConfig, Rect, Stats};
 
-/// A list of batches that preserve the ordering of overlapping primitives. 
-pub struct OrderedBatchList<Key, Instance> {
-    batches: Vec<Batch<Key, Instance>>,
-    item_rects: Vec<Vec<Rect>>,
-    max_lookback: usize,
+struct BatchRects {
+    batch: Rect,
+    items: Vec<Rect>,
 }
 
-impl<Key: BatchKey, Instance: Clone> OrderedBatchList<Key, Instance> {
+impl BatchRects {
+    fn new(rect: &Rect) -> Self {
+        BatchRects {
+            batch: *rect,
+            items: Vec::new(),
+        }
+    }
+
+    fn add_rect(&mut self, rect: &Rect) {
+        let union = self.batch.union(rect);
+
+        if !self.items.is_empty() {
+            self.items.push(*rect);
+        } else if self.batch.area() + rect.area() > union.area() {
+            self.items.reserve(16);
+            self.items.push(self.batch);
+            self.items.push(*rect);
+        }
+
+        self.batch = union;
+    }
+
+    fn intersects(&mut self, rect: &Rect) -> bool {
+        if !self.batch.intersects(rect) {
+            return false;
+        }
+
+        if self.items.is_empty() {
+            true
+        } else {
+            self.items.iter().any(|item| item.intersects(rect))
+        }
+    }
+}
+
+/// A list of batches that preserve the ordering of overlapping primitives. 
+pub struct OrderedBatchList<B> {
+    batches: Vec<OrderedBatch<B>>,
+    rects: Vec<BatchRects>,
+    max_lookback: usize,
+    hit_lookback_limit: u32,
+}
+
+struct OrderedBatch<B> {
+    batch: B,
+    cost: f32,
+}
+
+impl<B: Batch> OrderedBatchList<B> {
     pub fn new(config: &BatchingConfig) -> Self {
         OrderedBatchList {
             batches: Vec::new(),
-            item_rects: Vec::new(),
+            rects: Vec::new(),
             max_lookback: config.max_lookback,
+            hit_lookback_limit: 0,
         }
     }
 
-    pub fn add_instance(&mut self, key: &Key, instance: Instance, rect: &Rect) {
-        let selected_batch_index = self.select_batch(key, rect);
-
-        self.item_rects[selected_batch_index].push(*rect);
-        self.batches[selected_batch_index].instances.push(instance);
+    pub fn add_instance(&mut self, key: &B::Key, instance: B::Instance, rect: &Rect) {
+        self.add_instances(key, &[instance], rect);
     }
 
-    pub fn add_instances(&mut self, key: &Key, instances: &[Instance], rect: &Rect) {
-        let selected_batch_index = self.select_batch(key, rect);
+    pub fn add_instances(&mut self, key: &B::Key, instances: &[B::Instance], rect: &Rect) {
+        let mut intersected = false;
+        for (batch_index, batch) in self.batches.iter_mut().enumerate().rev().take(self.max_lookback) {
+            if batch.batch.add_instances(key, instances, rect) {
+                self.rects[batch_index].add_rect(rect);
+                batch.cost += rect.area();
+                return;
+            }
 
-        let batch = &mut self.batches[selected_batch_index];
-        batch.instances.extend_from_slice(instances);
-        batch.cost += rect.area();
-        batch.key.combine(&key);
-
-        self.item_rects[selected_batch_index].push(*rect);
-    }
-
-    fn select_batch(&mut self, key: &Key, rect: &Rect) -> usize {
-        let mut selected_batch_index = None;
-        'outer: for (batch_index, batch) in self.batches.iter().enumerate().rev().take(self.max_lookback) {
-            if key.should_add_to_batch(&batch.key) {
-                selected_batch_index = Some(batch_index);
+            if self.rects[batch_index].intersects(rect) {
+                intersected = true;
                 break;
             }
-            for item_rect in &self.item_rects[batch_index] {
-                if item_rect.intersects(&rect) {
-                    break 'outer;
-                }
-            }
         }
 
-        selected_batch_index.unwrap_or_else(|| {
-            let index = self.batches.len();
-            self.batches.push(Batch::with_key(key.clone()));
-            self.item_rects.push(Vec::new());
+        if !intersected && self.batches.len() > self.max_lookback {
+            self.hit_lookback_limit += 1;
+        }
 
-            index
-        })
+        self.batches.push(OrderedBatch {
+            batch: Batch::new(key, instances, rect),
+            cost: rect.area(),
+        });
+        self.rects.push(BatchRects::new(rect));
+    }
+
+    pub fn add_batch(&mut self, key: &B::Key, instances: &[B::Instance], rect: &Rect) {
+        self.batches.push(OrderedBatch {
+            batch: Batch::new(key, instances, rect),
+            cost: rect.area(),
+        });
+        self.rects.push(BatchRects::new(rect));
     }
 
     pub fn optimize(&mut self, config: &BatchingConfig) {
@@ -69,7 +113,7 @@ impl<Key: BatchKey, Instance: Clone> OrderedBatchList<Key, Instance> {
             let b = &self.batches[batch_index + 1];
 
             let cost = a.cost + b.cost;
-            if Key::can_merge_batches(&a.key, &b.key) && cost < config.max_merge_cost {
+            if a.batch.can_merge(&b.batch) && cost < config.max_merge_cost {
                 merge_candidates.push((batch_index, cost));
             }
         }
@@ -84,20 +128,40 @@ impl<Key: BatchKey, Instance: Clone> OrderedBatchList<Key, Instance> {
             // and we'll want to merge with the previous batch instead.
             let src_index = batch_index + 1;
             let mut dest_index = batch_index;
-            while dest_index > 0 && self.batches[dest_index].instances.is_empty() {
+            while dest_index > 0 && self.batches[dest_index].batch.num_instances() == 0 {
                 dest_index -= 1;
             }
 
-            let mut src_batch = std::mem::replace(
-                &mut self.batches[src_index],
-                Batch::with_key(Key::invalid()),
-            );
-            let dest_batch = &mut self.batches[dest_index];
+            let (src_batch, dest_batch) = get_both_mut(&mut self.batches, src_index, dest_index);
 
-            dest_batch.instances.append(&mut src_batch.instances);
-            dest_batch.cost += src_batch.cost;
-            dest_batch.key.combine(&src_batch.key);
+            if src_batch.batch.merge(&mut dest_batch.batch) {
+                dest_batch.cost += src_batch.cost;
+                src_batch.cost = 0.0;
+            }
+        }
+    }
+
+    pub fn stats(&self) -> Stats {
+        Stats {
+            hit_lookback_limit: self.hit_lookback_limit,
+            num_batches: self.batches.len() as u32,
+            num_instances: self.batches.iter().fold(
+                0,
+                |count, batch| count + batch.batch.num_instances() as u32,
+            ),
         }
     }
 }
 
+pub fn get_both_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
+    assert!(a != b);
+    assert!(a < v.len());
+    assert!(b < v.len());
+
+    unsafe {
+        (
+            &mut *v.as_mut_ptr().add(a),
+            &mut *v.as_mut_ptr().add(b),
+        )
+    }
+}
