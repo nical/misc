@@ -22,14 +22,16 @@ fn main() {
     let mut z_buffer = ZBuffer::new();
     z_buffer.init(view_box.max.x as usize / ts, view_box.max.y as usize / ts);
 
-    let mut encoder = PathfinderLikeEncoder {
-        edges: Vec::with_capacity(20000),
-        solid_tiles: Vec::with_capacity(2000),
-        alpha_tiles: Vec::with_capacity(5000),
-        next_tile_index: 0,
-        z_buffer: &mut z_buffer,
-        z_index: 0,
-    };
+    let mut encoder = crate::wr_encoder::WrEncoder::new(&mut z_buffer);
+
+    //let mut encoder = PathfinderLikeEncoder {
+    //    edges: Vec::with_capacity(20000),
+    //    solid_tiles: Vec::with_capacity(2000),
+    //    alpha_tiles: Vec::with_capacity(5000),
+    //    next_tile_index: 0,
+    //    z_buffer: &mut z_buffer,
+    //    z_index: 0,
+    //};
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -38,11 +40,9 @@ fn main() {
     let t0 = time::precise_time_ns();
     let transform = Transform2D::create_translation(1.0, 1.0);
     for _ in 0..n {
+        encoder.reset();
         encoder.z_buffer.init(view_box.max.x as usize / ts + 1, view_box.max.y as usize / ts + 1);
-        encoder.edges.clear();
-        encoder.solid_tiles.clear();
-        encoder.alpha_tiles.clear();
-        encoder.next_tile_index = paths.len() as u16;
+        encoder.z_index = paths.len() as u16;
 
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
@@ -59,7 +59,7 @@ fn main() {
         // Since the paths were processed front-to-back we have to reverse
         // the alpha tiles to render then back-to-front.
         // This surprisingly doesn't show up in profiles.
-        encoder.alpha_tiles.reverse();
+        encoder.mask_tiles.reverse();
     }
     let t1 = time::precise_time_ns();
 
@@ -69,9 +69,10 @@ fn main() {
     tile_time = tile_time / n as u64;
 
     println!("view box: {:?}", view_box);
-    println!("{} edges", encoder.edges.len());
+    //println!("{} edges", encoder.edges.len());
     println!("{} solid_tiles", encoder.solid_tiles.len());
-    println!("{} alpha_tiles", encoder.alpha_tiles.len());
+    println!("{} alpha_tiles", encoder.mask_tiles.len());
+    println!("{} mask bytes", encoder.mask_buffer.len());
     println!("");
     println!("-> {}ns", t);
     println!("-> {}ms", t as f64 / 1000000.0);

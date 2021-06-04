@@ -9,7 +9,9 @@ pub use lyon_path::geom;
 pub mod pathfinder_encoder;
 pub mod load_svg;
 pub mod rasterizer;
+pub mod raster_encoder;
 mod z_buffer;
+//mod wr;
 
 pub use z_buffer::ZBuffer;
 
@@ -194,7 +196,6 @@ impl Tiler {
                 if intersects_tile_top {
                     segment.from.y = y_min;
                 }
-
                 row.push(RowEdge {
                     from: segment.from,
                     to: segment.to,

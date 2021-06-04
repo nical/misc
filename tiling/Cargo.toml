@@ -17,5 +17,10 @@ time = "0.1.42"
 ordered-float = "1.0.2"
 typed-arena = "2.0"
 
+[dependencies.image]
+version = "0.23"
+default-features = false
+features = ["png"]
+
 [profile.release]
 debug=true
