@@ -22,7 +22,7 @@ fn main() {
     let mut z_buffer = ZBuffer::new();
     z_buffer.init(view_box.max.x as usize / ts, view_box.max.y as usize / ts);
 
-    let mut encoder = crate::wr_encoder::WrEncoder::new(&mut z_buffer);
+    let mut encoder = crate::raster_encoder::RasterEncoder::new(&mut z_buffer);
 
     //let mut encoder = PathfinderLikeEncoder {
     //    edges: Vec::with_capacity(20000),
@@ -78,4 +78,103 @@ fn main() {
     println!("-> {}ms", t as f64 / 1000000.0);
     println!("-> row decomposition: {}ms", row_time as f64 / 1000000.0);
     println!("-> tile decomposition: {}ms", tile_time as f64 / 1000000.0);
+/*
+
+    let mut dt = raqote::DrawTarget::new(900, 900);
+    let mut raqote_paths = Vec::new();
+    for path in &paths {
+        for evt in path {
+            let mut builder = raqote::PathBuilder::new();
+            match evt {
+                PathEvent::MoveTo(at) => {
+                    builder.move_to(at.x, at.y);
+                }
+                PathEvent::Line(segment) => {
+                    builder.line_to(segment.to.x, segment.to.y);
+                }
+                PathEvent::Quadratic(s) => {
+                    builder.quad_to(
+                        s.ctrl.x, s.ctrl.y,
+                        s.to.x, s.to.y,
+                    );
+                }
+                PathEvent::Cubic(s) => {
+                    builder.cubic_to(
+                        s.ctrl1.x, s.ctrl1.y,
+                        s.ctrl2.x, s.ctrl2.y,
+                        s.to.x, s.to.y,
+                    );
+                }
+                PathEvent::Close(..) => {
+                    builder.close();
+                }
+            }
+            raqote_paths.push(builder.finish());
+        }
+    }
+
+    let raqote_start = time::precise_time_ns();
+    for _ in 0..n {
+        for path in &raqote_paths {
+            let source = raqote::Source::Solid(raqote::SolidSource { r: 128, g: 128, b: 128, a: 255 });
+            dt.fill(path, &source, &raqote::DrawOptions::new());
+        }
+    }
+    let raqote_time = (time::precise_time_ns() - raqote_start) / n;
+
+    println!("-> raqote: {}ns = {}ms", raqote_time, raqote_time as f64 / 1000000.0);    
+*/
+
+
+    let mut tinyskia_paths = Vec::new();
+    for path in &paths {
+        for evt in path {
+            let mut builder = tiny_skia::PathBuilder::new();
+            match evt {
+                PathEvent::MoveTo(at) => {
+                    builder.move_to(at.x, at.y);
+                }
+                PathEvent::Line(segment) => {
+                    builder.line_to(segment.to.x, segment.to.y);
+                }
+                PathEvent::Quadratic(s) => {
+                    builder.quad_to(
+                        s.ctrl.x, s.ctrl.y,
+                        s.to.x, s.to.y,
+                    );
+                }
+                PathEvent::Cubic(s) => {
+                    builder.cubic_to(
+                        s.ctrl1.x, s.ctrl1.y,
+                        s.ctrl2.x, s.ctrl2.y,
+                        s.to.x, s.to.y,
+                    );
+                }
+                PathEvent::Close(..) => {
+                    builder.close();
+                }
+            }
+            if let Some(path) = builder.finish() {
+                tinyskia_paths.push(path);
+            } else {
+                println!("skipping path!");
+                println!("{:?}", path);
+            }
+        }
+    }
+
+    let tinyskia_start = time::precise_time_ns();
+    let mut dt = tiny_skia::Pixmap::new(900, 900).unwrap();
+    for _ in 0..n {
+        for path in &tinyskia_paths {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(50, 127, 150, 200);
+            paint.anti_alias = true;
+
+            dt.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+        }
+    }
+    let tinyskia_time = (time::precise_time_ns() - tinyskia_start) / n;
+
+    println!("-> tiny-skia: {}ns = {}ms", tinyskia_time, tinyskia_time as f64 / 1000000.0);    
 }

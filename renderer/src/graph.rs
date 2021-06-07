@@ -300,6 +300,7 @@ impl GraphBuilder {
 
         // Visit passes in reverse order and look at the dependencies.
         // Each dependency that we haven't visited yet is the last reference to a node.
+        // TODO: this only works if passes can only refer to pass indices prior to theirs.
         let mut pass_index = self.passes.len();
         for pass in self.passes.iter().rev() {
             pass_index -= 1;

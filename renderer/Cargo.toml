@@ -8,10 +8,12 @@ edition = "2018"
 euclid = "0.22"
 guillotiere = "0.6"
 etagere = "0.2"
-smallvec = "1.1.0"
+smallvec = { version = "1.6.0", features = ["union"] }
+arrayvec = { version = "0.7.0" }
 serde = { version = "1.0", optional = true, features = ["serde_derive"] }
 lru = "0.6"
 svg_fmt = "0.4.1"
+as-any = "0.2.0"
 
 [features]
 checks = []

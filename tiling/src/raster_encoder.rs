@@ -1,5 +1,5 @@
 use crate::*;
-use rasterizer2::*;
+use rasterizer::*;
 use euclid::point2;
 
 #[repr(C)]
@@ -18,7 +18,7 @@ pub struct MaskTile {
 }
 
 /// An example encoder that encodes tiles in a similar format as pathfinder.
-pub struct WrEncoder<'l> {
+pub struct RasterEncoder<'l> {
     pub mask_buffer: Vec<u8>,
     pub solid_tiles: Vec<SolidTile>,
     pub mask_tiles: Vec<MaskTile>,
@@ -27,9 +27,9 @@ pub struct WrEncoder<'l> {
     pub z_index: u16,
 }
 
-impl<'l> WrEncoder<'l> {
+impl<'l> RasterEncoder<'l> {
     pub fn new(z_buffer: &'l mut ZBuffer) -> Self {
-        WrEncoder {
+        RasterEncoder {
             mask_buffer: Vec::with_capacity(TILE_SIZE * TILE_SIZE * 5000),
             solid_tiles: Vec::with_capacity(2000),
             mask_tiles: Vec::with_capacity(5000),
@@ -47,7 +47,7 @@ impl<'l> WrEncoder<'l> {
     }
 }
 
-impl<'l> TileEncoder for WrEncoder<'l> {
+impl<'l> TileEncoder for RasterEncoder<'l> {
     fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
 
         let mut solid = false;

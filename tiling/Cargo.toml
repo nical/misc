@@ -16,6 +16,8 @@ usvg = "0.4"
 time = "0.1.42"
 ordered-float = "1.0.2"
 typed-arena = "2.0"
+raqote = "0.8"
+tiny-skia = "0.5.1"
 
 [dependencies.image]
 version = "0.23"

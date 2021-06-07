@@ -13,6 +13,7 @@ use lru::LruCache;
 pub enum ImageFormat {
     Rgba8,
     Alpha8,
+    Depth,
 }
 
 #[cfg_attr(feature = "serialize", derive(Serialize))]
@@ -65,6 +66,7 @@ fn cache_index(size: DeviceIntSize, format: ImageFormat) -> usize {
     match format {
         ImageFormat::Rgba8 => { 1 }
         ImageFormat::Alpha8 => { 2 }
+        ImageFormat::Depth => { 3 }
     }
 }
 
@@ -561,6 +563,7 @@ impl Cache {
             &mut self.standalone_cache,
             &mut self.rgba8_shared_cache,
             &mut self.alpha8_shared_cache,
+            // TODO: depth ?
         ]
     }
 }
