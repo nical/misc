@@ -1,7 +1,16 @@
-use lyon_path::geom::euclid::default::{Box2D, Transform2D};
-use lyon_path::math::point;
+use lyon::path::geom::euclid::default::{Box2D, Transform2D};
+use lyon::path::math::point;
+use lyon::path::Path;
+use crate::Color;
 
-pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
+pub const FALLBACK_COLOR: Color = Color {
+    r: 0,
+    g: 255,
+    b: 0,
+    a: 255,
+};
+
+pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<(Path, Color)>) {
     let opt = usvg::Options::default();
     let rtree = usvg::Tree::from_file(filename, &opt).unwrap();
     let mut paths = Vec::new();
@@ -10,18 +19,31 @@ pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
     for node in rtree.root().descendants() {
         use usvg::NodeExt;
         let t = node.transform();
-        let transform = Transform2D::row_major(
+        let transform = Transform2D::new(
             t.a as f32, t.b as f32,
             t.c as f32, t.d as f32,
             t.e as f32, t.f as f32,
         );
 
         if let usvg::NodeKind::Path(ref usvg_path) = *node.borrow() {
-            //if usvg_path.fill.is_none() {
-            //    continue;
-            //}
+            let color = match usvg_path.fill {
+                Some(ref fill) => {
+                    match fill.paint {
+                        usvg::Paint::Color(c) => Color {
+                            r: c.red,
+                            g: c.green,
+                            b: c.blue,
+                            a: 255,
+                        },
+                        _ => FALLBACK_COLOR,
+                    }
+                }
+                None => {
+                    continue;
+                }
+            };
 
-            let mut builder = lyon_path::Path::builder();
+            let mut builder = Path::builder().with_svg();
             for segment in &usvg_path.segments {
                 match *segment {
                     usvg::PathSegment::MoveTo { x, y } => {
@@ -44,7 +66,7 @@ pub fn load_svg(filename: &str) -> (Box2D<f32>, Vec<lyon_path::Path>) {
             }
             let path = builder.build();
 
-            paths.push(path);
+            paths.push((path, color));
         }
     }
 

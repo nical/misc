@@ -1,23 +1,19 @@
 [package]
 name = "tiling"
 version = "0.1.0"
-authors = ["Nicolas Silva <nical@fastmail.com>"]
 edition = "2018"
-
-#[workspace]
-#members = [
-#    "cli"
-#]
+resolver = "2"
 
 [dependencies]
-lyon_path = "0.14"
+lyon = "0.17"
+wgpu = "0.11"
+winit = "0.25"
+futures = "0.3.5"
+bytemuck = "1.2.0"
 svg_fmt = "0.4.1"
 usvg = "0.4"
 time = "0.1.42"
 ordered-float = "1.0.2"
-typed-arena = "2.0"
-raqote = "0.8"
-tiny-skia = "0.5.1"
 
 [dependencies.image]
 version = "0.23"

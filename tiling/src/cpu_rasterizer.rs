@@ -1,7 +1,6 @@
 use std::f32;
-use lyon_path::geom::euclid;
-use euclid::default::*;
-use euclid::point2;
+use lyon::geom::euclid::default::*;
+use lyon::geom::euclid::{point2, vec2};
 
 pub const TILE_SIZE: usize = 16;
 
@@ -210,21 +209,29 @@ pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
 }
 
 
-fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
-    let mut bytes = Vec::with_capacity(mask.len()*4);
-
-    for a in mask {
-        bytes.push(*a);
-        bytes.push(*a);
-        bytes.push(*a);
-        bytes.push(255);
+pub fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
+    let mut bytes = Vec::with_capacity(mask.len()*4 * PIXEL_SIZE * PIXEL_SIZE);
+    const PIXEL_SIZE: usize = 8;
+    for y in 0..TILE_SIZE {
+        for _ in 0..PIXEL_SIZE {
+            for x in 0..TILE_SIZE {
+                let a = mask[y * TILE_SIZE + x];
+                for _ in 0..PIXEL_SIZE {
+                    bytes.push(a);
+                    bytes.push(a);
+                    bytes.push(a);
+                    bytes.push(255);
+                }
+            }
+        }
     }
 
-    let encoder = image::png::PNGEncoder::new(std::fs::File::create(file_name).unwrap());
-    encoder.encode(&bytes, w, h, image::ColorType::Rgba8).unwrap();
+
+    let encoder = image::png::PngEncoder::new(std::fs::File::create(file_name).unwrap());
+    encoder.encode(&bytes, w * PIXEL_SIZE as u32, h * PIXEL_SIZE as u32, image::ColorType::Rgba8).unwrap();
 }
 
-fn save_accum_png(w: u32, h: u32, accum: &[f32], backdrops: &[f32], file_name: &str) {
+pub fn save_accum_png(w: u32, h: u32, accum: &[f32], backdrops: &[f32], file_name: &str) {
     let mut bytes = Vec::with_capacity(accum.len()*4);
 
     for y in 0..h {
@@ -241,7 +248,7 @@ fn save_accum_png(w: u32, h: u32, accum: &[f32], backdrops: &[f32], file_name: &
         }
     }
 
-    let encoder = image::png::PNGEncoder::new(std::fs::File::create(file_name).unwrap());
+    let encoder = image::png::PngEncoder::new(std::fs::File::create(file_name).unwrap());
     encoder.encode(&bytes, w, h, image::ColorType::Rgba8).unwrap();
 }
 
@@ -317,5 +324,85 @@ fn simple_line() {
     //    println!("{:.2?}", &accum[y* TILE_SIZE .. (y+1) * TILE_SIZE]);
     //}
 
+}
+
+
+// This a rust port of piet's line rasterization routine, just for the sake of
+// understanding and testing the code. There's no reason to run this on the CPU.
+pub fn gpu_fill_line(from: Point2D<f32>, to: Point2D<f32>, pos: Point2D<f32>, winding_num: &mut f32) {
+    let from = from - pos;
+    let to = to - pos;
+
+    // range of the pixel that is in the bounding box of the edge (at most 1.0 since it's a pixel)
+    let window = Point2D::new(
+        from.y.max(0.0).min(1.0),
+        to.y.max(0.0).min(1.0),
+    );
+
+    if (window.x - window.y).abs() < 0.001 {
+        // pixel no affected.
+        return;
+    }
+
+    let t = (window - Point2D::new(from.y, from.y)) / (to.y - from.y);
+    let xs = Point2D::new(
+        from.x * (1.0 - t.x) + to.x * t.x,
+        from.x * (1.0 - t.y) + to.x * t.y,
+    );
+    let xmin: f32 = xs.x.min(xs.y).min(1.0) - 1e-6;
+    let xmax: f32 = xs.x.max(xs.y);
+    let b: f32 = xmax.min(1.0);
+    let c: f32 = b.max(0.0);
+    let d: f32 = xmin.max(0.0);
+    let area = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+
+    *winding_num += area * (window.x - window.y);
+}
+
+#[test]
+fn gpu_line_test() {
+    let mut accum = [0.0; TILE_SIZE * TILE_SIZE];
+    let mut mask = [0; TILE_SIZE * TILE_SIZE];
+
+    let lines = [
+//        (point2(-0.5, 8.0), point2(8.0, 0.0)),
+//        (point2(8.0, 16.0), point2(-0.5, 10.0)),
+
+        (point2(1.0, 1.0), point2(14.0, 2.0)),
+        (point2(14.0, 2.0), point2(2.0, 12.0)),
+        (point2(2.0, 12.0), point2(1.0, 1.0)),
+        //(point2(14.0, 2.0), point2(2.0, 12.0)),
+        //(point2(2.0, 12.0), point2(1.0, 1.0)),
+
+        //(point2(-0.5, 12.0), point2(6.0, 8.0)),
+        //(point2(6.0, 8.0), point2(-0.5, 4.0)),
+
+        //(point2(8.0, 0.0), point2(15.5, 4.0)),
+    ];
+
+    fn even_odd(winding_number: f32) -> f32 {
+        1.0 - (winding_number.abs().rem_euclid(2.0) - 1.0).abs()
+    }
+
+    for y in 0..TILE_SIZE {
+        for x in 0..TILE_SIZE {
+            let pos = Point2D::new(x as f32, y as f32);
+            let mut winding_number = 0.0;
+            for line in &lines {
+                gpu_fill_line(line.0, line.1, pos, &mut winding_number);
+            }
+
+            assert!(winding_number > -1.1);
+            assert!(winding_number < 1.1);
+
+            mask[y * TILE_SIZE + x] = (even_odd(winding_number) * 255.0) as u8
+        }
+    }
+
+    save_mask_png(16, 16, &mask, "mask.png");
+
+    //for y in 0..TILE_SIZE {
+    //    println!("{:.2?}", &accum[y* TILE_SIZE .. (y+1) * TILE_SIZE]);
+    //}
 
 }
