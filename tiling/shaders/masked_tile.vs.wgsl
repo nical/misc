@@ -5,9 +5,12 @@ struct Globals {
 
 [[group(0), binding(0)]] var<uniform> globals: Globals;
 
+[[group(0), binding(1)]] var mask_texture: texture_2d<f32>;
+
 struct VertexOutput {
     [[location(0), interpolate(linear)]] uv: vec2<f32>;
     [[location(1), interpolate(flat)]] color: vec4<f32>;
+    [[location(2), interpolate(flat)]] tmp: vec4<f32>;
     [[builtin(position)]] position: vec4<f32>;
 };
 
@@ -34,7 +37,7 @@ fn main(
         vec2<f32>(0.0, 1.0)
     );
 
-    var uv = vertices[vertex_index % 4u];
+    var uv = vertices[vertex_index];
 
     var screen_pos = mix(a_rect.xy, a_rect.zw, uv) / globals.resolution - vec2<f32>(0.5);
     screen_pos.y = -screen_pos.y;
@@ -45,9 +48,13 @@ fn main(
     var tile_y = f32(a_mask / MASKS_PER_ROW) * TILE_SIZE;
     var mask_uv = vec2<f32>(tile_x, tile_y) + uv * TILE_SIZE;
 
+    var tmp_uv = vec2<i32>(i32(mask_uv.x), i32(mask_uv.y));
+    var tmp = textureLoad(mask_texture, tmp_uv, 0);
+
     return VertexOutput(
         mask_uv,
         decode_color(a_color),
+        tmp,
         vec4<f32>(screen_pos.x, screen_pos.y, 0.0, 1.0)
     );
 }

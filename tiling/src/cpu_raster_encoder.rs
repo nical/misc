@@ -47,7 +47,7 @@ impl<'l> RasterEncoder<'l> {
 }
 
 impl<'l> TileEncoder for RasterEncoder<'l> {
-    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
+    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) {
 
         let mut solid = false;
         if active_edges.is_empty() {

@@ -13,7 +13,7 @@ struct Edges {
     data: [[stride(16)]] array<vec4<f32>>;
 };
 
-[[group(0), binding(2)]] var<storage> edges: Edges;
+[[group(0), binding(1)]] var<storage> edges: Edges;
 
 fn even_odd(winding_number: f32) -> f32 {
     return 1.0 - abs((abs(winding_number) % 2.0) - 1.0);
@@ -21,7 +21,7 @@ fn even_odd(winding_number: f32) -> f32 {
 
 [[stage(fragment)]]
 fn main(
-    [[location(0), interpolate(linear)]] in_uv: vec4<f32>,
+    [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
     [[location(2), interpolate(flat)]] in_backdrop: f32,
 ) -> FragmentOutput {
@@ -35,7 +35,7 @@ fn main(
         }
 
         var edge = edges.data[edge_idx];
-        edge_idx = edge_idx + 1;
+        edge_idx = edge_idx + 1u;
 
         var from = edge.xy - in_uv;
         var to = edge.zw - in_uv;
@@ -62,7 +62,14 @@ fn main(
         }
     }
 
-    var  = even_odd(winding_number);
+    var mask = even_odd(winding_number);
+    var color = vec4<f32>(mask, mask, mask, mask);
 
-    return FragmentOutput(vec4<f32>(mask));
+    //if (in_edges_range.y > in_edges_range.x + 128u) {
+    //    color = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    //}
+    //color.b = 0.5;
+    //color.a = 1.0;
+
+    return FragmentOutput(color);
 }

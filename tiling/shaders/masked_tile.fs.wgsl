@@ -1,19 +1,21 @@
 
+[[group(0), binding(1)]] var mask_texture: texture_2d<f32>;
+
 struct FragmentOutput {
     [[location(0)]] color: vec4<f32>;
 };
-
-// TODO actually sample a mask.
 
 [[stage(fragment)]]
 fn main(
     [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_color: vec4<f32>,
+    [[location(2), interpolate(flat)]] in_tmp: vec4<f32>,
 ) -> FragmentOutput {
 
     var color = in_color;
-    // TODO
-    color.a = 0.5;
+
+    var uv = vec2<i32>(i32(in_uv.x), i32(in_uv.y));
+    color.a = textureLoad(mask_texture, uv, 0).r;
 
     // Premultiply.
     color.r = color.r * color.a;

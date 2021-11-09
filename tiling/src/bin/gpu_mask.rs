@@ -13,7 +13,18 @@ use futures::executor::block_on;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (view_box, paths) = load_svg(&args[1]);
+    let (view_box, paths) = if args.len() > 1 {
+        load_svg(&args[1])
+    } else {
+        let mut builder = lyon::path::Path::builder();
+        builder.begin(point(0.0, 0.0));
+        builder.line_to(point(50.0, 400.0));
+        builder.line_to(point(450.0, 450.0));
+        builder.line_to(point(400.0, 50.0));
+        builder.end(true);
+
+        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
+    };
 
     // The tile size.
     let ts = 16;
@@ -22,7 +33,7 @@ fn main() {
         &TilerConfig {
             view_box,
             tile_size: size2(ts as f32, ts as f32),
-            tile_padding: 0.0,
+            tile_padding: 0.5,
             tolerance: 0.1,
             flatten: true,
         }
@@ -36,43 +47,36 @@ fn main() {
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
 
-    let n = 100;
     let t0 = time::precise_time_ns();
     let transform = Transform2D::translation(1.0, 1.0);
-    for _ in 0..n {
-        builder.reset();
-        builder.z_buffer.init(view_box.max.x as usize / ts + 1, view_box.max.y as usize / ts + 1);
-        builder.z_index = paths.len() as u16;
-        builder.path_id = paths.len() as u16;
 
-        // Loop over the paths in front-to-back order to take advantage of
-        // occlusion culling.
-        for (path, color) in paths.iter().rev() {
-            builder.z_index -= 1;
-            builder.path_id -= 1;
-            builder.color = *color;
+    builder.reset();
+    builder.z_buffer.init(view_box.max.x as usize / ts + 1, view_box.max.y as usize / ts + 1);
+    builder.z_index = paths.len() as u16;
 
-            tiler.tile_path(path.iter(), Some(&transform), &mut builder);
+    // Loop over the paths in front-to-back order to take advantage of
+    // occlusion culling.
+    for (path, color) in paths.iter().rev() {
+        builder.color = *color;
 
-            row_time += tiler.row_decomposition_time_ns;
-            tile_time += tiler.tile_decomposition_time_ns;
-        }
+        tiler.tile_path(path.iter(), Some(&transform), &mut builder);
 
-        // Since the paths were processed front-to-back we have to reverse
-        // the alpha tiles to render then back-to-front.
-        // This doesn't show up in profiles.
-        builder.mask_tiles.reverse();
+        builder.z_index -= 1;
+        row_time += tiler.row_decomposition_time_ns;
+        tile_time += tiler.tile_decomposition_time_ns;
     }
+
+    // Since the paths were processed front-to-back we have to reverse
+    // the alpha tiles to render then back-to-front.
+    // This doesn't show up in profiles.
+    builder.mask_tiles.reverse();
 
     let num_solid_tiles = builder.solid_tiles.len() as u32;
     let num_masked_tiles = builder.mask_tiles.len() as u32;
 
     let t1 = time::precise_time_ns();
 
-    let t = (t1 - t0) / n;
-
-    row_time = row_time / n as u64;
-    tile_time = tile_time / n as u64;
+    let t = t1 - t0;
 
     println!("view box: {:?}", view_box);
     //println!("{} edges", builder.edges.len());
@@ -136,7 +140,15 @@ fn main() {
         usage: wgpu::BufferUsages::VERTEX,
     });
 
+    let edges_ssbo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Edges"),
+        contents: bytemuck::cast_slice(&builder.edges),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     let solid_tiles = tiling::gpu::solid_tiles::SolidTiles::new(&device);
+
+    let masks = tiling::gpu::masked_tiles::Masks::new(&device);
 
     let masked_tiles = tiling::gpu::masked_tiles::MaskedTiles::new(&device);
 
@@ -176,17 +188,6 @@ fn main() {
     });
 
     let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    //let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-    //    label: Some("Mask"),
-    //    address_mode_u: wgpu::AddressMode::ClampToEdge,
-    //    address_mode_v: wgpu::AddressMode::ClampToEdge,
-    //    address_mode_w: wgpu::AddressMode::ClampToEdge,
-    //    mag_filter: wgpu::FilterMode::Linear,
-    //    min_filter: wgpu::FilterMode::Linear,
-    //    mipmap_filter: wgpu::FilterMode::Nearest,
-    //    compare: None,
-    //    ..Default::default()
-    //});
 
     let masked_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Masked tiles"),
@@ -199,6 +200,21 @@ fn main() {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(&mask_texture_view),
+            },
+        ],
+    });
+
+    let masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Masks"),
+        layout: &masks.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(edges_ssbo.as_entire_buffer_binding()),
             },
         ],
     });
@@ -223,6 +239,8 @@ fn main() {
         size_changed: true,
         render: true,
     };
+
+    println!("{:?}", &builder.mask_tiles[0..8]);
 
     event_loop.run(move |event, _, control_flow| {
         if !update_inputs(event, &window, control_flow, &mut scene) {
@@ -260,6 +278,27 @@ fn main() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &mask_texture_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: true,
+                    },
+                    resolve_target: None,
+                }],
+                depth_stencil_attachment: None,
+            });
+
+            pass.set_pipeline(&masks.evenodd_pipeline);
+            pass.set_bind_group(0, &masks_bind_group, &[]);
+            pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_vertex_buffer(0, masks_vbo.slice(..));
+            pass.draw_indexed(0..6, 0, 0..num_masked_tiles);
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[wgpu::RenderPassColorAttachment {
                     view: &frame_view,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
@@ -270,9 +309,10 @@ fn main() {
                 depth_stencil_attachment: None,
             });
 
+            pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+
             pass.set_pipeline(&solid_tiles.pipeline);
             pass.set_bind_group(0, &solid_bind_group, &[]);
-            pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, solid_tiles_vbo.slice(..));
             pass.draw_indexed(0..6, 0, 0..num_solid_tiles);
 

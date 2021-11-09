@@ -1,6 +1,6 @@
 use ordered_float::OrderedFloat;
 pub use lyon::path::math::{Point, point};
-pub use lyon::path::PathEvent;
+pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 pub use lyon::geom;
@@ -18,19 +18,21 @@ pub trait TileEncoder {
         &mut self,
         tile: &TileInfo,
         active_edges: &[ActiveEdge],
+        side_edges: &SideEdgeTracker,
     );
 }
 
 impl<T> TileEncoder for T
 where
-    T: FnMut(&TileInfo, &[ActiveEdge])
+    T: FnMut(&TileInfo, &[ActiveEdge], &SideEdgeTracker)
 {
     fn encode_tile(
         &mut self,
         tile: &TileInfo,
         active_edges: &[ActiveEdge],
+        side_edges: &SideEdgeTracker,
     ) {
-        (*self)(tile, active_edges)
+        (*self)(tile, active_edges, side_edges)
     }
 }
 
@@ -254,10 +256,12 @@ impl Tiler {
         let mut rows = Vec::new();
         std::mem::swap(&mut self.rows, &mut rows);
 
+        let mut side_edges = SideEdgeTracker::new();
         // This could be done in parallel but it's already quite fast serially.
         for row in &mut rows {
             if !row.is_empty() {
-                self.process_row(tile_y, &mut row[..], &mut active_edges, encoder);
+                side_edges.clear();
+                self.process_row(tile_y, &mut row[..], &mut active_edges, &mut side_edges, encoder);
             }
             tile_y += 1;
         }
@@ -352,9 +356,10 @@ impl Tiler {
         tile_y: u32,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
+        side_edges: &mut SideEdgeTracker,
         encoder: &mut dyn TileEncoder,
     ) {
-
+        //println!(" -- process row y {:?} edges {:?} first tile {:?} num tiles x {:?}", tile_y, row.len(), self.tile_offset_x, self.num_tiles_x);
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
         active_edges.clear();
@@ -387,11 +392,11 @@ impl Tiler {
                 break;
             }
 
+            let max_x = edge.from.x.max(edge.to.x);
+
             if edge.intersects_tile_top {
                 tile.backdrop_winding += edge.winding;
             }
-
-            let max_x = edge.from.x.max(edge.to.x);
 
             if max_x >= tile.outer_rect.min.x {
                 active_edges.push(ActiveEdge {
@@ -401,6 +406,7 @@ impl Tiler {
                     winding: edge.winding,
                     kind: edge.kind,
                     max_x,
+                    intersects_tile_top: edge.intersects_tile_top,
                 });
             }
 
@@ -410,19 +416,15 @@ impl Tiler {
         // Iterate over edges in the tiling area.
         // Now we produce actual tiles.
         //
-        // Each time we get to a new tile, we remove all active edges that end left of the tile.
+        // Each time we get to a new tile, we remove all active edges that end side of the tile.
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x {
-                self.finish_tile(&mut tile, active_edges, encoder);
+                self.finish_tile(&mut tile, active_edges, side_edges, encoder);
             }
 
             if tile.x >= self.num_tiles_x {
                 break;
-            }
-
-            if edge.intersects_tile_top {
-                tile.backdrop_winding += edge.winding;
             }
 
             active_edges.push(ActiveEdge {
@@ -432,6 +434,7 @@ impl Tiler {
                 winding: edge.winding,
                 kind: edge.kind,
                 max_x: edge.from.x.max(edge.to.x),
+                intersects_tile_top: edge.intersects_tile_top,
             });
 
             current_edge += 1;
@@ -439,7 +442,7 @@ impl Tiler {
 
         // At this point we visited all edges but not necessarily all tiles.
         while tile.x < self.num_tiles_x {
-            self.finish_tile(&mut tile, active_edges, encoder);
+            self.finish_tile(&mut tile, active_edges, side_edges, encoder);
 
             if active_edges.is_empty() {
                 break;
@@ -451,10 +454,11 @@ impl Tiler {
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
+        side_edges: &mut SideEdgeTracker,
         encoder: &mut dyn TileEncoder,
     ) {
         //println!("  <!-- tile {} {} -->", tile.x, tile.y);
-        encoder.encode_tile(tile, active_edges);
+        encoder.encode_tile(tile, active_edges, side_edges);
 
         tile.inner_rect.min.x += self.tile_size.width;
         tile.inner_rect.max.x += self.tile_size.width;
@@ -462,7 +466,19 @@ impl Tiler {
         tile.outer_rect.max.x += self.tile_size.width;
         tile.x += 1;
 
-        active_edges.retain(|edge| edge.max_x > tile.outer_rect.min.x);
+        active_edges.retain(|edge| {
+            let retain = edge.max_x > tile.outer_rect.min.x;
+
+            if !retain && edge.intersects_tile_top {
+                tile.backdrop_winding += edge.winding;
+            }
+
+            if !retain {
+                side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+            }
+
+            retain
+        });
     }
 }
 
@@ -539,6 +555,7 @@ pub struct ActiveEdge {
     pub kind: EdgeKind,
     pub winding: i16,
     max_x: f32,
+    intersects_tile_top: bool,
 }
 
 impl ActiveEdge {
@@ -568,6 +585,7 @@ impl ActiveEdge {
                     winding: self.winding,
                     kind: EdgeKind::Linear,
                     max_x: 0.0,
+                    intersects_tile_top: self.intersects_tile_top, // TODO
                 }
             }
             EdgeKind::Quadratic => {
@@ -597,6 +615,7 @@ impl ActiveEdge {
                     winding: self.winding,
                     kind: EdgeKind::Quadratic,
                     max_x: 0.0,
+                    intersects_tile_top: self.intersects_tile_top, // TODO
                 }
             }
         }
@@ -681,4 +700,265 @@ pub fn clip_line_segment_1d(
     let t1 = ((max - from) * inv_d).min(1.0);
 
     t0 .. t1
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub struct SideEvent {
+    pub y: f32,
+    pub winding: i16,
+}
+
+impl std::fmt::Debug for SideEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        (self.y, self.winding).fmt(f)
+    }
+}
+
+pub struct SideEdgeTracker {
+    events: Vec<SideEvent>,
+}
+
+impl SideEdgeTracker {
+    pub fn new() -> Self {
+        SideEdgeTracker {
+            events: Vec::with_capacity(32),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    pub fn events(&self) -> &[SideEvent] { &self.events }
+
+    pub fn is_empty(&self) -> bool { self.events.is_empty() }
+
+    pub fn is_in(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
+        let mut i = 0;
+        let len = self.events.len();
+        while i < len {
+            let evt = &self.events[i];
+            i += 1;
+
+            if evt.y > from {
+                return false;
+            }
+
+            if fill_rule.is_in(evt.winding) {
+                break;
+            }
+        }
+
+        while i < len {
+            let evt = &self.events[i];
+            i += 1;
+
+            if evt.y >= to {
+                return true;
+            }
+
+            if fill_rule.is_out(evt.winding) {
+                return false;
+            }
+        }
+
+        false
+    }
+
+    pub fn add_edge(&mut self, from: f32, to: f32, edge_winding: i16) {
+        // TODO: I think they are already top to bottom.
+        let y0 = from.min(to);
+        let y1 = from.max(to);
+
+        // Keep track of the winding at current y.
+        let mut winding = 0;
+        let mut i = 0;
+
+        // Iterate over events up to the start of the range.
+        loop {
+            if i >= self.events.len() {
+                self.events.push(SideEvent { y: y0, winding: edge_winding });
+                self.events.push(SideEvent { y: y1, winding: 0 });
+                return;
+            }
+
+            let e = self.events[i];
+            if e.y == y0 {
+                if e.winding + edge_winding == winding {
+                    // Simplify consecutive events as winding is the same.
+                    //  +      +
+                    //  |      |
+                    // -+- -> -|-
+                    //  |      |
+                    self.events.remove(i);
+                } else {
+                    //  +      +
+                    //  |      |
+                    // -+- -> -+-
+                    //  |      |
+                    winding = e.winding + edge_winding;
+                    self.events[i].winding = winding;
+                    i += 1;
+                }
+
+                break;
+            } else if e.y > y0 {
+                //  +      +
+                //  |      |
+                // -|- -> -+-
+                //  |      |
+                //  +      +
+                winding = winding + edge_winding;
+                self.events.insert(i, SideEvent { y: y0, winding });
+                i += 1;
+                break;
+            }
+
+            winding = e.winding;
+            i += 1;
+        }
+
+        // Iterate over events up to the end of the range.
+        loop {
+            if i == self.events.len() {
+                self.events.push(SideEvent { y: y1, winding: winding - edge_winding });
+                break;
+            }
+
+            let e = self.events[i];
+            if e.y > y1 {
+                self.events.insert(i, SideEvent { y: y1, winding: winding - edge_winding });
+                break;
+            } else if e.y == y1 {
+                if e.winding == winding {
+                    self.events.remove(i);
+                }
+
+                break;
+            } else {
+                self.events[i].winding += edge_winding;
+            }
+
+            winding = e.winding + edge_winding;
+
+            i += 1;
+        }
+    }
+}
+
+#[test]
+fn side_edges() {
+    let mut side = SideEdgeTracker::new();
+
+    side.add_edge(0.2, 0.5, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.5, winding: 0 },
+    ]);
+
+    side.add_edge(0.5, 0.7, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.7, winding: 0 },
+    ]);
+
+    side.add_edge(0.4, 0.7, -1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.4, winding: 0 },
+    ]);
+
+    side.add_edge(0.8, 0.9, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.4, winding: 0 },
+        SideEvent { y: 0.8, winding: 1 },
+        SideEvent { y: 0.9, winding: 0 },
+    ]);
+
+    side.add_edge(0.4, 0.8, -1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.4, winding: -1 },
+        SideEvent { y: 0.8, winding: 1 },
+        SideEvent { y: 0.9, winding: 0 },
+    ]);
+
+    side.add_edge(0.4, 0.8, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.4, winding: 0 },
+        SideEvent { y: 0.8, winding: 1 },
+        SideEvent { y: 0.9, winding: 0 },
+    ]);
+
+    side.add_edge(0.4, 0.8, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.9, winding: 0 },
+    ]);
+
+    side.add_edge(0.2, 0.9, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 2 },
+        SideEvent { y: 0.9, winding: 0 },
+    ]);
+
+    side.add_edge(0.2, 0.9, -2);
+
+    assert_eq!(side.events.len(), 0);
+
+    side.add_edge(0.3, 0.6, 1);
+    side.add_edge(0.2, 0.7, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.3, winding: 2 },
+        SideEvent { y: 0.6, winding: 1 },
+        SideEvent { y: 0.7, winding: 0 },
+    ]);
+
+    side.clear();
+
+    side.add_edge(0.2, 0.7, 1);
+    side.add_edge(0.3, 0.6, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.3, winding: 2 },
+        SideEvent { y: 0.6, winding: 1 },
+        SideEvent { y: 0.7, winding: 0 },
+    ]);
+
+    side.clear();
+
+    side.add_edge(0.2, 0.6, 1);
+    side.add_edge(0.3, 0.7, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.3, winding: 2 },
+        SideEvent { y: 0.6, winding: 1 },
+        SideEvent { y: 0.7, winding: 0 },
+    ]);
+
+    side.clear();
+
+    side.add_edge(0.3, 0.7, 1);
+    side.add_edge(0.2, 0.6, 1);
+
+    assert_eq!(&side.events[..], &[
+        SideEvent { y: 0.2, winding: 1 },
+        SideEvent { y: 0.3, winding: 2 },
+        SideEvent { y: 0.6, winding: 1 },
+        SideEvent { y: 0.7, winding: 0 },
+    ]);
 }

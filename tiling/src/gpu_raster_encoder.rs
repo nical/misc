@@ -1,4 +1,5 @@
 use lyon::path::math::{Point, point, vector};
+use lyon::path::FillRule;
 use std::mem::transmute;
 use std::ops::Range;
 use crate::z_buffer::ZBuffer;
@@ -88,11 +89,6 @@ impl TileCommandEncoder {
 
 pub enum BlendMode {
     Over,
-}
-
-pub enum FillRule {
-    EvenOdd,
-    NonZero,
 }
 
 pub struct FillBuilder<'l> {
@@ -192,17 +188,7 @@ impl<'l> Group<'l> {
 
 use crate::gpu::solid_tiles::TileInstance as SolidTile;
 use crate::gpu::masked_tiles::TileInstance as MaskedTile;
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct Mask {
-    pub edges: (u32, u32),
-    pub mask_id: u32,
-    pub backdrop: f32,
-}
-
-unsafe impl bytemuck::Pod for Mask {}
-unsafe impl bytemuck::Zeroable for Mask {}
+use crate::gpu::masked_tiles::Mask;
 
 /// Encodes tiles of two kinds:
 ///  - solid tiles.
@@ -241,13 +227,17 @@ impl<'l> GpuRasterEncoder<'l> {
 }
 
 impl<'l> TileEncoder for GpuRasterEncoder<'l> {
-    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
+    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) {
+
+        const TILE_SIZE: f32 = 16.0;
+        let tx = tile.x as f32 * TILE_SIZE;
+        let ty = tile.y as f32 * TILE_SIZE;
 
         let mut solid = false;
         if active_edges.is_empty() {
-            if tile.backdrop_winding % 2 != 0 {
+            if left.is_in(ty - 0.4, ty + 16.4, FillRule::EvenOdd) {
                 solid = true;
-            } else {
+            } else if left.is_empty() {
                 // Empty tile.
                 return;
             }
@@ -257,10 +247,6 @@ impl<'l> TileEncoder for GpuRasterEncoder<'l> {
             // Culled by a solid tile.
             return;
         }
-
-        const TILE_SIZE: f32 = 16.0;
-        let tx = tile.x as f32 * TILE_SIZE;
-        let ty = tile.y as f32 * TILE_SIZE;
 
         if solid {
             self.solid_tiles.push(SolidTile {
@@ -277,21 +263,51 @@ impl<'l> TileEncoder for GpuRasterEncoder<'l> {
 
         let offset = vector(tile.outer_rect.min.x, tile.outer_rect.min.y);
         for edge in active_edges {
-            let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
-
-            self.edges.push(Edge(
-                edge.from - offset,
-                edge.to - offset,
-            ));
+            let mut e = Edge(edge.from - offset, edge.to - offset);
+            if edge.winding < 0 {
+                std::mem::swap(&mut e.0, &mut e.1);
+            }
+            self.edges.push(e);
         }
 
-        let edges_end = self.edges.len() as u32;
+        let mut prev: Option<SideEvent> = None;
+        for evt in left.events() {
+            if let Some(prev) = prev {
+                let x = -1.0;
+                let mut from = point(x, prev.y - offset.y);
+                let mut to = point(x, evt.y - offset.y);
+                if prev.winding < 0 {
+                    std::mem::swap(&mut from, &mut to);
+                }
 
+                for _ in 0..prev.winding.abs() {
+                    self.edges.push(Edge(from, to));
+                }
+            }
+
+            if evt.winding != 0 {
+                prev = Some(*evt);
+            } else {
+                prev = None;
+            }
+        }
+
+        const MASKS_PER_ROW: u32 = 2048 / 16; 
+        let edges_end = self.edges.len() as u32;
+        assert!(edges_end > edges_start);
+        assert!(edges_end - edges_start < 100);
         let mask = self.masks.len() as u32;
+
+        //println!(" - mask tile {:?} {:?} {:?}",
+        //    active_edges.len(), left.events(),
+        //    &self.edges[edges_start as usize .. (edges_end as usize)]
+        //);
+
         self.masks.push(Mask {
             edges: (edges_start, edges_end),
             mask_id: mask,
-            backdrop: 
+            //backdrop: tile.backdrop_winding as f32,
+            backdrop: 0.0,
         });
 
         self.mask_tiles.push(MaskedTile {
