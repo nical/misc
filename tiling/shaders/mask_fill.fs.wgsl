@@ -23,10 +23,10 @@ fn even_odd(winding_number: f32) -> f32 {
 fn main(
     [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
-    [[location(2), interpolate(flat)]] in_backdrop: f32,
+    [[location(2), interpolate(flat)]] in_fill_rule: u32,
 ) -> FragmentOutput {
 
-    var winding_number = in_backdrop;
+    var winding_number = 0.0;
 
     var edge_idx = in_edges_range.x;
     loop {
@@ -64,12 +64,6 @@ fn main(
 
     var mask = even_odd(winding_number);
     var color = vec4<f32>(mask, mask, mask, mask);
-
-    //if (in_edges_range.y > in_edges_range.x + 128u) {
-    //    color = vec4<f32>(1.0, 0.0, 0.0, 1.0);
-    //}
-    //color.b = 0.5;
-    //color.a = 1.0;
 
     return FragmentOutput(color);
 }

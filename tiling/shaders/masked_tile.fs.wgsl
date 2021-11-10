@@ -9,7 +9,6 @@ struct FragmentOutput {
 fn main(
     [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_color: vec4<f32>,
-    [[location(2), interpolate(flat)]] in_tmp: vec4<f32>,
 ) -> FragmentOutput {
 
     var color = in_color;

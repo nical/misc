@@ -1,7 +1,7 @@
 struct VertexOutput {
     [[location(0), interpolate(linear)]] uv: vec2<f32>;
     [[location(1), interpolate(flat)]] edges: vec2<u32>;
-    [[location(2), interpolate(flat)]] backdrop: f32;
+    [[location(2), interpolate(flat)]] fill_rule: u32;
     [[builtin(position)]] position: vec4<f32>;
 };
 
@@ -9,7 +9,7 @@ struct VertexOutput {
 fn main(
     [[location(0)]] in_edges: vec2<u32>,
     [[location(1)]] in_mask_id: u32,
-    [[location(2)]] in_backdrop: f32,
+    [[location(2)]] in_fill_rule: u32,
     [[builtin(vertex_index)]] vertex_index: u32,
 ) -> VertexOutput {
 
@@ -33,7 +33,7 @@ fn main(
     return VertexOutput(
         uv * 16.0,
         in_edges,
-        in_backdrop,
+        in_fill_rule,
         vec4<f32>(screen_pos.x, screen_pos.y, 0.0, 1.0),
     );
 }

@@ -1,6 +1,5 @@
 pub mod tiler;
 pub mod gpu_raster_encoder;
-pub mod cpu_raster_encoder;
 pub mod cpu_rasterizer;
 pub mod z_buffer;
 pub mod load_svg;

@@ -377,7 +377,6 @@ impl Tiler {
         let mut tile = TileInfo {
             x: 0,
             y: tile_y,
-            backdrop_winding: 0,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
         };
@@ -393,10 +392,6 @@ impl Tiler {
             }
 
             let max_x = edge.from.x.max(edge.to.x);
-
-            if edge.intersects_tile_top {
-                tile.backdrop_winding += edge.winding;
-            }
 
             if max_x >= tile.outer_rect.min.x {
                 active_edges.push(ActiveEdge {
@@ -468,10 +463,6 @@ impl Tiler {
 
         active_edges.retain(|edge| {
             let retain = edge.max_x > tile.outer_rect.min.x;
-
-            if !retain && edge.intersects_tile_top {
-                tile.backdrop_winding += edge.winding;
-            }
 
             if !retain {
                 side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
@@ -627,8 +618,6 @@ pub struct TileInfo {
     pub x: u32,
     /// Y-offset in number of tiles.
     pub y: u32,
-    /// Winding number of the background of the tile.
-    pub backdrop_winding: i16,
     /// Rectangle of the tile aligned with the tile grid.
     pub inner_rect: Box2D<f32>,
     /// Rectangle including the tile padding.

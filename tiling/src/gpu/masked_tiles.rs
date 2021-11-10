@@ -18,7 +18,7 @@ unsafe impl bytemuck::Zeroable for TileInstance {}
 pub struct Mask {
     pub edges: (u32, u32),
     pub mask_id: u32,
-    pub backdrop: f32,
+    pub fill_rule: u32,
 }
 
 unsafe impl bytemuck::Pod for Mask {}
@@ -63,7 +63,7 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -162,7 +162,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
     });
     let evenodd_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Mask even-odd fs"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_evenodd.fs.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.fs.wgsl").into()),
     });
 
     let globals_buffer_byte_size = std::mem::size_of::<GpuGlobals>() as u64;
@@ -221,7 +221,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
                     },
                     wgpu::VertexAttribute {
                         offset: 12,
-                        format: wgpu::VertexFormat::Float32,
+                        format: wgpu::VertexFormat::Uint32,
                         shader_location: 2,
                     },
                 ],

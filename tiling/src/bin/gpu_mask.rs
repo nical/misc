@@ -34,7 +34,7 @@ fn main() {
             view_box,
             tile_size: size2(ts as f32, ts as f32),
             tile_padding: 0.5,
-            tolerance: 0.1,
+            tolerance: 0.05,
             flatten: true,
         }
     );
@@ -53,6 +53,7 @@ fn main() {
     builder.reset();
     builder.z_buffer.init(view_box.max.x as usize / ts + 1, view_box.max.y as usize / ts + 1);
     builder.z_index = paths.len() as u16;
+    //builder.max_edges_per_gpu_tile  = 32;
 
     // Loop over the paths in front-to-back order to take advantage of
     // occlusion culling.
@@ -73,6 +74,7 @@ fn main() {
 
     let num_solid_tiles = builder.solid_tiles.len() as u32;
     let num_masked_tiles = builder.mask_tiles.len() as u32;
+    let num_gpu_masks = builder.gpu_masks.len() as u32;
 
     let t1 = time::precise_time_ns();
 
@@ -82,6 +84,8 @@ fn main() {
     //println!("{} edges", builder.edges.len());
     println!("{} solid_tiles", builder.solid_tiles.len());
     println!("{} alpha_tiles", builder.mask_tiles.len());
+    println!("{} gpu_masks", builder.gpu_masks.len());
+    println!("{} cpu_masks", builder.cpu_masks.len());
     println!("{} edges", builder.edges.len());
     println!("");
     println!("-> {}ns", t);
@@ -136,7 +140,7 @@ fn main() {
 
     let masks_vbo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Mask instances"),
-        contents: bytemuck::cast_slice(&builder.masks),
+        contents: bytemuck::cast_slice(&builder.gpu_masks),
         usage: wgpu::BufferUsages::VERTEX,
     });
 
@@ -292,7 +296,7 @@ fn main() {
             pass.set_bind_group(0, &masks_bind_group, &[]);
             pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, masks_vbo.slice(..));
-            pass.draw_indexed(0..6, 0, 0..num_masked_tiles);
+            pass.draw_indexed(0..6, 0, 0..num_gpu_masks);
         }
 
         {

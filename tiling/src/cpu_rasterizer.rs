@@ -1,5 +1,6 @@
 use std::f32;
 use lyon::geom::euclid::default::*;
+#[cfg(test)]
 use lyon::geom::euclid::{point2, vec2};
 
 pub const TILE_SIZE: usize = 16;
@@ -93,7 +94,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32], backdrops
 
         let row = &mut dst[y * TILE_SIZE .. (y + 1) * TILE_SIZE];
 
-        let start_idx = x_range_int.start.max(0) as usize;
+        let start_idx = x_range_int.start.max(0).min(15) as usize;
 
         if x_range_int.len() <= 1 {
             // The edge overlaps a single pixel on the current row.
