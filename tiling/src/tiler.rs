@@ -8,7 +8,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-use crate::job::{ThreadPool, no_output, no_worker_data, ExclusiveCheck};
+use crate::job::{Parallel, ThreadPool, ExclusiveCheck};
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -367,11 +367,6 @@ impl Tiler {
     }
 
     pub fn end_path_parallel(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
-        use rayon::prelude::*;
-
-        // borrow-ck dance.
-        let mut rows = std::mem::take(&mut self.rows);
-
         //println!("sanity check...");
         //for row in &rows {
         //    row.lock.begin();
@@ -388,52 +383,50 @@ impl Tiler {
         unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
         unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
 
-        {
         let mut shared = Shared { encoders, };
         let shared_ptr: UnsafeSendPtr<Shared> = UnsafeSendPtr(&mut shared);
 
+        // borrow-ck dance.
+        let mut rows = std::mem::take(&mut self.rows);
         let mut tp = self.thread_pool.take().unwrap();
         let mut worker_data = std::mem::take(&mut self.worker_data);
 
-        tp.worker().for_each_mut(&mut rows[..], no_output(), Some(&mut worker_data),
-            |worker, row, mut worker_data| {
+        Parallel::for_each_mut(&mut rows[..])
+            .with_worker_data(&mut worker_data)
+            .apply(|worker, row, worker_data| {
+                //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 
-            //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
-
-            if row.edges.is_empty() {
-                return;
-            }
-
-            row.lock.begin();
-
-            unsafe {
-                let worker_data: &mut TilerWorkerData = worker_data.as_mut().unwrap();
-                worker_data.active_edges.clear();
-                worker_data.side_edges.clear();
-
-                if row.z_buffer.is_empty() {
-                    row.z_buffer.init(self.num_tiles_x as usize);
+                if row.edges.is_empty() {
+                    return;
                 }
 
-                let idx = worker.id() as usize;
-                self.process_row(
-                    row.tile_y,
-                    &mut row.edges[..],
-                    &mut worker_data.active_edges,
-                    &mut worker_data.side_edges,
-                    &mut row.z_buffer,
-                    (*shared_ptr.get()).encoders[idx],
-                );
-            }
+                row.lock.begin();
 
-            row.lock.end();
-        });
+                unsafe {
+                    worker_data.active_edges.clear();
+                    worker_data.side_edges.clear();
+
+                    if row.z_buffer.is_empty() {
+                        row.z_buffer.init(self.num_tiles_x as usize);
+                    }
+
+                    let idx = worker.id() as usize;
+                    self.process_row(
+                        row.tile_y,
+                        &mut row.edges[..],
+                        &mut worker_data.active_edges,
+                        &mut worker_data.side_edges,
+                        &mut row.z_buffer,
+                        (*shared_ptr.get()).encoders[idx],
+                    );
+                }
+
+                row.lock.end();
+            })
+            .run(tp.context());
 
         self.thread_pool = Some(tp);
         self.worker_data = worker_data;
-
-        }
-
         self.rows = rows;
 
         for row in &mut self.rows {

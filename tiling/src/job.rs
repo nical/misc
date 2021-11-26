@@ -1,23 +1,37 @@
-use std::any::Any;
+//! An experimental parallel job scheduler with the goal of doing better than rayon
+//! specifically in the types of workloads we have in Firefox.
+//!
+//! What we want:
+//! - Allow running jobs outside of the thread pool.
+//! - Avoid blocking the thread that submits the work if possible.
+//! - No implicit global thread pool.
+//! - Ways to safely manage per-worker data.
+//! - Avoid hoarding CPU resources in worker threads that don't have work to execute (this
+//!   is at the cost of higher latency).
+//! - No need to scale to a very large number of threads. We prefer to have something that
+//!   runs efficiently on up to 8 threads and not need to scale well above that.
+//!
+//! Part of the code was copied from rayon (JobRef, HeapJob and StackJob).
+
 use std::cell::UnsafeCell;
 use std::mem;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{Ordering, AtomicI32, AtomicPtr, AtomicBool};
+use std::sync::{Arc, Mutex, Condvar};
 
-pub(super) enum JobResult<T> {
-    None,
-    Ok(T),
-    Panic(Box<dyn Any + Send>),
-}
+use crossbeam_channel::{Sender, Receiver, unbounded};
+
 
 /// A `Job` is used to advertise work for other threads that they may
 /// want to steal. In accordance with time honored tradition, jobs are
 /// arranged in a deque, so that thieves can take from the top of the
 /// deque while the main worker manages the bottom of the deque. This
 /// deque is managed by the `thread_pool` module.
-pub(super) trait Job {
+trait Job {
     /// Unsafe: this may be called from a different thread than the one
     /// which scheduled the job, so the implementer must ensure the
     /// appropriate traits are met, whether `Send`, `Sync`, or both.
-    unsafe fn execute(this: *const Self, worker: &mut Worker);
+    unsafe fn execute(this: *const Self, worker: &mut Context);
 }
 
 /// Effectively a Job trait object. Each JobRef **must** be executed
@@ -38,11 +52,11 @@ unsafe impl Sync for JobRef {}
 impl JobRef {
     /// Unsafe: caller asserts that `data` will remain valid until the
     /// job is executed.
-    pub(super) unsafe fn new<T>(data: *const T) -> JobRef
+    unsafe fn new<T>(data: *const T) -> JobRef
     where
         T: Job,
     {
-        let fn_ptr: unsafe fn(*const T, &mut Worker) = <T as Job>::execute;
+        let fn_ptr: unsafe fn(*const T, &mut Context) = <T as Job>::execute;
 
         // erase types:
         JobRef {
@@ -52,7 +66,7 @@ impl JobRef {
     }
 
     #[inline]
-    pub(super) unsafe fn execute(&self, worker: &mut Worker) {
+    unsafe fn execute(&self, worker: &mut Context) {
         (self.execute_fn)(self.pointer, mem::transmute(worker))
     }
 }
@@ -61,42 +75,37 @@ impl JobRef {
 /// executes it need not free any heap data, the cleanup occurs when
 /// the stack frame is later popped.  The function parameter indicates
 /// `true` if the job was stolen -- executed on a different thread.
-pub(super) struct StackJob<F, R>
+struct StackJob<F, R>
 where
-    F: FnOnce(&mut Worker) -> R + Send,
+    F: FnOnce(&mut Context) -> R + Send,
     R: Send,
 {
     func: UnsafeCell<Option<F>>,
-    //result: UnsafeCell<JobResult<R>>,
 }
 
 impl<F, R> StackJob<F, R>
 where
-    F: FnOnce(&mut Worker) -> R + Send,
+    F: FnOnce(&mut Context) -> R + Send,
     R: Send,
 {
-    pub(super) fn new(func: F) -> StackJob<F, R> {
+    fn new(func: F) -> StackJob<F, R> {
         StackJob {
             func: UnsafeCell::new(Some(func)),
             //result: UnsafeCell::new(JobResult::None),
         }
     }
 
-    pub(super) unsafe fn as_job_ref(&self) -> JobRef {
+    unsafe fn as_job_ref(&self) -> JobRef {
         JobRef::new(self)
     }
-
-    //pub(super) unsafe fn into_result(self) -> R {
-    //    self.result.into_inner().into_return_value()
-    //}
 }
 
 impl<F, R> Job for StackJob<F, R>
 where
-    F: FnOnce(&mut Worker) -> R + Send,
+    F: FnOnce(&mut Context) -> R + Send,
     R: Send,
 {
-    unsafe fn execute(this: *const Self, worker: &mut Worker) {
+    unsafe fn execute(this: *const Self, worker: &mut Context) {
         let this = &*this;
         let abort = AbortIfPanic;
         let func = (*this.func.get()).take().unwrap();
@@ -118,31 +127,31 @@ where
 /// signal that the job executed.
 ///
 /// (Probably `StackJob` should be refactored in a similar fashion.)
-pub(super) struct HeapJob<BODY>
+struct HeapJob<BODY>
 where
-    BODY: FnOnce(&mut Worker) + Send,
+    BODY: FnOnce(&mut Context) + Send,
 {
     job: UnsafeCell<Option<BODY>>,
 }
 
 impl<F> HeapJob<F>
 where
-    F: FnOnce(&mut Worker) + Send,
+    F: FnOnce(&mut Context) + Send,
 {
-    pub fn new(func: F) -> Self {
+    fn new(func: F) -> Self {
         HeapJob {
             job: UnsafeCell::new(Some(func)),
         }
     }
 
-    pub unsafe fn new_ref(func: F) -> JobRef {
+    unsafe fn new_ref(func: F) -> JobRef {
         Box::new(Self::new(func)).as_job_ref()
     }
 
     /// Creates a `JobRef` from this job -- note that this hides all
     /// lifetimes, so it is up to you to ensure that this JobRef
     /// doesn't outlive any data that it closes over.
-    pub unsafe fn as_job_ref(self: Box<Self>) -> JobRef {
+    unsafe fn as_job_ref(self: Box<Self>) -> JobRef {
         let this: *const Self = mem::transmute(self);
         JobRef::new(this)
     }
@@ -150,39 +159,16 @@ where
 
 impl<BODY> Job for HeapJob<BODY>
 where
-    BODY: FnOnce(&mut Worker) + Send,
+    BODY: FnOnce(&mut Context) + Send,
 {
-    unsafe fn execute(this: *const Self, worker: &mut Worker) {
+    unsafe fn execute(this: *const Self, worker: &mut Context) {
         let this: Box<Self> = mem::transmute(this);
         let job = (*this.job.get()).take().unwrap();
         job(worker);
     }
 }
 
-impl<T> JobResult<T> {
-    /// Convert the `JobResult` for a job that has finished (and hence
-    /// its JobResult is populated) into its return value.
-    ///
-    /// NB. This will panic if the job panicked.
-    pub(super) fn into_return_value(self) -> T {
-        match self {
-            JobResult::None => unreachable!(),
-            JobResult::Ok(x) => x,
-            JobResult::Panic(x) => resume_unwinding(x),
-        }
-    }
-}
-
-
-
-use std::panic::{self, AssertUnwindSafe};
-use std::thread;
-
-pub(super) fn resume_unwinding(payload: Box<dyn Any + Send>) -> ! {
-    panic::resume_unwind(payload)
-}
-
-pub(super) struct AbortIfPanic;
+struct AbortIfPanic;
 
 impl Drop for AbortIfPanic {
     fn drop(&mut self) {
@@ -191,14 +177,7 @@ impl Drop for AbortIfPanic {
     }
 }
 
-
-use std::sync::atomic::{Ordering, AtomicI32, AtomicPtr, AtomicBool};
-use std::sync::{Arc, Mutex, Condvar};
-use std::marker::PhantomData;
-use std::alloc::Layout;
-
-use crossbeam_channel::{Sender, Receiver, unbounded};
-
+/// A wrapper for `*const T` that is Send and Sync
 struct SyncPtr<T: ?Sized>(*const T);
 unsafe impl<T> Send for SyncPtr<T> {}
 unsafe impl<T> Sync for SyncPtr<T> {}
@@ -208,6 +187,7 @@ impl<T: ?Sized> SyncPtr<T> {
     unsafe fn get(&self) -> &T { &(*self.0) }
 }
 
+/// A wrapper for `*mut T` that is Send and Sync
 struct SyncPtrMut<T: ?Sized>(*mut T);
 unsafe impl<T> Send for SyncPtrMut<T> {}
 unsafe impl<T> Sync for SyncPtrMut<T> {}
@@ -217,16 +197,28 @@ impl<T: ?Sized> SyncPtrMut<T> {
     unsafe fn get(&self) -> &mut T { &mut(*self.0) }
 }
 
+// TODO: proper worker thread shutdown.
+
 pub struct ThreadPool {
-    worker: Worker,
+    ctx: Context,
 }
 
 impl ThreadPool {
     pub fn new(num_threads: usize) -> Self {
         let (tx, rx) = unbounded();
 
+        let num_threads = num_threads.min(127);
+        let worker_count = num_threads as u8 + 1;
+
         for i in 0..num_threads {
-            let mut worker = Worker { tx: tx.clone(), rx: rx.clone(), id: i as u32, job_idx: 0 };
+            let mut worker = Context {
+                tx: tx.clone(),
+                rx: rx.clone(),
+                id: i as u32,
+                worker_count,
+                job_idx: None
+            };
+
             let _ = std::thread::spawn(move || {
                 profiling::register_thread!("Worker");
 
@@ -234,20 +226,93 @@ impl ThreadPool {
             });
         }
 
-        ThreadPool { worker: Worker { tx, rx, id: num_threads as u32, job_idx: 0 } }
+        ThreadPool {
+            ctx: Context {
+                tx,
+                rx,
+                id: num_threads as u32,
+                worker_count,
+                job_idx: None,
+            }
+        }
     }
 
-    pub fn worker(&mut self) -> &mut Worker { &mut self.worker }
+    pub fn context(&mut self) -> &mut Context { &mut self.ctx }
 }
 
-pub struct Worker {
+pub struct Parallel {}
+
+impl Parallel {
+    #[inline]
+    pub fn for_each_mut<'a, Item: Send>(items: &'a mut [Item]) -> ForEachMut<'a, 'static, Item, (), ()> {
+        ForEachMut {
+            items,
+            worker_data: None,
+            function: (),
+            group_size: 5, // TODO
+        }
+    }
+}
+
+pub struct ForEachMut<'a, 'b, Item, ContextData, F> {
+    items: &'a mut [Item],
+    worker_data: Option<&'b mut [ContextData]>,
+    function: F,
+    group_size: usize,
+}
+
+impl<'a, 'b, Item, ContextData, F> ForEachMut<'a, 'b, Item, ContextData, F> 
+{
+    #[inline]
+    pub fn with_worker_data<'c, W: Send>(self, worker_data: &'c mut [W]) -> ForEachMut<'a,'c, Item, W, F> {
+        ForEachMut {
+            items: self.items,
+            worker_data: Some(worker_data),
+            function: self.function,
+            group_size: self.group_size,
+        }
+    }
+
+    #[inline]
+    pub fn with_group_size(mut self, group_size: usize) -> Self {
+        self.group_size = group_size;
+
+        self
+    }
+
+    #[inline]
+    pub fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, Item, ContextData, Func>
+    where
+        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send
+    {
+        ForEachMut {
+            items: self.items,
+            worker_data: self.worker_data,
+            function,
+            group_size: self.group_size
+        }
+    }
+
+    #[inline]
+    pub fn run(self, worker: &mut Context)
+    where
+        F: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send,
+        Item: Sync + Send,
+    {
+        worker.for_each_mut(self);
+    }
+}
+
+
+pub struct Context {
     tx: Sender<JobRef>,
     rx: Receiver<JobRef>,
     id: u32,
-    job_idx: u32,
+    job_idx: Option<u32>,
+    worker_count: u8,
 }
 
-impl Worker {
+impl Context {
     fn schedule_job(&mut self, job: JobRef) {
         profiling::scope!("schedule_job");
         self.tx.send(job).unwrap();
@@ -255,7 +320,7 @@ impl Worker {
 
     pub fn id(&self) -> u32 { self.id }
 
-    fn job_index(&self) -> u32 { self.job_idx }
+    fn job_index(&self) -> Option<u32> { self.job_idx }
 
     pub fn run(&mut self) {
         while let Ok(job) = self.rx.recv() {
@@ -280,123 +345,38 @@ impl Worker {
         sync.then(job, self);
     }
 
-    // pub fn for_each_async<I>(&mut self, input: Vec<I>, cb: F) -> HeapWorkload<I, O>
-    // pub fn for_each_async_stack<I>(&mut self, input: &[I], output: &[O], cb: F) -> StackWorkload<I, O, 'scope>
-    // pub fn for_each_sync<I>(&mut self, input: &[I], output: &mut[O], cb: F);
-
-    // let scope = worker.scope();
-    // let 
-    unsafe fn for_each_heap_impl<Input, Output, W, F>(
+    pub fn for_each_mut<Input, W, F>(
         &mut self,
-        count: usize,
-        input: *const Input,
-        output: *mut Output,
-        worker_data: Option<*mut W>,
-        sync: *const SyncPoint,
-        cb: &F)
-    where
-        F: Fn(&mut Worker, &Input, Option<&mut W>) -> Output + Sync + Send,
-        Input: Sync + Send,
-        Output: Sized,
-    {
-        // I'm not entirely sure why I have to do this.
-        // If I don't wrap the unsafe pointers, the compiler tries to capture
-        // the &*T instead of *T.
-        let mut sync_ptr = SyncPtr(sync);
-        let mut in_ptr = SyncPtr(input);
-        let mut out_ptr = SyncPtrMut(output);
-        let mut wd_ptr = worker_data.map(|wd| SyncPtrMut(wd));
-
-        for i in 0..(count as isize) {
-            unsafe {
-                let job = HeapJob::new_ref(
-                    move |worker| {
-                        let idx = worker.id() as isize;
-                        *out_ptr.0.offset(i) = cb(
-                            worker,
-                            &*in_ptr.0.offset(i),
-                            wd_ptr.map(|wd| &mut*wd.0.offset(idx)),
-                        );
-                        sync_ptr.get().signal(worker);
-                    }
-                );
-                self.schedule_job(job);
-            }
-        }
-    }
-
-    pub fn for_each<Input, Output, W, F>(
-        &mut self,
-        input: &[Input],
-        output: &mut [Output],
-        mut worker_data: Option<&mut [W]>,
-        cb: F,
+        mut params: ForEachMut<Input, W, F>
     )
     where
-        F: Fn(&mut Worker, &Input, Option<&mut W>) -> Output + Sync + Send,
+        F: Fn(&mut Context, &mut Input, &mut W) + Sync + Send,
         Input: Sync + Send,
-        Output: Sized,
-    {
-        assert_eq!(input.len(), output.len());
-        unsafe {
-            let in_ptr = input.as_ptr();
-            let out_ptr = output.as_mut_ptr();
-            let wd_ptr = worker_data.map(|wd| wd.as_mut_ptr());
-            let sync = SyncPoint::new(input.len() as u32);
-            let event = Event::new();
-
-            // It is important hat the StackJob exist on the stack until we wait.
-            let event_job = StackJob::new(|_| event.set());
-
-            self.then(&sync, event_job.as_job_ref());
-
-            self.for_each_heap_impl(input.len(), in_ptr, out_ptr, wd_ptr, &sync, &cb);
-
-            event.wait();
-        }
-    }
-
-
-    pub fn for_each_mut<Input, Output, W, F>(
-        &mut self,
-        input: &mut [Input],
-        output: &mut [Output],
-        mut worker_data: Option<&mut [W]>,
-        cb: F,
-    )
-    where
-        F: Fn(&mut Worker, &mut Input, Option<&mut W>) -> Output + Sync + Send,
-        Input: Sync + Send,
-        Output: Sized,
     {
         profiling::scope!("for_each_mut");
-        assert!(input.len() == output.len() || mem::size_of::<Output>() == 0);
+
+        if let Some(wd) = &params.worker_data {
+            assert!(
+                wd.len() >= self.worker_count as usize,
+                "Got {:?} worker data, need at least {:?}",
+                wd.len(), self.worker_count,
+            );
+        }
+
         unsafe {
-            fn div_ceil(a: usize, b: usize) -> usize {
-                let d = a / b;
-                let r = a % b;
-
-                if (r > 0 && b > 0) {
-                    d + 1
-                } else {
-                    d
-                }
-            }
-
-            let n = input.len();
+            let n = params.items.len();
             let num_parallel = (n * 4) / 5;
             let first_parallel = n - num_parallel;
 
-            let chunk_size = 5;
-            let num_chunks = div_ceil(num_parallel, chunk_size);
+            let group_size = params.group_size.min(params.items.len());
+            let num_chunks = div_ceil(num_parallel, group_size);
 
-            let in_ptr = input.as_mut_ptr();
-            let out_ptr = output.as_mut_ptr();
-            let wd_ptr = worker_data.as_mut().map(|arr| arr.as_mut_ptr());
+            let in_ptr = params.items.as_mut_ptr();
+            let wd_ptr = params.worker_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr());
             let sync = SyncPoint::new(num_chunks as u32 + 1);
             let event = Event::new();
 
-            //println!(" -- {:?} jobs, {:?} parallel {:?} chunks, chunksize {:?} ", n, num_parallel, num_chunks, chunk_size);
+            //println!(" -- {:?} jobs, {:?} parallel {:?} chunks, chunksize {:?} ", n, num_parallel, num_chunks, group_size);
 
             // It is important hat the StackJob exist on the stack until we wait.
             let event_job = StackJob::new(|_| event.set());
@@ -408,35 +388,29 @@ impl Worker {
             //println!("jobs: {:?}, num chunks: {:?} ", n, num_chunks);
 
             self.for_each_mut_impl(
-                input.len(),
+                params.items.len(),
                 in_ptr,
-                out_ptr,
                 wd_ptr,
                 &sync,
                 first_parallel,
                 num_chunks,
-                chunk_size,
-                &cb,
+                group_size,
+                &params.function,
             );
 
             {
-            profiling::scope!("mt:job group");
-            //println!("start main thread {:?}", 0..num_parallel);
-            for i in 0..first_parallel {
-                self.job_idx = i as u32;
-                profiling::scope!("mt:job");
-                let result = cb(
-                    self,
-                    &mut input[i],
-                    worker_data
-                        .as_mut()
-                        .map(|arr| &mut arr[self.id() as usize]),
-                );
-
-                if output.len() > 0 {
-                    output[i] = result;
+                profiling::scope!("mt:job group");
+                //println!("start main thread {:?}", 0..num_parallel);
+                for i in 0..first_parallel {
+                    self.job_idx = Some(i as u32);
+                    profiling::scope!("mt:job");
+                    (params.function)(
+                        self,
+                        &mut params.items[i],
+                        &mut *wd_ptr.offset(self.id() as isize),
+                    );
                 }
-            }
+                self.job_idx = None;
             }
 
             //println!("end main thread jobs");
@@ -462,15 +436,14 @@ impl Worker {
         &mut self,
         count: usize,
         input: *mut Input,
-        output: *mut Output,
-        worker_data: Option<*mut W>,
+        worker_data: *mut W,
         sync: *const SyncPoint,
         first_parallel: usize,
         num_chunks: usize,
-        chunk_size: usize,
+        group_size: usize,
         cb: &F)
     where
-        F: Fn(&mut Worker, &mut Input, Option<&mut W>) -> Output + Sync + Send,
+        F: Fn(&mut Context, &mut Input, &mut W) -> Output + Sync + Send,
         Input: Sync + Send,
         Output: Sized,
     {
@@ -478,49 +451,46 @@ impl Worker {
         // I'm not entirely sure why I have to do this.
         // If I don't wrap the unsafe pointers, the compiler tries to capture
         // the &*T instead of *T.
-        let mut sync_ptr = SyncPtr(sync);
-        let mut in_ptr = SyncPtrMut(input);
-        let mut out_ptr = SyncPtrMut(output);
-        let mut wd_ptr = worker_data.map(|wd| SyncPtrMut(wd));
+        let sync_ptr = SyncPtr(sync);
+        let in_ptr = SyncPtrMut(input);
+        let wd_ptr = SyncPtrMut(worker_data);
 
-        assert!(num_chunks * chunk_size >= (count - first_parallel), "num_chunks: {} * chunk_size: {} >= count: {}", num_chunks, chunk_size, count - first_parallel);
+        assert!(num_chunks * group_size >= (count - first_parallel), "num_chunks: {} * group_size: {} >= count: {}", num_chunks, group_size, count - first_parallel);
 
-        unsafe {
-            let fork_job = HeapJob::new_ref(move |worker| {
-                profiling::scope!("schedule jobs");
-                for chunk_idx in 0..num_chunks {
-                    let start = first_parallel + chunk_size * chunk_idx;
-                    let job = HeapJob::new_ref(
-                        move |worker| {
-                            profiling::scope!("job group");
+        let fork_job = HeapJob::new_ref(move |worker| {
+            profiling::scope!("schedule jobs");
+            for chunk_idx in 0..num_chunks {
+                let start = first_parallel + group_size * chunk_idx;
+                let job = HeapJob::new_ref(
+                    move |worker| {
+                        profiling::scope!("job group");
 
-                            let wroker_idx = worker.id() as isize;
-                            let end = (start + chunk_size).min(count);
-                            assert!(end > start);
-                            //println!(" -- (w{:?}) chunk {:?}", worker.id(), start..end);
-                            for job_idx in start..end {
-                                profiling::scope!("worker:job");
-                                worker.job_idx = job_idx as u32;
-                                let job_idx = job_idx as isize;
-                                //println!("  -- (w{:?}) job {:?}", worker.id(), job_idx);
-                                let result = cb(
-                                    worker,
-                                    &mut *in_ptr.0.offset(job_idx),
-                                    wd_ptr.map(|p| &mut *p.0.offset(wroker_idx)),
-                                );
+                        let end = (start + group_size).min(count);
+                        assert!(end > start);
+                        let wroker_idx = worker.id() as isize;
+                        let worker_data = &mut *wd_ptr.0.offset(wroker_idx);
 
-                                if mem::size_of::<Output>() > 0 {
-                                    *out_ptr.0.offset(job_idx) = result;
-                                }
-                            }
-                            sync_ptr.get().signal(worker);
+                        //println!(" -- (w{:?}) chunk {:?}", worker.id(), start..end);
+                        for job_idx in start..end {
+                            profiling::scope!("worker:job");
+                            worker.job_idx = Some(job_idx as u32);
+                            let job_idx = job_idx as isize;
+                            //println!("  -- (w{:?}) job {:?}", worker.id(), job_idx);
+                            
+                            cb(
+                                worker,
+                                &mut *in_ptr.0.offset(job_idx),
+                                worker_data,
+                            );
                         }
-                    );
-                    worker.schedule_job(job);
-                }
-            });
-            self.schedule_job(fork_job);
-        }
+                        worker.job_idx = None;
+                        sync_ptr.get().signal(worker);
+                    }
+                );
+                worker.schedule_job(job);
+            }
+        });
+        self.schedule_job(fork_job);
     }
 }
 
@@ -538,7 +508,7 @@ impl SyncPoint {
         }
     }
 
-    pub fn signal(&self, worker: &mut Worker) -> bool {
+    pub fn signal(&self, worker: &mut Context) -> bool {
         //println!("signal");
         profiling::scope!("signal");
 
@@ -573,7 +543,7 @@ impl SyncPoint {
         self.deps.load(Ordering::SeqCst) > 0
     }
 
-    fn then(&self, job: JobRef, worker: &mut Worker) {
+    fn then(&self, job: JobRef, worker: &mut Context) {
         let deps = self.deps.load(Ordering::SeqCst);
 
         if deps <= 0 {
@@ -630,11 +600,8 @@ impl Event {
     pub fn wait(&self) {
         let mut is_set = self.mutex.lock().unwrap();
         if *is_set {
-            //println!("no wait");
             return;
         }
-
-        //println!("slow wait");
 
         {
             profiling::scope!("event:wait");
@@ -645,7 +612,7 @@ impl Event {
         }
     }
 
-    fn set_job(event: Arc<Event>) -> JobRef {
+    pub fn set_job(event: Arc<Event>) -> JobRef {
         unsafe {
             Box::new(HeapJob::new(move |_| { event.set() })).as_job_ref()
         }
@@ -672,7 +639,7 @@ impl<T> AtomicLinkedList<T> {
     }
 
     pub fn push(&self, payload: T) {
-        let mut node = Box::into_raw(Box::new(Node {
+        let node = Box::into_raw(Box::new(Node {
             payload: Some(payload),
             next: AtomicPtr::new(std::ptr::null_mut()),
         }));
@@ -691,7 +658,7 @@ impl<T> AtomicLinkedList<T> {
 
     pub fn pop_all(&self, cb: &mut dyn FnMut(T)) {
         // First atomically swap out the first node.
-        let mut node = std::ptr::null_mut();
+        let mut node;
         loop {
             node = self.first.load(Ordering::SeqCst);
             if self.first.compare_exchange(node, std::ptr::null_mut(), Ordering::SeqCst, Ordering::SeqCst).is_ok() {
@@ -753,34 +720,62 @@ impl<T: std::fmt::Debug> ExclusiveCheck<T> {
     }
 }
 
-pub fn no_worker_data() -> Option<&'static mut [()]> { None }
-pub fn no_output() -> &'static mut [()] { &mut[] }
+//pub(super) enum JobResult<T> {
+//    None,
+//    Ok(T),
+//    Panic(Box<dyn Any + Send>),
+//}
+//impl<T> JobResult<T> {
+//    /// Convert the `JobResult` for a job that has finished (and hence
+//    /// its JobResult is populated) into its return value.
+//    ///
+//    /// NB. This will panic if the job panicked.
+//    pub(super) fn into_return_value(self) -> T {
+//        match self {
+//            JobResult::None => unreachable!(),
+//            JobResult::Ok(x) => x,
+//            JobResult::Panic(x) => resume_unwinding(x),
+//        }
+//    }
+//}
+//pub(super) fn resume_unwinding(payload: Box<dyn Any + Send>) -> ! {
+//    panic::resume_unwind(payload)
+//}
 
 #[test]
 fn test_simple_workload() {
     let mut pool = ThreadPool::new(3);
 
-    let input = &[0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    let output = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-    pool.worker.for_each(input, output, no_worker_data(), |worker, val, _| {
-        println!(" - worker {:} executing job", worker.id());
-        val * 2
-    });
-
-    assert_eq!(output, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
-
-    for _ in 0..20000 {
+    for _ in 0..2000 {
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let worker_data = &mut [0i32, 0, 0, 0];
 
-        pool.worker.for_each_mut(input, no_output(), Some(worker_data), |worker, val, wd| {
-            let v: i32 = *val;
-            *wd.unwrap() += 1;
-            *val *= 2;
-            println!(" * worker {:} job {:?} : {:?} * 2 = {:?}", worker.id(), worker.job_index(), v, val);
-            assert_eq!(v, worker.job_index() as i32);
-        });
+        Parallel::for_each_mut(input)
+            .with_worker_data(worker_data)
+            .apply(|ctx, item, wd| {
+                let v: i32 = *item;
+                *wd += 1;
+                *item *= 2;
+                println!(" * worker {:} job {:?} : {:?} * 2 = {:?}", ctx.id(), ctx.job_index(), v, item);
+                assert_eq!(ctx.job_index(), Some(v as u32));
+            })
+            .run(&mut pool.ctx);
+
+        assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
+    }
+
+    for _ in 0..2000 {
+        let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+        Parallel::for_each_mut(input)
+            .apply(|ctx, val, wd| {
+                let v: i32 = *val;
+                *val *= 2;
+                *wd = ();
+                println!(" * worker {:} job {:?} : {:?} * 2 = {:?}", ctx.id(), ctx.job_index(), v, val);
+                assert_eq!(ctx.job_index(), Some(v as u32));
+            })
+            .run(&mut pool.ctx);
 
         assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
     }
@@ -811,3 +806,10 @@ fn exclu_check_02() {
     lock.end();
     lock.end();
 }
+
+fn div_ceil(a: usize, b: usize) -> usize {
+    let d = a / b;
+    let r = a % b;
+    if r > 0 && b > 0 { d + 1 } else { d }
+}
+
