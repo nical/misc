@@ -1,9 +1,9 @@
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
 use std::mem::transmute;
-use crate::z_buffer::ZBuffer;
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
+use crate::job::ExclusiveCheck;
 
 use crate::Color;
 
@@ -195,38 +195,38 @@ pub struct CpuMask {
     pub byte_offset: u32,
 }
 
-pub struct GpuRasterEncoder<'l> {
+pub struct GpuRasterEncoder {
     pub edges: Vec<Edge>,
     pub solid_tiles: Vec<SolidTile>,
     pub mask_tiles: Vec<MaskedTile>,
     pub gpu_masks: Vec<GpuMask>,
     pub cpu_masks: Vec<CpuMask>,
     pub rasterized_mask_buffer: Vec<u8>,
-    pub z_buffer: &'l mut ZBuffer,
-    pub z_index: u16,
-    pub path_id: u16,
     pub color: Color,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub next_mask_id: u32,
+    pub is_opaque: bool,
+
+    lock: ExclusiveCheck<()>,
 }
 
-impl<'l> GpuRasterEncoder<'l> {
-    pub fn new(z_buffer: &'l mut ZBuffer) -> Self {
+impl GpuRasterEncoder {
+    pub fn new() -> Self {
         GpuRasterEncoder {
             edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
-            mask_tiles: Vec::with_capacity(5000),
-            gpu_masks: Vec::with_capacity(5000),
-            cpu_masks: Vec::with_capacity(5000),
+            mask_tiles: Vec::with_capacity(6000),
+            gpu_masks: Vec::with_capacity(6000),
+            cpu_masks: Vec::with_capacity(6000),
             rasterized_mask_buffer: Vec::with_capacity(16*16*128),
-            z_buffer,
-            z_index: 0,
-            path_id: 0,
             color: Color { r: 0, g: 0, b: 0, a: 0 },
             fill_rule: FillRule::EvenOdd,
             max_edges_per_gpu_tile: 4096,
             next_mask_id: 0,
+            is_opaque: true,
+
+            lock: ExclusiveCheck::new(),
         }
     }
 
@@ -237,7 +237,6 @@ impl<'l> GpuRasterEncoder<'l> {
         self.gpu_masks.clear();
         self.cpu_masks.clear();
         self.rasterized_mask_buffer.clear();
-        self.z_index = 0;
         self.next_mask_id = 0;
     }
 
@@ -291,7 +290,7 @@ impl<'l> GpuRasterEncoder<'l> {
         let edges_start = edges_start as u32;
         let edges_end = self.edges.len() as u32;
         assert!(edges_end > edges_start);
-        assert!(edges_end - edges_start < 100);
+        assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
         let mask_id = self.next_mask_id;
         self.next_mask_id += 1;
 
@@ -393,29 +392,14 @@ impl<'l> GpuRasterEncoder<'l> {
     }
 }
 
-impl<'l> TileEncoder for GpuRasterEncoder<'l> {
+impl TileEncoder for GpuRasterEncoder {
     fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) {
 
         const TILE_SIZE: f32 = 16.0;
         let tx = tile.x as f32 * TILE_SIZE;
         let ty = tile.y as f32 * TILE_SIZE;
 
-        let mut solid = false;
-        if active_edges.is_empty() {
-            if left.is_in(ty - 0.4, ty + 16.4, self.fill_rule) {
-                solid = true;
-            } else if left.is_empty() {
-                // Empty tile.
-                return;
-            }
-        }
-
-        if !self.z_buffer.test(tile.x, tile.y, self.z_index, solid) {
-            // Culled by a solid tile.
-            return;
-        }
-
-        if solid {
+        if tile.solid {
             self.solid_tiles.push(SolidTile {
                 rect: Box2D {
                     min: point(tx, ty),
@@ -430,5 +414,25 @@ impl<'l> TileEncoder for GpuRasterEncoder<'l> {
             || ! self.add_gpu_mask(tile, active_edges, left) {
             self.add_cpu_mask(tile, active_edges, left);
         }
+    }
+
+    fn begin_row(&self) {
+        self.lock.begin();
+    }
+    fn end_row(&self) {
+        self.lock.end();
+    }
+}
+
+use std::sync::{Mutex, MutexGuard};
+
+pub struct ParallelRasterEncoder<'l> {
+    pub workers: Vec<Mutex<&'l mut dyn TileEncoder>>,
+}
+
+impl<'l> ParallelRasterEncoder<'l> {
+    pub fn lock_encoder(&self) -> MutexGuard<&'l mut dyn TileEncoder> {
+        let idx = rayon::current_thread_index().unwrap_or(self.workers.len() - 1);
+        self.workers[idx].lock().unwrap()
     }
 }

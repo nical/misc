@@ -14,6 +14,9 @@ svg_fmt = "0.4.1"
 usvg = "0.4"
 time = "0.1.42"
 ordered-float = "1.0.2"
+rayon = "1.5"
+crossbeam-channel = "0.5"
+profiling = "1.0.4"
 
 [dependencies.image]
 version = "0.23"
@@ -22,3 +25,6 @@ features = ["png"]
 
 [profile.release]
 debug=true
+
+[features]
+tracy = ["profiling/profile-with-tracy"]

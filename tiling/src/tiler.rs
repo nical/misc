@@ -6,25 +6,39 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
-//mod wr;
+pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-pub use crate::z_buffer::ZBuffer;
+use crate::job::{ThreadPool, no_output, no_worker_data, ExclusiveCheck};
+
+use std::sync::{Mutex, MutexGuard};
+
+pub struct UnsafeSendPtr<T>(pub *mut T);
+unsafe impl<T> Send for UnsafeSendPtr<T> {}
+unsafe impl<T> Sync for UnsafeSendPtr<T> {}
+impl<T> Copy for UnsafeSendPtr<T> {}
+impl<T> Clone for UnsafeSendPtr<T> { fn clone(&self) -> Self { *self } }
+impl<T> UnsafeSendPtr<T> {
+    fn get(self) -> *mut T { self.0 }
+}
 
 /// The output of the tiler.
 ///
 /// encode_tile will be called for each tile that isn't fully empty.
-pub trait TileEncoder {
+pub trait TileEncoder: Send {
     fn encode_tile(
         &mut self,
         tile: &TileInfo,
         active_edges: &[ActiveEdge],
         side_edges: &SideEdgeTracker,
     );
+
+    fn begin_row(&self) {}
+    fn end_row(&self) {}
 }
 
 impl<T> TileEncoder for T
 where
-    T: FnMut(&TileInfo, &[ActiveEdge], &SideEdgeTracker)
+    T: Send + FnMut(&TileInfo, &[ActiveEdge], &SideEdgeTracker)
 {
     fn encode_tile(
         &mut self,
@@ -34,6 +48,13 @@ where
     ) {
         (*self)(tile, active_edges, side_edges)
     }
+}
+
+struct Row {
+    edges: Vec<RowEdge>,
+    tile_y: u32,
+    lock: ExclusiveCheck<usize>,
+    z_buffer: ZBufferRow,
 }
 
 /// A context object that can bin path edges into tile grids.
@@ -70,10 +91,33 @@ pub struct Tiler {
     tolerance: f32,
     flatten: bool,
 
-    rows: Vec<Vec<RowEdge>>,
+    rows: Vec<Row>,
+    z_buffer: Vec<ZBufferRow>,
+
+    worker_data: Vec<TilerWorkerData>,
 
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
+    pub is_opaque: bool,
+    pub fill_rule: FillRule,
+    pub z_index: u16,
+
+    pub thread_pool: Option<ThreadPool>,
+}
+
+#[derive(Clone)]
+struct TilerWorkerData {
+    side_edges: SideEdgeTracker,
+    active_edges: Vec<ActiveEdge>,
+}
+
+impl TilerWorkerData {
+    fn new() -> Self {
+        TilerWorkerData {
+            side_edges: SideEdgeTracker::new(),
+            active_edges: Vec::with_capacity(64),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -89,13 +133,14 @@ impl Tiler {
     /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
         let rect = config.view_box;
+        let num_tiles_y = f32::ceil(rect.size().height / config.tile_size.height);
         Tiler {
             tile_size: config.tile_size,
             tile_offset_x: rect.min.x,
             tile_offset_y: rect.min.y,
             tile_padding: config.tile_padding,
             num_tiles_x: f32::ceil(rect.size().width / config.tile_size.width) as u32,
-            num_tiles_y: f32::ceil(rect.size().height / config.tile_size.height),
+            num_tiles_y,
             tolerance: config.tolerance,
             flatten: config.flatten,
 
@@ -103,6 +148,15 @@ impl Tiler {
             tile_decomposition_time_ns: 0,
 
             rows: Vec::new(),
+            z_buffer: vec![ZBufferRow::new(); num_tiles_y as usize],
+
+            is_opaque: true,
+            fill_rule: FillRule::EvenOdd,
+            z_index: 0,
+
+            thread_pool: Some(ThreadPool::new(3)),
+
+            worker_data: vec![TilerWorkerData::new(); 4],
         }
     }
 
@@ -126,12 +180,12 @@ impl Tiler {
     /// - begin_Path
     /// - add_monotonic_edge
     /// - end_path
-    pub fn tile_path(
+    pub fn tile_path<E>(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        encoder: &mut dyn TileEncoder,
-    ) {
+        encoder: &mut E,
+    ) where E: TileEncoder {
         let t0 = time::precise_time_ns();
 
         let identity = Transform2D::identity();
@@ -193,7 +247,7 @@ impl Tiler {
                 if intersects_tile_top {
                     segment.from.y = y_min;
                 }
-                row.push(RowEdge {
+                row.edges.push(RowEdge {
                     from: segment.from,
                     to: segment.to,
                     ctrl: segment.to,
@@ -216,7 +270,7 @@ impl Tiler {
                     segment.from.y = y_min;
                 }
 
-                row.push(RowEdge {
+                row.edges.push(RowEdge {
                     from: segment.from,
                     to: segment.to,
                     ctrl: segment.ctrl,
@@ -238,37 +292,223 @@ impl Tiler {
 
         let num_rows = self.num_tiles_y as usize;
         self.rows.truncate(num_rows);
-        for _ in 0..(num_rows - self.rows.len()) {
-            self.rows.push(Vec::new());
+        for i in self.rows.len()..num_rows {
+            self.rows.push(Row {
+                edges: Vec::new(),
+                tile_y: i as u32,
+                lock: ExclusiveCheck::with_tag(i),
+                z_buffer: ZBufferRow::new(),
+            });
         }
 
         for row in &mut self.rows {
-            row.clear();
+            row.edges.clear();
         }
     }
 
     /// Process manually edges and encode them into the output TileEncoder.
-    pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
+    pub fn end_path<E>(&mut self, encoder: &mut E) where E: TileEncoder {
         let mut tile_y = 0;
-        let mut active_edges = Vec::new();
+        let mut active_edges = Vec::with_capacity(64);
 
         // borrow-ck dance.
-        let mut rows = Vec::new();
-        std::mem::swap(&mut self.rows, &mut rows);
+        let mut rows = std::mem::take(&mut self.rows);
+        let mut z_buffer = std::mem::take(&mut self.z_buffer);
 
         let mut side_edges = SideEdgeTracker::new();
         // This could be done in parallel but it's already quite fast serially.
         for row in &mut rows {
-            if !row.is_empty() {
+            if !row.edges.is_empty() {
+                let z_buffer = &mut z_buffer[tile_y as usize];
+                if z_buffer.is_empty() {
+                    z_buffer.init(self.num_tiles_x as usize);
+                }
                 side_edges.clear();
-                self.process_row(tile_y, &mut row[..], &mut active_edges, &mut side_edges, encoder);
+                self.process_row(row.tile_y, &mut row.edges[..], &mut active_edges, &mut side_edges, z_buffer, encoder);
             }
             tile_y += 1;
         }
 
-        std::mem::swap(&mut self.rows, &mut rows);
+        self.rows = rows;
+        self.z_buffer = z_buffer;
 
         for row in &mut self.rows {
+            row.edges.clear();
+        }
+    }
+
+    pub fn tile_path_parallel(
+        &mut self,
+        path: impl Iterator<Item = PathEvent>,
+        transform: Option<&Transform2D<f32>>,
+        encoders: &mut [&mut dyn TileEncoder],
+    ) where {
+        let t0 = time::precise_time_ns();
+
+        let identity = Transform2D::identity();
+        let transform = transform.unwrap_or(&identity);
+
+        self.begin_path();
+
+        if self.flatten {
+            self.assign_rows_linear(transform, path);
+        } else {
+            self.assign_rows_quadratic(transform, path);
+        }
+
+        let t1 = time::precise_time_ns();
+
+        self.end_path_parallel(encoders);
+
+        let t2 = time::precise_time_ns();
+
+        self.row_decomposition_time_ns = t1 - t0;
+        self.tile_decomposition_time_ns = t2 - t1;
+    }
+
+    pub fn end_path_parallel(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
+        use rayon::prelude::*;
+
+        // borrow-ck dance.
+        let mut rows = std::mem::take(&mut self.rows);
+
+        //println!("sanity check...");
+        //for row in &rows {
+        //    row.lock.begin();
+        //    row.lock.end();
+        //}
+        //println!("...ok!");
+
+        // Basically what we are doing here is passing the encoders rows to the
+        // worker threads in the most unsafe of ways, and being careful to never have multiple
+        // worker threads accessing the same encoder (there's one per worker)
+        struct Shared<'a, 'b> {
+            encoders: &'b mut [&'a mut dyn TileEncoder],
+        }
+        unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
+        unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
+
+        {
+        let mut shared = Shared { encoders, };
+        let shared_ptr: UnsafeSendPtr<Shared> = UnsafeSendPtr(&mut shared);
+
+        let mut tp = self.thread_pool.take().unwrap();
+        let mut worker_data = std::mem::take(&mut self.worker_data);
+
+        tp.worker().for_each_mut(&mut rows[..], no_output(), Some(&mut worker_data),
+            |worker, row, mut worker_data| {
+
+            //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
+
+            if row.edges.is_empty() {
+                return;
+            }
+
+            row.lock.begin();
+
+            unsafe {
+                let worker_data: &mut TilerWorkerData = worker_data.as_mut().unwrap();
+                worker_data.active_edges.clear();
+                worker_data.side_edges.clear();
+
+                if row.z_buffer.is_empty() {
+                    row.z_buffer.init(self.num_tiles_x as usize);
+                }
+
+                let idx = worker.id() as usize;
+                self.process_row(
+                    row.tile_y,
+                    &mut row.edges[..],
+                    &mut worker_data.active_edges,
+                    &mut worker_data.side_edges,
+                    &mut row.z_buffer,
+                    (*shared_ptr.get()).encoders[idx],
+                );
+            }
+
+            row.lock.end();
+        });
+
+        self.thread_pool = Some(tp);
+        self.worker_data = worker_data;
+
+        }
+
+        self.rows = rows;
+
+        for row in &mut self.rows {
+            row.edges.clear();
+        }
+    }
+
+    // A very hacky proof of concept of processing the rows in parallel via rayon.
+    // So far it's a spectacular fiasco due to spending all of our time in rayon's glue
+    // and less than 10% of the time doing usueful work on worker threads. 
+    pub fn end_path_rayon(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
+        use rayon::prelude::*;
+
+        // borrow-ck dance.
+        let mut rows = std::mem::take(&mut self.rows);
+        let mut z_buffer = std::mem::take(&mut self.z_buffer);
+
+        // Basically what we are doing here is passing the encoders and z_buffer rows to the
+        // worker threads in the most unsafe of ways, and being careful to never have multiple
+        // worker threads accessing the same encoder (there's one per worker), nor the same z buffers
+        // (there is one per row and rows are dispatched in parallel)
+        struct Shared<'a, 'b> {
+            encoders: &'b mut [&'a mut dyn TileEncoder],
+            z_buffer: &'b mut [ZBufferRow],
+        }
+        unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
+        unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
+
+        {
+        let mut shared = Shared {
+            encoders,
+            z_buffer: &mut z_buffer[..],
+        };
+
+        let shared_ptr: UnsafeSendPtr<Shared> = UnsafeSendPtr(&mut shared);
+
+        rows.par_iter_mut()
+            .for_each(|row| {
+
+            if row.edges.is_empty() {
+                return;
+            }
+
+            unsafe {
+
+            let mut active_edges = Vec::with_capacity(64);
+            let mut side_edges = SideEdgeTracker::new();
+
+            let z_buffer: &mut ZBufferRow = &mut (*shared_ptr.get()).z_buffer[row.tile_y as usize];
+
+            if z_buffer.is_empty() {
+                z_buffer.init(self.num_tiles_x as usize);
+            }
+            side_edges.clear();
+
+            row.lock.begin();
+            let idx = rayon::current_thread_index().unwrap();
+            self.process_row(row.tile_y, &mut row.edges[..], &mut active_edges, &mut side_edges, z_buffer, (*shared_ptr.get()).encoders[idx]);
+            row.lock.end();
+
+            }
+        });
+
+        }
+
+        self.rows = rows;
+        self.z_buffer = z_buffer;
+
+        for row in &mut self.rows {
+            row.edges.clear();
+        }
+    }
+
+    pub fn clear_depth(&mut self) {
+        for row in &mut self.z_buffer {
             row.clear();
         }
     }
@@ -357,8 +597,10 @@ impl Tiler {
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         side_edges: &mut SideEdgeTracker,
+        z_buffer: &mut ZBufferRow,
         encoder: &mut dyn TileEncoder,
     ) {
+        encoder.begin_row();
         //println!(" -- process row y {:?} edges {:?} first tile {:?} num tiles x {:?}", tile_y, row.len(), self.tile_offset_x, self.num_tiles_x);
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
@@ -379,6 +621,7 @@ impl Tiler {
             y: tile_y,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
+            solid: false,
         };
 
         let mut current_edge = 0;
@@ -415,7 +658,7 @@ impl Tiler {
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x {
-                self.finish_tile(&mut tile, active_edges, side_edges, encoder);
+                self.finish_tile(&mut tile, active_edges, side_edges, z_buffer, encoder);
             }
 
             if tile.x >= self.num_tiles_x {
@@ -437,12 +680,14 @@ impl Tiler {
 
         // At this point we visited all edges but not necessarily all tiles.
         while tile.x < self.num_tiles_x {
-            self.finish_tile(&mut tile, active_edges, side_edges, encoder);
+            self.finish_tile(&mut tile, active_edges, side_edges, z_buffer, encoder);
 
             if active_edges.is_empty() {
                 break;
             }
         }
+
+        encoder.end_row();
     }
 
     fn finish_tile(
@@ -450,10 +695,25 @@ impl Tiler {
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
         side_edges: &mut SideEdgeTracker,
+        z_buffer: &mut ZBufferRow,
         encoder: &mut dyn TileEncoder,
     ) {
         //println!("  <!-- tile {} {} -->", tile.x, tile.y);
-        encoder.encode_tile(tile, active_edges, side_edges);
+
+        tile.solid = false;
+        let mut occluded = false;
+        if active_edges.is_empty() {
+            if side_edges.is_in(tile.outer_rect.min.y, tile.outer_rect.max.y, self.fill_rule) {
+                tile.solid = true;
+            } else if side_edges.is_empty() {
+                // Empty tile.
+                occluded = true;
+            }
+        }
+
+        if !occluded && z_buffer.test(tile.x, self.z_index, tile.solid && self.is_opaque) {
+            encoder.encode_tile(tile, active_edges, side_edges);
+        }
 
         tile.inner_rect.min.x += self.tile_size.width;
         tile.inner_rect.max.x += self.tile_size.width;
@@ -462,13 +722,12 @@ impl Tiler {
         tile.x += 1;
 
         active_edges.retain(|edge| {
-            let retain = edge.max_x > tile.outer_rect.min.x;
-
-            if !retain {
+            if edge.max_x < tile.outer_rect.min.x {
                 side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+                return false
             }
 
-            retain
+            true
         });
     }
 }
@@ -622,6 +881,8 @@ pub struct TileInfo {
     pub inner_rect: Box2D<f32>,
     /// Rectangle including the tile padding.
     pub outer_rect: Box2D<f32>,
+    /// True if the tile is entirely covered by the current path. 
+    pub solid: bool,
 }
 
 fn clip_quadratic_bezier_1d(
@@ -703,6 +964,7 @@ impl std::fmt::Debug for SideEvent {
     }
 }
 
+#[derive(Clone)]
 pub struct SideEdgeTracker {
     events: Vec<SideEvent>,
 }

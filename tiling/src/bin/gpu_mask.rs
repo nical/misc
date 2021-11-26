@@ -1,5 +1,4 @@
 use tiling::*;
-use tiling::z_buffer::ZBuffer;
 use tiling::load_svg::*;
 use lyon::path::geom::euclid::{size2, Transform2D};
 use lyon::path::math::vector;
@@ -12,6 +11,8 @@ use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
 fn main() {
+    profiling::register_thread!("Main");
+
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
         load_svg(&args[1])
@@ -39,38 +40,54 @@ fn main() {
         }
     );
 
-    let mut z_buffer = ZBuffer::new();
-    z_buffer.init(view_box.max.x as usize / ts, view_box.max.y as usize / ts);
 
-    let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new(&mut z_buffer);
+    let mut b0 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
+    let mut b1 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
+    let mut b2 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
+    let mut b3 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
+
+
+    let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
 
+    let n = 500;
+
     let t0 = time::precise_time_ns();
-    let transform = Transform2D::translation(1.0, 1.0);
+    for _run in 0..n {
+        //println!("-- {:?}", _run);
+        let transform = Transform2D::translation(1.0, 1.0);
 
-    builder.reset();
-    builder.z_buffer.init(view_box.max.x as usize / ts + 1, view_box.max.y as usize / ts + 1);
-    builder.z_index = paths.len() as u16;
-    //builder.max_edges_per_gpu_tile  = 32;
+        b0.reset();
+        b1.reset();
+        b2.reset();
+        b3.reset();
 
-    // Loop over the paths in front-to-back order to take advantage of
-    // occlusion culling.
-    for (path, color) in paths.iter().rev() {
-        builder.color = *color;
+        builder.reset();
+        tiler.clear_depth();
+        tiler.z_index = paths.len() as u16;
+        //builder.max_edges_per_gpu_tile  = 32;
 
-        tiler.tile_path(path.iter(), Some(&transform), &mut builder);
+        // Loop over the paths in front-to-back order to take advantage of
+        // occlusion culling.
+        for (path, color) in paths.iter().rev() {
+            builder.color = *color;
 
-        builder.z_index -= 1;
-        row_time += tiler.row_decomposition_time_ns;
-        tile_time += tiler.tile_decomposition_time_ns;
+            //tiler.tile_path(path.iter(), Some(&transform), &mut builder);
+            tiler.tile_path_parallel(path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
+
+            tiler.z_index -= 1;
+
+            row_time += tiler.row_decomposition_time_ns;
+            tile_time += tiler.tile_decomposition_time_ns;
+        }
+
+        // Since the paths were processed front-to-back we have to reverse
+        // the alpha tiles to render then back-to-front.
+        // This doesn't show up in profiles.
+        builder.mask_tiles.reverse();
     }
-
-    // Since the paths were processed front-to-back we have to reverse
-    // the alpha tiles to render then back-to-front.
-    // This doesn't show up in profiles.
-    builder.mask_tiles.reverse();
 
     let num_solid_tiles = builder.solid_tiles.len() as u32;
     let num_masked_tiles = builder.mask_tiles.len() as u32;
@@ -78,7 +95,7 @@ fn main() {
 
     let t1 = time::precise_time_ns();
 
-    let t = t1 - t0;
+    let t = (t1 - t0) / n;
 
     println!("view box: {:?}", view_box);
     //println!("{} edges", builder.edges.len());
@@ -89,9 +106,12 @@ fn main() {
     println!("{} edges", builder.edges.len());
     println!("");
     println!("-> {}ns", t);
-    println!("-> {}ms", t as f64 / 1000000.0);
-    println!("-> row decomposition: {}ms", row_time as f64 / 1000000.0);
-    println!("-> tile decomposition: {}ms", tile_time as f64 / 1000000.0);
+    println!("-> {:.3}ms", t as f64 / 1000000.0);
+    println!("-> row decomposition: {:.3}ms", (row_time / n) as f64 / 1000000.0);
+    println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
+
+
+    return;
 
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();

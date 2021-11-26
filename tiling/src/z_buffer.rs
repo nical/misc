@@ -59,3 +59,50 @@ impl ZBuffer {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ZBufferRow {
+    data: Vec<u16>,
+}
+
+impl ZBufferRow {
+    pub fn new() -> Self {
+        ZBufferRow {
+            data: Vec::new(),
+        }
+    }
+
+    pub fn init(&mut self, w: usize) {
+        if self.data.len() < w {
+            self.data = vec![0; w];
+        } else {
+            for elt in &mut self.data[0..w] {
+                *elt = 0;
+            }
+        }
+    }
+
+    pub fn get(&self, x: u32) -> u16 {
+        self.data[x as usize]
+    }
+
+    pub fn test(&mut self, x: u32, z_index: u16, write: bool) -> bool {
+        debug_assert!(x < self.data.len() as u32);
+
+        let z = &mut self.data[x as usize];
+        let result = *z < z_index;
+
+        if write && result {
+            *z = z_index;
+        }
+
+        result
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+}
