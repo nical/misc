@@ -8,18 +8,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-use parasol::{Parallel, ThreadPool, ExclusiveCheck};
-
-use std::sync::{Mutex, MutexGuard};
-
-pub struct UnsafeSendPtr<T>(pub *mut T);
-unsafe impl<T> Send for UnsafeSendPtr<T> {}
-unsafe impl<T> Sync for UnsafeSendPtr<T> {}
-impl<T> Copy for UnsafeSendPtr<T> {}
-impl<T> Clone for UnsafeSendPtr<T> { fn clone(&self) -> Self { *self } }
-impl<T> UnsafeSendPtr<T> {
-    fn get(self) -> *mut T { self.0 }
-}
+use parasol::{ThreadPool, ExclusiveCheck};
 
 /// The output of the tiler.
 ///
@@ -391,9 +380,9 @@ impl Tiler {
         let mut tp = self.thread_pool.take().unwrap();
         let mut worker_data = std::mem::take(&mut self.worker_data);
 
-        Parallel::for_each_mut(&mut rows[..])
+        tp.context().for_each_mut(&mut rows[..])
             .with_worker_data(&mut worker_data)
-            .apply(|worker, row, worker_data| {
+            .run(|worker, row, worker_data| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 
                 if row.edges.is_empty() {
@@ -422,8 +411,7 @@ impl Tiler {
                 }
 
                 row.lock.end();
-            })
-            .run(tp.context());
+            });
 
         self.thread_pool = Some(tp);
         self.worker_data = worker_data;
@@ -1205,4 +1193,13 @@ fn side_edges() {
         SideEvent { y: 0.6, winding: 1 },
         SideEvent { y: 0.7, winding: 0 },
     ]);
+}
+
+struct UnsafeSendPtr<T>(pub *mut T);
+unsafe impl<T> Send for UnsafeSendPtr<T> {}
+unsafe impl<T> Sync for UnsafeSendPtr<T> {}
+impl<T> Copy for UnsafeSendPtr<T> {}
+impl<T> Clone for UnsafeSendPtr<T> { fn clone(&self) -> Self { *self } }
+impl<T> UnsafeSendPtr<T> {
+    fn get(self) -> *mut T { self.0 }
 }
