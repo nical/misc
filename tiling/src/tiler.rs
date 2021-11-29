@@ -8,7 +8,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-use crate::job::{Parallel, ThreadPool, ExclusiveCheck};
+use parasol::{Parallel, ThreadPool, ExclusiveCheck};
 
 use std::sync::{Mutex, MutexGuard};
 

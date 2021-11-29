@@ -3,7 +3,7 @@ use lyon::path::FillRule;
 use std::mem::transmute;
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
-use crate::job::ExclusiveCheck;
+use parasol::ExclusiveCheck;
 
 use crate::Color;
 
