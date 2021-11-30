@@ -381,7 +381,7 @@ impl Tiler {
         let mut worker_data = std::mem::take(&mut self.worker_data);
 
         tp.context().for_each_mut(&mut rows[..])
-            .with_worker_data(&mut worker_data)
+            .with_context_data(&mut worker_data)
             .run(|worker, row, worker_data| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 

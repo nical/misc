@@ -1,12 +1,12 @@
 use crate::{Context};
-use crate::util::{SyncPtr, SyncPtrMut};
-use crate::sync::{SyncPoint, Event};
-use crate::job::{HeapJob, StackJob};
+use crate::util::SyncPtrMut;
+use crate::sync::{SyncPoint, SyncPointRef};
 
+use std::marker::PhantomData;
 
 pub struct ForEachMut<'a, 'b, 'c, Item, ContextData, F> {
     pub(crate) items: &'a mut [Item],
-    pub(crate) worker_data: Option<&'b mut [ContextData]>,
+    pub(crate) context_data: Option<&'b mut [ContextData]>,
     pub(crate) function: F,
     pub(crate) group_size: usize,
     pub(crate) ctx: &'c mut Context,
@@ -15,10 +15,16 @@ pub struct ForEachMut<'a, 'b, 'c, Item, ContextData, F> {
 impl<'a, 'b, 'c, Item, ContextData, F> ForEachMut<'a, 'b, 'c, Item, ContextData, F> 
 {
     #[inline]
-    pub fn with_worker_data<'w, W: Send>(self, worker_data: &'w mut [W]) -> ForEachMut<'a, 'w, 'c, Item, W, F> {
+    pub fn with_context_data<'w, W: Send>(self, context_data: &'w mut [W]) -> ForEachMut<'a, 'w, 'c, Item, W, F> {
+        assert!(
+            context_data.len() >= self.ctx.num_contexts as usize,
+            "Got {:?} texture items, need at least {:?}",
+            context_data.len(), self.ctx.num_contexts,
+        );
+
         ForEachMut {
             items: self.items,
-            worker_data: Some(worker_data),
+            context_data: Some(context_data),
             function: self.function,
             group_size: self.group_size,
             ctx: self.ctx
@@ -32,20 +38,9 @@ impl<'a, 'b, 'c, Item, ContextData, F> ForEachMut<'a, 'b, 'c, Item, ContextData,
         self
     }
 
-    #[inline]
-    fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, 'c, Item, ContextData, Func>
-    where
-        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send
-    {
-        ForEachMut {
-            items: self.items,
-            worker_data: self.worker_data,
-            function,
-            group_size: self.group_size,
-            ctx: self.ctx,
-        }
-    }
-
+    /// Run this workload with the help of worker threads.
+    ///
+    /// This function returns after the workload has completed.
     #[inline]
     pub fn run<Func>(self, function: Func)
     where
@@ -53,6 +48,59 @@ impl<'a, 'b, 'c, Item, ContextData, F> ForEachMut<'a, 'b, 'c, Item, ContextData,
         Item: Sync + Send,
     {
         for_each_mut(self.apply(function));
+    }
+
+    /// Run this workload asynchronously on the worker threads
+    ///
+    /// Returns an object to wait on.
+    #[inline]
+    pub fn run_async<Func>(self, function: Func) -> JoinHandle<'a, 'b>
+    where
+        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send,
+        Item: Sync + Send,
+    {
+        for_each_mut_async(self.apply(function))
+    }
+
+    #[inline]
+    fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, 'c, Item, ContextData, Func>
+    where
+        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send
+    {
+        ForEachMut {
+            items: self.items,
+            context_data: self.context_data,
+            function,
+            group_size: self.group_size,
+            ctx: self.ctx,
+        }
+    }
+
+    unsafe fn unsafe_pointers(&mut self) -> (SyncPtrMut<Item>, SyncPtrMut<ContextData>) {
+        // Note: the safety of how we manipulate wd_ptr relies on that `ForEachMut::context_data` can only
+        // be null if its type is `()` due to how `ForEachMut` is constructed. As a result we can safely
+        // mess with the pointer when it is null because () makes sure we'll never actually read or write
+        // the pointed memory.
+        let in_ptr = self.items.as_mut_ptr();
+        let wd_ptr = self.context_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr());
+
+        (SyncPtrMut(in_ptr), SyncPtrMut(wd_ptr))
+    }
+
+    fn dispatch_parameters(&self, is_async: bool) -> DispatchParameters {
+        let n = self.items.len() as u32;
+
+        let num_parallel = if is_async { n } else { (n * 2) / 3 };
+        let first_parallel = n - num_parallel;
+        let group_size = self.group_size.min(self.items.len()) as u32;
+        let group_count = div_ceil(num_parallel, group_size);
+
+        DispatchParameters {
+            item_count: n,
+            group_count,
+            group_size,
+            first_parallel,
+        }
     }
 }
 
@@ -63,95 +111,74 @@ where
 {
     profiling::scope!("for_each_mut");
 
-    let mut ctx = params.ctx;
-
-    if let Some(wd) = &params.worker_data {
-        assert!(
-            wd.len() >= ctx.worker_count as usize,
-            "Got {:?} worker data, need at least {:?}",
-            wd.len(), ctx.worker_count,
-        );
-    }
-
     unsafe {
-        let n = params.items.len();
-        let num_parallel = (n * 4) / 5;
-        let first_parallel = n - num_parallel;
+        let (in_ptr, wd_ptr) = params.unsafe_pointers();
+        let dispatch = params.dispatch_parameters(false);
 
-        let group_size = params.group_size.min(params.items.len());
-        let num_chunks = div_ceil(num_parallel, group_size);
+        let sync = SyncPoint::new(dispatch.group_count);
 
-        let in_ptr = params.items.as_mut_ptr();
-        let wd_ptr = params.worker_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr());
-        let sync = SyncPoint::new(num_chunks as u32 + 1);
-        let event = Event::new();
+        let ctx = params.ctx;
 
-        //println!(" -- {:?} jobs, {:?} parallel {:?} chunks, chunksize {:?} ", n, num_parallel, num_chunks, group_size);
-
-        // It is important hat the StackJob exist on the stack until we wait.
-        let event_job = StackJob::new(|_| event.set());
-
-        sync.then(ctx, event_job.as_job_ref());
-
-        //panic!();
-
-        //println!("jobs: {:?}, num chunks: {:?} ", n, num_chunks);
-
-        for_each_mut_impl(
+        for_each_mut_dispatch(
             ctx,
-            params.items.len(),
+            &dispatch,
             in_ptr,
             wd_ptr,
-            &sync,
-            first_parallel,
-            num_chunks,
-            group_size,
+            sync.unsafe_ref(),
             &params.function,
         );
 
         {
             profiling::scope!("mt:job group");
-            //println!("start main thread {:?}", 0..num_parallel);
-            for i in 0..first_parallel {
-                ctx.job_idx = Some(i as u32);
+            for i in 0..dispatch.first_parallel {
                 profiling::scope!("mt:job");
                 (params.function)(
                     ctx,
-                    &mut params.items[i],
+                    &mut params.items[i as usize],
                     &mut *wd_ptr.offset(ctx.id() as isize),
                 );
             }
-            ctx.job_idx = None;
         }
 
         //println!("end main thread jobs");
 
-        sync.signal(ctx);
-
-        {
-            profiling::scope!("steal jobs");
-            while !event.peek() {
-                if let Ok(job) = ctx.rx.try_recv() {
-                    job.execute(ctx);
-                } else {
-                    break
-                }
-            }
-        }
-
-        event.wait();
+        ctx.wait(&sync);
     }
 }
 
-unsafe fn for_each_mut_impl<Input, Output, W, F>(
+fn for_each_mut_async<'a, 'b, Input, W, F>(mut params: ForEachMut<Input, W, F>) -> JoinHandle<'a, 'b>
+where
+    F: Fn(&mut Context, &mut Input, &mut W) + Sync + Send,
+    Input: Sync + Send,
+{
+    profiling::scope!("for_each_mut_async");
+
+    unsafe {
+        let (in_ptr, wd_ptr) = params.unsafe_pointers();
+        let dispatch = params.dispatch_parameters(true);
+
+        let sync = Box::new(SyncPoint::new(dispatch.group_count));
+
+        for_each_mut_dispatch(
+            params.ctx,
+            &dispatch,
+            in_ptr,
+            wd_ptr,
+            sync.unsafe_ref(),
+            &params.function,
+        );
+
+        JoinHandle { sync, _marker: PhantomData }
+    }
+}
+
+/// Dispatch the work that will be done in parallel.
+unsafe fn for_each_mut_dispatch<Input, Output, W, F>(
     ctx: &mut Context,
-    count: usize,
-    input: *mut Input,
-    worker_data: *mut W,
-    sync: *const SyncPoint,
-    first_parallel: usize,
-    num_chunks: usize,
-    group_size: usize,
+    dispatch: &DispatchParameters,
+    in_ptr: SyncPtrMut<Input>,
+    wd_ptr: SyncPtrMut<W>,
+    sync: SyncPointRef,
     cb: &F)
 where
     F: Fn(&mut Context, &mut Input, &mut W) -> Output + Sync + Send,
@@ -160,52 +187,76 @@ where
 {
     //println!("------- {:?}", 0..first_parallel);
 
-    // I'm not entirely sure why I have to do this.
-    // If I don't wrap the unsafe pointers, the compiler tries to capture
-    // the &*T instead of *T.
-    let sync_ptr = SyncPtr(sync);
-    let in_ptr = SyncPtrMut(input);
-    let wd_ptr = SyncPtrMut(worker_data);
+    // Make sure the closure captures the values directly instead of taking the address
+    // of the parameters struct.
+    let DispatchParameters {
+        item_count,
+        group_count,
+        group_size,
+        first_parallel,
+    } = *dispatch;
 
-    assert!(num_chunks * group_size >= (count - first_parallel), "num_chunks: {} * group_size: {} >= count: {}", num_chunks, group_size, count - first_parallel);
+    assert!(group_count * group_size >= (item_count - first_parallel));
 
-    let fork_job = HeapJob::new_ref(move |worker| {
+    // There's currently quite a bit of overhead from pushing the job groups one by one
+    // on the submitter thread so we first submit a single job that will submit the
+    // other ones while the initial thread starts to work.
+    ctx.dispatch_one(move |ctx| {
         profiling::scope!("schedule jobs");
-        for chunk_idx in 0..num_chunks {
+        for chunk_idx in 0..group_count {
             let start = first_parallel + group_size * chunk_idx;
-            let job = HeapJob::new_ref(
-                move |worker| {
-                    profiling::scope!("job group");
+            ctx.dispatch_one(move |ctx| {
+                profiling::scope!("job group");
 
-                    let end = (start + group_size).min(count);
-                    assert!(end > start);
-                    let wroker_idx = worker.id() as isize;
-                    let worker_data = wd_ptr.offset(wroker_idx);
+                let end = (start + group_size).min(item_count);
+                assert!(end > start);
+                let wroker_idx = ctx.id() as isize;
+                let context_data = wd_ptr.offset(wroker_idx);
 
-                    //println!(" -- (w{:?}) chunk {:?}", worker.id(), start..end);
-                    for job_idx in start..end {
-                        profiling::scope!("worker:job");
-                        worker.job_idx = Some(job_idx as u32);
-                        let job_idx = job_idx as isize;
-                        //println!("  -- (w{:?}) job {:?}", worker.id(), job_idx);
-                        
-                        cb(
-                            worker,
-                            in_ptr.offset(job_idx),
-                            worker_data,
-                        );
-                    }
-                    worker.job_idx = None;
-                    sync_ptr.get().signal(worker);
+                //println!(" -- (w{:?}) chunk {:?}", ctx.id(), start..end);
+                for job_idx in start..end {
+                    profiling::scope!("worker:job");
+                    let job_idx = job_idx as isize;
+                    //println!("  -- (w{:?}) job {:?}", ctx.id(), job_idx);
+
+                    cb(
+                        ctx,
+                        in_ptr.offset(job_idx),
+                        context_data,
+                    );
                 }
-            );
-            worker.schedule_job(job);
+                sync.signal(ctx);
+            });
         }
     });
-    ctx.schedule_job(fork_job);
 }
 
-fn div_ceil(a: usize, b: usize) -> usize {
+#[derive(Debug)]
+struct DispatchParameters {
+    item_count: u32,
+    group_count: u32,
+    group_size: u32,
+    first_parallel: u32,
+}
+
+pub struct JoinHandle<'a, 'b> {
+    sync: Box<SyncPoint>,
+    _marker: PhantomData<(&'a (), &'b ())>,
+}
+
+impl<'a, 'b> JoinHandle<'a, 'b> {
+    pub fn wait(self, ctx: &mut Context) {
+        ctx.wait(&self.sync);
+    }
+}
+
+impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
+    fn drop(&mut self) {
+        self.sync.wait_no_context();
+    }
+}
+
+fn div_ceil(a: u32, b: u32) -> u32 {
     let d = a / b;
     let r = a % b;
     if r > 0 && b > 0 { d + 1 } else { d }

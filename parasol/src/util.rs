@@ -1,13 +1,13 @@
 
-/// A wrapper for `*const T` that is Send and Sync (use carefully).
-pub struct SyncPtr<T: ?Sized>(pub *const T);
-unsafe impl<T> Send for SyncPtr<T> {}
-unsafe impl<T> Sync for SyncPtr<T> {}
-impl<T> Copy for SyncPtr<T> {}
-impl<T> Clone for SyncPtr<T> { fn clone(&self) -> Self { *self } }
-impl<T: ?Sized> SyncPtr<T> {
-    pub unsafe fn get(&self) -> &T { &(*self.0) }
-}
+// /// A wrapper for `*const T` that is Send and Sync (use carefully).
+// pub struct SyncPtr<T: ?Sized>(pub *const T);
+// unsafe impl<T> Send for SyncPtr<T> {}
+// unsafe impl<T> Sync for SyncPtr<T> {}
+// impl<T> Copy for SyncPtr<T> {}
+// impl<T> Clone for SyncPtr<T> { fn clone(&self) -> Self { *self } }
+// impl<T: ?Sized> SyncPtr<T> {
+//     pub unsafe fn get(&self) -> &T { &(*self.0) }
+// }
 
 /// A wrapper for `*mut T` that is Send and Sync (use carefully).
 pub struct SyncPtrMut<T>(pub *mut T);
