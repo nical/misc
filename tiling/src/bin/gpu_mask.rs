@@ -13,9 +13,16 @@ use futures::executor::block_on;
 fn main() {
     profiling::register_thread!("Main");
 
+    // The tile size.
+    let ts = 16;
+    let tolerance = 0.05;
+    let mut parallel = false;
+    let scale_factor = 2.0;
+    let n = 500;
+
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
-        load_svg(&args[1])
+        load_svg(&args[1], scale_factor)
     } else {
         let mut builder = lyon::path::Path::builder();
         builder.begin(point(0.0, 0.0));
@@ -27,32 +34,32 @@ fn main() {
         (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
     };
 
-    // The tile size.
-    let ts = 16;
+    for arg in args {
+        if arg == "-p" {
+            parallel = true;
+        }
+    }
 
     let mut tiler = Tiler::new(
         &TilerConfig {
             view_box,
             tile_size: size2(ts as f32, ts as f32),
             tile_padding: 0.5,
-            tolerance: 0.05,
-            flatten: true,
+            tolerance,
+            flatten: false,
         }
     );
 
+    let mut b0 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b1 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b2 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b3 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
 
-    let mut b0 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
-    let mut b1 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
-    let mut b2 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
-    let mut b3 = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
 
-
-    let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new();
+    let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
-
-    let n = 500;
 
     let t0 = time::precise_time_ns();
     for _run in 0..n {
@@ -67,15 +74,18 @@ fn main() {
         builder.reset();
         tiler.clear_depth();
         tiler.z_index = paths.len() as u16;
-        //builder.max_edges_per_gpu_tile  = 32;
+        builder.max_edges_per_gpu_tile  = 256;
 
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
             builder.color = *color;
 
-            //tiler.tile_path(path.iter(), Some(&transform), &mut builder);
-            tiler.tile_path_parallel(path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
+            if parallel {
+                tiler.tile_path_parallel(path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
+            } else {
+                tiler.tile_path(path.iter(), Some(&transform), &mut builder);
+            }
 
             tiler.z_index -= 1;
 
@@ -111,7 +121,9 @@ fn main() {
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
 
 
-    return;
+    if parallel {
+        return;
+    }
 
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();

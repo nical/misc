@@ -36,21 +36,19 @@ impl SyncPoint {
         SyncPoint {
             deps: AtomicI32::new(deps as i32),
             waiting_jobs: AtomicLinkedList::new(),
-            is_signaled: AtomicBool::new(false),
-            mutex: Mutex::new(false),
+            is_signaled: AtomicBool::new(deps == 0),
+            mutex: Mutex::new(deps == 0),
             cond: Condvar::new(),
-            id: SYNC_ID.fetch_add(1, Ordering::SeqCst),
+            id: SYNC_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
     pub fn signal(&self, ctx: &mut Context) -> bool {
         debug_assert!(!self.is_signaled(), "already signaled {:?}:{:?}", self as *const _, self.id); // TODO: this fails
-
-        let dep = self.deps.load(Ordering::SeqCst);
-        debug_assert!(dep >= 1);
+        debug_assert!(self.deps.load(Ordering::SeqCst) >= 1);
 
         profiling::scope!("signal");
-        let prev = self.deps.fetch_add(-1, Ordering::SeqCst);
+        let prev = self.deps.fetch_add(-1, Ordering::Relaxed);
 
         if prev > 1 {
             // After reading deps, it isn't guaranteed that self is valid except for the
@@ -89,7 +87,7 @@ impl SyncPoint {
         // would not be safe because the waiting thread might have continued from
         // an early-out on the is_signaled check. The waiting thread is responsible
         // for keeping the sync point alive is_signaled has been set to true.
-        self.is_signaled.store(true, Ordering::SeqCst);
+        self.is_signaled.store(true, Ordering::Release);
 
         // After the is_signaled store above, self isn't guaranteed to be valid.
 
@@ -104,12 +102,12 @@ impl SyncPoint {
 
     #[inline]
     fn has_unresolved_dependencies(&self) -> bool {
-        self.deps.load(Ordering::SeqCst) > 0
+        self.deps.load(Ordering::Acquire) > 0
     }
 
     #[inline]
     pub fn is_signaled(&self) -> bool {
-        self.is_signaled.load(Ordering::SeqCst)
+        self.is_signaled.load(Ordering::Acquire)
     }
 
     #[allow(unused)]
@@ -157,7 +155,7 @@ impl SyncPoint {
 
                 // Steal a job and execute it. If we are lucky our dependencies will
                 // be met by the time we run out of useful thin to do.
-                if !ctx.try_steal_one() {
+                if !ctx.keep_busy() {
                     break;
                 }
             }
@@ -183,7 +181,7 @@ impl SyncPoint {
                     if !*is_set {
                         // spurious wakeup, let's see if we have work to do instead of
                         // going back to sleep.
-                        if let Ok(job) = ctx.rx.try_recv() {
+                        if let Some(job) = ctx.try_fetch_one_job() {
                             stolen = Some(job);
                             continue 'outer;
                         }
@@ -197,9 +195,10 @@ impl SyncPoint {
 
         // We have to spin until is_signaled has been stored to ensure that it is safe
         // for the signaling thread to do the store operation.
+        // TODO: would it be better to spin in the destructor?
 
         for i in 0..200 {
-            if self.is_signaled.load(Ordering::SeqCst) {
+            if self.is_signaled.load(Ordering::Acquire) {
                 if i != 0 {
                     ctx.stats.cond_wait_spin += 1;
                     ctx.stats.spinned += i;
@@ -211,8 +210,8 @@ impl SyncPoint {
         // The majority of the time we only check is_signaled once. If we are unlucky we
         // can end up spinning for a longer time, so get back to trying to steal some jobs.
         let mut i = 200;
-        while !self.is_signaled.load(Ordering::SeqCst) {
-            ctx.try_steal_one();
+        while !self.is_signaled.load(Ordering::Acquire) {
+            ctx.keep_busy();
             i += 1;
         }
 
@@ -242,7 +241,7 @@ impl SyncPoint {
         }
 
         // Ensure is_signaled has been stored
-        while !self.is_signaled.load(Ordering::SeqCst) {}
+        while !self.is_signaled.load(Ordering::Acquire) {}
     }
 
     pub fn unsafe_ref(&self) -> SyncPointRef {
@@ -266,8 +265,8 @@ impl SyncPointRef {
 
 impl Drop for SyncPoint {
     fn drop(&mut self) {
-        debug_assert_eq!(self.deps.load(Ordering::SeqCst), 0);
-        debug_assert!(self.is_signaled.load(Ordering::SeqCst));
+        //debug_assert_eq!(self.deps.load(Ordering::Acquire), 0);
+        //debug_assert!(self.is_signaled.load(Ordering::Acquire));
     }
 }
 
@@ -279,12 +278,9 @@ pub struct AtomicLinkedList<T> {
     first: AtomicPtr<Node<T>>,
 }
 
-static NODE_ID: AtomicI32 = AtomicI32::new(0);
-
 struct Node<T> {
     payload: Option<T>,
     next: AtomicPtr<Node<T>>,
-    id: i32,
 }
 
 impl<T> AtomicLinkedList<T> {
@@ -298,13 +294,12 @@ impl<T> AtomicLinkedList<T> {
         let node = Box::into_raw(Box::new(Node {
             payload: Some(payload),
             next: AtomicPtr::new(std::ptr::null_mut()),
-            id: NODE_ID.fetch_add(1, Ordering::SeqCst),
         }));
 
         unsafe {
             loop {
-                let first = self.first.load(Ordering::SeqCst);
-                (*node).next.store(first, Ordering::SeqCst);
+                let first = self.first.load(Ordering::Acquire);
+                (*node).next.store(first, Ordering::Release);
 
                 if self.first.compare_exchange(first, node, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
                     break;
@@ -317,7 +312,7 @@ impl<T> AtomicLinkedList<T> {
         // First atomically swap out the first node.
         let mut node;
         loop {
-            node = self.first.load(Ordering::SeqCst);
+            node = self.first.load(Ordering::Acquire);
             let res = self.first.compare_exchange(node, std::ptr::null_mut(), Ordering::SeqCst, Ordering::Relaxed);
             if res.is_ok() {
                 break;

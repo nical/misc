@@ -6,8 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crossbeam-channel = "0.5"
+crossbeam-deque = "0.8"
+crossbeam-utils = "0.8"
 profiling = "1.0.4"
+smallvec = "1.7"
 
 [features]
 tracy = ["profiling/profile-with-tracy"]

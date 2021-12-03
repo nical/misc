@@ -1,3 +1,4 @@
+use lyon::geom::QuadraticBezierSegment;
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
 use std::mem::transmute;
@@ -207,12 +208,13 @@ pub struct GpuRasterEncoder {
     pub max_edges_per_gpu_tile: usize,
     pub next_mask_id: u32,
     pub is_opaque: bool,
+    pub tolerance: f32,
 
     lock: ExclusiveCheck<()>,
 }
 
 impl GpuRasterEncoder {
-    pub fn new() -> Self {
+    pub fn new(tolerance: f32) -> Self {
         GpuRasterEncoder {
             edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
@@ -225,6 +227,7 @@ impl GpuRasterEncoder {
             max_edges_per_gpu_tile: 4096,
             next_mask_id: 0,
             is_opaque: true,
+            tolerance,
 
             lock: ExclusiveCheck::new(),
         }
@@ -280,11 +283,23 @@ impl GpuRasterEncoder {
         }
 
         for edge in active_edges {
-            let mut e = Edge(edge.from - offset, edge.to - offset);
-            if edge.winding < 0 {
-                std::mem::swap(&mut e.0, &mut e.1);
+            if edge.ctrl.x.is_nan() {
+                let mut e = Edge(edge.from - offset, edge.to - offset);
+                if edge.winding < 0 {
+                    std::mem::swap(&mut e.0, &mut e.1);
+                }
+                self.edges.push(e);
+            } else {
+                let mut curve = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
+                if edge.winding < 0 {
+                    std::mem::swap(&mut curve.from, &mut curve.to);
+                }
+                let mut from = curve.from;
+                curve.for_each_flattened(self.tolerance, &mut |to| {
+                    self.edges.push(Edge(from, to));
+                    from = to;
+                });
             }
-            self.edges.push(e);
         }
 
         let edges_start = edges_start as u32;

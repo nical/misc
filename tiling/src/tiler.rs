@@ -118,6 +118,8 @@ pub struct TilerConfig {
     pub flatten: bool,
 }
 
+unsafe impl Sync for Tiler {}
+
 impl Tiler {
     /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
@@ -169,12 +171,13 @@ impl Tiler {
     /// - begin_Path
     /// - add_monotonic_edge
     /// - end_path
-    pub fn tile_path<E>(
+    pub fn tile_path(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        encoder: &mut E,
-    ) where E: TileEncoder {
+        encoder: &mut dyn TileEncoder,
+    ) {
+        profiling::scope!("tile_path");
         let t0 = time::precise_time_ns();
 
         let identity = Transform2D::identity();
@@ -239,7 +242,7 @@ impl Tiler {
                 row.edges.push(RowEdge {
                     from: segment.from,
                     to: segment.to,
-                    ctrl: segment.to,
+                    ctrl: point(std::f32::NAN, std::f32::NAN),
                     kind: EdgeKind::Linear,
                     winding: edge.winding,
                     min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
@@ -296,7 +299,7 @@ impl Tiler {
     }
 
     /// Process manually edges and encode them into the output TileEncoder.
-    pub fn end_path<E>(&mut self, encoder: &mut E) where E: TileEncoder {
+    pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
         let mut tile_y = 0;
         let mut active_edges = Vec::with_capacity(64);
 
@@ -332,6 +335,7 @@ impl Tiler {
         transform: Option<&Transform2D<f32>>,
         encoders: &mut [&mut dyn TileEncoder],
     ) where {
+        profiling::scope!("tile_path_parallel");
         let t0 = time::precise_time_ns();
 
         let identity = Transform2D::identity();
@@ -347,7 +351,11 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-        self.end_path_parallel(encoders);
+        if self.rows.len() > 8 {
+            self.end_path_parallel(encoders);
+        } else {
+            self.end_path(encoders[0]);
+        }
 
         let t2 = time::precise_time_ns();
 
@@ -356,13 +364,6 @@ impl Tiler {
     }
 
     pub fn end_path_parallel(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
-        //println!("sanity check...");
-        //for row in &rows {
-        //    row.lock.begin();
-        //    row.lock.end();
-        //}
-        //println!("...ok!");
-
         // Basically what we are doing here is passing the encoders rows to the
         // worker threads in the most unsafe of ways, and being careful to never have multiple
         // worker threads accessing the same encoder (there's one per worker)
@@ -382,6 +383,7 @@ impl Tiler {
 
         tp.context().for_each_mut(&mut rows[..])
             .with_context_data(&mut worker_data)
+            .filter(|row| !row.edges.is_empty())
             .run(|worker, row, worker_data| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 
@@ -410,18 +412,16 @@ impl Tiler {
                     );
                 }
 
+                row.edges.clear();
                 row.lock.end();
             });
 
         self.thread_pool = Some(tp);
         self.worker_data = worker_data;
         self.rows = rows;
-
-        for row in &mut self.rows {
-            row.edges.clear();
-        }
     }
 
+/*
     // A very hacky proof of concept of processing the rows in parallel via rayon.
     // So far it's a spectacular fiasco due to spending all of our time in rayon's glue
     // and less than 10% of the time doing usueful work on worker threads. 
@@ -487,7 +487,7 @@ impl Tiler {
             row.edges.clear();
         }
     }
-
+*/
     pub fn clear_depth(&mut self) {
         for row in &mut self.z_buffer {
             row.clear();
@@ -499,6 +499,7 @@ impl Tiler {
         transform: &Transform2D<f32>,
         path: impl Iterator<Item = PathEvent>,
     ) {
+        profiling::scope!("assign_rows_quadratic");
         for evt in path {
             match evt {
                 PathEvent::Begin { .. } => {}
@@ -537,6 +538,7 @@ impl Tiler {
         transform: &Transform2D<f32>,
         path: impl Iterator<Item = PathEvent>,
     ) {
+        profiling::scope!("assign_rows_linear");
         for evt in path {
             match evt {
                 PathEvent::Begin { .. } => {}
@@ -598,7 +600,7 @@ impl Tiler {
         };
 
         let mut tile = TileInfo {
-            x: 0,
+            x: self.tile_offset_x as u32,
             y: tile_y,
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
@@ -615,17 +617,24 @@ impl Tiler {
                 break;
             }
 
-            let max_x = edge.from.x.max(edge.to.x);
+            active_edges.push(ActiveEdge {
+                from: edge.from,
+                to: edge.to,
+                ctrl: edge.ctrl,
+                winding: edge.winding,
+                kind: edge.kind,
+                max_x: edge.from.x.max(edge.to.x),
+                intersects_tile_top: edge.intersects_tile_top,
+            });
 
-            if max_x >= tile.outer_rect.min.x {
-                active_edges.push(ActiveEdge {
-                    from: edge.from,
-                    to: edge.to,
-                    ctrl: edge.ctrl,
-                    winding: edge.winding,
-                    kind: edge.kind,
-                    max_x,
-                    intersects_tile_top: edge.intersects_tile_top,
+            while edge.min_x.0 > tile.outer_rect.max.x {
+                active_edges.retain(|edge| {
+                    if edge.max_x < tile.outer_rect.min.x {
+                        side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+                        return false
+                    }
+
+                    true
                 });
             }
 
@@ -740,7 +749,7 @@ impl MonotonicEdge {
         MonotonicEdge {
             from: segment.from,
             to: segment.to,
-            ctrl: segment.to,
+            ctrl: point(std::f32::NAN, std::f32::NAN),
             kind: EdgeKind::Linear,
             winding,
         }
@@ -812,7 +821,7 @@ impl ActiveEdge {
                 ActiveEdge {
                     from: segment.from,
                     to: segment.to,
-                    ctrl: segment.to,
+                    ctrl: point(std::f32::NAN, std::f32::NAN),
                     winding: self.winding,
                     kind: EdgeKind::Linear,
                     max_x: 0.0,
