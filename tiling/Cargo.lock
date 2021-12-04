@@ -1257,7 +1257,6 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
  "profiling",
- "smallvec",
 ]
 
 [[package]]

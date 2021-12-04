@@ -1,5 +1,5 @@
 use std::sync::{Mutex, Condvar};
-use std::sync::atomic::{Ordering, AtomicI32, AtomicBool, AtomicPtr};
+use std::sync::atomic::{Ordering, AtomicI32, AtomicPtr};
 
 use crossbeam_utils::Backoff;
 
@@ -12,6 +12,10 @@ use crate::job::JobRef;
 // for debugging.
 static SYNC_ID: AtomicI32 = AtomicI32::new(12345);
 
+const STATE_DEFAULT: i32 = 0;
+const STATE_SIGNALING: i32 = 1;
+const STATE_SIGNALED: i32 = 2;
+
 pub struct SyncPoint {
     // The number of unresolved dependency.
     deps: AtomicI32,
@@ -19,14 +23,14 @@ pub struct SyncPoint {
     // We can't simply use deps, because we need to keep the object alive for a little
     // bit after deps reach zero.
     //
-    // No read or write to the sync point is safe after is_signaled is set to true,
+    // No read or write to the sync point is safe after state is set to STATE_SIGNALED,
     // except for the threads that owns the sync point (the one that calls wait).
-    is_signaled: AtomicBool,
+    state: AtomicI32,
     // A list of jobs to schedule when the dependencies are met.
     waiting_jobs: AtomicLinkedList<JobRef>,
     // As a last resort, a condition variable and its mutex to wait on if we couldn't
     // keep busy while the dependencies are being processed.
-    mutex: Mutex<bool>,
+    mutex: Mutex<()>,
     cond: Condvar,
     // An ID for debugging
     id: i32,
@@ -35,11 +39,17 @@ pub struct SyncPoint {
 
 impl SyncPoint {
     pub fn new(deps: u32) -> Self {
+        let state = if deps == 0 {
+            STATE_SIGNALED
+        } else {
+            STATE_DEFAULT
+        };
+
         SyncPoint {
             deps: AtomicI32::new(deps as i32),
             waiting_jobs: AtomicLinkedList::new(),
-            is_signaled: AtomicBool::new(deps == 0),
-            mutex: Mutex::new(deps == 0),
+            state: AtomicI32::new(state),
+            mutex: Mutex::new(()),
             cond: Condvar::new(),
             id: SYNC_ID.fetch_add(1, Ordering::Relaxed),
         }
@@ -61,6 +71,8 @@ impl SyncPoint {
 
         debug_assert!(prev == 1, "signaled too many time");
 
+        self.state.store(STATE_SIGNALING, Ordering::SeqCst);
+
         // Executing the first job ourselves avoids the overhead of going
         // through the job queue.
         // TODO: this can create an unbounded recursion.
@@ -76,8 +88,8 @@ impl SyncPoint {
         });
 
         {
-            let mut is_set = self.mutex.lock().unwrap();
-            *is_set = true;
+            std::mem::drop(self.mutex.lock().unwrap());
+
             self.cond.notify_all();
         }
 
@@ -87,11 +99,11 @@ impl SyncPoint {
         // we have to make sure this store can safely happen.
         // If we'd do the store before setting the event, then setting the event
         // would not be safe because the waiting thread might have continued from
-        // an early-out on the is_signaled check. The waiting thread is responsible
-        // for keeping the sync point alive is_signaled has been set to true.
-        self.is_signaled.store(true, Ordering::Release);
+        // an early-out on the state check. The waiting thread is responsible
+        // for keeping the sync point alive state has been set to true.
+        self.state.store(STATE_SIGNALED, Ordering::Release);
 
-        // After the is_signaled store above, self isn't guaranteed to be valid.
+        // After the state store above, self isn't guaranteed to be valid.
 
         if let Some(job) = first {
             unsafe {
@@ -109,7 +121,7 @@ impl SyncPoint {
 
     #[inline]
     pub fn is_signaled(&self) -> bool {
-        self.is_signaled.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire) == STATE_SIGNALED
     }
 
     #[allow(unused)]
@@ -177,32 +189,29 @@ impl SyncPoint {
                     }
                 }
 
-                let mut is_set = self.mutex.lock().unwrap();
-                while !*is_set {
-                    is_set = self.cond.wait(is_set).unwrap();
-                    if !*is_set {
-                        // spurious wakeup, let's see if we have work to do instead of
-                        // going back to sleep.
-                        if let Some(job) = ctx.try_fetch_one_job() {
-                            stolen = Some(job);
-                            continue 'outer;
-                        }
+                let mut guard = self.mutex.lock().unwrap();
+                while self.state.load(Ordering::Acquire) == STATE_DEFAULT {
+                    // spurious wakeup, let's see if we have work to do instead of
+                    // going back to sleep.
+                    if let Some(job) = ctx.try_fetch_one_job() {
+                        stolen = Some(job);
+                        continue 'outer;
                     }
-
+                    guard = self.cond.wait(guard).unwrap();
                 }
 
                 break 'outer;
             }
         }
 
-        // We have to spin until is_signaled has been stored to ensure that it is safe
+        // We have to spin until state has been stored to ensure that it is safe
         // for the signaling thread to do the store operation.
         // TODO: would it be better to spin in the destructor?
 
         let backoff = Backoff::new();
 
         for i in 0..200 {
-            if self.is_signaled.load(Ordering::Acquire) {
+            if self.state.load(Ordering::Acquire) == STATE_SIGNALED {
                 if i != 0 {
                     ctx.stats.cond_wait_spin += 1;
                     ctx.stats.spinned += i;
@@ -212,10 +221,10 @@ impl SyncPoint {
             backoff.spin();
         }
 
-        // The majority of the time we only check is_signaled once. If we are unlucky we
+        // The majority of the time we only check state once. If we are unlucky we
         // can end up spinning for a longer time, so get back to trying to steal some jobs.
         let mut i = 200;
-        while !self.is_signaled.load(Ordering::Acquire) {
+        while self.state.load(Ordering::Acquire) != STATE_SIGNALED {
             ctx.keep_busy();
             i += 1;
         }
@@ -239,14 +248,18 @@ impl SyncPoint {
 
         profiling::scope!("wait");
 
-        let mut is_set = self.mutex.lock().unwrap();
+        let mut guard = self.mutex.lock().unwrap();
 
-        while !*is_set {
-            is_set = self.cond.wait(is_set).unwrap();
+        while self.state.load(Ordering::SeqCst) == STATE_DEFAULT {
+            guard = self.cond.wait(guard).unwrap();
         }
 
-        // Ensure is_signaled has been stored
-        while !self.is_signaled.load(Ordering::Acquire) {}
+        // Ensure state has been stored
+
+        let backoff = Backoff::new();
+        while self.state.load(Ordering::Acquire) != STATE_SIGNALED {
+            backoff.spin();
+        }
     }
 
     pub fn unsafe_ref(&self) -> SyncPointRef {
@@ -271,7 +284,7 @@ impl SyncPointRef {
 impl Drop for SyncPoint {
     fn drop(&mut self) {
         //debug_assert_eq!(self.deps.load(Ordering::Acquire), 0);
-        //debug_assert!(self.is_signaled.load(Ordering::Acquire));
+        //debug_assert!(self.state.load(Ordering::Acquire) == STATE_SIGNALED);
     }
 }
 

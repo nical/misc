@@ -145,7 +145,7 @@ impl Tiler {
             fill_rule: FillRule::EvenOdd,
             z_index: 0,
 
-            thread_pool: Some(ThreadPool::new(3)),
+            thread_pool: Some(ThreadPool::builder().with_worker_threads(3)),
 
             worker_data: vec![TilerWorkerData::new(); 4],
         }
@@ -383,6 +383,7 @@ impl Tiler {
 
         tp.context().for_each_mut(&mut rows[..])
             .with_context_data(&mut worker_data)
+            .with_group_size(3)
             .filter(|row| !row.edges.is_empty())
             .run(|worker, row, worker_data| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);

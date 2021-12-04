@@ -182,12 +182,15 @@ where
         {
             profiling::scope!("mt:job group");
             for i in 0..dispatch.first_parallel {
-                profiling::scope!("mt:job");
-                (job_data.function)(
-                    ctx,
-                    &mut params.items[i as usize],
-                    &mut *job_data.ctx_data.offset(ctx.id() as isize),
-                );
+                let item = &mut params.items[i as usize];
+                if job_data.filter.filter(item) {
+                    profiling::scope!("mt:job");
+                    (job_data.function)(
+                        ctx,
+                        item,
+                        &mut *job_data.ctx_data.offset(ctx.id() as isize),
+                    );
+                }
             }
         }
 
@@ -213,11 +216,11 @@ where
         debug_assert!(start < end);
 
         if !job_data.filter.is_empty() {
-            while start < end && !job_data.filter.filter(&items[end as usize]) {
+            while start < end && !job_data.filter.filter(&items[start as usize]) {
                 start += 1;
             }
 
-            while start < end && !job_data.filter.filter(&items[start as usize - 1]) {
+            while start < end && !job_data.filter.filter(&items[end as usize - 1]) {
                 end -= 1;
             }
 
@@ -299,6 +302,7 @@ where
         for item_idx in range {
             let item = &mut *this.items.offset(item_idx as isize);
             if this.filter.filter(item) {
+                profiling::scope!("job");
                 (this.function)(ctx, item, &mut *this.ctx_data.offset(ctx.id() as isize));
             }
         }

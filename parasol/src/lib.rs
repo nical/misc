@@ -17,23 +17,28 @@ mod job;
 mod sync;
 mod for_each_mut;
 mod util;
+mod thread_pool;
 
 use std::sync::{Mutex, Condvar, Arc};
 use std::sync::atomic::{Ordering, AtomicBool, AtomicU32};
 
 use crossbeam_deque::{Stealer, Steal, Worker as WorkerQueue};
-use crossbeam_utils::{CachePadded};
+use crossbeam_utils::CachePadded;
 use job::*;
 
 pub use sync::SyncPoint;
 pub use for_each_mut::{ForEachMut};
+pub use thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder, ShutdownHandle};
+use thread_pool::{WorkerHook, SleepState};
 
-// TODO: proper worker thread shutdown.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ContextId(pub(crate) u32);
 
-pub struct ThreadPool {
-    ctx: Context,
+impl ContextId {
+    pub fn index(&self) -> usize { self.0 as usize }
 }
 
+/// Data accessible by all contexts from any thread.
 struct Shared {
     /// Number of dedicated worker threads.
     num_workers: u32,
@@ -45,85 +50,36 @@ struct Shared {
 
     stealers: Vec<CachePadded<Stealer<JobRef>>>,
     sleep_states: Vec<CachePadded<SleepState>>,
+
+    start_handler: Option<Box<dyn WorkerHook>>,
+    exit_handler: Option<Box<dyn WorkerHook>>,
+
+    is_shutting_down: AtomicBool,
+    shutdown_mutex: Mutex<u32>,
+    shutdown_cond: Condvar,
+
+    contexts: Mutex<Vec<InactiveContext>>,
+
+    id: ThreadPoolId,
 }
 
-struct SleepState {
-    mutex: Mutex<bool>,
-    cond: Condvar,
-    // The index of the context this one will start searching at next time it tries to steal.
-    // Can be used as hint of which context last woke this worker.
-    // Since it only guides a heuristic, it doesn't need to be perfectly accurate.
-    next_target: AtomicU32,
-}
-
-impl ThreadPool {
-    pub fn new(mut num_threads: usize) -> Self {
-        num_threads = num_threads.min(32);
-
-        let num_threads = num_threads.min(127);
-        let num_contexts = num_threads + 1;
-
-        let mut stealers = Vec::with_capacity(num_contexts);
-        let mut queues = Vec::with_capacity(num_threads);
-        for _ in 0..(num_threads + 1) {
-            let w = WorkerQueue::new_fifo();
-            stealers.push(CachePadded::new(w.stealer()));
-            queues.push(Some(w));
+impl Shared {
+    fn pop_context(this: &Arc<Shared>) -> Option<Context> {
+        if this.is_shutting_down.load(Ordering::Acquire) {
+            return None;
         }
 
-        let mut sleep_states = Vec::with_capacity(num_threads);
-        for i in 0..num_threads {
-            sleep_states.push(CachePadded::new(SleepState {
-                mutex: Mutex::new(false),
-                cond: Condvar::new(),
-                next_target: AtomicU32::new(((i + 1) % num_contexts) as u32),
-            }));
-        }
-
-        let sleepy_worker_bits = (1 << (num_threads as u32)) - 1;
-
-        let shared = Arc::new(Shared {
-            num_workers: num_threads as u32,
-            num_contexts: num_contexts as u32,
-            sleepy_workers: AtomicU32::new(sleepy_worker_bits),
-            stealers,
-            sleep_states,
-        });
-
-        for i in 0..num_threads {
-            let mut worker = Context {
-                id: i as u32,
-                is_worker: true,
-                num_contexts: num_contexts as u8,
-
-                queue: queues[i].take().unwrap(),
-                shared: Arc::clone(&shared),
-
-                stats: Stats::new(),
-            };
-
-            let _ = std::thread::spawn(move || {
-                profiling::register_thread!("Worker");
-
-                worker.run_worker();
-            });
-        }
-
-        ThreadPool {
-            ctx: Context {
-                id: num_threads as u32,
-                is_worker: false,
-                num_contexts: num_contexts as u8,
-
-                queue: queues.last_mut().unwrap().take().unwrap(),
-                shared,
-
-                stats: Stats::new(),
-            }
-        }
+        let shared = this.clone();
+        let mut contexts = this.contexts.lock().unwrap();
+        contexts.pop().map(|ctx| Context {
+            id: ctx.id,
+            is_worker: ctx.is_worker,
+            num_contexts: ctx.num_contexts,
+            queue: ctx.queue,
+            shared,
+            stats: Stats::new(),
+        })
     }
-
-    pub fn context(&mut self) -> &mut Context { &mut self.ctx }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -152,6 +108,13 @@ impl Stats {
     }
 }
 
+struct InactiveContext {
+    id: u32,
+    is_worker: bool,
+    num_contexts: u8,
+    queue: WorkerQueue<JobRef>,
+}
+
 pub struct Context {
     id: u32,
     is_worker: bool,
@@ -160,29 +123,48 @@ pub struct Context {
     queue: WorkerQueue<JobRef>,
     shared: Arc<Shared>,
 
-    pub stats: Stats,
+    pub(crate) stats: Stats,
 }
 
 impl Context {
+    pub fn id(&self) -> u32 { self.id }
+
+    pub fn thread_pool_id(&self) -> ThreadPoolId {
+        self.shared.id
+    }
+
+    pub fn is_worker_thread(&self) -> bool {
+        self.is_worker
+    }
+
+    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers }
+
+    /// Returns the total number of contexts, including worker threads.
+    pub fn num_contexts(&self) -> u32 { self.shared.num_contexts }
+
+    /// Returns a reference to this context's thread pool.
+    pub fn thread_pool(&self) -> ThreadPool {
+        ThreadPool {
+            shared: self.shared.clone(),
+        }
+    }
+
+    pub fn wait(&mut self, sync: &SyncPoint) {
+        sync.wait(self);
+    }
+
+    pub fn schedule_one<F>(&mut self, job: F) where F: FnOnce(&mut Context) + Send {
+        unsafe {
+            self.schedule_job(HeapJob::new_ref(job));
+        }
+    }
+
     pub(crate) fn schedule_job(&mut self, job: JobRef) {
         profiling::scope!("schedule_job");
         //println!("worker:{} schedule a job", self.id());
 
         self.queue.push(job);
         self.wake_n(1);
-    }
-
-    pub fn dispatch_one<F>(&mut self, job: F) where F: FnOnce(&mut Context) + Send {
-        unsafe {
-            self.schedule_job(HeapJob::new_ref(job));
-        }
-    }
-
-    /// similar to dispatch_one but does not attempt to wake worker threads.
-    pub fn enqueue_heap_job<F>(&mut self, job: F) where F: FnOnce(&mut Context) + Send {
-        unsafe {
-            self.queue.push(HeapJob::new_ref(job));
-        }
     }
 
     pub fn enqueue_job(&mut self, job: JobRef) {
@@ -197,75 +179,9 @@ impl Context {
             context_data: None,
             function: (),
             filter: (),
-            group_size: 1, // TODO
+            group_size: 1,
             ctx: self,
         }
-    }
-
-    pub fn id(&self) -> u32 { self.id }
-
-    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers }
-
-    pub fn num_context(&self) -> u32 { self.shared.num_contexts }
-
-    fn run_worker(&mut self) {
-        let shared = Arc::clone(&self.shared);
-        let stealers = &shared.stealers[..];
-        loop {
-            // First see if we have work to do in our own queue.
-
-            //println!("worker:{} begin pop", self.id());
-            while let Some(job) = self.queue.pop() {
-                unsafe {
-                    self.execute_job(job);
-                }
-            }
-            //println!("worker:{} end pop", self.id());
-
-            // See if there is work we can steal from other contexts.
-
-            let len = stealers.len();
-            let mut stolen = None;
-            let sleep_state = &shared.sleep_states[self.id() as usize];
-            let start = sleep_state.next_target.load(Ordering::Relaxed) as usize;
-            // Reset the next_target hint to a default value which is the next context.
-            sleep_state.next_target.store((self.id() + 1) % (len as u32), Ordering::Release);
-
-            'stealers: for i in 0..len {
-                let idx = (start + i) % len;
-                for _ in 0..50 {
-                    match stealers[idx].steal_batch_and_pop(&self.queue) {
-                        Steal::Success(job) => {
-                            //println!("worker:{} stole jobs from {}", self.id(), i);
-                            stolen = Some(job);
-                            break 'stealers;
-                        }
-                        Steal::Empty => {
-                            continue 'stealers;
-                        }
-                        Steal::Retry => {}
-                    }
-                }
-            }
-
-            if let Some(job) = stolen.take() {
-                unsafe {
-                    self.execute_job(job);
-                    continue;
-                }
-            }
-
-            //println!("worker:{} end theft", self.id());
-
-            // Couldn't find work to do in our or another context's queue, so
-            // it's sleepy time.
-
-            self.sleep();
-        }
-    }
-
-    pub fn wait(&mut self, sync: &SyncPoint) {
-        sync.wait(self);
     }
 
     pub fn keep_busy(&mut self) -> bool {
@@ -325,27 +241,7 @@ impl Context {
         self.stats.jobs_executed += 1;
     }
 
-    fn sleep(&mut self) {
-        let sleepy_bit = 1 << self.id();
-        let _b = self.shared.sleepy_workers.fetch_or(sleepy_bit, Ordering::Release);
-
-        //println!("worker:{} goes to sleep (sleepy bits {:b})", self.id(), _b | sleepy_bit);
-        debug_assert!(self.queue.is_empty());
-
-        let sleep_state = &self.shared.sleep_states[self.id() as usize];
-
-        {
-            let mut wake_up = sleep_state.mutex.lock().unwrap();
-            while !*wake_up {
-                wake_up = sleep_state.cond.wait(wake_up).unwrap();
-            }
-            // Reset for next time.
-            *wake_up = false;
-        }
-        //println!("worker:{} wakes up", self.id());
-    }
-
-    pub fn wake_n(&mut self, mut n: u32) {
+    fn wake_n(&mut self, mut n: u32) {
         profiling::scope!("wake workers");
         while n > 0 {
             let mut sleepy_bits = self.shared.sleepy_workers.load(Ordering::Acquire);
@@ -378,11 +274,9 @@ impl Context {
                 }
 
                 let sleep_state = &self.shared.sleep_states[i as usize];
-
                 sleep_state.next_target.store(self.id, Ordering::Relaxed);
-                let mut wake_up = sleep_state.mutex.lock().unwrap();
-                *wake_up = true;
-                sleep_state.cond.notify_one();
+
+                sleep_state.unparker.unpark();
 
                 //println!("worker:{} woke {}", self.id(), i);
 
@@ -426,12 +320,22 @@ impl<T: std::fmt::Debug> ExclusiveCheck<T> {
 
 #[test]
 fn test_simple_workload() {
-    let mut pool = ThreadPool::new(3);
-    for _ in 0..100 {
+    static INITIALIZED_WORKERS: AtomicU32 = AtomicU32::new(0);
+    static SHUTDOWN_WORKERS: AtomicU32 = AtomicU32::new(0);
+
+    let mut pool = ThreadPool::builder()
+        .with_worker_threads(3)
+        .with_start_handler(|_id| { INITIALIZED_WORKERS.fetch_add(1, Ordering::SeqCst); })
+        .with_exit_handler(|_id| { SHUTDOWN_WORKERS.fetch_add(1, Ordering::SeqCst); })
+        .build();
+
+    let mut ctx = pool.pop_context().unwrap();
+
+    for _ in 0..500 {
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let worker_data = &mut [0i32, 0, 0, 0];
 
-        pool.ctx.for_each_mut(input)
+        ctx.for_each_mut(input)
             .with_context_data(worker_data)
             .run(|ctx, item, wd| {
                 let _v: i32 = *item;
@@ -461,15 +365,18 @@ fn test_simple_workload() {
         assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
     }
 
-    for _i in 0..2000 {
+    for _i in 0..500 {
         //println!(" - {:?}", _i);
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-        let handle = pool.ctx.for_each_mut(input).run_async(|ctx, val, wd| {
+        let handle = ctx.for_each_mut(input).run_async(|ctx, val, wd| {
 
             for _ in 0..10 {
                 let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                ctx.for_each_mut(nested_input).run(|_, item, _| { *item += 1; });
+
+                let handle = ctx.for_each_mut(nested_input).run_async(|_, item, _| { *item += 1; });
+                handle.wait(ctx);
+
                 for item in nested_input {
                     assert_eq!(*item, 1);
                 }
@@ -479,28 +386,35 @@ fn test_simple_workload() {
             *wd = ();
         });
 
-        handle.wait(&mut pool.ctx);
+        handle.wait(&mut ctx);
 
         assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
     }
+
+    let handle = pool.shut_down();
+    handle.wait();
+
+    assert_eq!(INITIALIZED_WORKERS.load(Ordering::SeqCst), 3);
+    assert_eq!(SHUTDOWN_WORKERS.load(Ordering::SeqCst), 3);
 }
 
 #[test]
 fn test_few_items() {
-    let mut pool = ThreadPool::new(3);
+    let mut pool = ThreadPool::builder().with_worker_threads(3).build();
+    let mut ctx = pool.pop_context().unwrap();
     for _ in 0..100 {
         for n in 0..8 {
             let mut input = vec![0i32; n];
 
-            pool.ctx.for_each_mut(&mut input).run(|_, item, _| {
+            ctx.for_each_mut(&mut input).run(|_, item, _| {
                 *item += 1;
             });
 
-            let handle = pool.ctx.for_each_mut(&mut input).run_async(|_, item, _| {
+            let handle = ctx.for_each_mut(&mut input).run_async(|_, item, _| {
                 *item += 1;
             });
 
-            handle.wait(&mut pool.ctx);
+            handle.wait(&mut ctx);
 
             for val in &input {
                 assert_eq!(*val, 2);
@@ -535,3 +449,27 @@ fn exclu_check_02() {
     lock.end();
 }
 
+#[test]
+fn test_shutdown() {
+    static INITIALIZED_WORKERS: AtomicU32 = AtomicU32::new(0);
+    static SHUTDOWN_WORKERS: AtomicU32 = AtomicU32::new(0);
+
+    for _ in 0..100 {
+        for num_threads in 1..32 {
+            INITIALIZED_WORKERS.store(0, Ordering::SeqCst);
+            SHUTDOWN_WORKERS.store(0, Ordering::SeqCst);
+
+            let pool = ThreadPool::builder()
+                .with_worker_threads(num_threads)
+                .with_start_handler(|_id| { INITIALIZED_WORKERS.fetch_add(1, Ordering::SeqCst); })
+                .with_exit_handler(|_id| { SHUTDOWN_WORKERS.fetch_add(1, Ordering::SeqCst); })
+                .build();
+
+            let handle = pool.shut_down();
+            handle.wait();
+
+            assert_eq!(INITIALIZED_WORKERS.load(Ordering::SeqCst), num_threads);
+            assert_eq!(SHUTDOWN_WORKERS.load(Ordering::SeqCst), num_threads);
+        }
+    }
+}
