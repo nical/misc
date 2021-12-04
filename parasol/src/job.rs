@@ -1,8 +1,7 @@
+use std::ops::Range;
 use std::cell::UnsafeCell;
 use std::mem;
 use crate::Context;
-use crate::sync::SyncPointRef;
-use crate::for_each_mut::Filter;
 
 /// A `Job` is used to advertise work for other threads that they may
 /// want to steal. In accordance with time honored tradition, jobs are
@@ -13,7 +12,7 @@ pub trait Job {
     /// Unsafe: this may be called from a different thread than the one
     /// which scheduled the job, so the implementer must ensure the
     /// appropriate traits are met, whether `Send`, `Sync`, or both.
-    unsafe fn execute(this: *const Self, ctx: &mut Context);
+    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>);
 }
 
 /// Effectively a Job trait object. Each JobRef **must** be executed
@@ -25,7 +24,13 @@ pub trait Job {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct JobRef {
     pointer: *const (),
-    execute_fn: unsafe fn(*const (), *const ()),
+    execute_fn: unsafe fn(*const (), *const (), Range<u32>),
+    // Optional start/end parameters to allow splitting a job that operates
+    // over a range of items.
+    start: u32,
+    end: u32,
+    // TODO: would it make sense to store an optional pointer to a SyncPoint
+    // here?
 }
 
 unsafe impl Send for JobRef {}
@@ -38,18 +43,44 @@ impl JobRef {
     where
         T: Job,
     {
-        let fn_ptr: unsafe fn(*const T, &mut Context) = <T as Job>::execute;
+        Self::with_range(data, 0..1)
+    }
+
+    pub unsafe fn with_range<T>(data: *const T, range: Range<u32>) -> JobRef
+    where
+        T: Job,
+    {
+        let fn_ptr: unsafe fn(*const T, &mut Context, range: Range<u32>) = <T as Job>::execute;
 
         // erase types:
         JobRef {
             pointer: data as *const (),
             execute_fn: mem::transmute(fn_ptr),
+            start: range.start,
+            end: range.end,
         }
     }
 
     #[inline]
     pub unsafe fn execute(&self, ctx: &mut Context) {
-        (self.execute_fn)(self.pointer, mem::transmute(ctx))
+        (self.execute_fn)(self.pointer, mem::transmute(ctx), self.start..self.end)
+    }
+
+    pub fn split(&mut self) -> Option<Self> {
+        if self.end - self.start <= 2 {
+            return None;
+        }
+
+        let split = self.start + self.end / 2;
+        let end = self.end;
+        self.end = split;
+
+        Some(JobRef {
+            pointer: self.pointer,
+            execute_fn: self.execute_fn,
+            start: split,
+            end,
+        })
     }
 }
 
@@ -87,7 +118,7 @@ where
     F: FnOnce(&mut Context) -> R + Send,
     R: Send,
 {
-    unsafe fn execute(this: *const Self, ctx: &mut Context) {
+    unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
         let this = &*this;
         let abort = AbortIfPanic;
         let func = (*this.func.get()).take().unwrap();
@@ -143,49 +174,12 @@ impl<BODY> Job for HeapJob<BODY>
 where
     BODY: FnOnce(&mut Context) + Send,
 {
-    unsafe fn execute(this: *const Self, ctx: &mut Context) {
+    unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
         let this: Box<Self> = mem::transmute(this);
         let job = (*this.job.get()).take().unwrap();
         job(ctx);
     }
 }
-
-pub(crate) struct MutSliceJob<Item, CtxData, Func, Filtr> {
-    pub items: *mut [Item],
-    pub ctx_data: *mut CtxData,
-    pub run_fn: *const Func,
-    pub filter: *const Filtr,
-    pub sync: SyncPointRef,
-}
-
-impl<Item, CtxData, Func, Filtr> Job for MutSliceJob<Item, CtxData, Func, Filtr>
-where
-    Func: Fn(&mut Context, &mut Item, &mut CtxData) + Send,
-    Filtr: Filter<Item>,
-{
-    unsafe fn execute(this: *const Self, ctx: &mut Context) {
-        let this: &Self = mem::transmute(this);
-        let items: &mut [Item] = mem::transmute(this.items);
-        for item in items {
-            if this.filter.as_ref().unwrap().filter(item) {
-                (*this.run_fn)(ctx, item, &mut *this.ctx_data.offset(ctx.id() as isize));
-            }
-        }
-
-        this.sync.signal(ctx);
-    }
-}
-
-impl<Item, CtxData, Func, Filtr> MutSliceJob<Item, CtxData, Func, Filtr>
-where
-    Func: Fn(&mut Context, &mut Item, &mut CtxData) + Send,
-    Filtr: Filter<Item>,
-{
-    pub unsafe fn as_job_ref(&self) -> JobRef {
-        JobRef::new(self)
-    }
-}
-
 
 //pub(super) enum JobResult<T> {
 //    None,

@@ -1,6 +1,8 @@
 use std::sync::{Mutex, Condvar};
 use std::sync::atomic::{Ordering, AtomicI32, AtomicBool, AtomicPtr};
 
+use crossbeam_utils::Backoff;
+
 use crate::Context;
 use crate::job::JobRef;
 
@@ -197,6 +199,8 @@ impl SyncPoint {
         // for the signaling thread to do the store operation.
         // TODO: would it be better to spin in the destructor?
 
+        let backoff = Backoff::new();
+
         for i in 0..200 {
             if self.is_signaled.load(Ordering::Acquire) {
                 if i != 0 {
@@ -205,6 +209,7 @@ impl SyncPoint {
                 }
                 return;
             }
+            backoff.spin();
         }
 
         // The majority of the time we only check is_signaled once. If we are unlucky we

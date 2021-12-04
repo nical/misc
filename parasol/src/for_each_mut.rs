@@ -1,13 +1,13 @@
 use crate::{Context};
-use crate::util::SyncPtrMut;
 use crate::sync::{SyncPoint, SyncPointRef};
 
-use smallvec::SmallVec;
-use crate::job::MutSliceJob;
+use crate::job::{JobRef, Job};
 
+use std::mem;
+use std::ops::Range;
 use std::marker::PhantomData;
 
-pub trait Filter<Item>: Sync {
+pub trait Filter<Item>: Sync + 'static {
     fn is_empty(&self) -> bool;
     fn filter(&self, item: &Item) -> bool;
 }
@@ -19,7 +19,7 @@ impl<Item> Filter<Item> for () {
     fn filter(&self, _: &Item) -> bool { true }
 }
 
-impl<Item, F: Fn(&Item) -> bool + Sync> Filter<Item> for CallbackFilter<F> {
+impl<Item, F: Fn(&Item) -> bool + Sync + 'static> Filter<Item> for CallbackFilter<F> {
     fn is_empty(&self) -> bool { false }
     fn filter(&self, item: &Item) -> bool { self.0(item) }
 }
@@ -42,7 +42,7 @@ impl<'a, 'b, 'c, Item, ContextData, F, Filtr> ForEachMut<'a, 'b, 'c, Item, Conte
     ///
     /// The length of the slice must be at least equal to the number of contexts.
     #[inline]
-    pub fn with_context_data<'w, W: Send>(self, context_data: &'w mut [W]) -> ForEachMut<'a, 'w, 'c, Item, W, F, Filtr> {
+    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEachMut<'a, 'w, 'c, Item, CtxData, F, Filtr> {
         assert!(
             context_data.len() >= self.ctx.num_contexts as usize,
             "Got {:?} context items, need at least {:?}",
@@ -106,9 +106,10 @@ impl<'a, 'b, 'c, Item, ContextData, F, Filtr> ForEachMut<'a, 'b, 'c, Item, Conte
     #[inline]
     pub fn run_async<Func>(self, function: Func) -> JoinHandle<'a, 'b>
     where
-        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send,
-        Item: Sync + Send,
+        Func: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send + 'static,
         Filtr: Filter<Item>,
+        Item: Sync + Send + 'static,
+        ContextData: 'static,
     {
         for_each_mut_async(self.apply(function))
     }
@@ -128,17 +129,6 @@ impl<'a, 'b, 'c, Item, ContextData, F, Filtr> ForEachMut<'a, 'b, 'c, Item, Conte
         }
     }
 
-    unsafe fn unsafe_pointers(&mut self) -> (SyncPtrMut<Item>, SyncPtrMut<ContextData>) {
-        // Note: the safety of how we manipulate wd_ptr relies on that `ForEachMut::context_data` can only
-        // be null if its type is `()` due to how `ForEachMut` is constructed. As a result we can safely
-        // mess with the pointer when it is null because () makes sure we'll never actually read or write
-        // the pointed memory.
-        let in_ptr = self.items.as_mut_ptr();
-        let wd_ptr = self.context_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr());
-
-        (SyncPtrMut(in_ptr), SyncPtrMut(wd_ptr))
-    }
-
     fn dispatch_parameters(&self, is_async: bool) -> DispatchParameters {
         let n = self.items.len() as u32;
 
@@ -156,120 +146,47 @@ impl<'a, 'b, 'c, Item, ContextData, F, Filtr> ForEachMut<'a, 'b, 'c, Item, Conte
     }
 }
 
-/*
-fn for_each_mut<Item, W, F, Filtr>(mut params: ForEachMut<Item, W, F, Filtr>)
+fn for_each_mut<Item, ContextData, F, Filtr>(params: ForEachMut<Item, ContextData, F, Filtr>)
 where
-    F: Fn(&mut Context, &mut Item, &mut W) + Sync + Send,
+    F: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send,
     Filtr: Filter<Item>,
     Item: Sync + Send,
 {
     profiling::scope!("for_each_mut");
 
     unsafe {
-        let (in_ptr, wd_ptr) = params.unsafe_pointers();
         let dispatch = params.dispatch_parameters(false);
 
         let sync = SyncPoint::new(dispatch.group_count);
 
         let ctx = params.ctx;
+
+        // Once we start converting this into jobrefs, it MUST NOT move or be destroyed until
+        // we are done waiting on the sync point.
+        let job_data: MutSliceJob<Item, ContextData, F, Filtr> = MutSliceJob::new(
+            params.items,
+            params.context_data,
+            params.function,
+            params.filter,
+            &sync,
+        );
 
         for_each_mut_dispatch(
             ctx,
+            &job_data,
             &dispatch,
-            in_ptr,
-            wd_ptr,
-            sync.unsafe_ref(),
-            &params.function,
-            &params.filter,
+            &params.items,
+            &sync,
         );
 
         {
             profiling::scope!("mt:job group");
             for i in 0..dispatch.first_parallel {
                 profiling::scope!("mt:job");
-                (params.function)(
+                (job_data.function)(
                     ctx,
                     &mut params.items[i as usize],
-                    &mut *wd_ptr.offset(ctx.id() as isize),
-                );
-            }
-        }
-
-        //println!("end main thread jobs");
-
-        ctx.wait(&sync);
-    }
-}
-*/
-
-fn for_each_mut<Item, W, F, Filtr>(mut params: ForEachMut<Item, W, F, Filtr>)
-where
-    F: Fn(&mut Context, &mut Item, &mut W) + Sync + Send,
-    Filtr: Filter<Item>,
-    Item: Sync + Send,
-{
-    profiling::scope!("for_each_mut");
-
-    unsafe {
-        let (_, cd_ptr) = params.unsafe_pointers();
-        let dispatch = params.dispatch_parameters(false);
-
-        let sync = SyncPoint::new(dispatch.group_count);
-
-        let ctx = params.ctx;
-
-        let mut jobs: SmallVec<[MutSliceJob<Item, W, F, Filtr>; 64]> = SmallVec::with_capacity(dispatch.group_count as usize);
-
-        let mut actual_group_count = dispatch.group_count;
-        for group_idx in 0..dispatch.group_count {
-            let mut start = dispatch.first_parallel + dispatch.group_size * group_idx;
-            let mut end = (start + dispatch.group_size).min(dispatch.item_count);
-            debug_assert!(start < end);
-
-            if !params.filter.is_empty() {
-                while start < end && !params.filter.filter(&params.items[end as usize]) {
-                    start += 1;
-                }
-
-                while start < end && !params.filter.filter(&params.items[start as usize - 1]) {
-                    end -= 1;
-                }
-
-                // If all items in the group are filtered out, skip scheduling it
-                // entirely
-                if start == end {
-                    sync.signal(ctx);
-                    actual_group_count -= 1;
-                    continue;
-                }
-            }
-
-            jobs.push(MutSliceJob {
-                items: (&mut params.items[start as usize .. end as usize]) as *mut _,
-                ctx_data: cd_ptr.0,
-                run_fn: (&params.function) as *const _,
-                filter: (&params.filter) as *const _,
-                sync: sync.unsafe_ref(),
-            });
-        }
-
-        // Once we start converting the jobs into jobrefs, they MUST NOT move or be destroyed until
-        // we are done waiting on the sync point.
-        for job in &jobs {
-            ctx.enqueue_job(job.as_job_ref());
-        }
-
-        // Waking up worker threads is the expensive part.
-        ctx.wake_n(actual_group_count.min(ctx.num_worker_threads()));
-
-        {
-            profiling::scope!("mt:job group");
-            for i in 0..dispatch.first_parallel {
-                profiling::scope!("mt:job");
-                (params.function)(
-                    ctx,
-                    &mut params.items[i as usize],
-                    &mut *cd_ptr.offset(ctx.id() as isize),
+                    &mut *job_data.ctx_data.offset(ctx.id() as isize),
                 );
             }
         }
@@ -278,81 +195,29 @@ where
     }
 }
 
-
-fn for_each_mut_async<'a, 'b, Item, W, F, Filtr>(mut params: ForEachMut<Item, W, F, Filtr>) -> JoinHandle<'a, 'b>
-where
-    F: Fn(&mut Context, &mut Item, &mut W) + Sync + Send,
-    Filtr: Filter<Item>,
-    Item: Sync + Send,
-{
-    profiling::scope!("for_each_mut_async");
-
-    unsafe {
-        let (in_ptr, wd_ptr) = params.unsafe_pointers();
-        let dispatch = params.dispatch_parameters(true);
-
-        let sync = Box::new(SyncPoint::new(dispatch.group_count));
-
-        for_each_mut_dispatch(
-            params.ctx,
-            &dispatch,
-            in_ptr,
-            wd_ptr,
-            sync.unsafe_ref(),
-            &params.function,
-            &params.filter,
-        );
-
-        JoinHandle { sync, _marker: PhantomData }
-    }
-}
-
-/// Dispatch the work that will be done in parallel.
-unsafe fn for_each_mut_dispatch<Item, Output, W, F, Filtr>(
+unsafe fn for_each_mut_dispatch<Item, ContextData, F, Filtr>(
     ctx: &mut Context,
+    job_data: &MutSliceJob<Item, ContextData, F, Filtr>,
     dispatch: &DispatchParameters,
-    in_ptr: SyncPtrMut<Item>,
-    wd_ptr: SyncPtrMut<W>,
-    sync: SyncPointRef,
-    cb: &F,
-    filter: &Filtr,
+    items: &[Item],
+    sync: &SyncPoint,
 )
 where
-    F: Fn(&mut Context, &mut Item, &mut W) -> Output + Sync + Send,
+    F: Fn(&mut Context, &mut Item, &mut ContextData) + Send,
     Filtr: Filter<Item>,
-    Item: Sync + Send,
-    Output: Sized,
 {
-    //println!("------- {:?}", 0..first_parallel);
+    let mut actual_group_count = dispatch.group_count;
+    for group_idx in 0..dispatch.group_count {
+        let mut start = dispatch.first_parallel + dispatch.group_size * group_idx;
+        let mut end = (start + dispatch.group_size).min(dispatch.item_count);
+        debug_assert!(start < end);
 
-    if dispatch.group_count == 0 {
-        return;
-    }
-
-    // Make sure the closure captures the values directly instead of taking the address
-    // of the parameters struct.
-    let DispatchParameters {
-        item_count,
-        group_count,
-        group_size,
-        first_parallel,
-    } = *dispatch;
-
-    assert!(group_count * group_size >= (item_count - first_parallel));
-    let mut actual_group_count = group_count;
-
-    profiling::scope!("schedule jobs");
-    for chunk_idx in 0..group_count {
-        let mut start = first_parallel + group_size * chunk_idx;
-        let mut end = (start + group_size).min(item_count);
-
-        // Apply the filter (if any) to reduce the size of the item group.
-        if !filter.is_empty() {
-            while start < end && !filter.filter(in_ptr.offset(start as isize)) {
+        if !job_data.filter.is_empty() {
+            while start < end && !job_data.filter.filter(&items[end as usize]) {
                 start += 1;
             }
 
-            while start < end && !filter.filter(in_ptr.offset(end as isize - 1)) {
+            while start < end && !job_data.filter.filter(&items[start as usize - 1]) {
                 end -= 1;
             }
 
@@ -365,30 +230,45 @@ where
             }
         }
 
-        ctx.enqueue_heap_job(move |ctx| {
-            profiling::scope!("job group");
-
-            assert!(end > start);
-            let wroker_idx = ctx.id() as isize;
-            let context_data = wd_ptr.offset(wroker_idx);
-
-            //println!(" -- (w{:?}) chunk {:?}", ctx.id(), start..end);
-            for job_idx in start..end {
-                profiling::scope!("worker:job");
-                let job_idx = job_idx as isize;
-                //println!("  -- (w{:?}) job {:?}", ctx.id(), job_idx);
-
-                let item = in_ptr.offset(job_idx);
-                if filter.filter(item) {
-                    cb(ctx, item, context_data);
-                }
-            }
-            sync.signal(ctx);
-        });
+        ctx.enqueue_job(job_data.as_job_ref(start..end));
     }
 
-    // Waking threads up is rather expensive we populate the queue first
+    // Waking up worker threads is the expensive part.
     ctx.wake_n(actual_group_count.min(ctx.num_worker_threads()));
+}
+
+fn for_each_mut_async<'a, 'b, Item, ContextData, F, Filtr>(params: ForEachMut<Item, ContextData, F, Filtr>) -> JoinHandle<'a, 'b>
+where
+    F: Fn(&mut Context, &mut Item, &mut ContextData) + Sync + Send + 'static,
+    Filtr: Filter<Item> + 'static,
+    Item: Sync + Send + 'static,
+    ContextData: 'static,
+{
+    profiling::scope!("for_each_mut_async");
+
+    unsafe {
+        let dispatch = params.dispatch_parameters(true);
+        let ctx = params.ctx;
+
+        let sync = Box::new(SyncPoint::new(dispatch.group_count));
+        let data = Box::new(MutSliceJob::new(
+            params.items,
+            params.context_data,
+            params.function,
+            params.filter,
+            &sync,
+        ));
+
+        for_each_mut_dispatch(
+            ctx,
+            &data,
+            &dispatch,
+            &params.items,
+            &sync,
+        );
+
+        JoinHandle { sync, data: data, _marker: PhantomData }
+    }
 }
 
 #[derive(Debug)]
@@ -399,8 +279,70 @@ struct DispatchParameters {
     first_parallel: u32,
 }
 
+pub(crate) struct MutSliceJob<Item, ContextData, Func, Filtr> {
+    items: *mut Item,
+    ctx_data: *mut ContextData,
+    function: Func,
+    filter: Filtr,
+    sync: SyncPointRef,
+    range: Range<u32>,
+}
+
+impl<Item, ContextData, Func, Filtr> Job for MutSliceJob<Item, ContextData, Func, Filtr>
+where
+    Func: Fn(&mut Context, &mut Item, &mut ContextData) + Send,
+    Filtr: Filter<Item>,
+{
+    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
+        let this: &Self = mem::transmute(this);
+
+        for item_idx in range {
+            let item = &mut *this.items.offset(item_idx as isize);
+            if this.filter.filter(item) {
+                (this.function)(ctx, item, &mut *this.ctx_data.offset(ctx.id() as isize));
+            }
+        }
+
+        this.sync.signal(ctx);
+    }
+}
+
+impl<Item, ContextData, Func, Filtr> MutSliceJob<Item, ContextData, Func, Filtr>
+where
+    Func: Fn(&mut Context, &mut Item, &mut ContextData) + Send,
+    Filtr: Filter<Item>,
+{
+    pub unsafe fn new(
+        items: &mut[Item],
+        mut ctx_data: Option<&mut [ContextData]>,
+        function: Func,
+        filter: Filtr,
+        sync: &SyncPoint,
+    ) -> Self {
+        MutSliceJob {
+            items: items.as_mut_ptr(),
+            ctx_data: ctx_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr()),
+            function,
+            filter,
+            sync: sync.unsafe_ref(),
+            range: 0..(items.len() as u32),
+        }
+    }
+
+    pub unsafe fn as_job_ref(&self, range: Range<u32>) -> JobRef {
+        assert!(range.start >= self.range.start);
+        assert!(range.end <= self.range.end);
+        JobRef::with_range(self, range)
+    }
+}
+
+trait Foo {}
+impl<T> Foo for T {}
+
 pub struct JoinHandle<'a, 'b> {
     sync: Box<SyncPoint>,
+    #[allow(unused)]
+    data: Box<dyn Foo>,
     _marker: PhantomData<(&'a (), &'b ())>,
 }
 
