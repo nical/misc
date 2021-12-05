@@ -8,7 +8,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-use parasol::{ThreadPool, ExclusiveCheck};
+use parasol::{Context, ExclusiveCheck};
 
 /// The output of the tiler.
 ///
@@ -81,17 +81,17 @@ pub struct Tiler {
     flatten: bool,
 
     rows: Vec<Row>,
-    z_buffer: Vec<ZBufferRow>,
 
     worker_data: Vec<TilerWorkerData>,
+
+    first_row: usize,
+    last_row: usize,
 
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
     pub is_opaque: bool,
     pub fill_rule: FillRule,
     pub z_index: u16,
-
-    pub thread_pool: Option<ThreadPool>,
 }
 
 #[derive(Clone)]
@@ -135,17 +135,17 @@ impl Tiler {
             tolerance: config.tolerance,
             flatten: config.flatten,
 
+            first_row: 0,
+            last_row: 0,
+
             row_decomposition_time_ns: 0,
             tile_decomposition_time_ns: 0,
 
             rows: Vec::new(),
-            z_buffer: vec![ZBufferRow::new(); num_tiles_y as usize],
 
             is_opaque: true,
             fill_rule: FillRule::EvenOdd,
             z_index: 0,
-
-            thread_pool: Some(ThreadPool::builder().with_worker_threads(3)),
 
             worker_data: vec![TilerWorkerData::new(); 4],
         }
@@ -230,6 +230,8 @@ impl Tiler {
         let mut y_max = self.tile_offset_y + (row_f + 1.0) * self.tile_size.height + self.tile_padding;
         let start_idx = y_start_tile as usize;
         let end_idx = y_end_tile as usize;
+        self.first_row = self.first_row.min(start_idx);
+        self.last_row = self.last_row.max(end_idx);
         match edge.kind {
             EdgeKind::Linear => for row in &mut self.rows[start_idx .. end_idx] {
                 let segment = LineSegment { from: edge.from, to: edge.to };
@@ -281,6 +283,9 @@ impl Tiler {
 
     /// Initialize the tiler before adding edges manually.
     pub fn begin_path(&mut self) {
+        self.first_row = self.rows.len();
+        self.last_row = 0;
+
 
         let num_rows = self.num_tiles_y as usize;
         self.rows.truncate(num_rows);
@@ -300,29 +305,33 @@ impl Tiler {
 
     /// Process manually edges and encode them into the output TileEncoder.
     pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
-        let mut tile_y = 0;
         let mut active_edges = Vec::with_capacity(64);
 
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
-        let mut z_buffer = std::mem::take(&mut self.z_buffer);
 
         let mut side_edges = SideEdgeTracker::new();
         // This could be done in parallel but it's already quite fast serially.
-        for row in &mut rows {
-            if !row.edges.is_empty() {
-                let z_buffer = &mut z_buffer[tile_y as usize];
-                if z_buffer.is_empty() {
-                    z_buffer.init(self.num_tiles_x as usize);
-                }
-                side_edges.clear();
-                self.process_row(row.tile_y, &mut row.edges[..], &mut active_edges, &mut side_edges, z_buffer, encoder);
+        for (row_idx, row) in rows[self.first_row..self.last_row].iter_mut().enumerate() {
+            if row.edges.is_empty() {
+                continue;
             }
-            tile_y += 1;
+
+            if row.z_buffer.is_empty() {
+                row.z_buffer.init(self.num_tiles_x as usize);
+            }
+            side_edges.clear();
+            self.process_row(
+                row.tile_y,
+                &mut row.edges[..],
+                &mut active_edges,
+                &mut side_edges,
+                &mut row.z_buffer,
+                encoder,
+            );
         }
 
         self.rows = rows;
-        self.z_buffer = z_buffer;
 
         for row in &mut self.rows {
             row.edges.clear();
@@ -331,6 +340,7 @@ impl Tiler {
 
     pub fn tile_path_parallel(
         &mut self,
+        ctx: &mut Context,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
         encoders: &mut [&mut dyn TileEncoder],
@@ -351,10 +361,13 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-        if self.rows.len() > 8 {
-            self.end_path_parallel(encoders);
-        } else {
-            self.end_path(encoders[0]);
+
+        if self.first_row < self.last_row {
+            if self.last_row - self.first_row > 8 {
+                self.end_path_parallel(ctx, encoders);
+            } else {
+                self.end_path(encoders[0]);
+            }
         }
 
         let t2 = time::precise_time_ns();
@@ -363,7 +376,7 @@ impl Tiler {
         self.tile_decomposition_time_ns = t2 - t1;
     }
 
-    pub fn end_path_parallel(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
+    pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut dyn TileEncoder]) {
         // Basically what we are doing here is passing the encoders rows to the
         // worker threads in the most unsafe of ways, and being careful to never have multiple
         // worker threads accessing the same encoder (there's one per worker)
@@ -378,13 +391,12 @@ impl Tiler {
 
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
-        let mut tp = self.thread_pool.take().unwrap();
         let mut worker_data = std::mem::take(&mut self.worker_data);
 
-        tp.context().for_each_mut(&mut rows[..])
+        ctx.for_each_mut(&mut rows[self.first_row..self.last_row])
             .with_context_data(&mut worker_data)
-            .with_group_size(3)
-            .filter(|row| !row.edges.is_empty())
+            .with_group_size(4)
+            //.filter(|row| !row.edges.is_empty())
             .run(|worker, row, worker_data| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 
@@ -402,7 +414,7 @@ impl Tiler {
                         row.z_buffer.init(self.num_tiles_x as usize);
                     }
 
-                    let idx = worker.id() as usize;
+                    let idx = worker.id().index();
                     self.process_row(
                         row.tile_y,
                         &mut row.edges[..],
@@ -417,7 +429,6 @@ impl Tiler {
                 row.lock.end();
             });
 
-        self.thread_pool = Some(tp);
         self.worker_data = worker_data;
         self.rows = rows;
     }
@@ -490,8 +501,8 @@ impl Tiler {
     }
 */
     pub fn clear_depth(&mut self) {
-        for row in &mut self.z_buffer {
-            row.clear();
+        for row in &mut self.rows {
+            row.z_buffer.clear();
         }
     }
 

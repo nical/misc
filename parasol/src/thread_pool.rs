@@ -1,7 +1,7 @@
 use std::sync::{Mutex, Condvar, Arc};
 use std::sync::atomic::{Ordering, AtomicBool, AtomicU32};
 
-use crossbeam_deque::{Worker as WorkerQueue, Steal };
+use crossbeam_deque::Worker as WorkerQueue;
 use crossbeam_utils::{CachePadded, sync::{Parker, Unparker}};
 
 use crate::{Context, InactiveContext, Shared, Stats};
@@ -24,6 +24,8 @@ impl ThreadPool {
             num_contexts: 1,
             start_handler: None,
             exit_handler: None,
+            name_handler: Box::new(|idx| format!("Worker#{}", idx)),
+            stack_size: None,
         }
     }
 
@@ -42,6 +44,10 @@ impl ThreadPool {
         Shared::pop_context(&self.shared)
     }
 
+    pub fn recycle_context(&self, ctx: Context) {
+        Shared::recycle_context(&self.shared, ctx)
+    }
+
     pub fn id(&self) -> ThreadPoolId {
         self.shared.id
     }
@@ -49,7 +55,6 @@ impl ThreadPool {
     pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers }
 
     pub fn num_contexts(&self) -> u32 { self.shared.num_contexts }
-
 }
 
 pub struct ThreadPoolBuilder {
@@ -57,11 +62,11 @@ pub struct ThreadPoolBuilder {
     num_contexts: u32,
     start_handler: Option<Box<dyn WorkerHook>>,
     exit_handler: Option<Box<dyn WorkerHook>>,
+    name_handler: Box<dyn Fn(u32) -> String>,
+    stack_size: Option<usize>,
 }
 
 impl ThreadPoolBuilder {
-    // TODO: stack size, thread names
-
     pub fn with_start_handler<F>(self, handler: F) -> Self
     where F: Fn(u32) + Send + Sync + 'static
     {
@@ -70,6 +75,8 @@ impl ThreadPoolBuilder {
             num_contexts: self.num_contexts,
             start_handler: Some(Box::new(handler)),
             exit_handler: self.exit_handler,
+            name_handler: self.name_handler,
+            stack_size: self.stack_size,
         }
     }
 
@@ -81,6 +88,21 @@ impl ThreadPoolBuilder {
             num_contexts: self.num_contexts,
             start_handler: self.start_handler,
             exit_handler: Some(Box::new(handler)),
+            name_handler: self.name_handler,
+            stack_size: self.stack_size,
+        }
+    }
+
+    pub fn with_thread_names<F>(self, handler: F) -> Self
+    where F: Fn(u32) -> String + 'static
+    {
+        ThreadPoolBuilder {
+            num_threads: self.num_threads,
+            num_contexts: self.num_contexts,
+            start_handler: self.start_handler,
+            exit_handler: self.exit_handler,
+            name_handler: Box::new(handler),
+            stack_size: self.stack_size,
         }
     }
 
@@ -96,6 +118,12 @@ impl ThreadPoolBuilder {
         self
     }
 
+    pub fn with_stack_size(mut self, size: usize) -> Self {
+        self.stack_size = Some(size);
+
+        self
+    }
+
     pub fn build(self) -> ThreadPool {
         let num_threads = self.num_threads as usize;
         let num_contexts = num_threads + self.num_contexts as usize;
@@ -103,9 +131,13 @@ impl ThreadPoolBuilder {
         let mut stealers = Vec::with_capacity(num_contexts);
         let mut queues = Vec::with_capacity(num_threads);
         for _ in 0..(num_threads + 1) {
-            let w = WorkerQueue::new_fifo();
-            stealers.push(CachePadded::new(w.stealer()));
-            queues.push(Some(w));
+            let hp = WorkerQueue::new_fifo();
+            let lp = WorkerQueue::new_fifo();
+            stealers.push(CachePadded::new([
+                hp.stealer(),
+                lp.stealer(),
+            ]));
+            queues.push(Some([hp, lp]));
         }
         let mut parkers = Vec::new();
         let mut sleep_states = Vec::with_capacity(num_threads);
@@ -127,7 +159,7 @@ impl ThreadPoolBuilder {
                 is_worker: false,
                 num_contexts: num_contexts as u8,
 
-                queue: queues[i].take().unwrap(),
+                queues: queues[i].take().unwrap(),
             });
         }
 
@@ -157,7 +189,8 @@ impl ThreadPoolBuilder {
                     is_worker: true,
                     num_contexts: num_contexts as u8,
 
-                    queue: queues[i].take().unwrap(),
+                    queues: queues[i].take().unwrap(),
+
                     shared: Arc::clone(&shared),
 
                     stats: Stats::new(),
@@ -165,17 +198,24 @@ impl ThreadPoolBuilder {
                 parker: parkers[i].take().unwrap(),
             };
 
-            let _ = std::thread::spawn(move || {
+            let mut builder = std::thread::Builder::new()
+                .name((self.name_handler)(i as u32));
+
+            if let Some(stack_size) = self.stack_size {
+                builder = builder.stack_size(stack_size);
+            }
+
+            let _ = builder.spawn(move || {
                 profiling::register_thread!("Worker");
 
                 if let Some(handler) = &worker.ctx.shared.start_handler {
-                    handler.run(worker.ctx.id());
+                    handler.run(worker.ctx.id().0);
                 }
 
                 worker.run();
 
                 if let Some(handler) = &worker.ctx.shared.exit_handler {
-                    handler.run(worker.ctx.id());
+                    handler.run(worker.ctx.id().0);
                 }
 
                 let shared = worker.ctx.shared.clone();
@@ -184,7 +224,7 @@ impl ThreadPoolBuilder {
                 if *num_workers == 0 {
                     shared.shutdown_cond.notify_all();
                 }
-            });
+            }).unwrap();
         }
 
         ThreadPool { shared }
@@ -208,50 +248,27 @@ impl Worker {
     fn run(&mut self) {
         let ctx = &mut self.ctx;
         let shared = Arc::clone(&ctx.shared);
-        let stealers = &shared.stealers[..];
         loop {
-            // First see if we have work to do in our own queue.
-            while let Some(job) = ctx.queue.pop() {
-                unsafe {
-                    ctx.execute_job(job);
+            // First see if we have work to do in our own queues.
+            for priority in 0..2 {
+                while let Some(job) = ctx.queues[priority].pop() {
+                    unsafe {
+                        ctx.execute_job(job);
+                    }
                 }
             }
 
             // See if there is work we can steal from other contexts.
 
-            let len = stealers.len();
-            let mut stolen = None;
-            let sleep_state = &shared.sleep_states[ctx.id() as usize];
-            let start = sleep_state.next_target.load(Ordering::Relaxed) as usize;
-            // Reset the next_target hint to a default value which is the next context.
-            sleep_state.next_target.store((ctx.id() + 1) % (len as u32), Ordering::Release);
-
-            'stealers: for i in 0..len {
-                let idx = (start + i) % len;
-                for _ in 0..50 {
-                    match stealers[idx].steal_batch_and_pop(&ctx.queue) {
-                        Steal::Success(job) => {
-                            //println!("worker:{} stole jobs from {}", self.id(), i);
-                            stolen = Some(job);
-                            break 'stealers;
-                        }
-                        Steal::Empty => {
-                            continue 'stealers;
-                        }
-                        Steal::Retry => {}
-                    }
-                }
-            }
-
-            if let Some(job) = stolen.take() {
+            if let Some(job) = ctx.steal(true) {
                 unsafe {
                     ctx.execute_job(job);
-                    continue;
                 }
+                continue;
             }
 
             if shared.is_shutting_down.load(Ordering::SeqCst) {
-                if ctx.queue.is_empty() {
+                if ctx.queues[0].is_empty() && ctx.queues[1].is_empty() {
                     return;
                 } else {
                     continue;
@@ -261,12 +278,15 @@ impl Worker {
             // Couldn't find work to do in our or another context's queue, so
             // it's sleepy time.
 
-            let sleepy_bit = 1 << ctx.id();
+            debug_assert!(ctx.queues[0].is_empty());
+            debug_assert!(ctx.queues[1].is_empty());
 
-            let _b = ctx.shared.sleepy_workers.fetch_or(sleepy_bit, Ordering::Release);
-            //println!("worker:{} goes to sleep (sleepy bits {:b})", self.id(), _b | sleepy_bit);
+            let sleepy_bit = 1 << ctx.id().0;
 
-            debug_assert!(ctx.queue.is_empty());
+            let _bits = ctx.shared.sleepy_workers.fetch_or(sleepy_bit, Ordering::SeqCst) | sleepy_bit;
+
+            //let label = format!("sleep ({:b})", _bits);
+            //profiling::scope!(&label);
 
             self.parker.park();
         }

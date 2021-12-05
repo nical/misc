@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::cell::UnsafeCell;
 use std::mem;
-use crate::Context;
+use crate::{Context, Priority};
 
 /// A `Job` is used to advertise work for other threads that they may
 /// want to steal. In accordance with time honored tradition, jobs are
@@ -13,6 +13,7 @@ pub trait Job {
     /// which scheduled the job, so the implementer must ensure the
     /// appropriate traits are met, whether `Send`, `Sync`, or both.
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>);
+    unsafe fn should_split(this: *const Self, range: Range<u32>) -> bool { false }
 }
 
 /// Effectively a Job trait object. Each JobRef **must** be executed
@@ -23,14 +24,16 @@ pub trait Job {
 /// it. We also carry the "execute fn" from the `Job` trait.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct JobRef {
+    // The "deconstructed trait object" part, taken directly from rayon.
     pointer: *const (),
     execute_fn: unsafe fn(*const (), *const (), Range<u32>),
+
     // Optional start/end parameters to allow splitting a job that operates
     // over a range of items.
     start: u32,
     end: u32,
-    // TODO: would it make sense to store an optional pointer to a SyncPoint
-    // here?
+    split_thresold: u32,
+    priority: Priority,
 }
 
 unsafe impl Send for JobRef {}
@@ -43,35 +46,48 @@ impl JobRef {
     where
         T: Job,
     {
-        Self::with_range(data, 0..1)
+        Self::with_range(data, 0..1, 1)
     }
 
-    pub unsafe fn with_range<T>(data: *const T, range: Range<u32>) -> JobRef
+    pub unsafe fn with_range<T>(data: *const T, range: Range<u32>, split_thresold: u32) -> JobRef
     where
         T: Job,
     {
+        debug_assert!(range.start < range.end);
         let fn_ptr: unsafe fn(*const T, &mut Context, range: Range<u32>) = <T as Job>::execute;
-
         // erase types:
         JobRef {
             pointer: data as *const (),
             execute_fn: mem::transmute(fn_ptr),
             start: range.start,
             end: range.end,
+            split_thresold: split_thresold.max(1),
+            priority: Priority::High,
         }
     }
+
+    #[inline]
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    #[inline]
+    pub fn priority(&self) -> Priority { self.priority }
 
     #[inline]
     pub unsafe fn execute(&self, ctx: &mut Context) {
         (self.execute_fn)(self.pointer, mem::transmute(ctx), self.start..self.end)
     }
 
+    #[inline]
     pub fn split(&mut self) -> Option<Self> {
-        if self.end - self.start <= 2 {
+        if self.end - self.start <= self.split_thresold {
             return None;
         }
 
-        let split = self.start + self.end / 2;
+        let split = (self.start + self.end) / 2;
+
         let end = self.end;
         self.end = split;
 
@@ -80,6 +96,8 @@ impl JobRef {
             execute_fn: self.execute_fn,
             start: split,
             end,
+            split_thresold: self.split_thresold,
+            priority: self.priority,
         })
     }
 }

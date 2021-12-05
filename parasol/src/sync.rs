@@ -36,7 +36,6 @@ pub struct SyncPoint {
     id: i32,
 }
 
-
 impl SyncPoint {
     pub fn new(deps: u32) -> Self {
         let state = if deps == 0 {
@@ -55,21 +54,26 @@ impl SyncPoint {
         }
     }
 
-    pub fn signal(&self, ctx: &mut Context) -> bool {
+    pub fn signal_one(&self, ctx: &mut Context) -> bool {
+        self.signal(ctx, 1)
+    }
+
+    pub fn signal(&self, ctx: &mut Context, n: u32) -> bool {
         debug_assert!(!self.is_signaled(), "already signaled {:?}:{:?}", self as *const _, self.id); // TODO: this fails
         debug_assert!(self.deps.load(Ordering::SeqCst) >= 1);
 
         profiling::scope!("signal");
-        let prev = self.deps.fetch_add(-1, Ordering::Relaxed);
+        let n = n as i32;
+        let deps = self.deps.fetch_add(-n, Ordering::Relaxed) - n;
 
-        if prev > 1 {
+        if deps > 0 {
             // After reading deps, it isn't guaranteed that self is valid except for the
             // one thread which signaled the last dependency (the one thread not taking this
             // branch).
             return false;
         }
 
-        debug_assert!(prev == 1, "signaled too many time");
+        debug_assert!(deps == 0, "signaled too many time");
 
         self.state.store(STATE_SIGNALING, Ordering::SeqCst);
 
@@ -156,6 +160,10 @@ impl SyncPoint {
     pub fn wait(&self, ctx: &mut Context) {
         profiling::scope!("wait");
 
+        // TODO: would it be possible to block on the worker thread's condition variable if there is
+        // one instead of always blocking on the sync point's? That would allow the worker to resume
+        // working if there is new work.
+
         {
             profiling::scope!("steal jobs");
             loop {
@@ -191,12 +199,6 @@ impl SyncPoint {
 
                 let mut guard = self.mutex.lock().unwrap();
                 while self.state.load(Ordering::Acquire) == STATE_DEFAULT {
-                    // spurious wakeup, let's see if we have work to do instead of
-                    // going back to sleep.
-                    if let Some(job) = ctx.try_fetch_one_job() {
-                        stolen = Some(job);
-                        continue 'outer;
-                    }
                     guard = self.cond.wait(guard).unwrap();
                 }
 
@@ -276,8 +278,8 @@ unsafe impl Send for SyncPointRef {}
 unsafe impl Sync for SyncPointRef {}
 
 impl SyncPointRef {
-    pub unsafe fn signal(&self, ctx: &mut Context) -> bool {
-        (*self.sync).signal(ctx)
+    pub unsafe fn signal(&self, ctx: &mut Context, n: u32) -> bool {
+        (*self.sync).signal(ctx, n)
     }
 }
 

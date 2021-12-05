@@ -40,6 +40,13 @@ fn main() {
         }
     }
 
+    let thread_pool = parasol::ThreadPool::builder()
+        .with_worker_threads(3)
+        .with_contexts(1)
+        .build();
+
+    let mut ctx = thread_pool.pop_context().unwrap();
+
     let mut tiler = Tiler::new(
         &TilerConfig {
             view_box,
@@ -82,7 +89,7 @@ fn main() {
             builder.color = *color;
 
             if parallel {
-                tiler.tile_path_parallel(path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
+                tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
             } else {
                 tiler.tile_path(path.iter(), Some(&transform), &mut builder);
             }

@@ -16,6 +16,7 @@
 mod job;
 mod sync;
 mod for_each_mut;
+mod graph;
 mod util;
 mod thread_pool;
 
@@ -38,6 +39,21 @@ impl ContextId {
     pub fn index(&self) -> usize { self.0 as usize }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Priority {
+    High,
+    Low,
+}
+
+impl Priority {
+    pub(crate) fn index(&self) -> usize {
+        match self {
+            Priority::High => 0,
+            Priority::Low => 1,
+        }
+    }
+}
+
 /// Data accessible by all contexts from any thread.
 struct Shared {
     /// Number of dedicated worker threads.
@@ -48,7 +64,7 @@ struct Shared {
     /// Atomic bitfield. Setting the Nth bit to one means the Nth worker thread is sleepy.
     sleepy_workers: AtomicU32,
 
-    stealers: Vec<CachePadded<Stealer<JobRef>>>,
+    stealers: Vec<CachePadded<[Stealer<JobRef>; 2]>>,
     sleep_states: Vec<CachePadded<SleepState>>,
 
     start_handler: Option<Box<dyn WorkerHook>>,
@@ -75,9 +91,19 @@ impl Shared {
             id: ctx.id,
             is_worker: ctx.is_worker,
             num_contexts: ctx.num_contexts,
-            queue: ctx.queue,
+            queues: ctx.queues,
             shared,
             stats: Stats::new(),
+        })
+    }
+
+    fn recycle_context(this: &Arc<Shared>, ctx: Context) {
+        let mut contexts = this.contexts.lock().unwrap();
+        contexts.push(InactiveContext {
+            id: ctx.id,
+            is_worker: ctx.is_worker,
+            num_contexts: ctx.num_contexts,
+            queues: ctx.queues,
         })
     }
 }
@@ -112,7 +138,7 @@ struct InactiveContext {
     id: u32,
     is_worker: bool,
     num_contexts: u8,
-    queue: WorkerQueue<JobRef>,
+    queues: [WorkerQueue<JobRef>; 2],
 }
 
 pub struct Context {
@@ -120,14 +146,18 @@ pub struct Context {
     is_worker: bool,
     num_contexts: u8,
 
-    queue: WorkerQueue<JobRef>,
+    queues: [WorkerQueue<JobRef>; 2],
+
     shared: Arc<Shared>,
 
     pub(crate) stats: Stats,
 }
 
 impl Context {
-    pub fn id(&self) -> u32 { self.id }
+
+    pub fn id(&self) -> ContextId { ContextId(self.id) }
+
+    pub(crate) fn index(&self) -> usize { self.id as usize }
 
     pub fn thread_pool_id(&self) -> ThreadPoolId {
         self.shared.id
@@ -153,22 +183,22 @@ impl Context {
         sync.wait(self);
     }
 
-    pub fn schedule_one<F>(&mut self, job: F) where F: FnOnce(&mut Context) + Send {
+    pub fn schedule_one<F>(&mut self, job: F, priority: Priority) where F: FnOnce(&mut Context) + Send {
         unsafe {
-            self.schedule_job(HeapJob::new_ref(job));
+            self.schedule_job(HeapJob::new_ref(job).with_priority(priority));
         }
     }
 
     pub(crate) fn schedule_job(&mut self, job: JobRef) {
         profiling::scope!("schedule_job");
-        //println!("worker:{} schedule a job", self.id());
 
-        self.queue.push(job);
-        self.wake_n(1);
+        self.enqueue_job(job);
+
+        self.wake(1);
     }
 
-    pub fn enqueue_job(&mut self, job: JobRef) {
-        self.queue.push(job);
+    pub(crate) fn enqueue_job(&mut self, job: JobRef) {
+        self.queues[job.priority().index()].push(job);
     }
 
 
@@ -181,11 +211,12 @@ impl Context {
             filter: (),
             group_size: 1,
             ctx: self,
+            priority: Priority::High,
         }
     }
 
     pub fn keep_busy(&mut self) -> bool {
-        if let Some(job) = self.try_fetch_one_job() {
+        if let Some(job) = self.fetch_job(false) {
             unsafe {
                 self.execute_job(job);
             }
@@ -195,40 +226,56 @@ impl Context {
         false
     }
 
-    pub(crate) fn try_fetch_one_job(&mut self) -> Option<JobRef> {
-        if let Some(job) = self.queue.pop() {
-            return Some(job);
+    pub(crate) fn fetch_job(&mut self, batch: bool) -> Option<JobRef> {
+        for queue in &self.queues {
+            if let Some(job) = queue.pop() {
+                return Some(job);
+            }
         }
 
+        self.steal(batch)
+    }
+
+    /// Attempt to steal a job.
+    pub(crate) fn steal(&mut self, batch: bool) -> Option<JobRef> {
         let stealers = &self.shared.stealers[..];
         let len = stealers.len();
         let start = if self.is_worker {
-            let sleep_state = &self.shared.sleep_states[self.id() as usize];
+            let sleep_state = &self.shared.sleep_states[self.index()];
             sleep_state.next_target.load(Ordering::Relaxed) as usize
         } else {
-            (self.id() as usize + 1) % len
+            self.index()
         };
 
         'stealers: for i in 0..len {
             let idx = (start + i) % len;
-            if idx == self.id() as usize {
+            if idx == self.index() {
                 continue;
             }
-            for _ in 0..50 {
-                match stealers[idx].steal() {
-                    Steal::Success(job) => {
-                        //println!("worker:{} stole a job from {}", self.id(), i);
-                        // We'll try to steal from here again next time.
-                        if self.is_worker {
-                            let sleep_state = &self.shared.sleep_states[self.id() as usize];
-                            sleep_state.next_target.store(i as u32, Ordering::Release);
+            for priority in 0..2 {
+                for _ in 0..50 {
+                    let stealer = &stealers[idx][priority];
+                    let steal = if batch {
+                        stealer.steal_batch_and_pop(&self.queues[priority])
+                    } else {
+                        stealer.steal()
+                    };
+
+                    match steal {
+                        Steal::Success(job) => {
+                            //println!("worker:{} stole a job from {}", self.id(), i);
+                            // We'll try to steal from here again next time.
+                            if self.is_worker {
+                                let sleep_state = &self.shared.sleep_states[self.index()];
+                                sleep_state.next_target.store(i as u32, Ordering::Release);
+                            }
+                            return Some(job);
                         }
-                        return Some(job);
+                        Steal::Empty => {
+                            continue 'stealers;
+                        }
+                        Steal::Retry => {}
                     }
-                    Steal::Empty => {
-                        continue 'stealers;
-                    }
-                    Steal::Retry => {}
                 }
             }
         }
@@ -236,20 +283,31 @@ impl Context {
         None
     }
 
-    pub(crate) unsafe fn execute_job(&mut self, job: JobRef) {
+    pub(crate) unsafe fn execute_job(&mut self, mut job: JobRef) {
+        if let Some(next) = job.split() {
+            self.enqueue_job(next);
+            self.wake(1);
+        }
+
         job.execute(self);
         self.stats.jobs_executed += 1;
     }
 
-    fn wake_n(&mut self, mut n: u32) {
-        profiling::scope!("wake workers");
+    /// Wake up to n worker threads (stop when they are all awake).
+    ///
+    /// This function is fairly expensive when it causes a thread to
+    /// wake up (most of the time is spent dealing with the condition
+    /// variable).
+    /// However it is fairly cheap if all workers are already awake.
+    fn wake(&mut self, mut n: u32) {
         while n > 0 {
+            //profiling::scope!("wake workers");
             let mut sleepy_bits = self.shared.sleepy_workers.load(Ordering::Acquire);
-            //println!("worker:{} wake({}) sleepy bits {:b}", self.id(), n, sleepy_bits);
+
+            profiling::scope!(&format!("wake {} workers ({:b})", n, sleepy_bits));
 
             if sleepy_bits == 0 {
                 // Everyone is already awake.
-                //println!("worker:{} woke no threads", self.id());
                 return;
             }
 
@@ -266,7 +324,6 @@ impl Context {
                     sleepy_bits = self.shared.sleepy_workers.load(Ordering::Acquire);
 
                     if sleepy_bits == 0 {
-                        //println!("worker:{} woke no threads", self.id());
                         return;
                     }
 
@@ -276,9 +333,8 @@ impl Context {
                 let sleep_state = &self.shared.sleep_states[i as usize];
                 sleep_state.next_target.store(self.id, Ordering::Relaxed);
 
+                profiling::scope!("unpark");
                 sleep_state.unparker.unpark();
-
-                //println!("worker:{} woke {}", self.id(), i);
 
                 n -= 1;
                 break;
@@ -323,7 +379,7 @@ fn test_simple_workload() {
     static INITIALIZED_WORKERS: AtomicU32 = AtomicU32::new(0);
     static SHUTDOWN_WORKERS: AtomicU32 = AtomicU32::new(0);
 
-    let mut pool = ThreadPool::builder()
+    let pool = ThreadPool::builder()
         .with_worker_threads(3)
         .with_start_handler(|_id| { INITIALIZED_WORKERS.fetch_add(1, Ordering::SeqCst); })
         .with_exit_handler(|_id| { SHUTDOWN_WORKERS.fetch_add(1, Ordering::SeqCst); })
@@ -331,7 +387,7 @@ fn test_simple_workload() {
 
     let mut ctx = pool.pop_context().unwrap();
 
-    for _ in 0..500 {
+    for _ in 0..300 {
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let worker_data = &mut [0i32, 0, 0, 0];
 
@@ -343,16 +399,22 @@ fn test_simple_workload() {
                 *item *= 2;
                 //println!(" * worker {:} : {:?} * 2 = {:?}", ctx.id(), _v, item);
 
-                for _ in 0..10 {
+                for i in 0..10 {
+                    let priority = if i % 2 == 0 { Priority::High } else { Priority::Low };
                     let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                    ctx.for_each_mut(nested_input).run(|_, item, _| { *item += 1; });
+                    ctx.for_each_mut(nested_input)
+                        .with_priority(priority)
+                        .run(|_, item, _| { *item += 1; });
                     for item in nested_input {
                         assert_eq!(*item, 1);
                     }
 
-                    for _ in 0..100 {
+                    for j in 0..100 {
+                        let priority = if j % 2 == 0 { Priority::High } else { Priority::Low };
                         let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                        ctx.for_each_mut(nested_input).run(|_, item, _| { *item += 1; });
+                        ctx.for_each_mut(nested_input)
+                            .with_priority(priority)
+                            .run(|_, item, _| { *item += 1; });
                         for item in nested_input {
                             let item = *item;
                             assert_eq!(item, 1);
@@ -365,7 +427,7 @@ fn test_simple_workload() {
         assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
     }
 
-    for _i in 0..500 {
+    for _i in 0..300 {
         //println!(" - {:?}", _i);
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
@@ -400,7 +462,7 @@ fn test_simple_workload() {
 
 #[test]
 fn test_few_items() {
-    let mut pool = ThreadPool::builder().with_worker_threads(3).build();
+    let pool = ThreadPool::builder().with_worker_threads(3).build();
     let mut ctx = pool.pop_context().unwrap();
     for _ in 0..100 {
         for n in 0..8 {
