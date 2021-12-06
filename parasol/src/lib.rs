@@ -203,7 +203,7 @@ impl Context {
 
 
     #[inline]
-    pub fn for_each_mut<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), (), ()> {
+    pub fn for_each_mut<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), ()> {
         new_for_each_mut(self, items)
     }
 

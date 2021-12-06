@@ -24,50 +24,31 @@ impl<'l, Item, ContextData, ImmutableData> DerefMut for Args<'l, Item, ContextDa
     fn deref_mut(&mut self) -> &mut Item { self.item }
 }
 
-pub trait Filter<Item>: Sync + 'static {
-    fn is_empty(&self) -> bool;
-    fn filter(&self, item: &Item) -> bool;
-}
-
-pub struct CallbackFilter<Cb>(Cb);
-
-impl<Item> Filter<Item> for () {
-    fn is_empty(&self) -> bool { true }
-    fn filter(&self, _: &Item) -> bool { true }
-}
-
-impl<Item, F: Fn(&Item) -> bool + Sync + 'static> Filter<Item> for CallbackFilter<F> {
-    fn is_empty(&self) -> bool { false }
-    fn filter(&self, item: &Item) -> bool { self.0(item) }
-}
-
-pub struct ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func, Filtr> {
+pub struct ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
     pub(crate) items: &'a mut [Item],
     pub(crate) context_data: Option<&'b mut [ContextData]>,
     pub(crate) immutable_data: Option<&'g ImmutableData>,
     pub(crate) function: Func,
-    pub(crate) filter: Filtr,
     pub(crate) range: Range<u32>,
     pub(crate) group_size: u32,
     pub(crate) priority: Priority,
     pub(crate) ctx: &'c mut Context,
 }
 
-pub fn new_for_each_mut<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), (), ()> {
+pub fn new_for_each_mut<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), ()> {
     ForEachMut {
         range: 0..items.len() as u32,
         items,
         context_data: None,
         immutable_data: None,
         function: (),
-        filter: (),
         group_size: 1,
         ctx,
         priority: Priority::High,
     }
 }
 
-impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr>
+impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F>
 {
     /// Specify some per-context data that can be mutably accessed by the run function.
     ///
@@ -76,7 +57,7 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
     ///
     /// The length of the slice must be at least equal to the number of contexts.
     #[inline]
-    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEachMut<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F, Filtr> {
+    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEachMut<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
         assert!(
             context_data.len() >= self.ctx.num_contexts as usize,
             "Got {:?} context items, need at least {:?}",
@@ -88,7 +69,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
             context_data: Some(context_data),
             immutable_data: self.immutable_data,
             function: self.function,
-            filter: self.filter,
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
@@ -120,27 +100,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
         self
     }
 
-    /// Pass a callback that can be used to filter out items before processing them in parallel.
-    ///
-    /// This can be faster than an early-out in the run function because it allows the scheduler
-    /// to discard chunks of work before scheduling them.
-    #[inline]
-    pub fn filter<FilterFn>(self, filter: FilterFn) -> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, CallbackFilter<FilterFn>>
-    where FilterFn: Fn(&Item) -> bool + Sync,
-    {
-        ForEachMut {
-            items: self.items,
-            context_data: self.context_data,
-            immutable_data: self.immutable_data,
-            function: self.function,
-            filter: CallbackFilter(filter),
-            range: self.range,
-            group_size: self.group_size,
-            priority: self.priority,
-            ctx: self.ctx
-        }
-    }
-
     /// Run this workload with the help of worker threads.
     ///
     /// This function returns after the workload has completed.
@@ -149,7 +108,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
     where
         Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
         Item: Sync + Send,
-        Filtr: Filter<Item>,
     {
         if !self.items.is_empty() {
             for_each_mut(self.apply(function));
@@ -163,7 +121,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
     pub fn run_async<Func>(self, function: Func) -> JoinHandle<'a, 'b>
     where
         Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
-        Filtr: Filter<Item>,
         Item: Sync + Send + 'static,
         ContextData: 'static,
         ImmutableData: 'static,
@@ -172,7 +129,7 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
     }
 
     #[inline]
-    fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func, Filtr>
+    fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
     where
         Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
     {
@@ -181,7 +138,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
             context_data: self.context_data,
             immutable_data: self.immutable_data,
             function,
-            filter: self.filter,
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
@@ -194,10 +150,9 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F, Filtr> ForEachMut<'a, 
     }
 }
 
-fn for_each_mut<Item, ContextData, ImmutableData, F, Filtr>(params: ForEachMut<Item, ContextData, ImmutableData, F, Filtr>)
+fn for_each_mut<Item, ContextData, ImmutableData, F>(params: ForEachMut<Item, ContextData, ImmutableData, F>)
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
-    Filtr: Filter<Item>,
     Item: Sync + Send,
 {
     profiling::scope!("for_each_mut");
@@ -212,13 +167,12 @@ where
 
         // Once we start converting this into jobrefs, it MUST NOT move or be destroyed until
         // we are done waiting on the sync point.
-        let job_data: MutSliceJob<Item, ContextData, ImmutableData, F, Filtr> = MutSliceJob::new(
+        let job_data: MutSliceJob<Item, ContextData, ImmutableData, F> = MutSliceJob::new(
             params.items,
             params.group_size,
             params.context_data,
             params.immutable_data,
             params.function,
-            params.filter,
             &sync,
         );
 
@@ -235,17 +189,15 @@ where
             profiling::scope!("mt:job group");
             for i in first_item..parallel.range.start {
                 let item = &mut params.items[i as usize];
-                if job_data.filter.filter(item) {
-                    profiling::scope!("mt:job");
-                    let args = Args {
-                        item,
-                        item_index: i,
-                        context_data: &mut *job_data.ctx_data.offset(ctx.index() as isize),
-                        immutable_data: &*job_data.immutable_data,
-                    };
+                profiling::scope!("mt:job");
+                let args = Args {
+                    item,
+                    item_index: i,
+                    context_data: &mut *job_data.ctx_data.offset(ctx.index() as isize),
+                    immutable_data: &*job_data.immutable_data,
+                };
 
-                    (job_data.function)(ctx, args);
-                }
+                (job_data.function)(ctx, args);
             }
 
             sync.signal(ctx, parallel.range.start - first_item);
@@ -255,9 +207,9 @@ where
     }
 }
 
-unsafe fn for_each_mut_dispatch<Item, ContextData, ImmutableData, F, Filtr>(
+unsafe fn for_each_mut_dispatch<Item, ContextData, ImmutableData, F>(
     ctx: &mut Context,
-    job_data: &MutSliceJob<Item, ContextData, ImmutableData, F, Filtr>,
+    job_data: &MutSliceJob<Item, ContextData, ImmutableData, F>,
     dispatch: &DispatchParameters,
     items: &[Item],
     sync: &SyncPoint,
@@ -265,25 +217,12 @@ unsafe fn for_each_mut_dispatch<Item, ContextData, ImmutableData, F, Filtr>(
 )
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
-    Filtr: Filter<Item>,
 {
     let mut skipped_items = 0;
     let mut actual_group_count = dispatch.group_count;
     for group_idx in 0..dispatch.group_count {
         let mut start = dispatch.range.start + dispatch.initial_group_size * group_idx;
         let mut end = (start + dispatch.initial_group_size).min(dispatch.range.end);
-
-        if !job_data.filter.is_empty() {
-            while start < end && !job_data.filter.filter(&items[start as usize]) {
-                skipped_items += 1;
-                start += 1;
-            }
-
-            while start < end && !job_data.filter.filter(&items[end as usize - 1]) {
-                skipped_items += 1;
-                end -= 1;
-            }
-        }
 
         // If all items in the group are filtered out, skip scheduling it
         // entirely
@@ -303,10 +242,9 @@ where
     ctx.wake(actual_group_count.min(ctx.num_worker_threads()));
 }
 
-fn for_each_mut_async<'a, 'b, Item, ContextData, ImmutableData, F, Filtr>(params: ForEachMut<Item, ContextData, ImmutableData, F, Filtr>) -> JoinHandle<'a, 'b>
+fn for_each_mut_async<'a, 'b, Item, ContextData, ImmutableData, F>(params: ForEachMut<Item, ContextData, ImmutableData, F>) -> JoinHandle<'a, 'b>
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
-    Filtr: Filter<Item> + 'static,
     Item: Sync + Send + 'static,
     ContextData: 'static,
     ImmutableData: 'static,
@@ -324,7 +262,6 @@ where
             params.context_data,
             params.immutable_data,
             params.function,
-            params.filter,
             &sync,
         ));
 
@@ -365,21 +302,19 @@ impl DispatchParameters {
     }
 }
 
-pub(crate) struct MutSliceJob<Item, ContextData, ImmutableData, Func, Filtr> {
+pub(crate) struct MutSliceJob<Item, ContextData, ImmutableData, Func> {
     items: *mut Item,
     ctx_data: *mut ContextData,
     immutable_data: *const ImmutableData,
     function: Func,
-    filter: Filtr,
     sync: SyncPointRef,
     range: Range<u32>,
     split_thresold: u32,
 }
 
-impl<Item, ContextData, ImmutableData, Func, Filtr> Job for MutSliceJob<Item, ContextData, ImmutableData, Func, Filtr>
+impl<Item, ContextData, ImmutableData, Func> Job for MutSliceJob<Item, ContextData, ImmutableData, Func>
 where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
-    Filtr: Filter<Item>,
 {
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
         let this: &Self = mem::transmute(this);
@@ -387,27 +322,24 @@ where
 
         for item_idx in range {
             let item = &mut *this.items.offset(item_idx as isize);
-            if this.filter.filter(item) {
-                profiling::scope!("job");
-                let args = Args {
-                    item,
-                    item_index: item_idx,
-                    context_data: &mut *this.ctx_data.offset(ctx.index() as isize),
-                    immutable_data: &*this.immutable_data,
-                };
+            profiling::scope!("job");
+            let args = Args {
+                item,
+                item_index: item_idx,
+                context_data: &mut *this.ctx_data.offset(ctx.index() as isize),
+                immutable_data: &*this.immutable_data,
+            };
 
-                (this.function)(ctx, args);
-            }
+            (this.function)(ctx, args);
         }
 
         this.sync.signal(ctx, n);
     }
 }
 
-impl<Item, ContextData, ImmutableData, Func, Filtr> MutSliceJob<Item, ContextData, ImmutableData, Func, Filtr>
+impl<Item, ContextData, ImmutableData, Func> MutSliceJob<Item, ContextData, ImmutableData, Func>
 where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
-    Filtr: Filter<Item>,
 {
     pub unsafe fn new(
         items: &mut[Item],
@@ -415,7 +347,6 @@ where
         mut ctx_data: Option<&mut [ContextData]>,
         immutable_data: Option<&ImmutableData>,
         function: Func,
-        filter: Filtr,
         sync: &SyncPoint,
     ) -> Self {
         MutSliceJob {
@@ -423,7 +354,6 @@ where
             ctx_data: ctx_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr()),
             immutable_data: immutable_data.map_or(std::ptr::null_mut(), |ptr| ptr),
             function,
-            filter,
             sync: sync.unsafe_ref(),
             range: 0..(items.len() as u32),
             split_thresold,
@@ -561,7 +491,6 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 self.context_data.as_mut().map(|vec| &mut vec[..]),
                 immutable_data,
                 function,
-                (),
                 &self.sync,
             ));
 
