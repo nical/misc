@@ -24,7 +24,7 @@ impl<'l, Item, ContextData, ImmutableData> DerefMut for Args<'l, Item, ContextDa
     fn deref_mut(&mut self) -> &mut Item { self.item }
 }
 
-pub struct ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
+pub struct ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
     pub(crate) items: &'a mut [Item],
     pub(crate) context_data: Option<&'b mut [ContextData]>,
     pub(crate) immutable_data: Option<&'g ImmutableData>,
@@ -35,8 +35,8 @@ pub struct ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
     pub(crate) ctx: &'c mut Context,
 }
 
-pub fn new_for_each_mut<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), ()> {
-    ForEachMut {
+pub fn new_for_each<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
+    ForEach {
         range: 0..items.len() as u32,
         items,
         context_data: None,
@@ -48,7 +48,7 @@ pub fn new_for_each_mut<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut
     }
 }
 
-impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F>
+impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F>
 {
     /// Specify some per-context data that can be mutably accessed by the run function.
     ///
@@ -57,14 +57,14 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g,
     ///
     /// The length of the slice must be at least equal to the number of contexts.
     #[inline]
-    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEachMut<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
+    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEach<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
         assert!(
             context_data.len() >= self.ctx.num_contexts as usize,
             "Got {:?} context items, need at least {:?}",
             context_data.len(), self.ctx.num_contexts,
         );
 
-        ForEachMut {
+        ForEach {
             items: self.items,
             context_data: Some(context_data),
             immutable_data: self.immutable_data,
@@ -110,7 +110,7 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g,
         Item: Sync + Send,
     {
         if !self.items.is_empty() {
-            for_each_mut(self.apply(function));
+            for_each(self.apply(function));
         }
     }
 
@@ -125,15 +125,15 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g,
         ContextData: 'static,
         ImmutableData: 'static,
     {
-        for_each_mut_async(self.apply(function))
+        for_each_async(self.apply(function))
     }
 
     #[inline]
-    fn apply<Func>(self, function: Func) -> ForEachMut<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
+    fn apply<Func>(self, function: Func) -> ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
     where
         Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
     {
-        ForEachMut {
+        ForEach {
             items: self.items,
             context_data: self.context_data,
             immutable_data: self.immutable_data,
@@ -150,12 +150,12 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachMut<'a, 'b, 'g,
     }
 }
 
-fn for_each_mut<Item, ContextData, ImmutableData, F>(params: ForEachMut<Item, ContextData, ImmutableData, F>)
+fn for_each<Item, ContextData, ImmutableData, F>(params: ForEach<Item, ContextData, ImmutableData, F>)
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
     Item: Sync + Send,
 {
-    profiling::scope!("for_each_mut");
+    profiling::scope!("for_each");
 
     unsafe {
         let first_item = params.range.start;
@@ -176,12 +176,10 @@ where
             &sync,
         );
 
-        for_each_mut_dispatch(
+        for_each_dispatch(
             ctx,
             &job_data,
             &parallel,
-            &params.items,
-            &sync,
             params.priority,
         );
 
@@ -207,25 +205,21 @@ where
     }
 }
 
-unsafe fn for_each_mut_dispatch<Item, ContextData, ImmutableData, F>(
+unsafe fn for_each_dispatch<Item, ContextData, ImmutableData, F>(
     ctx: &mut Context,
     job_data: &MutSliceJob<Item, ContextData, ImmutableData, F>,
     dispatch: &DispatchParameters,
-    items: &[Item],
-    sync: &SyncPoint,
     priority: Priority,
 )
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
 {
-    let mut skipped_items = 0;
     let mut actual_group_count = dispatch.group_count;
     for group_idx in 0..dispatch.group_count {
-        let mut start = dispatch.range.start + dispatch.initial_group_size * group_idx;
-        let mut end = (start + dispatch.initial_group_size).min(dispatch.range.end);
+        let start = dispatch.range.start + dispatch.initial_group_size * group_idx;
+        let end = (start + dispatch.initial_group_size).min(dispatch.range.end);
 
-        // If all items in the group are filtered out, skip scheduling it
-        // entirely
+        // TODO: handle this in DispatchParameters::new
         if start >= end {
             actual_group_count -= 1;
             continue;
@@ -234,22 +228,18 @@ where
         ctx.enqueue_job(job_data.as_job_ref(start..end).with_priority(priority));
     }
 
-    if skipped_items > 0 {
-        sync.signal(ctx, skipped_items);
-    }
-
     // Waking up worker threads is the expensive part.
     ctx.wake(actual_group_count.min(ctx.num_worker_threads()));
 }
 
-fn for_each_mut_async<'a, 'b, Item, ContextData, ImmutableData, F>(params: ForEachMut<Item, ContextData, ImmutableData, F>) -> JoinHandle<'a, 'b>
+fn for_each_async<'a, 'b, Item, ContextData, ImmutableData, F>(params: ForEach<Item, ContextData, ImmutableData, F>) -> JoinHandle<'a, 'b>
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
     Item: Sync + Send + 'static,
     ContextData: 'static,
     ImmutableData: 'static,
 {
-    profiling::scope!("for_each_mut_async");
+    profiling::scope!("for_each_async");
 
     unsafe {
         let parallel = params.dispatch_parameters(true);
@@ -265,12 +255,10 @@ where
             &sync,
         ));
 
-        for_each_mut_dispatch(
+        for_each_dispatch(
             ctx,
             &data,
             &parallel,
-            &params.items,
-            &sync,
             params.priority,
         );
 
@@ -494,12 +482,10 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 &self.sync,
             ));
 
-            for_each_mut_dispatch(
+            for_each_dispatch(
                 ctx,
                 &data,
                 &dispatch,
-                &self.items,
-                &self.sync,
                 self.priority,
             );
 

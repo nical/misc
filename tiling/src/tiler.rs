@@ -312,7 +312,7 @@ impl Tiler {
 
         let mut side_edges = SideEdgeTracker::new();
         // This could be done in parallel but it's already quite fast serially.
-        for (row_idx, row) in rows[self.first_row..self.last_row].iter_mut().enumerate() {
+        for row in &mut rows[self.first_row..self.last_row] {
             if row.edges.is_empty() {
                 continue;
             }
@@ -393,12 +393,15 @@ impl Tiler {
         let mut rows = std::mem::take(&mut self.rows);
         let mut worker_data = std::mem::take(&mut self.worker_data);
 
-        ctx.for_each_mut(&mut rows[self.first_row..self.last_row])
+        ctx.for_each(&mut rows[self.first_row..self.last_row])
             .with_context_data(&mut worker_data)
             .with_group_size(4)
             //.filter(|row| !row.edges.is_empty())
-            .run(|worker, row, worker_data| {
+            .run(|worker, args| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
+
+                let row = args.item;
+                let worker_data = args.context_data;
 
                 if row.edges.is_empty() {
                     return;
