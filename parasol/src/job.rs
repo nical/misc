@@ -13,7 +13,6 @@ pub trait Job {
     /// which scheduled the job, so the implementer must ensure the
     /// appropriate traits are met, whether `Send`, `Sync`, or both.
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>);
-    unsafe fn should_split(this: *const Self, range: Range<u32>) -> bool { false }
 }
 
 /// Effectively a Job trait object. Each JobRef **must** be executed

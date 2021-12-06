@@ -54,6 +54,14 @@ impl SyncPoint {
         }
     }
 
+    pub fn reset(&mut self, deps: u32) {
+        assert!(self.state.load(Ordering::Acquire) == STATE_SIGNALED);
+
+        let state = if deps == 0 { STATE_SIGNALED } else { STATE_DEFAULT };
+        self.state.store(state, Ordering::Release);
+        self.deps.store(deps as i32, Ordering::Release);
+    }
+
     pub fn signal_one(&self, ctx: &mut Context) -> bool {
         self.signal(ctx, 1)
     }

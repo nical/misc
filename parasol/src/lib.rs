@@ -28,7 +28,7 @@ use crossbeam_utils::CachePadded;
 use job::*;
 
 pub use sync::SyncPoint;
-pub use for_each_mut::{ForEachMut};
+pub use for_each_mut::{ForEachMut, workload, range_workload, Workload, RunningWorkload, new_for_each_mut};
 pub use thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder, ShutdownHandle};
 use thread_pool::{WorkerHook, SleepState};
 
@@ -203,16 +203,8 @@ impl Context {
 
 
     #[inline]
-    pub fn for_each_mut<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'c, Item, (), (), ()> {
-        ForEachMut {
-            items,
-            context_data: None,
-            function: (),
-            filter: (),
-            group_size: 1,
-            ctx: self,
-            priority: Priority::High,
-        }
+    pub fn for_each_mut<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEachMut<'a, 'static, 'static, 'c, Item, (), (), (), ()> {
+        new_for_each_mut(self, items)
     }
 
     pub fn keep_busy(&mut self) -> bool {
@@ -393,20 +385,28 @@ fn test_simple_workload() {
 
         ctx.for_each_mut(input)
             .with_context_data(worker_data)
-            .run(|ctx, item, wd| {
-                let _v: i32 = *item;
-                *wd += 1;
-                *item *= 2;
+            .run(|ctx, args| {
+                let _v: i32 = *args;
+                *args.context_data += 1;
+                *args.item *= 2;
                 //println!(" * worker {:} : {:?} * 2 = {:?}", ctx.id(), _v, item);
 
                 for i in 0..10 {
                     let priority = if i % 2 == 0 { Priority::High } else { Priority::Low };
                     let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                     ctx.for_each_mut(nested_input)
+                        .with_range(3..14)
                         .with_priority(priority)
-                        .run(|_, item, _| { *item += 1; });
-                    for item in nested_input {
+                        .run(|_, mut args| { *args += 1; });
+
+                    for item in &nested_input[0..3] {
+                        assert_eq!(*item, 0);
+                    }
+                    for item in &nested_input[3..14] {
                         assert_eq!(*item, 1);
+                    }
+                    for item in &nested_input[14..16] {
+                        assert_eq!(*item, 0);
                     }
 
                     for j in 0..100 {
@@ -414,13 +414,12 @@ fn test_simple_workload() {
                         let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                         ctx.for_each_mut(nested_input)
                             .with_priority(priority)
-                            .run(|_, item, _| { *item += 1; });
+                            .run(|_, mut item| { *item += 1; });
                         for item in nested_input {
                             let item = *item;
                             assert_eq!(item, 1);
                         }
                     }
-
                 }
             });
 
@@ -431,12 +430,12 @@ fn test_simple_workload() {
         //println!(" - {:?}", _i);
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-        let handle = ctx.for_each_mut(input).run_async(|ctx, val, wd| {
+        let handle = ctx.for_each_mut(input).run_async(|ctx, mut args| {
 
             for _ in 0..10 {
                 let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-                let handle = ctx.for_each_mut(nested_input).run_async(|_, item, _| { *item += 1; });
+                let handle = ctx.for_each_mut(nested_input).run_async(|_, mut item| { *item += 1; });
                 handle.wait(ctx);
 
                 for item in nested_input {
@@ -444,8 +443,8 @@ fn test_simple_workload() {
                 }
             }
 
-            *val *= 2;
-            *wd = ();
+            *args *= 2;
+            *args.context_data = ();
         });
 
         handle.wait(&mut ctx);
@@ -468,13 +467,9 @@ fn test_few_items() {
         for n in 0..8 {
             let mut input = vec![0i32; n];
 
-            ctx.for_each_mut(&mut input).run(|_, item, _| {
-                *item += 1;
-            });
+            ctx.for_each_mut(&mut input).run(|_, mut item| { *item += 1; });
 
-            let handle = ctx.for_each_mut(&mut input).run_async(|_, item, _| {
-                *item += 1;
-            });
+            let handle = ctx.for_each_mut(&mut input).run_async(|_, mut item| { *item += 1; });
 
             handle.wait(&mut ctx);
 
