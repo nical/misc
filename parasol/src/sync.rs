@@ -168,6 +168,8 @@ impl SyncPoint {
     pub fn wait(&self, ctx: &mut Context) {
         profiling::scope!("wait");
 
+        // TODO: assert that the context belongs to the same thread pool.
+
         // TODO: would it be possible to block on the worker thread's condition variable if there is
         // one instead of always blocking on the sync point's? That would allow the worker to resume
         // working if there is new work.

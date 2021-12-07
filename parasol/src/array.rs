@@ -1,7 +1,6 @@
-use crate::{Context, Priority};
 use crate::sync::{SyncPoint, SyncPointRef};
-
-use crate::job::{JobRef, Job};
+use crate::job::{JobRef, Job, Priority};
+use crate::context::Context;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
@@ -59,9 +58,9 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     #[inline]
     pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEach<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
         assert!(
-            context_data.len() >= self.ctx.num_contexts as usize,
+            context_data.len() >= self.ctx.num_contexts() as usize,
             "Got {:?} context items, need at least {:?}",
-            context_data.len(), self.ctx.num_contexts,
+            context_data.len(), self.ctx.num_contexts(),
         );
 
         ForEach {
@@ -585,4 +584,123 @@ fn test_range_workload() {
     w.wait(&mut ctx);
 
     pool.shut_down().wait();
+}
+
+#[test]
+fn test_simple_for_each() {
+    use crate::ThreadPool;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static INITIALIZED_WORKERS: AtomicU32 = AtomicU32::new(0);
+    static SHUTDOWN_WORKERS: AtomicU32 = AtomicU32::new(0);
+
+    let pool = ThreadPool::builder()
+        .with_worker_threads(3)
+        .with_contexts(1)
+        .with_start_handler(|_id| { INITIALIZED_WORKERS.fetch_add(1, Ordering::SeqCst); })
+        .with_exit_handler(|_id| { SHUTDOWN_WORKERS.fetch_add(1, Ordering::SeqCst); })
+        .build();
+
+    let mut ctx = pool.pop_context().unwrap();
+
+    for _ in 0..300 {
+        let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let worker_data = &mut [0i32, 0, 0, 0];
+
+        ctx.for_each(input)
+            .with_context_data(worker_data)
+            .run(|ctx, args| {
+                let _v: i32 = *args;
+                *args.context_data += 1;
+                *args.item *= 2;
+                //println!(" * worker {:} : {:?} * 2 = {:?}", ctx.id(), _v, item);
+
+                for i in 0..10 {
+                    let priority = if i % 2 == 0 { Priority::High } else { Priority::Low };
+                    let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                    ctx.for_each(nested_input)
+                        .with_range(3..14)
+                        .with_priority(priority)
+                        .run(|_, mut args| { *args += 1; });
+
+                    for item in &nested_input[0..3] {
+                        assert_eq!(*item, 0);
+                    }
+                    for item in &nested_input[3..14] {
+                        assert_eq!(*item, 1);
+                    }
+                    for item in &nested_input[14..16] {
+                        assert_eq!(*item, 0);
+                    }
+
+                    for j in 0..100 {
+                        let priority = if j % 2 == 0 { Priority::High } else { Priority::Low };
+                        let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                        ctx.for_each(nested_input)
+                            .with_priority(priority)
+                            .run(|_, mut item| { *item += 1; });
+                        for item in nested_input {
+                            let item = *item;
+                            assert_eq!(item, 1);
+                        }
+                    }
+                }
+            });
+
+        assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
+    }
+
+    for _i in 0..300 {
+        //println!(" - {:?}", _i);
+        let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+        let handle = ctx.for_each(input).run_async(|ctx, mut args| {
+
+            for _ in 0..10 {
+                let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+                let handle = ctx.for_each(nested_input).run_async(|_, mut item| { *item += 1; });
+                handle.wait(ctx);
+
+                for item in nested_input {
+                    assert_eq!(*item, 1);
+                }
+            }
+
+            *args *= 2;
+            *args.context_data = ();
+        });
+
+        handle.wait(&mut ctx);
+
+        assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
+    }
+
+    let handle = pool.shut_down();
+    handle.wait();
+
+    assert_eq!(INITIALIZED_WORKERS.load(Ordering::SeqCst), 3);
+    assert_eq!(SHUTDOWN_WORKERS.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn test_few_items() {
+    use crate::ThreadPool;
+
+    let pool = ThreadPool::builder().with_worker_threads(3).build();
+    let mut ctx = pool.pop_context().unwrap();
+    for _ in 0..100 {
+        for n in 0..8 {
+            let mut input = vec![0i32; n];
+
+            ctx.for_each(&mut input).run(|_, mut item| { *item += 1; });
+
+            let handle = ctx.for_each(&mut input).run_async(|_, mut item| { *item += 1; });
+
+            handle.wait(&mut ctx);
+
+            for val in &input {
+                assert_eq!(*val, 2);
+            }
+        }
+    }
 }

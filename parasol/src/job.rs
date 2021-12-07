@@ -1,7 +1,24 @@
 use std::ops::Range;
 use std::cell::UnsafeCell;
 use std::mem;
-use crate::{Context, Priority};
+use crate::context::Context;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Priority {
+    High,
+    Low,
+}
+
+// TODO: move into job.rs
+impl Priority {
+    pub(crate) fn index(&self) -> usize {
+        match self {
+            Priority::High => 0,
+            Priority::Low => 1,
+        }
+    }
+}
+
 
 /// A `Job` is used to advertise work for other threads that they may
 /// want to steal. In accordance with time honored tradition, jobs are
@@ -21,6 +38,8 @@ pub trait Job {
 /// Internally, we store the job's data in a `*const ()` pointer.  The
 /// true type is something like `*const StackJob<...>`, but we hide
 /// it. We also carry the "execute fn" from the `Job` trait.
+///
+/// The interesting parts of this type are taken from Rayon.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct JobRef {
     // The "deconstructed trait object" part, taken directly from rayon.
@@ -101,6 +120,64 @@ impl JobRef {
     }
 }
 
+/// Represents a job stored in the heap. Used to implement
+/// `scope`. Unlike `StackJob`, when executed, `HeapJob` simply
+/// invokes a closure, which then triggers the appropriate logic to
+/// signal that the job executed.
+///
+/// (Probably `StackJob` should be refactored in a similar fashion.)
+pub struct HeapJob<BODY>
+where
+    BODY: FnOnce(&mut Context) + Send,
+{
+    job: UnsafeCell<Option<BODY>>,
+}
+
+impl<F> HeapJob<F>
+where
+    F: FnOnce(&mut Context) + Send,
+{
+    pub fn new(func: F) -> Self {
+        HeapJob {
+            job: UnsafeCell::new(Some(func)),
+        }
+    }
+
+    pub unsafe fn new_ref(func: F) -> JobRef {
+        Box::new(Self::new(func)).as_job_ref()
+    }
+
+    /// Creates a `JobRef` from this job -- note that this hides all
+    /// lifetimes, so it is up to you to ensure that this JobRef
+    /// doesn't outlive any data that it closes over.
+    pub unsafe fn as_job_ref(self: Box<Self>) -> JobRef {
+        let this: *const Self = mem::transmute(self);
+        JobRef::new(this)
+    }
+}
+
+impl<BODY> Job for HeapJob<BODY>
+where
+    BODY: FnOnce(&mut Context) + Send,
+{
+    unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
+        let this: Box<Self> = mem::transmute(this);
+        let job = (*this.job.get()).take().unwrap();
+        job(ctx);
+    }
+}
+
+struct AbortIfPanic;
+
+impl Drop for AbortIfPanic {
+    fn drop(&mut self) {
+        eprintln!("unexpected panic; aborting");
+        ::std::process::abort();
+    }
+}
+
+/*
+
 /// A job that will be owned by a stack slot. This means that when it
 /// executes it need not free any heap data, the cleanup occurs when
 /// the stack frame is later popped.  The function parameter indicates
@@ -151,81 +228,26 @@ where
     }
 }
 
-/// Represents a job stored in the heap. Used to implement
-/// `scope`. Unlike `StackJob`, when executed, `HeapJob` simply
-/// invokes a closure, which then triggers the appropriate logic to
-/// signal that the job executed.
-///
-/// (Probably `StackJob` should be refactored in a similar fashion.)
-pub struct HeapJob<BODY>
-where
-    BODY: FnOnce(&mut Context) + Send,
-{
-    job: UnsafeCell<Option<BODY>>,
+pub(super) enum JobResult<T> {
+    None,
+    Ok(T),
+    Panic(Box<dyn Any + Send>),
 }
-
-impl<F> HeapJob<F>
-where
-    F: FnOnce(&mut Context) + Send,
-{
-    pub fn new(func: F) -> Self {
-        HeapJob {
-            job: UnsafeCell::new(Some(func)),
+impl<T> JobResult<T> {
+    /// Convert the `JobResult` for a job that has finished (and hence
+    /// its JobResult is populated) into its return value.
+    ///
+    /// NB. This will panic if the job panicked.
+    pub(super) fn into_return_value(self) -> T {
+        match self {
+            JobResult::None => unreachable!(),
+            JobResult::Ok(x) => x,
+            JobResult::Panic(x) => resume_unwinding(x),
         }
     }
-
-    pub unsafe fn new_ref(func: F) -> JobRef {
-        Box::new(Self::new(func)).as_job_ref()
-    }
-
-    /// Creates a `JobRef` from this job -- note that this hides all
-    /// lifetimes, so it is up to you to ensure that this JobRef
-    /// doesn't outlive any data that it closes over.
-    pub unsafe fn as_job_ref(self: Box<Self>) -> JobRef {
-        let this: *const Self = mem::transmute(self);
-        JobRef::new(this)
-    }
+}
+pub(super) fn resume_unwinding(payload: Box<dyn Any + Send>) -> ! {
+    panic::resume_unwind(payload)
 }
 
-impl<BODY> Job for HeapJob<BODY>
-where
-    BODY: FnOnce(&mut Context) + Send,
-{
-    unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
-        let this: Box<Self> = mem::transmute(this);
-        let job = (*this.job.get()).take().unwrap();
-        job(ctx);
-    }
-}
-
-//pub(super) enum JobResult<T> {
-//    None,
-//    Ok(T),
-//    Panic(Box<dyn Any + Send>),
-//}
-//impl<T> JobResult<T> {
-//    /// Convert the `JobResult` for a job that has finished (and hence
-//    /// its JobResult is populated) into its return value.
-//    ///
-//    /// NB. This will panic if the job panicked.
-//    pub(super) fn into_return_value(self) -> T {
-//        match self {
-//            JobResult::None => unreachable!(),
-//            JobResult::Ok(x) => x,
-//            JobResult::Panic(x) => resume_unwinding(x),
-//        }
-//    }
-//}
-//pub(super) fn resume_unwinding(payload: Box<dyn Any + Send>) -> ! {
-//    panic::resume_unwind(payload)
-//}
-
-struct AbortIfPanic;
-
-impl Drop for AbortIfPanic {
-    fn drop(&mut self) {
-        eprintln!("unexpected panic; aborting");
-        ::std::process::abort();
-    }
-}
-
+*/

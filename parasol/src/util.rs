@@ -1,21 +1,59 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 
-// /// A wrapper for `*const T` that is Send and Sync (use carefully).
-// pub struct SyncPtr<T: ?Sized>(pub *const T);
-// unsafe impl<T> Send for SyncPtr<T> {}
-// unsafe impl<T> Sync for SyncPtr<T> {}
-// impl<T> Copy for SyncPtr<T> {}
-// impl<T> Clone for SyncPtr<T> { fn clone(&self) -> Self { *self } }
-// impl<T: ?Sized> SyncPtr<T> {
-//     pub unsafe fn get(&self) -> &T { &(*self.0) }
-// }
+pub struct ExclusiveCheck<T> {
+    lock: AtomicBool,
+    tag: T
+}
 
-// /// A wrapper for `*mut T` that is Send and Sync (use carefully).
-// pub struct SyncPtrMut<T>(pub *mut T);
-// unsafe impl<T> Send for SyncPtrMut<T> {}
-// unsafe impl<T> Sync for SyncPtrMut<T> {}
-// impl<T> Copy for SyncPtrMut<T> {}
-// impl<T> Clone for SyncPtrMut<T> { fn clone(&self) -> Self { *self } }
-// impl<T> SyncPtrMut<T> {
-//     //unsafe fn get(&self) -> &mut T { &mut(*self.0) }
-//     pub unsafe fn offset(&self, n: isize) -> &mut T { &mut(*self.0.offset(n)) }
-// }
+impl<T: std::fmt::Debug> ExclusiveCheck<T> {
+    pub fn new() -> Self where T: Default {
+        ExclusiveCheck {
+            lock: AtomicBool::new(false),
+            tag: Default::default(),
+        }
+    }
+
+    pub fn with_tag(tag: T) -> Self {
+        ExclusiveCheck {
+            lock: AtomicBool::new(false),
+            tag,
+        }
+    }
+
+    pub fn begin(&self) {
+        let res = self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
+        assert!(res.is_ok(), "Exclusive check failed (begin): {:?}", self.tag);
+    }
+
+    pub fn end(&self) {
+        let res = self.lock.compare_exchange(true, false, Ordering::Release, Ordering::Relaxed);
+        assert!(res.is_ok(), "Exclusive check failed (end): {:?}", self.tag);
+    }
+}
+
+#[test]
+fn exclu_check_01() {
+    let lock = ExclusiveCheck::with_tag(());
+
+    lock.begin();
+    lock.end();
+
+    lock.begin();
+    lock.end();
+
+    lock.begin();
+    lock.end();
+}
+
+#[test]
+#[should_panic]
+fn exclu_check_02() {
+    let lock = ExclusiveCheck::with_tag(());
+
+    lock.begin();
+    lock.begin();
+
+    lock.end();
+    lock.end();
+}
+

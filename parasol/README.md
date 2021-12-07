@@ -52,8 +52,12 @@ There are context objects, and only they can process submitted work. There are m
 
 ## How to get good performance
 
-To have good performance it is best to have rather heavy workloads so that the help provided by worker threads is not eclipsed by the time we spent waking them up. With smaller workloads it is best to be able to overlap them before blocking.
-Typically it is hard to beat single-threaded performance with a succession of short workloads where the submitter waits as soon as it submits a workload.
+To have good performance it is best to either:
+ - have rather heavy workloads so that the help provided by worker threads is not eclipsed by the time we spent waking them up.
+ - or with smaller workloads it is best to be able to overlap them before blocking.
+ - for asynchronous workloads, postpone waiting on the result as much as possible to increase the probability of the workload being done by the time we need it (and therefore avoiding the expensive blocking primitives). 
+
+Typically it is hard to beat single-threaded performance with a succession of short workloads where the submitter waits as soon as it submits a workload. Because waking the workers up is not cheap and there's additional latency coming from the gap between when a thread wakes another thread up and when the other thread actually starts running.
 
 ## The fixed number of contexts
 
@@ -91,12 +95,12 @@ The reason this is important (for Gecko) is that we can have very heavy low-prio
 
 Rayon is quite good, there are plenty of reasons to use it over this crate:
 
+ - This crate is a work in progress (no panic handling, woops!). Rayon has been around for a while and works quite well.
  - Rayon is fine tuned for different types of workloads (typically very long ones, I suspect). In doubt, just try both crates and see which works better for your particular workloads.
  - Rayon reduces latency at the cost of spending more CPU cycles spinning. This crates avoids spinning which means worker threads go sleep as soon as they don't have anything to do. The extra latency comes from waking them back up.
  - Rayon has a very nice API with lots of functionality. This crate is designed around the set of particular workloads I am currently trying to optimize so it's API is not nearly as nice and rich for other use cases.
- - Rayon has been around for a while, it works quite well. This crate has yet to stand the test of time.
+ - Rayon is a pretty cool name.
 
 ## Should this be an async executor?
 
 I don't know. Maybe? What I'm trying to optimize at the moment doesn't use async code so I might look into that later.
-
