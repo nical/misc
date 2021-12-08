@@ -42,9 +42,9 @@ impl ThreadPool {
         self.shared.id
     }
 
-    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers() }
+    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers }
 
-    pub fn num_contexts(&self) -> u32 { self.shared.num_contexts() }
+    pub fn num_contexts(&self) -> u32 { self.shared.num_contexts }
 }
 
 pub struct ThreadPoolBuilder {

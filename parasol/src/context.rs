@@ -1,6 +1,6 @@
 use std::sync::{Mutex, Arc};
 
-use crossbeam_deque::{Steal, Worker as WorkerQueue};
+use crossbeam_deque::{Worker as WorkerQueue};
 
 use crate::core::Shared;
 use crate::job::{HeapJob, JobRef, Priority};
@@ -49,6 +49,10 @@ impl Context {
         }
     }
 
+    pub(crate) fn get_queue(&self, priority: Priority) -> &WorkerQueue<JobRef> {
+        &self.queues[priority.index()]
+    }
+
     pub fn id(&self) -> ContextId { ContextId(self.id) }
 
     pub fn thread_pool_id(&self) -> ThreadPoolId {
@@ -59,7 +63,7 @@ impl Context {
         self.is_worker
     }
 
-    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers() }
+    pub fn num_worker_threads(&self) -> u32 { self.shared.num_workers }
 
     /// Returns the total number of contexts, including worker threads.
     pub fn num_contexts(&self) -> u32 { self.num_contexts as u32 }
@@ -81,6 +85,11 @@ impl Context {
         }
     }
 
+    #[inline]
+    pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
+        new_for_each(self, items)
+    }
+
     pub(crate) fn schedule_job(&mut self, job: JobRef) {
         profiling::scope!("schedule_job");
 
@@ -94,17 +103,26 @@ impl Context {
     }
 
 
-    #[inline]
-    pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
-        new_for_each(self, items)
-    }
-
+    /// Attempt to fetch or steal one job and execute it.
+    ///
+    /// Return false if we couldn't find a job to execute.
+    /// Useful when the current thread needs to wait for something to happen and we would rather
+    /// process work than put the thread to sleep.
     pub fn keep_busy(&mut self) -> bool {
-        if let Some(job) = self.fetch_job(false) {
-            unsafe {
-                self.execute_job(job);
+        for priority in [Priority::High, Priority::Low] {
+            if let Some(job) = self.fetch_local_job(priority) {
+                unsafe {
+                    self.execute_job(job);
+                    return true;
+                }
             }
-            return true;
+
+            if let Some(job) = self.shared.stealers.steal_one(self.index(), priority) {
+                unsafe {
+                    self.execute_job(job);
+                    return true;
+                }
+            }
         }
 
         false
@@ -112,68 +130,8 @@ impl Context {
 
     pub(crate) fn index(&self) -> usize { self.id as usize }
 
-    pub(crate) fn fetch_job(&mut self, batch: bool) -> Option<JobRef> {
-        for queue in &self.queues {
-            if let Some(job) = queue.pop() {
-                return Some(job);
-            }
-        }
-
-        self.steal(batch)
-    }
-
-    pub(crate) fn fetch_local_job(&mut self) -> Option<JobRef> {
-        for queue in &self.queues {
-            if let Some(job) = queue.pop() {
-                return Some(job);
-            }
-        }
-
-        None
-    }
-
-    /// Attempt to steal a job.
-    pub(crate) fn steal(&mut self, batch: bool) -> Option<JobRef> {
-        let stealers = &self.shared.stealers[..];
-        let len = stealers.len();
-        let start = if self.is_worker {
-            self.shared.sleep.get_waker_hint(self.index())
-        } else {
-            self.index()
-        };
-
-        'stealers: for i in 0..len {
-            let idx = (start + i) % len;
-            if idx == self.index() {
-                continue;
-            }
-            for priority in 0..2 {
-                for _ in 0..50 {
-                    let stealer = &stealers[idx][priority];
-                    let steal = if batch {
-                        stealer.steal_batch_and_pop(&self.queues[priority])
-                    } else {
-                        stealer.steal()
-                    };
-
-                    match steal {
-                        Steal::Success(job) => {
-                            // We'll try to steal from here again next time.
-                            if self.is_worker {
-                                self.shared.sleep.set_waker_hint(self.index(), i);
-                            }
-                            return Some(job);
-                        }
-                        Steal::Empty => {
-                            continue 'stealers;
-                        }
-                        Steal::Retry => {}
-                    }
-                }
-            }
-        }
-
-        None
+    pub(crate) fn fetch_local_job(&mut self, priority: Priority) -> Option<JobRef> {
+        self.queues[priority.index()].pop()
     }
 
     pub(crate) unsafe fn execute_job(&mut self, mut job: JobRef) {

@@ -32,3 +32,5 @@ pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload, ne
 pub use thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder};
 pub use shutdown::ShutdownHandle;
 pub use util::ExclusiveCheck;
+
+pub use crossbeam_utils::CachePadded;

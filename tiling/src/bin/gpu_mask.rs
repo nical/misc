@@ -42,7 +42,7 @@ fn main() {
 
     let thread_pool = parasol::ThreadPool::builder()
         .with_worker_threads(3)
-        .with_contexts(1)
+        .with_contexts(10)
         .build();
 
     let mut ctx = thread_pool.pop_context().unwrap();
@@ -61,6 +61,15 @@ fn main() {
     let mut b1 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
     let mut b2 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
     let mut b3 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b4 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b5 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b6 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b7 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b8 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b9 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b10 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b11 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b12 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
 
 
     let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
@@ -77,6 +86,15 @@ fn main() {
         b1.reset();
         b2.reset();
         b3.reset();
+        b4.reset();
+        b5.reset();
+        b6.reset();
+        b7.reset();
+        b8.reset();
+        b9.reset();
+        b10.reset();
+        b11.reset();
+        b12.reset();
 
         builder.reset();
         tiler.clear_depth();
@@ -89,7 +107,10 @@ fn main() {
             builder.color = *color;
 
             if parallel {
-                tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [&mut b0, &mut b1, &mut b2, &mut b3]);
+                tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [
+                    &mut b0, &mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6, &mut b7, &mut b8,
+                    &mut b9, &mut b10, &mut b11, &mut b12,
+                ]);
             } else {
                 tiler.tile_path(path.iter(), Some(&transform), &mut builder);
             }

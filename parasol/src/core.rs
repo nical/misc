@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicU32};
 
-use crossbeam_deque::{Stealer, Worker as WorkerQueue};
+use crossbeam_deque::{Stealer, Steal, Worker as WorkerQueue};
 use crossbeam_utils::{CachePadded, sync::{Parker, Unparker}};
 
-use crate::job::JobRef;
+use crate::job::{JobRef, Priority};
 use crate::thread_pool::{ThreadPool, ThreadPoolBuilder, ThreadPoolId};
 use crate::context::{Context, ContextId, ContextPool};
 use crate::shutdown::Shutdown;
@@ -14,11 +14,11 @@ static NEXT_THREADPOOL_ID: AtomicU32 = AtomicU32::new(0);
 /// Data accessible by all contexts from any thread.
 pub(crate) struct Shared {
     /// Number of dedicated worker threads.
-    num_workers: u32,
+    pub num_workers: u32,
     /// Number of contexts. Always greater than the number of workers.
-    num_contexts: u32,
+    pub num_contexts: u32,
 
-    pub stealers: Vec<CachePadded<[Stealer<JobRef>; 2]>>,
+    pub stealers: Stealers,
 
     pub sleep: Sleep,
 
@@ -37,7 +37,7 @@ pub(crate) fn init(params: ThreadPoolBuilder) -> ThreadPool {
 
     let mut stealers = Vec::with_capacity(num_contexts);
     let mut queues = Vec::with_capacity(num_threads);
-    for _ in 0..(num_threads + 1) {
+    for _ in 0..num_contexts {
         let hp = WorkerQueue::new_fifo();
         let lp = WorkerQueue::new_fifo();
         stealers.push(CachePadded::new([
@@ -53,7 +53,9 @@ pub(crate) fn init(params: ThreadPoolBuilder) -> ThreadPool {
         num_workers: num_threads as u32,
         num_contexts: num_contexts as u32,
 
-        stealers,
+        stealers: Stealers {
+            stealers,
+        },
 
         sleep,
 
@@ -106,18 +108,13 @@ pub(crate) fn init(params: ThreadPoolBuilder) -> ThreadPool {
     ThreadPool { shared }
 }
 
-impl Shared {
-    pub fn num_workers(&self) -> u32 { self.num_workers }
 
-    pub fn num_contexts(&self) -> u32 { self.num_contexts }
-}
-
-pub(crate) struct SleepState {
-    pub(crate) unparker: Unparker,
+struct SleepState {
+    unparker: Unparker,
     // The index of the context this one will start searching at next time it tries to steal.
     // Can be used as hint of which context last woke this worker.
     // Since it only guides a heuristic, it doesn't need to be perfectly accurate.
-    pub(crate) next_target: AtomicU32,
+    next_target: AtomicU32,
 }
 
 pub(crate) struct Sleep {
@@ -141,7 +138,6 @@ impl Sleep {
         }
 
         let sleepy_worker_bits = (1 << (num_threads as u32)) - 1;
-
 
         (
             Sleep {
@@ -225,6 +221,77 @@ impl Sleep {
     }
 }
 
+pub(crate) struct Stealers {
+    pub stealers: Vec<CachePadded<[Stealer<JobRef>; 2]>>,
+}
+
+impl Stealers {
+    /// Attempt to steal one job.
+    ///
+    /// Can be called by any context, including non-worker ones. Useful when
+    /// stealing jobs only to keep busy while waiting for somthing else to happen.
+    pub fn steal_one(&self, stealer_index: usize, priority: Priority) -> Option<JobRef> {
+        let len = self.stealers.len();
+        let start = stealer_index;
+
+        'stealers: for i in 1..len {
+            let idx = (start + i) % len;
+
+            for _ in 0..50 {
+                let stealer = &self.stealers[idx][priority.index()];
+                match stealer.steal() {
+                    Steal::Success(job) => {
+                        // We'll try to steal from here again next time.
+                        return Some(job);
+                    }
+                    Steal::Empty => {
+                        continue 'stealers;
+                    }
+                    Steal::Retry => {}
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Attempt to steal multiple jobs, returning one of them.
+    ///
+    /// Only called by Worker contexts.
+    /// Similar to steal above, but will try to steal a batch of jobs instead of just one,
+    /// and uses the waker hint to start stealing from the last thread that woke us up.
+    pub fn steal_batch(&self, ctx: &Context, sleep: &Sleep, priority: Priority) -> Option<JobRef> {
+        let stealer_index = ctx.index();
+        let len = self.stealers.len();
+        let start = sleep.get_waker_hint(stealer_index);
+
+        'stealers: for i in 0..len {
+            let idx = (start + i) % len;
+
+            if idx == stealer_index {
+                continue;
+            }
+
+            for _ in 0..50 {
+                let stealer = &self.stealers[idx][priority.index()];
+                match stealer.steal_batch_and_pop(ctx.get_queue(priority)) {
+                    Steal::Success(job) => {
+                        // We'll try to steal from here again next time.
+                        sleep.set_waker_hint(stealer_index, i);
+                        return Some(job);
+                    }
+                    Steal::Empty => {
+                        continue 'stealers;
+                    }
+                    Steal::Retry => {}
+                }
+            }
+        }
+
+        None
+    }
+}
+
 struct Worker {
     ctx: Context,
     parker: Parker,
@@ -239,22 +306,29 @@ impl Worker {
             handler.run(ctx.id().0);
         }
 
-        loop {
-            // First see if we have work to do in our own queues.
-            while let Some(job) = ctx.fetch_local_job() {
-                unsafe {
-                    ctx.execute_job(job);
+        'main: loop {
+            for priority in [Priority::High, Priority::Low] {
+                // First see if we have work to do in our own queues.
+                while let Some(job) = ctx.fetch_local_job(priority) {
+                    unsafe {
+                        ctx.execute_job(job);
+                    }
+                }
+
+                // See if there is work we can steal from other contexts.
+                if let Some(job) = shared.stealers.steal_batch(ctx, &shared.sleep, priority) {
+                    unsafe {
+                        ctx.execute_job(job);
+                    }
+
+                    // If we found anything to do via work-stealing, go back to checking the local
+                    // queue again.
+                    continue 'main;
                 }
             }
 
-            // See if there is work we can steal from other contexts.
-            if let Some(job) = ctx.steal(true) {
-                unsafe {
-                    ctx.execute_job(job);
-                }
-                continue;
-            }
-
+            // Only the worker can install work in its own queues, so no other can install work in our
+            // context without us noticing and as result if we get here the queue should be empty.
             debug_assert!(ctx.queues_are_empty());
 
             if shared.shutdown.is_shutting_down() {

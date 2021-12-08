@@ -147,7 +147,7 @@ impl Tiler {
             fill_rule: FillRule::EvenOdd,
             z_index: 0,
 
-            worker_data: vec![TilerWorkerData::new(); 4],
+            worker_data: Vec::new(),
         }
     }
 
@@ -377,9 +377,14 @@ impl Tiler {
     }
 
     pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut dyn TileEncoder]) {
+        if self.worker_data.is_empty() {
+            self.worker_data = vec![TilerWorkerData::new(); ctx.num_contexts() as usize];
+        }
         // Basically what we are doing here is passing the encoders rows to the
         // worker threads in the most unsafe of ways, and being careful to never have multiple
-        // worker threads accessing the same encoder (there's one per worker)
+        // worker threads accessing the same encoder (there's one per parallel context)
+        // we should be using the context_data thing instead but the whole passing &mut dyn TileEncoder
+        // around is tedious.
         struct Shared<'a, 'b> {
             encoders: &'b mut [&'a mut dyn TileEncoder],
         }
@@ -396,6 +401,7 @@ impl Tiler {
         ctx.for_each(&mut rows[self.first_row..self.last_row])
             .with_context_data(&mut worker_data)
             .with_group_size(4)
+            .with_priority(parasol::Priority::Low)
             //.filter(|row| !row.edges.is_empty())
             .run(|worker, args| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
