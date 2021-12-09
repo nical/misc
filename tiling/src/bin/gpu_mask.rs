@@ -10,6 +10,8 @@ use winit::window::Window;
 use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
+use parasol::CachePadded;
+
 fn main() {
     profiling::register_thread!("Main");
 
@@ -57,19 +59,19 @@ fn main() {
         }
     );
 
-    let mut b0 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b1 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b2 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b3 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b4 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b5 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b6 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b7 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b8 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b9 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b10 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b11 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
-    let mut b12 = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    let mut b0 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b1 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b3 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b4 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b5 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b6 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b7 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b8 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b9 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b10 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b11 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut b12 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
 
 
     let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
@@ -108,8 +110,8 @@ fn main() {
 
             if parallel {
                 tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [
-                    &mut b0, &mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6, &mut b7, &mut b8,
-                    &mut b9, &mut b10, &mut b11, &mut b12,
+                    &mut *b0, &mut *b1, &mut *b2, &mut *b3, &mut *b4, &mut *b5, &mut *b6, &mut *b7, &mut *b8,
+                    &mut *b9, &mut *b10, &mut *b11, &mut *b12,
                 ]);
             } else {
                 tiler.tile_path(path.iter(), Some(&transform), &mut builder);
@@ -147,6 +149,7 @@ fn main() {
     println!("-> {:.3}ms", t as f64 / 1000000.0);
     println!("-> row decomposition: {:.3}ms", (row_time / n) as f64 / 1000000.0);
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
+    println!("{:?}", ctx.stats());
 
 
     if parallel {

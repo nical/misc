@@ -38,6 +38,18 @@ This crate contains a work in progress parallel job scheduler.
 
 # Notes
 
+## Overall design
+
+- A parallel job scheduler based on work-stealing via Chase-Lev queues.
+- Each context has two queues: high and low priority.
+- To make a job available to the thread pool, a job must be inserted into a context queue.
+- Each worker thread owns a context, however there are more contexts than workers. To start a parallel workload, a thread must have exclusive access to a context.
+- Contexts can participate in the work that they submit. This allows a submitter thread to complete work itself if the thread pool (or the CPU) is too busy to pick work up.
+- Worker contexts can steal work, but non-worker contexts cannot (they only have access to their own queue). This is so that a job can be only processed by either a worker thread or the submitting thread instead of potentially any thread that owns a context. The reason we want this is for tasks like glyph rasterization in WebRender where we need to create a font context and register all fonts for each thread that may rasterize some glyphs so we want to keep this number under control. An argument can also be made that we don't want a thread to start processing a potentially heavy job from another thread's workload while waiting for something more important to complete, but that depends on how evenly distributed the cost of jobs is.
+- Avoid blocking synchronization primitives using atomics to count remaining work and having thread pariticpate in the workloads they are waiting for as much as possible, to avoid the cost of the blocking primitive and the latency from putting the thread back to sleep and waking it back up.
+- Avoid spinning in worker threads. If a worker can't find useful work to do it goes to sleep immediately. Depending on the application this may or may not be a good thing, for Gecko it is because the browser has many other threads with useful things to do.
+
+
 ## Overhead of going to sleep and waking up
 
 Interacting with condition variables, in particular waking threads up is not cheap. To mitigate that:
@@ -53,6 +65,7 @@ There are context objects, and only they can process submitted work. There are m
 ## How to get good performance
 
 To have good performance it is best to either:
+ - Ensure that arrays of items concurrently accessed are L1 cache-line padded (for example use crossbeam_utils::CachePadded which is reexported at the root of this crate for conveience).
  - have rather heavy workloads so that the help provided by worker threads is not eclipsed by the time we spent waking them up.
  - or with smaller workloads it is best to be able to overlap them before blocking.
  - for asynchronous workloads, postpone waiting on the result as much as possible to increase the probability of the workload being done by the time we need it (and therefore avoiding the expensive blocking primitives). 
@@ -78,7 +91,6 @@ Alternatives:
 
  - Some way to schedule a callback that is executed once per worker thread. WebRender currently needs this for some font related stuff where we don't trust the per-worker font context to be OK to access from outside the worker.
  - Some way to do dependency graphs that maps well with how WebRender's software backend works. (see webrender/src/compositor/sw_compositor.rs). work is divided into rectangles with a dependency graph between rectangles and each rectangle is divided into horizontal bands. The smallest unit of work that can be done in parallel is bands. The dependencies between rectangles is based on z-order and overlap. The graph is determined before execution. We need to separate the rectangles/bands aspects from the purely graph and scheduling aspects and provide a generic API for the latter that fits well with how swgl would use it.
- - Play with adding some cache-line padding in a few places.
  - See if we can have sync points block on the current worker's thread Parker instead of their own condvar. This way they could be woken up when new work comes in.
 
 

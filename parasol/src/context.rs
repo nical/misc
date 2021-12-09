@@ -19,8 +19,15 @@ impl ContextId {
 pub struct Context {
     id: u32,
     is_worker: bool,
+    steal_from_other_contexts: bool,
     num_contexts: u8,
     queues: [WorkerQueue<JobRef>; 2],
+    // Keep track of whether we may have work in our local queues. This is is simple
+    // because only the context can insert into its queues, so we can update this
+    // when pushing and poping from the queues.
+    // Only when this value changes do we propagate this information to a shared array
+    // of atomics that is visible from other threads (a more expensive operation).
+    may_have_work: [bool; 2],
 
     pub(crate) shared: Arc<Shared>,
     pub(crate) stats: Stats,
@@ -31,8 +38,10 @@ impl Context {
         Context {
             id,
             is_worker: true,
+            steal_from_other_contexts: true,
             num_contexts: num_contexts as u8,
             queues,
+            may_have_work: [false, false],
             shared,
             stats: Stats::new(),
         }
@@ -42,8 +51,10 @@ impl Context {
         Context {
             id,
             is_worker: false,
+            steal_from_other_contexts: false,
             num_contexts: num_contexts as u8,
             queues,
+            may_have_work: [false, false],
             shared,
             stats: Stats::new(),
         }
@@ -52,6 +63,8 @@ impl Context {
     pub(crate) fn get_queue(&self, priority: Priority) -> &WorkerQueue<JobRef> {
         &self.queues[priority.index()]
     }
+
+    pub fn stats(&self) -> &Stats { &self.stats }
 
     pub fn id(&self) -> ContextId { ContextId(self.id) }
 
@@ -99,7 +112,13 @@ impl Context {
     }
 
     pub(crate) fn enqueue_job(&mut self, job: JobRef) {
-        self.queues[job.priority().index()].push(job);
+        let priority = job.priority().index();
+        if !self.may_have_work[priority] {
+            self.may_have_work[priority] = true;
+            self.shared.activity.mark_context_active(self.id().0, job.priority());
+        }
+
+        self.queues[priority].push(job);
     }
 
 
@@ -117,7 +136,11 @@ impl Context {
                 }
             }
 
-            if let Some(job) = self.shared.stealers.steal_one(self.index(), priority) {
+            if !self.steal_from_other_contexts {
+                continue;
+            }
+
+            if let Some(job) = self.shared.stealers.steal_one(self.index(), priority, &self.shared.activity) {
                 unsafe {
                     self.execute_job(job);
                     return true;
@@ -131,7 +154,15 @@ impl Context {
     pub(crate) fn index(&self) -> usize { self.id as usize }
 
     pub(crate) fn fetch_local_job(&mut self, priority: Priority) -> Option<JobRef> {
-        self.queues[priority.index()].pop()
+        let priority_idx = priority.index();
+        let job = self.queues[priority_idx].pop();
+
+        if job.is_none() && self.may_have_work[priority_idx] {
+            self.may_have_work[priority_idx] = false;
+            self.shared.activity.mark_context_inactive(self.id().0, priority);
+        }
+
+        job
     }
 
     pub(crate) unsafe fn execute_job(&mut self, mut job: JobRef) {
@@ -164,6 +195,7 @@ impl Context {
 struct InactiveContext {
     id: u32,
     is_worker: bool,
+    steal_from_other_contexts: bool,
     num_contexts: u8,
     queues: [WorkerQueue<JobRef>; 2],
 }
@@ -186,8 +218,10 @@ impl ContextPool {
         contexts.pop().map(|ctx| Context {
             id: ctx.id,
             is_worker: ctx.is_worker,
+            steal_from_other_contexts: ctx.steal_from_other_contexts,
             num_contexts: ctx.num_contexts,
             queues: ctx.queues,
+            may_have_work: [false, false],
             shared,
             stats: Stats::new(),
         })
@@ -198,6 +232,7 @@ impl ContextPool {
         contexts.push(InactiveContext {
             id: ctx.id,
             is_worker: ctx.is_worker,
+            steal_from_other_contexts: ctx.steal_from_other_contexts,
             num_contexts: ctx.num_contexts,
             queues: ctx.queues,
         });

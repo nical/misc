@@ -97,13 +97,27 @@ impl ThreadPoolBuilder {
     }
 
     pub fn with_worker_threads(mut self, num_threads: u32) -> Self {
-        self.num_threads = num_threads.max(1).min(31);
+        self.num_threads = num_threads.max(1);
+
+        // We are currently limited to 32 workers, and that should be fine.
+        assert!(self.num_threads < 32);
+        // We are also currently limited to a total of 32 contexts including workers.
+        // this might be more problematic in practice. If so the changes that need to
+        // happen are in the Activity struct in core.rs.
+        assert!(self.num_threads + self.num_contexts < 32);
 
         self
     }
 
     pub fn with_contexts(mut self, num_contexts: u32) -> Self {
-        self.num_contexts = num_contexts.max(1).min(127);
+        self.num_contexts = num_contexts.max(1);
+
+        // We are currently limited to 32 workers, and that should be fine.
+        assert!(self.num_threads < 32);
+        // We are also currently limited to a total of 32 contexts including workers.
+        // this might be more problematic in practice. If so the changes that need to
+        // happen are in the Activity struct in core.rs.
+        assert!(self.num_threads + self.num_contexts < 32);
 
         self
     }

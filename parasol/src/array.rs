@@ -1,6 +1,7 @@
 use crate::sync::{SyncPoint, SyncPointRef};
 use crate::job::{JobRef, Job, Priority};
 use crate::context::Context;
+use crate::thread_pool::ThreadPoolId;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
@@ -24,14 +25,15 @@ impl<'l, Item, ContextData, ImmutableData> DerefMut for Args<'l, Item, ContextDa
 }
 
 pub struct ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
-    pub(crate) items: &'a mut [Item],
-    pub(crate) context_data: Option<&'b mut [ContextData]>,
-    pub(crate) immutable_data: Option<&'g ImmutableData>,
-    pub(crate) function: Func,
-    pub(crate) range: Range<u32>,
-    pub(crate) group_size: u32,
-    pub(crate) priority: Priority,
-    pub(crate) ctx: &'c mut Context,
+    pub items: &'a mut [Item],
+    pub context_data: Option<&'b mut [ContextData]>,
+    pub immutable_data: Option<&'g ImmutableData>,
+    pub function: Func,
+    pub range: Range<u32>,
+    pub group_size: u32,
+    pub priority: Priority,
+    pub parallel: Ratio,
+    pub ctx: &'c mut Context,
 }
 
 pub fn new_for_each<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
@@ -44,6 +46,7 @@ pub fn new_for_each<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [It
         group_size: 1,
         ctx,
         priority: Priority::High,
+        parallel: Ratio::DEFAULT,
     }
 }
 
@@ -54,7 +57,9 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     /// This can be useful to store and reuse some scratch buffers and avoid memory allocations in the
     /// run function.
     ///
-    /// The length of the slice must be at least equal to the number of contexts.
+    /// The length of the slice must be at least equal to the number of worker threads plus one.
+    ///
+    /// For best performance make sure the size of the data is a multiple of L1 cache line size (see `CachePadded`).
     #[inline]
     pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEach<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
         assert!(
@@ -71,10 +76,12 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
+            parallel: self.parallel,
             ctx: self.ctx
         }
     }
 
+    /// Restrict processing to a range of the data.
     pub fn with_range(mut self, range: Range<u32>) -> Self {
         assert!(range.end >= range.start);
         assert!(range.end <= self.items.len() as u32);
@@ -95,6 +102,18 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     #[inline]
     pub fn with_priority(mut self, priority: Priority) -> Self {
         self.priority = priority;
+
+        self
+    }
+
+    // TODO: "parallel ratio" isn't a great name.
+
+    /// Specify the proportion of items that we want to expose to worker threads.
+    ///
+    /// The remaining items will be processed on this thread.
+    #[inline]
+    pub fn with_parallel_ratio(mut self, ratio: Ratio) -> Self {
+        self.parallel = ratio;
 
         self
     }
@@ -124,7 +143,7 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
         ContextData: 'static,
         ImmutableData: 'static,
     {
-        for_each_async(self.apply(function))
+        for_each_async(self.with_parallel_ratio(Ratio::ONE).apply(function))
     }
 
     #[inline]
@@ -140,12 +159,13 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
+            parallel: self.parallel,
             ctx: self.ctx,
         }
     }
 
-    fn dispatch_parameters(&self, is_async: bool) -> DispatchParameters {
-        DispatchParameters::new(self.ctx, self.range.clone(), self.group_size, is_async)
+    fn dispatch_parameters(&self) -> DispatchParameters {
+        DispatchParameters::new(self.ctx, self.range.clone(), self.group_size, self.parallel)
     }
 }
 
@@ -158,11 +178,11 @@ where
 
     unsafe {
         let first_item = params.range.start;
-        let parallel = params.dispatch_parameters(false);
-
-        let sync = SyncPoint::new(params.range.end - params.range.start);
+        let parallel = params.dispatch_parameters();
 
         let ctx = params.ctx;
+
+        let sync = SyncPoint::new(params.range.end - params.range.start, ctx.thread_pool_id());
 
         // Once we start converting this into jobrefs, it MUST NOT move or be destroyed until
         // we are done waiting on the sync point.
@@ -175,6 +195,11 @@ where
             &sync,
         );
 
+
+        // This makes `parallel.range` items available for the thread pool to steal from us.
+        // and wakes some workers up if need be.
+        // The items from `params.range.start` to `parallel.range.start` are reserved. we will
+        // execute them last without exposing them to the worker threads.
         for_each_dispatch(
             ctx,
             &job_data,
@@ -182,16 +207,34 @@ where
             params.priority,
         );
 
+        // Now the interesting bits: We kept around a range of items that for this thread to
+        // execute, that workers threads cannot steal. The goal here is to make it as likely
+        // as possible for this thread to be the last one finishing a job from this workload.
+        // The reason is that if we run out of jobs to execute we have no other choice but to
+        // block the thread on a condition variable, and that's bad for two reasons:
+        //  - It's rather expensive.
+        //  - There's extra latency on top of that from not necessarily being re-scheduled by the
+        //    OS as soon as the condvar is signaled.
+
+        // Pull work from our queue and execute it.
+        while ctx.keep_busy() {}
+
+        // Execute the reserved batch of items that we didn't make available to worker threads.
+        // Doing this removes some potential for parallelism, but greatly increase the likelihood
+        // of not having to block the thread so it usually a win.
         {
             profiling::scope!("mt:job group");
-            for i in first_item..parallel.range.start {
-                let item = &mut params.items[i as usize];
+            let context_data_index = ctx.num_worker_threads() as isize;
+            let context_data = &mut *job_data.ctx_data.offset(context_data_index);
+            let immutable_data = &*job_data.immutable_data;
+            for item_index in first_item..parallel.range.start {
+                let item = &mut params.items[item_index as usize];
                 profiling::scope!("mt:job");
                 let args = Args {
                     item,
-                    item_index: i,
-                    context_data: &mut *job_data.ctx_data.offset(ctx.index() as isize),
-                    immutable_data: &*job_data.immutable_data,
+                    item_index,
+                    context_data,
+                    immutable_data,
                 };
 
                 (job_data.function)(ctx, args);
@@ -200,6 +243,8 @@ where
             sync.signal(ctx, parallel.range.start - first_item);
         }
 
+        // Hopefully by now all items have been processed. If so, wait will return quickly,
+        // otherwise we'll have to block on a condition variable.
         ctx.wait(&sync);
     }
 }
@@ -228,7 +273,11 @@ where
     }
 
     // Waking up worker threads is the expensive part.
-    ctx.wake(actual_group_count.min(ctx.num_worker_threads()));
+    // There's a balancing act between waking more threads now (which means they probably will get
+    // to pick work up sooner but we spend time waking them up) or waking fewer of them.
+    // Right now we wake at most half of the workers. Workers themselves will wake other workers
+    // up if they have enough work.
+    ctx.wake(actual_group_count.min((ctx.num_worker_threads() + 1) / 2));
 }
 
 fn for_each_async<'a, 'b, Item, ContextData, ImmutableData, F>(params: ForEach<Item, ContextData, ImmutableData, F>) -> JoinHandle<'a, 'b>
@@ -241,10 +290,11 @@ where
     profiling::scope!("for_each_async");
 
     unsafe {
-        let parallel = params.dispatch_parameters(true);
+        let parallel = params.dispatch_parameters();
         let ctx = params.ctx;
 
-        let sync = Box::new(SyncPoint::new(params.items.len() as u32));
+        let sync = Box::new(SyncPoint::new(params.range.end - params.range.start, ctx.thread_pool_id()));
+
         let data = Box::new(MutSliceJob::new(
             params.items,
             params.group_size,
@@ -273,10 +323,17 @@ struct DispatchParameters {
 }
 
 impl DispatchParameters {
-    fn new(ctx: &Context, item_range: Range<u32>, group_size: u32, is_async: bool) -> Self {
+    fn new(ctx: &Context, item_range: Range<u32>, group_size: u32, mut parallel_ratio: Ratio) -> Self {
+        if parallel_ratio.dividend == 0 {
+            parallel_ratio.dividend = 1;
+        }
+        if parallel_ratio.divisor < parallel_ratio.dividend {
+            parallel_ratio.divisor = parallel_ratio.dividend;
+        }
+
         let n = item_range.end - item_range.start;
 
-        let num_parallel = if is_async { n } else { (2 * n) / 3 };
+        let num_parallel = (parallel_ratio.dividend as u32 * n) / parallel_ratio.divisor as u32;
         let first_parallel = item_range.start + n - num_parallel;
         let group_count = div_ceil(num_parallel, group_size).min(ctx.num_worker_threads() * 2);
         let initial_group_size = if group_count == 0 { 0 } else { div_ceil(num_parallel, group_count) };
@@ -307,14 +364,23 @@ where
         let this: &Self = mem::transmute(this);
         let n = range.end - range.start;
 
+        let context_data_index = if ctx.is_worker_thread() {
+            ctx.index() as isize
+        } else {
+            ctx.num_worker_threads() as isize
+        };
+
+        let context_data = &mut *this.ctx_data.offset(context_data_index);
+        let immutable_data = &*this.immutable_data;
+
         for item_idx in range {
             let item = &mut *this.items.offset(item_idx as isize);
             profiling::scope!("job");
             let args = Args {
                 item,
                 item_index: item_idx,
-                context_data: &mut *this.ctx_data.offset(ctx.index() as isize),
-                immutable_data: &*this.immutable_data,
+                context_data,
+                immutable_data,
             };
 
             (this.function)(ctx, args);
@@ -407,7 +473,7 @@ pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
         immutable_data: None,
         group_size: 1,
         priority: Priority::High,
-        sync: Box::new(SyncPoint::new(0)),
+        sync: Box::new(SyncPoint::new(0, ThreadPoolId(std::u32::MAX))),
     }
 }
 
@@ -464,9 +530,9 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         Item: 'static,
     {
         unsafe {
-            let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, true);
+            let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
 
-            self.sync.reset(self.range.end - self.range.start);
+            self.sync.reset(self.range.end - self.range.start, ctx.thread_pool_id());
 
             let immutable_data: Option<&ImmutableData> = self.immutable_data
                 .as_ref()
@@ -524,6 +590,21 @@ impl<Item, ContextData, ImmutableData> Drop for RunningWorkload<Item, ContextDat
             sync.wait_no_context();
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Ratio {
+    pub dividend: u8,
+    pub divisor: u8,
+}
+
+impl Ratio {
+    pub const DEFAULT: Ratio = Ratio { dividend: 4, divisor: 5 };
+    pub const ONE: Ratio = Ratio { dividend: 1, divisor: 1 };
+    pub const HALF: Ratio = Ratio { dividend: 1, divisor: 2 };
+    pub const THREE_QUARTERS: Ratio = Ratio { dividend: 3, divisor: 4 };
+    pub const TWO_THIRDS: Ratio = Ratio { dividend: 2, divisor: 3 };
+    pub const ONE_THIRD: Ratio = Ratio { dividend: 1, divisor: 3 };
 }
 
 fn div_ceil(a: u32, b: u32) -> u32 {

@@ -18,6 +18,8 @@ pub(crate) struct Shared {
     /// Number of contexts. Always greater than the number of workers.
     pub num_contexts: u32,
 
+    pub activity: Activity,
+
     pub stealers: Stealers,
 
     pub sleep: Sleep,
@@ -52,6 +54,8 @@ pub(crate) fn init(params: ThreadPoolBuilder) -> ThreadPool {
     let shared = Arc::new(Shared {
         num_workers: num_threads as u32,
         num_contexts: num_contexts as u32,
+
+        activity: Activity::new(num_contexts),
 
         stealers: Stealers {
             stealers,
@@ -230,29 +234,30 @@ impl Stealers {
     ///
     /// Can be called by any context, including non-worker ones. Useful when
     /// stealing jobs only to keep busy while waiting for somthing else to happen.
-    pub fn steal_one(&self, stealer_index: usize, priority: Priority) -> Option<JobRef> {
-        let len = self.stealers.len();
+    pub fn steal_one(&self, stealer_index: usize, priority: Priority, activity: &Activity) -> Option<JobRef> {
         let start = stealer_index;
 
-        'stealers: for i in 1..len {
-            let idx = (start + i) % len;
-
+        let mut stolen = None;
+        activity.for_each_active_context(priority, start as u32, &mut |idx| {
             for _ in 0..50 {
-                let stealer = &self.stealers[idx][priority.index()];
+                let stealer = &self.stealers[idx as usize][priority.index()];
                 match stealer.steal() {
                     Steal::Success(job) => {
                         // We'll try to steal from here again next time.
-                        return Some(job);
+                        stolen = Some(job);
+                        return true;
                     }
                     Steal::Empty => {
-                        continue 'stealers;
+                        return false;
                     }
                     Steal::Retry => {}
                 }
             }
-        }
 
-        None
+            false
+        });
+
+        stolen
     }
 
     /// Attempt to steal multiple jobs, returning one of them.
@@ -260,35 +265,100 @@ impl Stealers {
     /// Only called by Worker contexts.
     /// Similar to steal above, but will try to steal a batch of jobs instead of just one,
     /// and uses the waker hint to start stealing from the last thread that woke us up.
-    pub fn steal_batch(&self, ctx: &Context, sleep: &Sleep, priority: Priority) -> Option<JobRef> {
+    pub fn steal_batch(&self, ctx: &Context, sleep: &Sleep, priority: Priority, activity: &Activity) -> Option<JobRef> {
         let stealer_index = ctx.index();
-        let len = self.stealers.len();
         let start = sleep.get_waker_hint(stealer_index);
 
-        'stealers: for i in 0..len {
-            let idx = (start + i) % len;
-
+        let mut stolen = None;
+        activity.for_each_active_context(priority, start as u32, &mut |idx| {
+            let idx = idx as usize;
             if idx == stealer_index {
-                continue;
+                return false;
             }
+
+            //println!("--[ctx#{}] steal from {:?} ({:b})", ctx.index(), idx, activity.activity[priority.index()][0].load(Ordering::Acquire));
 
             for _ in 0..50 {
                 let stealer = &self.stealers[idx][priority.index()];
                 match stealer.steal_batch_and_pop(ctx.get_queue(priority)) {
                     Steal::Success(job) => {
                         // We'll try to steal from here again next time.
-                        sleep.set_waker_hint(stealer_index, i);
-                        return Some(job);
+                        sleep.set_waker_hint(stealer_index, idx);
+                        stolen = Some(job);
+                        return true;
                     }
                     Steal::Empty => {
-                        continue 'stealers;
+                        return false;
                     }
                     Steal::Retry => {}
                 }
             }
-        }
 
-        None
+            false
+        });
+
+        stolen
+    }
+}
+
+
+/// Keep track of which contexts may have work in its queue.
+///
+/// This is only used as an optimization heuristic for work-stealing. There is no
+/// correctness or safety guarantee that depends on any particular ordering of access
+/// of this, however for performance it is better to mark a context active before making
+/// work available in its queue rather than the opposite.
+pub(crate) struct Activity {
+    // An bitfiled per priority where each bit corresponds to a context.
+    // if the bit is not set we know that there is no work in the context's queue
+    // and therefore we can skip trying to steal from it.
+    //
+    // TODO: right now this limits us to 32 contexts total, which may or may turn out to
+    // be too limiting in practice. To increase the limit we just need to have an array
+    // of atomics per priority instead of just one atomic and do some bit shifting. It
+    // doesn't matter whether the bits are stored in different atomics because we don't
+    // need any form of synchronization between the bits.
+    // storing them inline instead of on the heap is measurably faster.
+    activity: [AtomicU32; 2],
+    num_contexts: u32,
+}
+
+impl Activity {
+    pub fn new(num_contexts: usize) -> Self {
+        Activity {
+            activity: [AtomicU32::new(0), AtomicU32::new(0)],
+            num_contexts: num_contexts as u32,
+        }
+    }
+
+    pub fn mark_context_active(&self, index: u32, priority: Priority) {
+        debug_assert!(index < self.num_contexts);
+        let bit = 1 << index;
+        self.activity[priority.index()].fetch_or(bit, Ordering::Release);
+    }
+
+    pub fn mark_context_inactive(&self, index: u32, priority: Priority) {
+        debug_assert!(index < self.num_contexts);
+        let bit = 1 << index;
+        self.activity[priority.index()].fetch_and(!bit, Ordering::Release);
+    }
+
+    pub fn for_each_active_context<F>(&self, priority: Priority, start: u32, cb: &mut F)
+    where F: FnMut(u32) -> bool
+    {
+        let bits = self.activity[priority.index()].load(Ordering::Acquire);
+        for i in 0..self.num_contexts {
+            let idx = (start + i) % self.num_contexts;
+            let bit = 1 << idx;
+
+            if bits & bit == 0 {
+                continue;
+            }
+
+            if cb(idx) {
+                return;
+            }
+        }
     }
 }
 
@@ -316,7 +386,7 @@ impl Worker {
                 }
 
                 // See if there is work we can steal from other contexts.
-                if let Some(job) = shared.stealers.steal_batch(ctx, &shared.sleep, priority) {
+                if let Some(job) = shared.stealers.steal_batch(ctx, &shared.sleep, priority, &shared.activity) {
                     unsafe {
                         ctx.execute_job(job);
                     }

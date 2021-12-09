@@ -8,7 +8,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
-use parasol::{Context, ExclusiveCheck};
+use parasol::{Context, CachePadded};
 
 /// The output of the tiler.
 ///
@@ -42,8 +42,17 @@ where
 struct Row {
     edges: Vec<RowEdge>,
     tile_y: u32,
-    lock: ExclusiveCheck<usize>,
     z_buffer: ZBufferRow,
+}
+
+impl Row {
+    fn new() -> Self {
+        Row {
+            edges: Vec::new(),
+            tile_y: 0,
+            z_buffer: ZBufferRow::new()
+        }
+    }
 }
 
 /// A context object that can bin path edges into tile grids.
@@ -82,7 +91,7 @@ pub struct Tiler {
 
     rows: Vec<Row>,
 
-    worker_data: Vec<TilerWorkerData>,
+    worker_data: Vec<CachePadded<TilerWorkerData>>,
 
     first_row: usize,
     last_row: usize,
@@ -293,7 +302,6 @@ impl Tiler {
             self.rows.push(Row {
                 edges: Vec::new(),
                 tile_y: i as u32,
-                lock: ExclusiveCheck::with_tag(i),
                 z_buffer: ZBufferRow::new(),
             });
         }
@@ -363,7 +371,7 @@ impl Tiler {
 
 
         if self.first_row < self.last_row {
-            if self.last_row - self.first_row > 8 {
+            if self.last_row - self.first_row > 16 {
                 self.end_path_parallel(ctx, encoders);
             } else {
                 self.end_path(encoders[0]);
@@ -378,7 +386,7 @@ impl Tiler {
 
     pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut dyn TileEncoder]) {
         if self.worker_data.is_empty() {
-            self.worker_data = vec![TilerWorkerData::new(); ctx.num_contexts() as usize];
+            self.worker_data = vec![CachePadded::new(TilerWorkerData::new()); ctx.num_contexts() as usize];
         }
         // Basically what we are doing here is passing the encoders rows to the
         // worker threads in the most unsafe of ways, and being careful to never have multiple
@@ -406,14 +414,16 @@ impl Tiler {
             .run(|worker, args| {
                 //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
 
-                let row = args.item;
-                let worker_data = args.context_data;
+                let worker_data: &mut TilerWorkerData = &mut *args.context_data;
 
-                if row.edges.is_empty() {
+                if args.item.edges.is_empty() {
                     return;
                 }
 
-                row.lock.begin();
+                // Temporarily move the row out of the row array.
+                // For once this is not a borrowck dance, we just want to avoid
+                // false cache sharing.
+                let mut row = std::mem::replace(args.item, Row::new());
 
                 unsafe {
                     worker_data.active_edges.clear();
@@ -435,7 +445,8 @@ impl Tiler {
                 }
 
                 row.edges.clear();
-                row.lock.end();
+
+                *args.item = row;
             });
 
         self.worker_data = worker_data;
@@ -491,10 +502,8 @@ impl Tiler {
             }
             side_edges.clear();
 
-            row.lock.begin();
             let idx = rayon::current_thread_index().unwrap();
             self.process_row(row.tile_y, &mut row.edges[..], &mut active_edges, &mut side_edges, z_buffer, (*shared_ptr.get()).encoders[idx]);
-            row.lock.end();
 
             }
         });

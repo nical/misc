@@ -5,9 +5,7 @@ use crossbeam_utils::Backoff;
 
 use crate::Context;
 use crate::job::JobRef;
-
-// TODO: For now all atomic operations are sequentially consistent but most of them don't
-// need it.
+use crate::thread_pool::ThreadPoolId;
 
 // for debugging.
 static SYNC_ID: AtomicI32 = AtomicI32::new(12345);
@@ -32,12 +30,14 @@ pub struct SyncPoint {
     // keep busy while the dependencies are being processed.
     mutex: Mutex<()>,
     cond: Condvar,
+
+    thread_pool_id: ThreadPoolId,
     // An ID for debugging
     id: i32,
 }
 
 impl SyncPoint {
-    pub fn new(deps: u32) -> Self {
+    pub fn new(deps: u32, pool_id: ThreadPoolId) -> Self {
         let state = if deps == 0 {
             STATE_SIGNALED
         } else {
@@ -50,14 +50,16 @@ impl SyncPoint {
             state: AtomicI32::new(state),
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            thread_pool_id: pool_id,
             id: SYNC_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
-    pub fn reset(&mut self, deps: u32) {
+    pub fn reset(&mut self, deps: u32, thread_pool_id: ThreadPoolId) {
         assert!(self.state.load(Ordering::Acquire) == STATE_SIGNALED);
 
         let state = if deps == 0 { STATE_SIGNALED } else { STATE_DEFAULT };
+        self.thread_pool_id = thread_pool_id;
         self.state.store(state, Ordering::Release);
         self.deps.store(deps as i32, Ordering::Release);
     }
@@ -69,6 +71,7 @@ impl SyncPoint {
     pub fn signal(&self, ctx: &mut Context, n: u32) -> bool {
         debug_assert!(!self.is_signaled(), "already signaled {:?}:{:?}", self as *const _, self.id); // TODO: this fails
         debug_assert!(self.deps.load(Ordering::SeqCst) >= 1);
+        //assert_eq!(self.thread_pool_id, ctx.thread_pool_id());
 
         profiling::scope!("signal");
         let n = n as i32;
@@ -162,34 +165,41 @@ impl SyncPoint {
         }
     }
 
+
+    pub fn try_wait(&self, ctx: &mut Context) -> bool {
+        profiling::scope!("steal jobs");
+        loop {
+            if self.is_signaled() {
+                // Fast path: the sync point's dependencies were all met before
+                // we had to block on the condvar.
+
+                ctx.stats.fast_wait += 1;
+                return true;
+            }
+
+            // Steal a job and execute it. If we are lucky our dependencies will
+            // be met by the time we run out of useful thin to do.
+            if !ctx.keep_busy() {
+                return false;
+            }
+        }
+    }
+
     /// Wait until all dependencies of this synchronization points are met, and until
     /// it is safe to destroy the sync point (no other threads are going to read or write
     /// into it)
     pub fn wait(&self, ctx: &mut Context) {
         profiling::scope!("wait");
 
-        // TODO: assert that the context belongs to the same thread pool.
+        //assert_eq!(self.thread_pool_id, ctx.thread_pool_id());
 
         // TODO: would it be possible to block on the worker thread's condition variable if there is
         // one instead of always blocking on the sync point's? That would allow the worker to resume
         // working if there is new work.
 
         {
-            profiling::scope!("steal jobs");
-            loop {
-                if self.is_signaled() {
-                    // Fast path: the sync point's dependencies were all met before
-                    // we had to block on the condvar.
-
-                    ctx.stats.fast_wait += 1;
-                    return;
-                }
-
-                // Steal a job and execute it. If we are lucky our dependencies will
-                // be met by the time we run out of useful thin to do.
-                if !ctx.keep_busy() {
-                    break;
-                }
+            if self.try_wait(ctx) {
+                return;
             }
         }
 

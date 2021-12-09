@@ -73,7 +73,7 @@ fn test_shutdown() {
     static SHUTDOWN_WORKERS: AtomicU32 = AtomicU32::new(0);
 
     for _ in 0..100 {
-        for num_threads in 1..32 {
+        for num_threads in 1..31 {
             INITIALIZED_WORKERS.store(0, Ordering::SeqCst);
             SHUTDOWN_WORKERS.store(0, Ordering::SeqCst);
 
