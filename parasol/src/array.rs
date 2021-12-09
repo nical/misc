@@ -63,9 +63,9 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     #[inline]
     pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEach<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
         assert!(
-            context_data.len() >= self.ctx.num_contexts() as usize,
+            context_data.len() >= self.ctx.num_worker_threads() as usize + 1,
             "Got {:?} context items, need at least {:?}",
-            context_data.len(), self.ctx.num_contexts(),
+            context_data.len(), self.ctx.num_worker_threads() + 1,
         );
 
         ForEach {
@@ -186,7 +186,7 @@ where
 
         // Once we start converting this into jobrefs, it MUST NOT move or be destroyed until
         // we are done waiting on the sync point.
-        let job_data: MutSliceJob<Item, ContextData, ImmutableData, F> = MutSliceJob::new(
+        let job_data: ArrayJob<Item, ContextData, ImmutableData, F> = ArrayJob::new(
             params.items,
             params.group_size,
             params.context_data,
@@ -217,12 +217,12 @@ where
         //    OS as soon as the condvar is signaled.
 
         // Pull work from our queue and execute it.
-        while ctx.keep_busy() {}
+        while !sync.is_signaled() && ctx.keep_busy() {}
 
         // Execute the reserved batch of items that we didn't make available to worker threads.
         // Doing this removes some potential for parallelism, but greatly increase the likelihood
         // of not having to block the thread so it usually a win.
-        {
+        if parallel.range.start > first_item {
             profiling::scope!("mt:job group");
             let context_data_index = ctx.num_worker_threads() as isize;
             let context_data = &mut *job_data.ctx_data.offset(context_data_index);
@@ -251,7 +251,7 @@ where
 
 unsafe fn for_each_dispatch<Item, ContextData, ImmutableData, F>(
     ctx: &mut Context,
-    job_data: &MutSliceJob<Item, ContextData, ImmutableData, F>,
+    job_data: &ArrayJob<Item, ContextData, ImmutableData, F>,
     dispatch: &DispatchParameters,
     priority: Priority,
 )
@@ -295,7 +295,7 @@ where
 
         let sync = Box::new(SyncPoint::new(params.range.end - params.range.start, ctx.thread_pool_id()));
 
-        let data = Box::new(MutSliceJob::new(
+        let data = Box::new(ArrayJob::new(
             params.items,
             params.group_size,
             params.context_data,
@@ -346,7 +346,12 @@ impl DispatchParameters {
     }
 }
 
-pub(crate) struct MutSliceJob<Item, ContextData, ImmutableData, Func> {
+/// A job that represents an array-like workload, for example updating a slice of items in parallel.
+///
+/// Once the workload starts, the object must NOT move or be dropped until the workload completes.
+/// Typically this structure leaves on the stack if we know the workload to end within this stack
+/// frame (see `for_each`) or on the heap otherwise.
+struct ArrayJob<Item, ContextData, ImmutableData, Func> {
     items: *mut Item,
     ctx_data: *mut ContextData,
     immutable_data: *const ImmutableData,
@@ -356,7 +361,7 @@ pub(crate) struct MutSliceJob<Item, ContextData, ImmutableData, Func> {
     split_thresold: u32,
 }
 
-impl<Item, ContextData, ImmutableData, Func> Job for MutSliceJob<Item, ContextData, ImmutableData, Func>
+impl<Item, ContextData, ImmutableData, Func> Job for ArrayJob<Item, ContextData, ImmutableData, Func>
 where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
 {
@@ -364,16 +369,27 @@ where
         let this: &Self = mem::transmute(this);
         let n = range.end - range.start;
 
+        assert!(range.start >= this.range.start && range.end <= this.range.end);
+
         let context_data_index = if ctx.is_worker_thread() {
             ctx.index() as isize
         } else {
             ctx.num_worker_threads() as isize
         };
 
+        // SAFETY: Here we rely two very important things:
+        // - If there is no context data, then it's type is `()`, which means reads and writes
+        //   to the pointer are ALWAYS noop whatever the address of the pointer.
+        // - If a context data array was provided, its size has been checked in `with_context_data`.
+        //
+        // As a result it is impossible to craft a pointer that will read or write out of bounds
+        // here.
         let context_data = &mut *this.ctx_data.offset(context_data_index);
         let immutable_data = &*this.immutable_data;
 
         for item_idx in range {
+            // SAFETY: The situation for the item pointer is the same as with context_data.
+            // The pointer can be null, but when it is the case, the type is always ().
             let item = &mut *this.items.offset(item_idx as isize);
             profiling::scope!("job");
             let args = Args {
@@ -390,7 +406,7 @@ where
     }
 }
 
-impl<Item, ContextData, ImmutableData, Func> MutSliceJob<Item, ContextData, ImmutableData, Func>
+impl<Item, ContextData, ImmutableData, Func> ArrayJob<Item, ContextData, ImmutableData, Func>
 where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
 {
@@ -402,7 +418,7 @@ where
         function: Func,
         sync: &SyncPoint,
     ) -> Self {
-        MutSliceJob {
+        ArrayJob {
             items: items.as_mut_ptr(),
             ctx_data: ctx_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr()),
             immutable_data: immutable_data.map_or(std::ptr::null_mut(), |ptr| ptr),
@@ -441,8 +457,9 @@ impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
 
 pub struct Workload<Item, ContextData, ImmutableData> {
     pub items: Vec<Item>,
-    pub context_data: Option<Vec<ContextData>>,
     pub immutable_data: Option<Arc<ImmutableData>>,
+    // Can't give direct access to this to preserve safety guarantees of ArrayJob..
+    context_data: Option<Vec<ContextData>>,
     range: Range<u32>,
     group_size: u32,
     priority: Priority,
@@ -502,6 +519,10 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         }
     }
 
+    pub fn take_context_data(&mut self) -> Option<&mut [ContextData]> {
+        self.context_data.as_mut().map(|data| &mut data[..])
+    }
+
     pub fn with_range(mut self, range: Range<u32>) -> Self {
         assert!(range.end >= range.start);
         assert!(range.end <= self.items.len() as u32);
@@ -538,7 +559,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 .as_ref()
                 .map(|boxed| boxed.deref());
 
-            let data = Box::new(MutSliceJob::new(
+            let data = Box::new(ArrayJob::new(
                 &mut self.items[..],
                 self.group_size,
                 self.context_data.as_mut().map(|vec| &mut vec[..]),
