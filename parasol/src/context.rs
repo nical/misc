@@ -4,7 +4,7 @@ use crossbeam_deque::{Worker as WorkerQueue};
 
 use crate::core::Shared;
 use crate::job::{HeapJob, JobRef, Priority};
-use crate::sync::SyncPoint;
+use crate::event::Event;
 use crate::array::{ForEach, new_for_each};
 use crate::thread_pool::{ThreadPool, ThreadPoolId};
 
@@ -88,8 +88,8 @@ impl Context {
         }
     }
 
-    pub fn wait(&mut self, sync: &SyncPoint) {
-        sync.wait(self);
+    pub fn wait(&mut self, event: &Event) {
+        event.wait(self);
     }
 
     pub fn schedule_one<F>(&mut self, job: F, priority: Priority) where F: FnOnce(&mut Context) + Send {
@@ -243,9 +243,9 @@ impl ContextPool {
 pub struct Stats {
     /// number of jobs executed.
     pub jobs_executed: u64,
-    /// How many times waiting on a sync event didn't involve waiting on a condvar.
+    /// How many times waiting on an event didn't involve waiting on a condvar.
     pub fast_wait: u64,
-    /// How many times waiting on a sync event involved waiting on a condvar.
+    /// How many times waiting on an event involved waiting on a condvar.
     pub cond_wait: u64,
     /// number of spinned iterations
     pub spinned: u64,

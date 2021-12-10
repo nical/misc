@@ -19,7 +19,7 @@
 mod core;
 mod job;
 mod context;
-mod sync;
+mod event;
 mod array;
 mod util;
 mod thread_pool;
@@ -27,7 +27,7 @@ mod shutdown;
 
 pub use job::Priority;
 pub use context::*;
-pub use sync::SyncPoint;
+pub use event::Event;
 pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload, new_for_each};
 pub use thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder};
 pub use shutdown::ShutdownHandle;

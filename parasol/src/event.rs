@@ -14,15 +14,15 @@ const STATE_DEFAULT: i32 = 0;
 const STATE_SIGNALING: i32 = 1;
 const STATE_SIGNALED: i32 = 2;
 
-pub struct SyncPoint {
+pub struct Event {
     // The number of unresolved dependency.
     deps: AtomicI32,
-    // Whether the dependencies has been met AND it is safe to deallocate the syncpoint.
+    // Whether the dependencies has been met AND it is safe to deallocate the event.
     // We can't simply use deps, because we need to keep the object alive for a little
     // bit after deps reach zero.
     //
-    // No read or write to the sync point is safe after state is set to STATE_SIGNALED,
-    // except for the threads that owns the sync point (the one that calls wait).
+    // No read or write to the event is safe after state is set to STATE_SIGNALED,
+    // except for the threads that owns the event (the one that calls wait).
     state: AtomicI32,
     // A list of jobs to schedule when the dependencies are met.
     waiting_jobs: AtomicLinkedList<JobRef>,
@@ -36,7 +36,7 @@ pub struct SyncPoint {
     id: i32,
 }
 
-impl SyncPoint {
+impl Event {
     pub fn new(deps: u32, pool_id: ThreadPoolId) -> Self {
         let state = if deps == 0 {
             STATE_SIGNALED
@@ -44,7 +44,7 @@ impl SyncPoint {
             STATE_DEFAULT
         };
 
-        SyncPoint {
+        Event {
             deps: AtomicI32::new(deps as i32),
             waiting_jobs: AtomicLinkedList::new(),
             state: AtomicI32::new(state),
@@ -115,7 +115,7 @@ impl SyncPoint {
         // If we'd do the store before setting the event, then setting the event
         // would not be safe because the waiting thread might have continued from
         // an early-out on the state check. The waiting thread is responsible
-        // for keeping the sync point alive state has been set to true.
+        // for keeping the event alive state has been set to true.
         self.state.store(STATE_SIGNALED, Ordering::Release);
 
         // After the state store above, self isn't guaranteed to be valid.
@@ -141,7 +141,7 @@ impl SyncPoint {
 
     #[allow(unused)]
     pub(crate) fn log(&self, msg: &str) {
-        println!("sync {:?}:{} {}", self as *const _, self.id, msg);
+        println!("event {:?}:{} {}", self as *const _, self.id, msg);
     }
 
     #[allow(unused)]
@@ -155,7 +155,7 @@ impl SyncPoint {
 
         // This can be called concurrently with `signal`, its possible for `deps` to be read here
         // before decrementing it in `signal` but submitting the jobs happens before `push`.
-        // This sequence means the sync point ends up signaled with a job sitting in the waiting list.
+        // This sequence means the event ends up signaled with a job sitting in the waiting list.
         // To prevent that we check `deps` a second time and submit again if it has reached zero in
         // the mean time.
         if !self.has_unresolved_dependencies() {
@@ -170,7 +170,7 @@ impl SyncPoint {
         profiling::scope!("steal jobs");
         loop {
             if self.is_signaled() {
-                // Fast path: the sync point's dependencies were all met before
+                // Fast path: the event's dependencies were all met before
                 // we had to block on the condvar.
 
                 ctx.stats.fast_wait += 1;
@@ -185,8 +185,8 @@ impl SyncPoint {
         }
     }
 
-    /// Wait until all dependencies of this synchronization points are met, and until
-    /// it is safe to destroy the sync point (no other threads are going to read or write
+    /// Wait until all dependencies of this event are met, and until
+    /// it is safe to destroy the event (no other threads are going to read or write
     /// into it)
     pub fn wait(&self, ctx: &mut Context) {
         profiling::scope!("wait");
@@ -194,7 +194,7 @@ impl SyncPoint {
         //assert_eq!(self.thread_pool_id, ctx.thread_pool_id());
 
         // TODO: would it be possible to block on the worker thread's condition variable if there is
-        // one instead of always blocking on the sync point's? That would allow the worker to resume
+        // one instead of always blocking on the event's? That would allow the worker to resume
         // working if there is new work.
 
         {
@@ -257,7 +257,7 @@ impl SyncPoint {
         //println!("spinned {} times", i);
     }
 
-    /// Block the current thread until all of the sync point's dependencies are met.
+    /// Block the current thread until all of the event's dependencies are met.
     ///
     /// This does not attempt to steal/execute jobs.
     ///
@@ -284,34 +284,34 @@ impl SyncPoint {
         }
     }
 
-    pub fn unsafe_ref(&self) -> SyncPointRef {
-        SyncPointRef { sync: self }
+    pub fn unsafe_ref(&self) -> EventRef {
+        EventRef { event: self }
     }
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct SyncPointRef {
-    sync: *const SyncPoint,
+pub struct EventRef {
+    event: *const Event,
 }
 
-unsafe impl Send for SyncPointRef {}
-unsafe impl Sync for SyncPointRef {}
+unsafe impl Send for EventRef {}
+unsafe impl Sync for EventRef {}
 
-impl SyncPointRef {
+impl EventRef {
     pub unsafe fn signal(&self, ctx: &mut Context, n: u32) -> bool {
-        (*self.sync).signal(ctx, n)
+        (*self.event).signal(ctx, n)
     }
 }
 
-impl Drop for SyncPoint {
+impl Drop for Event {
     fn drop(&mut self) {
         //debug_assert_eq!(self.deps.load(Ordering::Acquire), 0);
         //debug_assert!(self.state.load(Ordering::Acquire) == STATE_SIGNALED);
     }
 }
 
-unsafe impl Sync for SyncPoint {}
-unsafe impl Send for SyncPoint {}
+unsafe impl Sync for Event {}
+unsafe impl Send for Event {}
 
 
 pub struct AtomicLinkedList<T> {

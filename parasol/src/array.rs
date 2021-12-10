@@ -1,4 +1,4 @@
-use crate::sync::{SyncPoint, SyncPointRef};
+use crate::event::{Event, EventRef};
 use crate::job::{JobRef, Job, Priority};
 use crate::context::Context;
 use crate::thread_pool::ThreadPoolId;
@@ -182,17 +182,17 @@ where
 
         let ctx = params.ctx;
 
-        let sync = SyncPoint::new(params.range.end - params.range.start, ctx.thread_pool_id());
+        let event = Event::new(params.range.end - params.range.start, ctx.thread_pool_id());
 
         // Once we start converting this into jobrefs, it MUST NOT move or be destroyed until
-        // we are done waiting on the sync point.
+        // we are done waiting on the event.
         let job_data: ArrayJob<Item, ContextData, ImmutableData, F> = ArrayJob::new(
             params.items,
             params.group_size,
             params.context_data,
             params.immutable_data,
             params.function,
-            &sync,
+            &event,
         );
 
 
@@ -217,7 +217,7 @@ where
         //    OS as soon as the condvar is signaled.
 
         // Pull work from our queue and execute it.
-        while !sync.is_signaled() && ctx.keep_busy() {}
+        while !event.is_signaled() && ctx.keep_busy() {}
 
         // Execute the reserved batch of items that we didn't make available to worker threads.
         // Doing this removes some potential for parallelism, but greatly increase the likelihood
@@ -240,12 +240,12 @@ where
                 (job_data.function)(ctx, args);
             }
 
-            sync.signal(ctx, parallel.range.start - first_item);
+            event.signal(ctx, parallel.range.start - first_item);
         }
 
         // Hopefully by now all items have been processed. If so, wait will return quickly,
         // otherwise we'll have to block on a condition variable.
-        ctx.wait(&sync);
+        ctx.wait(&event);
     }
 }
 
@@ -293,7 +293,7 @@ where
         let parallel = params.dispatch_parameters();
         let ctx = params.ctx;
 
-        let sync = Box::new(SyncPoint::new(params.range.end - params.range.start, ctx.thread_pool_id()));
+        let event = Box::new(Event::new(params.range.end - params.range.start, ctx.thread_pool_id()));
 
         let data = Box::new(ArrayJob::new(
             params.items,
@@ -301,7 +301,7 @@ where
             params.context_data,
             params.immutable_data,
             params.function,
-            &sync,
+            &event,
         ));
 
         for_each_dispatch(
@@ -311,7 +311,7 @@ where
             params.priority,
         );
 
-        JoinHandle { sync, data: data, _marker: PhantomData }
+        JoinHandle { event, data: data, _marker: PhantomData }
     }
 }
 
@@ -356,7 +356,7 @@ struct ArrayJob<Item, ContextData, ImmutableData, Func> {
     ctx_data: *mut ContextData,
     immutable_data: *const ImmutableData,
     function: Func,
-    sync: SyncPointRef,
+    event: EventRef,
     range: Range<u32>,
     split_thresold: u32,
 }
@@ -402,7 +402,7 @@ where
             (this.function)(ctx, args);
         }
 
-        this.sync.signal(ctx, n);
+        this.event.signal(ctx, n);
     }
 }
 
@@ -416,14 +416,14 @@ where
         mut ctx_data: Option<&mut [ContextData]>,
         immutable_data: Option<&ImmutableData>,
         function: Func,
-        sync: &SyncPoint,
+        event: &Event,
     ) -> Self {
         ArrayJob {
             items: items.as_mut_ptr(),
             ctx_data: ctx_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr()),
             immutable_data: immutable_data.map_or(std::ptr::null_mut(), |ptr| ptr),
             function,
-            sync: sync.unsafe_ref(),
+            event: event.unsafe_ref(),
             range: 0..(items.len() as u32),
             split_thresold,
         }
@@ -437,7 +437,7 @@ where
 }
 
 pub struct JoinHandle<'a, 'b> {
-    sync: Box<SyncPoint>,
+    event: Box<Event>,
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
     _marker: PhantomData<(&'a (), &'b ())>,
@@ -445,25 +445,25 @@ pub struct JoinHandle<'a, 'b> {
 
 impl<'a, 'b> JoinHandle<'a, 'b> {
     pub fn wait(self, ctx: &mut Context) {
-        ctx.wait(&self.sync);
+        ctx.wait(&self.event);
     }
 }
 
 impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
     fn drop(&mut self) {
-        self.sync.wait_no_context();
+        self.event.wait_no_context();
     }
 }
 
 pub struct Workload<Item, ContextData, ImmutableData> {
     pub items: Vec<Item>,
     pub immutable_data: Option<Arc<ImmutableData>>,
-    // Can't give direct access to this to preserve safety guarantees of ArrayJob..
+    // Can't give direct access to this to preserve safety guarantees of ArrayJob.
     context_data: Option<Vec<ContextData>>,
     range: Range<u32>,
     group_size: u32,
     priority: Priority,
-    sync: Box<SyncPoint>,
+    event: Box<Event>,
 }
 
 pub struct RunningWorkload<Item, ContextData, ImmutableData> {
@@ -475,7 +475,7 @@ pub struct RunningWorkload<Item, ContextData, ImmutableData> {
     priority: Priority,
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
-    sync: Option<Box<SyncPoint>>,
+    event: Option<Box<Event>>,
 }
 
 pub fn range_workload(range: Range<u32>) -> Workload<(), (), ()> {
@@ -490,7 +490,7 @@ pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
         immutable_data: None,
         group_size: 1,
         priority: Priority::High,
-        sync: Box::new(SyncPoint::new(0, ThreadPoolId(std::u32::MAX))),
+        event: Box::new(Event::new(0, ThreadPoolId(std::u32::MAX))),
     }
 }
 
@@ -503,7 +503,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
-            sync: self.sync,
+            event: self.event,
         }
     }
 
@@ -515,7 +515,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
             range: self.range,
             group_size: self.group_size,
             priority: self.priority,
-            sync: self.sync,
+            event: self.event,
         }
     }
 
@@ -553,7 +553,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         unsafe {
             let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
 
-            self.sync.reset(self.range.end - self.range.start, ctx.thread_pool_id());
+            self.event.reset(self.range.end - self.range.start, ctx.thread_pool_id());
 
             let immutable_data: Option<&ImmutableData> = self.immutable_data
                 .as_ref()
@@ -565,7 +565,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 self.context_data.as_mut().map(|vec| &mut vec[..]),
                 immutable_data,
                 function,
-                &self.sync,
+                &self.event,
             ));
 
             for_each_dispatch(
@@ -583,7 +583,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 group_size: self.group_size,
                 priority: self.priority,
                 data,
-                sync: Some(self.sync),
+                event: Some(self.event),
             }
         }
     }
@@ -591,7 +591,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
 
 impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, ImmutableData> {
     pub fn wait(mut self, ctx: &mut Context) -> Workload<Item, ContextData, ImmutableData> {
-        self.sync.as_ref().unwrap().wait(ctx);
+        self.event.as_ref().unwrap().wait(ctx);
 
         Workload {
             items: std::mem::take(&mut self.items),
@@ -600,15 +600,15 @@ impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, Immuta
             range: self.range.clone(),
             group_size: self.group_size,
             priority: self.priority,
-            sync: self.sync.take().unwrap(),
+            event: self.event.take().unwrap(),
         }
     }
 }
 
 impl<Item, ContextData, ImmutableData> Drop for RunningWorkload<Item, ContextData, ImmutableData> {
     fn drop(&mut self) {
-        if let Some(sync) = &self.sync {
-            sync.wait_no_context();
+        if let Some(event) = &self.event {
+            event.wait_no_context();
         }
     }
 }
