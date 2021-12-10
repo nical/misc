@@ -1,4 +1,4 @@
-use std::sync::{Mutex, Arc};
+use crate::sync::{Mutex, Arc};
 
 use crossbeam_deque::{Worker as WorkerQueue};
 
@@ -32,6 +32,8 @@ pub struct Context {
     pub(crate) shared: Arc<Shared>,
     pub(crate) stats: Stats,
 }
+
+unsafe impl Send for Context {}
 
 impl Context {
     pub(crate) fn new_worker(id: u32, num_contexts: u32, queues: [WorkerQueue<JobRef>; 2], shared: Arc<Shared>) -> Self {

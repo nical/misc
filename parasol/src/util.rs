@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::{AtomicBool, Ordering};
 
 pub struct ExclusiveCheck<T> {
     lock: AtomicBool,

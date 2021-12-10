@@ -5,8 +5,7 @@
 /// starts. Then we have a simple mutex/condvar pair tracking the remaining number of
 /// workers to shut down that we can wait on.
 
-use std::sync::{Mutex, Condvar, Arc};
-use std::sync::atomic::{Ordering, AtomicBool};
+use crate::sync::{Ordering, AtomicBool, Mutex, Condvar, Arc};
 
 use crate::core::Shared;
 

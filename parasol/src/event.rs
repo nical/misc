@@ -1,14 +1,13 @@
-use std::sync::{Mutex, Condvar};
-use std::sync::atomic::{Ordering, AtomicI32, AtomicPtr};
-
-use crossbeam_utils::Backoff;
-
+use crate::sync::{Ordering, AtomicI32, AtomicPtr, Mutex, Condvar};
 use crate::Context;
 use crate::job::JobRef;
 use crate::thread_pool::ThreadPoolId;
 
+use crossbeam_utils::Backoff;
+
 // for debugging.
-static SYNC_ID: AtomicI32 = AtomicI32::new(12345);
+// Use std's atomic type explicitly here because loom's doesn't support static initialization.
+static NEXT_EVENT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(12345);
 
 const STATE_DEFAULT: i32 = 0;
 const STATE_SIGNALING: i32 = 1;
@@ -51,7 +50,7 @@ impl Event {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             thread_pool_id: pool_id,
-            id: SYNC_ID.fetch_add(1, Ordering::Relaxed),
+            id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -209,14 +208,7 @@ impl Event {
 
         {
             profiling::scope!("wait(condvar)");
-            let mut stolen = None;
             'outer: loop {
-                if let Some(job) = stolen.take() {
-                    unsafe {
-                        ctx.execute_job(job);
-                    }
-                }
-
                 let mut guard = self.mutex.lock().unwrap();
                 while self.state.load(Ordering::Acquire) == STATE_DEFAULT {
                     guard = self.cond.wait(guard).unwrap();
@@ -240,7 +232,11 @@ impl Event {
                 }
                 return;
             }
+
             backoff.spin();
+
+            #[cfg(loom)]
+            loom::thread::yield_now();
         }
 
         // The majority of the time we only check state once. If we are unlucky we
@@ -249,12 +245,13 @@ impl Event {
         while self.state.load(Ordering::Acquire) != STATE_SIGNALED {
             ctx.keep_busy();
             i += 1;
+
+            #[cfg(loom)]
+            loom::thread::yield_now();
         }
 
         ctx.stats.cond_wait_spin += 1;
         ctx.stats.spinned += i;
-
-        //println!("spinned {} times", i);
     }
 
     /// Block the current thread until all of the event's dependencies are met.

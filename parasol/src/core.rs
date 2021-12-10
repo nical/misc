@@ -1,15 +1,15 @@
-use std::sync::Arc;
-use std::sync::atomic::{Ordering, AtomicU32};
 
 use crossbeam_deque::{Stealer, Steal, Worker as WorkerQueue};
 use crossbeam_utils::{CachePadded, sync::{Parker, Unparker}};
 
+use crate::sync::{Arc, Ordering, AtomicU32, thread};
 use crate::job::{JobRef, Priority};
 use crate::thread_pool::{ThreadPool, ThreadPoolBuilder, ThreadPoolId};
 use crate::context::{Context, ContextId, ContextPool};
 use crate::shutdown::Shutdown;
 
-static NEXT_THREADPOOL_ID: AtomicU32 = AtomicU32::new(0);
+// Use std's atomic type explicitly here because loom's doesn't support static initialization.
+static NEXT_THREADPOOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Data accessible by all contexts from any thread.
 pub(crate) struct Shared {
@@ -85,7 +85,7 @@ pub(crate) fn init(params: ThreadPoolBuilder) -> ThreadPool {
             parker: parkers[i].take().unwrap(),
         };
 
-        let mut builder = std::thread::Builder::new()
+        let mut builder = thread::Builder::new()
             .name((params.name_handler)(i as u32));
 
         if let Some(stack_size) = params.stack_size {

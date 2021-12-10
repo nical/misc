@@ -24,6 +24,7 @@ mod array;
 mod util;
 mod thread_pool;
 mod shutdown;
+pub mod sync;
 
 pub use job::Priority;
 pub use context::*;
