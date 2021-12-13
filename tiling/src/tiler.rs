@@ -718,6 +718,7 @@ impl Tiler {
         z_buffer: &mut ZBufferRow,
         encoder: &mut dyn TileEncoder,
     ) {
+        //side_edges.print();
         //println!("  <!-- tile {} {} -->", tile.x, tile.y);
 
         tile.solid = false;
@@ -996,6 +997,14 @@ impl SideEdgeTracker {
         }
     }
 
+    pub fn print(&self) {
+        print!("side events: [");
+        for evt in &self.events {
+            print!("{}({}), ", evt.y, evt.winding);
+        }
+        println!("]");
+    }
+
     pub fn clear(&mut self) {
         self.events.clear();
     }
@@ -1029,14 +1038,21 @@ impl SideEdgeTracker {
             }
 
             if fill_rule.is_out(evt.winding) {
+                //println!("B {} {:?}", evt.y, fill_rule);
                 return false;
             }
         }
+
+        //println!("A");
 
         false
     }
 
     pub fn add_edge(&mut self, from: f32, to: f32, edge_winding: i16) {
+        if from == to {
+            return;
+        }
+
         // TODO: I think they are already top to bottom.
         let y0 = from.min(to);
         let y1 = from.max(to);

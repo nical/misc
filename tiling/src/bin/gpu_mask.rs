@@ -20,7 +20,7 @@ fn main() {
     let tolerance = 0.05;
     let mut parallel = false;
     let scale_factor = 2.0;
-    let n = 1;
+    let n = 500;
 
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
@@ -36,7 +36,7 @@ fn main() {
         (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
     };
 
-    for arg in args {
+    for arg in &args {
         if arg == "-p" {
             parallel = true;
         }
@@ -86,6 +86,7 @@ fn main() {
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
+
             builder.color = *color;
 
             if parallel {
@@ -115,6 +116,11 @@ fn main() {
             row_time += tiler.row_decomposition_time_ns;
             tile_time += tiler.tile_decomposition_time_ns;
         }
+
+        //let idx_str: &str = &args.last().as_ref().unwrap();
+        //let idx: usize = idx_str.parse().unwrap();
+        //builder.color = paths[idx].1;
+        //tiler.tile_path(paths[idx].0.iter(), Some(&transform), &mut *builder);
 
         // Since the paths were processed front-to-back we have to reverse
         // the alpha tiles to render then back-to-front.

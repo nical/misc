@@ -4,11 +4,10 @@ use super::GpuGlobals;
 /*
 
 When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Graphics 620 (KBL GT2):
- - rasterizing the masks takes 3 to 4ms
+ - rasterizing the masks takes ~2ms
  - rendering into the color target takes ~0.8ms
   - ~0.28ms opaque tiles
   - ~0.48ms alpha tiles
-
 
 */
 
