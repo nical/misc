@@ -20,7 +20,7 @@ fn main() {
     let tolerance = 0.05;
     let mut parallel = false;
     let scale_factor = 2.0;
-    let n = 500;
+    let n = 1;
 
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
