@@ -20,7 +20,7 @@ fn main() {
     let tolerance = 0.05;
     let mut parallel = false;
     let scale_factor = 2.0;
-    let n = 500;
+    let n = 1;
 
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
@@ -59,22 +59,12 @@ fn main() {
         }
     );
 
-    let mut b0 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b1 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b3 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b4 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b5 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b6 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b7 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b8 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b9 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b10 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b11 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-    let mut b12 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
-
-
-    let mut builder = tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance);
+    // Main builder.
+    let mut builder = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    // Extra builders for worker threads.
+    let mut b0 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
+    let mut b1 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
+    let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -87,16 +77,6 @@ fn main() {
         b0.reset();
         b1.reset();
         b2.reset();
-        b3.reset();
-        b4.reset();
-        b5.reset();
-        b6.reset();
-        b7.reset();
-        b8.reset();
-        b9.reset();
-        b10.reset();
-        b11.reset();
-        b12.reset();
 
         builder.reset();
         tiler.clear_depth();
@@ -109,12 +89,25 @@ fn main() {
             builder.color = *color;
 
             if parallel {
+                b0.color = *color;
+                b1.color = *color;
+                b2.color = *color;
+
                 tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [
-                    &mut *b0, &mut *b1, &mut *b2, &mut *b3, &mut *b4, &mut *b5, &mut *b6, &mut *b7, &mut *b8,
-                    &mut *b9, &mut *b10, &mut *b11, &mut *b12,
+                    &mut *b0, &mut *b1, &mut *b2, &mut *builder
                 ]);
+
+                // The order of the mask tiles doesn't matter within a path but it does between paths,
+                // so extend the main builder's mask tiles buffer between each path.
+                builder.mask_tiles.reserve(b0.mask_tiles.len() + b1.mask_tiles.len() + b2.mask_tiles.len());
+                builder.mask_tiles.extend_from_slice(&b0.mask_tiles);
+                builder.mask_tiles.extend_from_slice(&b1.mask_tiles);
+                builder.mask_tiles.extend_from_slice(&b2.mask_tiles);
+                b0.mask_tiles.clear();
+                b1.mask_tiles.clear();
+                b2.mask_tiles.clear();
             } else {
-                tiler.tile_path(path.iter(), Some(&transform), &mut builder);
+                tiler.tile_path(path.iter(), Some(&transform), &mut *builder);
             }
 
             tiler.z_index -= 1;
@@ -127,6 +120,49 @@ fn main() {
         // the alpha tiles to render then back-to-front.
         // This doesn't show up in profiles.
         builder.mask_tiles.reverse();
+    }
+
+    if parallel {
+        // Merge worker data into the main builder. TODO: It's not necessary, we should upload directly
+        // off of each worker's data.
+        builder.solid_tiles.reserve(b0.solid_tiles.len() + b1.solid_tiles.len() + b2.solid_tiles.len());
+        builder.solid_tiles.extend_from_slice(&b0.solid_tiles);
+        builder.solid_tiles.extend_from_slice(&b1.solid_tiles);
+        builder.solid_tiles.extend_from_slice(&b2.solid_tiles);
+
+        builder.cpu_masks.reserve(b0.cpu_masks.len() + b1.cpu_masks.len() + b2.cpu_masks.len());
+        builder.cpu_masks.extend_from_slice(&b0.cpu_masks);
+        builder.cpu_masks.extend_from_slice(&b1.cpu_masks);
+        builder.cpu_masks.extend_from_slice(&b2.cpu_masks);
+
+        builder.gpu_masks.reserve(b0.gpu_masks.len() + b1.gpu_masks.len() + b2.gpu_masks.len());
+        use tiling::gpu::masked_tiles::Mask;
+        let mut offset = builder.edges.len() as u32;
+        for mask in &b0.gpu_masks {
+            builder.gpu_masks.push(Mask {
+                edges: (mask.edges.0 + offset, mask.edges.1 + offset),
+                ..*mask
+            });
+        }
+        offset += b0.edges.len() as u32;
+        for mask in &b1.gpu_masks {
+            builder.gpu_masks.push(Mask {
+                edges: (mask.edges.0 + offset, mask.edges.1 + offset),
+                ..*mask
+            });
+        }
+        offset += b1.edges.len() as u32;
+        for mask in &b2.gpu_masks {
+            builder.gpu_masks.push(Mask {
+                edges: (mask.edges.0 + offset, mask.edges.1 + offset),
+                ..*mask
+            });
+        }
+
+        builder.edges.reserve(b0.edges.len() + b1.edges.len() + b2.edges.len());
+        builder.edges.extend_from_slice(&b0.edges);
+        builder.edges.extend_from_slice(&b1.edges);
+        builder.edges.extend_from_slice(&b2.edges);
     }
 
     let num_solid_tiles = builder.solid_tiles.len() as u32;
@@ -151,10 +187,6 @@ fn main() {
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
     println!("{:?}", ctx.stats());
 
-
-    if parallel {
-        return;
-    }
 
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();
@@ -226,8 +258,21 @@ fn main() {
                 resolution: vector(window_size.width as f32, window_size.height as f32),
             }
         ]),
-        usage: wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
+
+    let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Mask params"),
+        contents: bytemuck::cast_slice(&[
+            tiling::gpu::masked_tiles::MaskParams {
+                tile_size: 16.0,
+                inv_atlas_width: 1.0 / 2048.0,
+                masks_per_row: 2048 / 16,
+            }
+        ]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
 
     let solid_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Solid tiles"),
@@ -277,7 +322,7 @@ fn main() {
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
+                resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
             },
             wgpu::BindGroupEntry {
                 binding: 1,
@@ -307,8 +352,6 @@ fn main() {
         render: true,
     };
 
-    println!("{:?}", &builder.mask_tiles[0..8]);
-
     event_loop.run(move |event, _, control_flow| {
         if !update_inputs(event, &window, control_flow, &mut scene) {
             return;
@@ -337,6 +380,18 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+
+        queue.write_buffer(
+            &globals_ubo,
+            0,
+            bytemuck::cast_slice(&[tiling::gpu::GpuGlobals {
+                resolution: vector(
+                    scene.window_size.width as f32,
+                    scene.window_size.height as f32,
+                ),
+            }]),
+        );
+
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),
         });
@@ -363,12 +418,13 @@ fn main() {
         }
 
         {
+            let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachment {
                     view: &frame_view,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        load: wgpu::LoadOp::Clear(bg_color),
                         store: true,
                     },
                     resolve_target: None,

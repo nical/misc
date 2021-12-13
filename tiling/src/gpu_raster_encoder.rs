@@ -1,199 +1,30 @@
 use lyon::geom::QuadraticBezierSegment;
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
-use std::mem::transmute;
+use parasol::ExclusiveCheck;
+use std::sync::{
+    Arc,
+    atomic::{Ordering, AtomicU32},
+};
+
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
-use parasol::ExclusiveCheck;
-
 use crate::Color;
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Pattern {
-    Color(Color),
-    Image(u32),
-}
-
-const OP_BACKDROP: i32 = 1;
-const OP_FILL: i32 = 3;
-//const OP_STROKE: i32 = 4;
-const OP_MASK_EVEN_ODD: i32 = 5;
-const OP_MASK_NON_ZERO: i32 = 6;
-const OP_PATTERN_COLOR: i32 = 7;
-//const OP_PATTERN_IMAGE: i32 = 8;
-const OP_BLEND_OVER: i32 = 9;
-const OP_PUSH_GROUP: i32 = 10;
-const OP_POP_GROUP: i32 = 11;
-
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Edge(Point, Point);
-
-unsafe impl bytemuck::Pod for Edge {}
-unsafe impl bytemuck::Zeroable for Edge {}
-
-pub struct TileCommandEncoder {
-    commands: Vec<i32>,
-    edges: Vec<Edge>,
-}
-
-impl TileCommandEncoder {
-    pub fn new() -> Self {
-        TileCommandEncoder {
-            commands: Vec::new(),
-            edges: Vec::new(),
-        }
-    }
-
-    pub fn set_backdrop(&mut self, winding_number: i32) {
-        self.commands.push(OP_BACKDROP);
-        self.commands.push(winding_number);
-    }
-
-    pub fn mask_even_odd(&mut self) {
-        self.commands.push(OP_MASK_EVEN_ODD);
-    }
-
-    pub fn mask_non_zero(&mut self) {
-        self.commands.push(OP_MASK_NON_ZERO);
-    }
-
-    pub fn blend_over(&mut self) {
-        self.commands.push(OP_BLEND_OVER);
-    }
-
-    pub fn set_color(&mut self, color: Color) {
-        let packed = (color.r as u32) << 24
-            | (color.g as u32) << 16
-            | (color.b as u32) << 8
-            | (color.a as u32);
-        self.commands.push(OP_PATTERN_COLOR);
-        self.commands.push(unsafe { transmute(packed) });
-    }
-
-    pub fn fill(&mut self) -> FillBuilder {
-        FillBuilder::new(self)
-    }
-
-    pub fn push_group(&mut self) -> Group {
-        Group::new(self)
-    }
-
-    pub fn commands(&self) -> &[i32] {
-        &self.commands
-    }
-
-    pub fn edges(&self) -> &[Edge] {
-        &self.edges
-    }
-}
-
-pub enum BlendMode {
-    Over,
-}
-
-pub struct FillBuilder<'l> {
-    encoder: &'l mut TileCommandEncoder,
-    color: Option<Color>,
-    fill_rule: FillRule,
-    blend_mode: BlendMode,
-    edges_start: i32,
-    backdrop: i32,
-}
-
-impl<'l> FillBuilder<'l> {
-    pub fn new(encoder: &'l mut TileCommandEncoder) -> Self {
-        FillBuilder {
-            edges_start: encoder.edges.len() as i32,
-            encoder,
-            color: None,
-            fill_rule: FillRule::EvenOdd,
-            blend_mode: BlendMode::Over,
-            backdrop: 0,
-        }
-    }
-
-    pub fn with_color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-
-    pub fn with_bend_mode(mut self, blend_mode: BlendMode) -> Self {
-        self.blend_mode = blend_mode;
-        self
-    }
-
-    pub fn with_backdrop(mut self, winding_number: i32) -> Self {
-        self.backdrop = winding_number;
-        self
-    }
-
-    pub fn add_edge(&mut self, from: Point, to: Point) {
-        self.encoder.edges.push(Edge(from, to));
-    }
-
-    pub fn build(self) {
-        let edges_end = self.encoder.edges.len() as i32;
-        if edges_end == self.edges_start {
-            return;
-        }
-
-        self.encoder.set_backdrop(self.backdrop);
-
-        self.encoder.commands.push(OP_FILL);
-        self.encoder.commands.push(self.edges_start);
-        self.encoder.commands.push(edges_end);
-
-        match self.fill_rule {
-            FillRule::EvenOdd => { self.encoder.mask_even_odd(); }
-            FillRule::NonZero => { self.encoder.mask_non_zero(); }
-        }
-
-        if let Some(color) = self.color {
-            self.encoder.set_color(color);
-        }
-
-        match self.blend_mode {
-            BlendMode::Over => { self.encoder.blend_over(); }
-        }
-    }
-}
-
-pub struct Group<'l> {
-    encoder: &'l mut TileCommandEncoder,    
-}
-
-impl<'l> Group<'l> {
-    fn new(encoder: &'l mut TileCommandEncoder) -> Group<'l> {
-        encoder.commands.push(OP_PUSH_GROUP);
-        Group { encoder }
-    }
-
-    pub fn pop(self) {
-        self.encoder.commands.push(OP_POP_GROUP);
-    }
-
-    pub fn pop_with_mask(self) -> FillBuilder<'l> {
-        self.encoder.commands.push(OP_POP_GROUP);
-        FillBuilder::new(self.encoder)
-    }
-
-    pub fn push_group(&mut self) -> Group {
-        Group::new(self.encoder)
-    }
-
-    pub fn fill(&mut self) -> FillBuilder {
-        FillBuilder::new(self.encoder)
-    }
-}
-
 use crate::gpu::solid_tiles::TileInstance as SolidTile;
 use crate::gpu::masked_tiles::TileInstance as MaskedTile;
 use crate::gpu::masked_tiles::Mask as GpuMask;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Edge(pub Point, pub Point);
+
+#[derive(Copy, Clone, Debug)]
 pub struct CpuMask {
     pub mask_id: u32,
     pub byte_offset: u32,
+}
+
+struct Shared {
+    next_mask_id: AtomicU32,
 }
 
 pub struct GpuRasterEncoder {
@@ -206,9 +37,9 @@ pub struct GpuRasterEncoder {
     pub color: Color,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
-    pub next_mask_id: u32,
     pub is_opaque: bool,
     pub tolerance: f32,
+    shared: Arc<Shared>,
 
     lock: ExclusiveCheck<()>,
 }
@@ -225,9 +56,32 @@ impl GpuRasterEncoder {
             color: Color { r: 0, g: 0, b: 0, a: 0 },
             fill_rule: FillRule::EvenOdd,
             max_edges_per_gpu_tile: 4096,
-            next_mask_id: 0,
             is_opaque: true,
             tolerance,
+
+            shared: Arc::new(Shared {
+                next_mask_id: AtomicU32::new(0),
+            }),
+
+            lock: ExclusiveCheck::new(),
+        }
+    }
+
+    pub fn new_parallel(other: &GpuRasterEncoder) -> Self {
+        GpuRasterEncoder {
+            edges: Vec::with_capacity(8196),
+            solid_tiles: Vec::with_capacity(2000),
+            mask_tiles: Vec::with_capacity(1000),
+            gpu_masks: Vec::with_capacity(6000),
+            cpu_masks: Vec::with_capacity(6000),
+            rasterized_mask_buffer: Vec::with_capacity(16*16*128),
+            color: Color { r: 0, g: 0, b: 0, a: 0 },
+            fill_rule: other.fill_rule,
+            max_edges_per_gpu_tile: other.max_edges_per_gpu_tile,
+            is_opaque: true,
+            tolerance: other.tolerance,
+
+            shared: other.shared.clone(),
 
             lock: ExclusiveCheck::new(),
         }
@@ -240,8 +94,13 @@ impl GpuRasterEncoder {
         self.gpu_masks.clear();
         self.cpu_masks.clear();
         self.rasterized_mask_buffer.clear();
-        self.next_mask_id = 0;
+        self.shared.next_mask_id.store(0, Ordering::Release);
     }
+
+    fn allocate_mask_id(&self) -> u32 {
+        self.shared.next_mask_id.fetch_add(1, Ordering::SeqCst)
+    }
+
 
     fn add_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) -> bool {
         const TILE_SIZE: f32 = 16.0;
@@ -306,8 +165,7 @@ impl GpuRasterEncoder {
         let edges_end = self.edges.len() as u32;
         assert!(edges_end > edges_start);
         assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
-        let mask_id = self.next_mask_id;
-        self.next_mask_id += 1;
+        let mask_id = self.allocate_mask_id();
 
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
@@ -386,8 +244,7 @@ impl GpuRasterEncoder {
             &mut self.rasterized_mask_buffer[mask_buffer_offset .. mask_buffer_offset + TILE_SIZE * TILE_SIZE],
         );
 
-        let mask_id = self.next_mask_id;
-        self.next_mask_id += 1;
+        let mask_id = self.allocate_mask_id();
 
         let tx = tile.x as f32 * 16.0;
         let ty = tile.y as f32 * 16.0;

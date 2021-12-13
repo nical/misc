@@ -12,7 +12,7 @@ use winit::window::Window;
 use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
-use tiling::gpu_raster_encoder::*;
+use tiling::advanced_raster_encoder::*;
 use tiling::Color;
 
 use tiling::gpu::GpuGlobals;

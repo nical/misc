@@ -53,6 +53,9 @@ fn main(
     [[location(1), interpolate(flat)]] in_cmd_range: vec2<u32>,
 ) -> FragmentOutput {
 
+    // TODO: piet-gpu was originally doing this for their blend stack and is moving away
+    // because lots of drivers don't implement it properly.
+    // see https://github.com/linebender/piet-gpu/issues/83#issuecomment-989001504
     var blend_stack: array<vec4<f32>, 128>;
     var blend_stack_offset: u32 = 0u;
 

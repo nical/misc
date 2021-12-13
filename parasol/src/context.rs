@@ -155,6 +155,15 @@ impl Context {
 
     pub(crate) fn index(&self) -> usize { self.id as usize }
 
+    #[doc(hidden)]
+    pub fn data_index(&self) -> usize {
+        if self.is_worker_thread() {
+            self.id as usize
+        } else {
+            self.num_worker_threads() as usize
+        }
+    }
+
     pub(crate) fn fetch_local_job(&mut self, priority: Priority) -> Option<JobRef> {
         let priority_idx = priority.index();
         let job = self.queues[priority_idx].pop();

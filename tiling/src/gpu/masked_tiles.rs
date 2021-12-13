@@ -1,6 +1,17 @@
 use lyon::geom::Box2D;
 use super::GpuGlobals;
 
+/*
+
+When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Graphics 620 (KBL GT2):
+ - rasterizing the masks takes 3 to 4ms
+ - rendering into the color target takes ~0.8ms
+  - ~0.28ms opaque tiles
+  - ~0.48ms alpha tiles
+
+
+*/
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct TileInstance {
@@ -24,6 +35,16 @@ pub struct Mask {
 unsafe impl bytemuck::Pod for Mask {}
 unsafe impl bytemuck::Zeroable for Mask {}
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MaskParams {
+    pub tile_size: f32,
+    pub inv_atlas_width: f32,
+    pub masks_per_row: u32,
+}
+
+unsafe impl bytemuck::Pod for MaskParams {}
+unsafe impl bytemuck::Zeroable for MaskParams {}
 
 pub struct MaskedTiles {
     pub pipeline: wgpu::RenderPipeline,
@@ -46,7 +67,7 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/masked_tile.fs.wgsl").into()),
     });
 
-    let globals_buffer_byte_size = std::mem::size_of::<GpuGlobals>() as u64;
+    let globals_buffer_size = std::mem::size_of::<GpuGlobals>() as u64;
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Masked tiles"),
@@ -57,7 +78,7 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(globals_buffer_byte_size),
+                    min_binding_size: wgpu::BufferSize::new(globals_buffer_size),
                 },
                 count: None,
             },
@@ -165,7 +186,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.fs.wgsl").into()),
     });
 
-    let globals_buffer_byte_size = std::mem::size_of::<GpuGlobals>() as u64;
+    let mask_globals_buffer_size = std::mem::size_of::<MaskParams>() as u64;
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask"),
@@ -176,7 +197,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(globals_buffer_byte_size),
+                    min_binding_size: wgpu::BufferSize::new(mask_globals_buffer_size),
                 },
                 count: None,
             },

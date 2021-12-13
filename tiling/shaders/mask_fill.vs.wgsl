@@ -1,3 +1,12 @@
+[[block]]
+struct MaskParams {
+    tile_size: f32;
+    inv_atlas_width: f32;
+    masks_per_row: u32;
+};
+
+[[group(0), binding(0)]] var<uniform> globals: MaskParams;
+
 struct VertexOutput {
     [[location(0), interpolate(linear)]] uv: vec2<f32>;
     [[location(1), interpolate(flat)]] edges: vec2<u32>;
@@ -22,16 +31,18 @@ fn main(
 
     var uv = vertices[vertex_index % 4u];
 
-    var TILE_SIZE: f32 = 16.0;
-    var MASKS_PER_ROW: u32 = 2048u / 16u;
-    var tile_x = f32(in_mask_id % MASKS_PER_ROW);
-    var tile_y = f32(in_mask_id / MASKS_PER_ROW);
-    var normalized_mask_uv = ((vec2<f32>(tile_x, tile_y) + uv) * TILE_SIZE) / 2048.0;
+    var tile_size = globals.tile_size;
+    var masks_per_row = globals.masks_per_row;
+
+    var tile_x = f32(in_mask_id % masks_per_row);
+    var tile_y = f32(in_mask_id / masks_per_row);
+    var normalized_mask_uv = ((vec2<f32>(tile_x, tile_y) + uv) * tile_size) * globals.inv_atlas_width;
+
     var screen_pos = normalized_mask_uv * 2.0 - vec2<f32>(1.0);
-    screen_pos.y = - screen_pos.y;
+    screen_pos.y = -screen_pos.y;
 
     return VertexOutput(
-        uv * 16.0,
+        uv * tile_size,
         in_edges,
         in_fill_rule,
         vec4<f32>(screen_pos.x, screen_pos.y, 0.0, 1.0),

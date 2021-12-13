@@ -371,11 +371,7 @@ where
 
         assert!(range.start >= this.range.start && range.end <= this.range.end);
 
-        let context_data_index = if ctx.is_worker_thread() {
-            ctx.index() as isize
-        } else {
-            ctx.num_worker_threads() as isize
-        };
+        let context_data_index = ctx.data_index() as isize;
 
         // SAFETY: Here we rely two very important things:
         // - If there is no context data, then it's type is `()`, which means reads and writes
@@ -646,7 +642,7 @@ impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, Immuta
     /// The extra items will have access to the same context and immutable data as the original
     /// running workload.
     ///
-    /// `WorkloadExt::submit` must be called otherwise the work won't happen.
+    /// `WorkloadExt::submit` must be called for the work to happen.
     pub fn extend(&mut self, items: Vec<Item>) -> WorkloadExt<Item, ContextData, ImmutableData> {
         WorkloadExt {
             range: 0..(items.len() as u32),

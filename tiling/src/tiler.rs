@@ -411,8 +411,8 @@ impl Tiler {
             .with_group_size(4)
             .with_priority(parasol::Priority::Low)
             //.filter(|row| !row.edges.is_empty())
-            .run(|worker, args| {
-                //println!("worker {:?} row {:?}", worker.id(), row.tile_y);
+            .run(|ctx, args| {
+                //println!("ctx {:?} row {:?}", ctx.id(), row.tile_y);
 
                 let worker_data: &mut TilerWorkerData = &mut *args.context_data;
 
@@ -433,7 +433,7 @@ impl Tiler {
                         row.z_buffer.init(self.num_tiles_x as usize);
                     }
 
-                    let idx = worker.id().index();
+                    let idx = if ctx.is_worker_thread()  { ctx.id().index() } else { ctx.num_worker_threads() as usize };
                     self.process_row(
                         row.tile_y,
                         &mut row.edges[..],
