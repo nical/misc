@@ -464,6 +464,7 @@ pub struct Workload<Item, ContextData, ImmutableData> {
     group_size: u32,
     priority: Priority,
     event: Box<Event>,
+    ext: Option<Box<WorkloadExtension<Item>>>,
 }
 
 pub struct RunningWorkload<Item, ContextData, ImmutableData> {
@@ -476,6 +477,7 @@ pub struct RunningWorkload<Item, ContextData, ImmutableData> {
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
     event: Option<Box<Event>>,
+    ext: Option<Box<WorkloadExtension<Item>>>,
 }
 
 pub fn range_workload(range: Range<u32>) -> Workload<(), (), ()> {
@@ -491,6 +493,7 @@ pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
         group_size: 1,
         priority: Priority::High,
         event: Box::new(Event::new(0, ThreadPoolId(std::u32::MAX))),
+        ext: None,
     }
 }
 
@@ -504,6 +507,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
             group_size: self.group_size,
             priority: self.priority,
             event: self.event,
+            ext: self.ext,
         }
     }
 
@@ -516,6 +520,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
             group_size: self.group_size,
             priority: self.priority,
             event: self.event,
+            ext: self.ext,
         }
     }
 
@@ -584,14 +589,45 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
                 priority: self.priority,
                 data,
                 event: Some(self.event),
+                ext: None,
             }
         }
     }
+
+    pub fn pop_items(&mut self) -> Option<Vec<Item>> {
+        if !self.items.is_empty() {
+            return Some(std::mem::take(&mut self.items));
+        }
+
+        if let Some(mut ext) = self.ext.take() {
+            self.ext = ext.ext;
+            return Some(std::mem::take(&mut ext.items));
+        }
+
+        None
+    }
+}
+
+
+/// A somewhat inelegant way to model a dynamically growing workload. An example use case is
+/// glyph rasterization in webrender where we send batches of glyphs throughout the frame
+/// building process and gather all of the results at some point towards the end.
+struct WorkloadExtension<Item> {
+    items: Vec<Item>,
+    event: Event,
+    data: Option<Box<dyn std::any::Any>>,
+    ext: Option<Box<WorkloadExtension<Item>>>,
 }
 
 impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, ImmutableData> {
     pub fn wait(mut self, ctx: &mut Context) -> Workload<Item, ContextData, ImmutableData> {
         self.event.as_ref().unwrap().wait(ctx);
+
+        let mut ext_ref = &self.ext;
+        while let Some(ext) = ext_ref {
+            ext.event.wait(ctx);
+            ext_ref = &ext.ext;
+        }
 
         Workload {
             items: std::mem::take(&mut self.items),
@@ -601,6 +637,21 @@ impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, Immuta
             group_size: self.group_size,
             priority: self.priority,
             event: self.event.take().unwrap(),
+            ext: self.ext.take(),
+        }
+    }
+
+    /// Start preparing additional work to add to the running workload.
+    ///
+    /// The extra items will have access to the same context and immutable data as the original
+    /// running workload.
+    ///
+    /// `WorkloadExt::submit` must be called otherwise the work won't happen.
+    pub fn extend(&mut self, items: Vec<Item>) -> WorkloadExt<Item, ContextData, ImmutableData> {
+        WorkloadExt {
+            range: 0..(items.len() as u32),
+            items,
+            workload: self,
         }
     }
 }
@@ -609,6 +660,73 @@ impl<Item, ContextData, ImmutableData> Drop for RunningWorkload<Item, ContextDat
     fn drop(&mut self) {
         if let Some(event) = &self.event {
             event.wait_no_context();
+        }
+    }
+}
+
+pub struct WorkloadExt<'l, Item, ContextData, ImmutableData> {
+    workload: &'l mut RunningWorkload<Item, ContextData, ImmutableData>,
+    items: Vec<Item>,
+    range: Range<u32>,
+}
+
+impl<'l, Item, ContextData, ImmutableData> WorkloadExt<'l, Item, ContextData, ImmutableData> {
+    pub fn with_range(mut self, range: Range<u32>) -> Self {
+        assert!(range.start <= range.end);
+        assert!(range.end <= self.items.len() as u32);
+        self.range = range;
+
+        self
+    }
+
+    pub fn submit<F>(self, ctx: &mut Context, function: F)
+    where
+        F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
+        ContextData: 'static,
+        ImmutableData: 'static,
+        Item: 'static,
+    {
+        unsafe {
+            let count = self.range.end - self.range.start;
+            let dispatch = DispatchParameters::new(ctx, self.range, self.workload.group_size, Ratio::ONE);
+
+            let mut ext = Box::new(WorkloadExtension {
+                items: self.items,
+                data: None,
+                event: Event::new(count, ctx.thread_pool_id()),
+                ext: None,
+            });
+
+            let immutable_data: Option<&ImmutableData> = self.workload.immutable_data
+                .as_ref()
+                .map(|boxed| boxed.deref());
+
+            let data = Box::new(ArrayJob::new(
+                &mut ext.items[..],
+                self.workload.group_size,
+                self.workload.context_data.as_mut().map(|vec| &mut vec[..]),
+                immutable_data,
+                function,
+                &ext.event,
+            ));
+
+            for_each_dispatch(
+                ctx,
+                &data,
+                &dispatch,
+                self.workload.priority,
+            );
+
+            ext.data = Some(data);
+
+            // Enqueue at the end of the list, mainly so that we will conveniently
+            // dequeue in FIFO order and be less likely to hit unfinished work.
+            let mut next_ref = &mut self.workload.ext;
+            while let Some(node) = next_ref {
+                next_ref = &mut node.ext;
+            }
+
+            *next_ref = Some(ext);
         }
     }
 }
@@ -805,6 +923,37 @@ fn test_few_items() {
             }
         }
     }
+}
+
+#[test]
+fn test_extend() {
+    use crate::ThreadPool;
+
+    let pool = ThreadPool::builder()
+        .with_worker_threads(3)
+        .with_contexts(1)
+        .build();
+
+    let mut ctx = pool.pop_context().unwrap();
+
+    for _ in 0..100 {
+        let mut workload = workload(vec![0u32; 16])
+            .submit(&mut ctx, |_, mut args| *args += 1);
+
+        for _ in 0..10 {
+            workload.extend(vec![0u32; 16]).submit(&mut ctx, |_, mut args| *args += 1);
+        }
+
+        let mut workload = workload.wait(&mut ctx);
+
+        for _ in 0..11 {
+            assert_eq!(workload.pop_items(), Some(vec![1u32; 16]));
+        }
+
+        assert_eq!(workload.pop_items(), None);
+    }
+
+    pool.shut_down().wait();
 }
 
 #[cfg(loom)]
