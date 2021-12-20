@@ -8,7 +8,6 @@ struct FragmentOutput {
     [[location(0)]] color: vec4<f32>;
 };
 
-[[block]]
 struct Edges {
     data: [[stride(16)]] array<vec4<f32>>;
 };

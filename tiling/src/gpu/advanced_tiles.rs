@@ -111,10 +111,11 @@ pub fn create_pipeline(device: &wgpu::Device) -> AdvancedTiles {
             front_face: wgpu::FrontFace::Ccw,
             strip_index_format: None,
             cull_mode: None,
-            clamp_depth: false,
             conservative: false,
+            unclipped_depth: false,
         },
         depth_stencil: None,
+        multiview: None,
         multisample: wgpu::MultisampleState {
             count: 1,
             mask: !0,

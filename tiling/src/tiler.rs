@@ -1133,6 +1133,72 @@ impl SideEdgeTracker {
     }
 }
 
+pub(crate) fn apply_side_edges_to_backdrop(side: &SideEdgeTracker, y_offset: f32, backdrops: &mut [f32; 16]) {
+    let mut prev: Option<SideEvent> = None;
+    for evt in side.events() {
+        if let Some(prev) = prev {
+            let y0 = (prev.y - y_offset).max(0.0).min(15.0);
+            let y1 = (evt.y - y_offset).max(0.0).min(15.0);
+            let winding = prev.winding as f32;
+            let y0_px = y0.floor();
+            let y1_px = y1.floor();
+            let first_px = y0_px as usize;
+            let last_px = y1_px as usize;
+
+            backdrops[first_px] += winding * (y0_px + 1.0 - y0);
+            for i in first_px + 1 ..= last_px {
+                backdrops[i] += winding;
+            }
+            backdrops[last_px] -= winding * (y1_px + 1.0 - y1);
+        }
+
+        if evt.winding != 0 {
+            prev = Some(*evt);
+        } else {
+            prev = None;
+        }
+    }
+}
+
+#[test]
+fn side_edges_backdrop() {
+    let mut side = SideEdgeTracker::new();
+    side.add_edge(0.0, 16.0, 1);
+
+    let mut backdrops = [0.0; 16];
+    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
+
+    println!("{:?}", backdrops);
+
+    let mut side = SideEdgeTracker::new();
+    side.add_edge(0.25, 3.25, 1);
+
+    let mut backdrops = [0.0; 16];
+    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
+
+    println!("{:?}", backdrops);
+
+
+    let mut side = SideEdgeTracker::new();
+    side.add_edge(0.25, 0.75, 1);
+
+    let mut backdrops = [0.0; 16];
+    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
+
+    println!("{:?}", backdrops);
+
+    let mut side = SideEdgeTracker::new();
+    side.add_edge(-0.5, 5.0, 1);
+    side.add_edge(10.0, 16.5, 1);
+
+    let mut backdrops = [0.0; 16];
+    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
+
+    println!("{:?}", backdrops);
+
+    //panic!();
+}
+
 #[test]
 fn side_edges() {
     let mut side = SideEdgeTracker::new();

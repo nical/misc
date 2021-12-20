@@ -5,6 +5,7 @@ pub mod cpu_rasterizer;
 pub mod z_buffer;
 pub mod load_svg;
 pub mod gpu;
+pub mod buffer;
 
 pub use tiler::*;
 pub use z_buffer::*;

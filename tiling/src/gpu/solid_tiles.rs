@@ -96,10 +96,11 @@ fn create_pipeline(device: &wgpu::Device) -> SolidTiles {
             front_face: wgpu::FrontFace::Ccw,
             strip_index_format: None,
             cull_mode: None,
-            clamp_depth: false,
+            unclipped_depth: false,
             conservative: false,
         },
         depth_stencil: None,
+        multiview: None,
         multisample: wgpu::MultisampleState {
             count: 1,
             mask: !0,

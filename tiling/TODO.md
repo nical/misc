@@ -1,0 +1,27 @@
+# TODO list
+
+ - [x] GPU mask rasterization (fragment shader, ssbo).
+ - [x] CPU mask rasterization fallback.
+ - [x] Solid tile occlusion culling.
+ - [x] Basic multi-threading support.
+ - [x] Solid color pattern.
+ - [ ] Fix the CPU rasterizer code path (it's gltitchy).
+ - [ ] Use SIMD instructions for the CPU rasterizer's prefix sums.
+  - Encode rasterized masks in column major (flip it back in the copy shader).
+  - do N rows at a time (one per SIMD lane), each with their own prefix sum.
+ - [ ] Send quadratic bézier curves to the GPU and flatten them in the mask rasterization shader.
+ - [ ] Compress the curves sent to the GPU.
+ - [ ] Rasterize CPU masks asynchronously (using the job scheduler).
+ - [ ] Overlap the row decomposition and row processing stages when running in parallel.
+ - [ ] Support multiple atlas textures.
+ - [ ] configurable atlas texture sizes.
+ - [ ] Better upload paths (write data directly inot mapped gpu buffers).
+ - [ ] Stroke mask shader (round joins/caps).
+ - [ ] Compute shader version for the rasterization and compositing.
+ - [ ] Option to merge consecutive solid tiles.
+ - [ ] See if there are benefits from doing multiple quads per instance.
+ - [ ] Image patterns.
+ - [ ] Gradient patterns.
+ - [ ] Axis-aligned rectangular clips.
+ - [ ] Clip paths.
+ - [ ] GPU tiling (compute shaders).

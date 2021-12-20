@@ -6,8 +6,8 @@ resolver = "2"
 
 [dependencies]
 lyon = "0.17"
-wgpu = "0.11"
-winit = "0.25"
+wgpu = "0.12"
+winit = "0.26"
 futures = "0.3.5"
 bytemuck = "1.2.0"
 svg_fmt = "0.4.1"

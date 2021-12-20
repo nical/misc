@@ -1,4 +1,3 @@
-[[block]]
 struct Globals {
     resolution: vec2<f32>;
 };

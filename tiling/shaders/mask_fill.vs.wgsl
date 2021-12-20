@@ -1,4 +1,3 @@
-[[block]]
 struct MaskParams {
     tile_size: f32;
     inv_atlas_width: f32;

@@ -20,7 +20,40 @@ fn main() {
     let tolerance = 0.05;
     let mut parallel = false;
     let scale_factor = 2.0;
+    let max_edges_per_gpu_tile = 256;
     let n = 1;
+
+
+
+    let event_loop = EventLoop::new();
+    let window = Window::new(&event_loop).unwrap();
+    let window_size = window.inner_size();
+
+    // create an instance
+    let instance = wgpu::Instance::new(wgpu::Backends::all());
+
+    // create an surface
+    let surface = unsafe { instance.create_surface(&window) };
+
+    // create an adapter
+    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    })).unwrap();
+    // create a device and a queue
+    let (device, queue) = block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: None,
+            features: wgpu::Features::default(),
+            limits: wgpu::Limits::default(),
+        },
+        None,
+    )).unwrap();
+
+    let mask_upload_copies = tiling::gpu::masked_tiles::MaskUploadCopies::new(&device);
+
+
 
     let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
@@ -59,12 +92,23 @@ fn main() {
         }
     );
 
+    use tiling::gpu::masked_tiles::MaskUploader;
+    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout);
+    let mask_uploader_0 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout);
+    let mask_uploader_1 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout);
+    let mask_uploader_2 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout);
+
     // Main builder.
-    let mut builder = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance));
+    let mut builder = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new(tolerance, mask_uploader));
     // Extra builders for worker threads.
-    let mut b0 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
-    let mut b1 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
-    let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder));
+    let mut b0 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder, mask_uploader_0));
+    let mut b1 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder, mask_uploader_1));
+    let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder, mask_uploader_2));
+
+    builder.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b0.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b1.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b2.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -81,8 +125,6 @@ fn main() {
         builder.reset();
         tiler.clear_depth();
         tiler.z_index = paths.len() as u16;
-        builder.max_edges_per_gpu_tile  = 256;
-
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
@@ -136,11 +178,6 @@ fn main() {
         builder.solid_tiles.extend_from_slice(&b1.solid_tiles);
         builder.solid_tiles.extend_from_slice(&b2.solid_tiles);
 
-        builder.cpu_masks.reserve(b0.cpu_masks.len() + b1.cpu_masks.len() + b2.cpu_masks.len());
-        builder.cpu_masks.extend_from_slice(&b0.cpu_masks);
-        builder.cpu_masks.extend_from_slice(&b1.cpu_masks);
-        builder.cpu_masks.extend_from_slice(&b2.cpu_masks);
-
         builder.gpu_masks.reserve(b0.gpu_masks.len() + b1.gpu_masks.len() + b2.gpu_masks.len());
         use tiling::gpu::masked_tiles::Mask;
         let mut offset = builder.edges.len() as u32;
@@ -165,6 +202,7 @@ fn main() {
             });
         }
 
+
         builder.edges.reserve(b0.edges.len() + b1.edges.len() + b2.edges.len());
         builder.edges.extend_from_slice(&b0.edges);
         builder.edges.extend_from_slice(&b1.edges);
@@ -184,7 +222,7 @@ fn main() {
     println!("{} solid_tiles", builder.solid_tiles.len());
     println!("{} alpha_tiles", builder.mask_tiles.len());
     println!("{} gpu_masks", builder.gpu_masks.len());
-    println!("{} cpu_masks", builder.cpu_masks.len());
+    println!("{} cpu_masks", builder.num_cpu_masks());
     println!("{} edges", builder.edges.len());
     println!("");
     println!("-> {}ns", t);
@@ -194,31 +232,12 @@ fn main() {
     println!("{:?}", ctx.stats());
 
 
-    let event_loop = EventLoop::new();
-    let window = Window::new(&event_loop).unwrap();
-    let window_size = window.inner_size();
 
-    // create an instance
-    let instance = wgpu::Instance::new(wgpu::Backends::all());
+    let solid_tiles = tiling::gpu::solid_tiles::SolidTiles::new(&device);
 
-    // create an surface
-    let surface = unsafe { instance.create_surface(&window) };
+    let masks = tiling::gpu::masked_tiles::Masks::new(&device);
 
-    // create an adapter
-    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-    })).unwrap();
-    // create a device and a queue
-    let (device, queue) = block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: None,
-            features: wgpu::Features::default(),
-            limits: wgpu::Limits::default(),
-        },
-        None,
-    )).unwrap();
+    let masked_tiles = tiling::gpu::masked_tiles::MaskedTiles::new(&device);
 
     let quad_indices = [0u16, 1, 2, 0, 2, 3];
     let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -226,6 +245,56 @@ fn main() {
         contents: bytemuck::cast_slice(&quad_indices),
         usage: wgpu::BufferUsages::INDEX,
     });
+
+    let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Globals"),
+        contents: bytemuck::cast_slice(&[
+            tiling::gpu::GpuGlobals {
+                resolution: vector(window_size.width as f32, window_size.height as f32),
+            }
+        ]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let mut mask_textures = Vec::new();
+    let mut mask_texture_views = Vec::new();
+    let num_atlases = builder.num_mask_atlases();
+    for i in 0..num_atlases {
+        let label = format!("mask atlas #{}", i);
+        let mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label),
+            dimension: wgpu::TextureDimension::D2,
+            size: wgpu::Extent3d {
+                width: 2048,
+                height: 2048,
+                depth_or_array_layers: 1,
+            },
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            sample_count: 1,
+        });
+
+        let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let masked_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Masked tiles"),
+            layout: &masked_tiles.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&mask_texture_view),
+                },
+            ],
+        });
+
+        mask_textures.push((mask_texture, masked_tiles_bind_group));
+        mask_texture_views.push(mask_texture_view)
+    }
 
     let solid_tiles_vbo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Solid tile instances"),
@@ -245,27 +314,15 @@ fn main() {
         usage: wgpu::BufferUsages::VERTEX,
     });
 
-    let edges_ssbo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Edges"),
-        contents: bytemuck::cast_slice(&builder.edges),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let solid_tiles = tiling::gpu::solid_tiles::SolidTiles::new(&device);
-
-    let masks = tiling::gpu::masked_tiles::Masks::new(&device);
-
-    let masked_tiles = tiling::gpu::masked_tiles::MaskedTiles::new(&device);
-
-    let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Globals"),
-        contents: bytemuck::cast_slice(&[
-            tiling::gpu::GpuGlobals {
-                resolution: vector(window_size.width as f32, window_size.height as f32),
-            }
-        ]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let edges_ssbo = if builder.edges.is_empty() {
+        None
+    } else {
+        Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Edges"),
+            contents: bytemuck::cast_slice(&builder.edges),
+            usage: wgpu::BufferUsages::STORAGE,
+        }))
+    };
 
     let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Mask params"),
@@ -291,38 +348,7 @@ fn main() {
         ],
     });
 
-    let mask_texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Mask atlas"),
-        dimension: wgpu::TextureDimension::D2,
-        size: wgpu::Extent3d {
-            width: 2048,
-            height: 2048,
-            depth_or_array_layers: 1,
-        },
-        format: wgpu::TextureFormat::R8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        mip_level_count: 1,
-        sample_count: 1,
-    });
-
-    let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let masked_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Masked tiles"),
-        layout: &masked_tiles.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&mask_texture_view),
-            },
-        ],
-    });
-
-    let masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let masks_bind_group = edges_ssbo.map(|edges_ssbo| device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Masks"),
         layout: &masks.bind_group_layout,
         entries: &[
@@ -335,7 +361,7 @@ fn main() {
                 resource: wgpu::BindingResource::Buffer(edges_ssbo.as_entire_buffer_binding()),
             },
         ],
-    });
+    }));
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -359,6 +385,8 @@ fn main() {
     };
 
     event_loop.run(move |event, _, control_flow| {
+        device.poll(wgpu::Maintain::Poll);
+
         if !update_inputs(event, &window, control_flow, &mut scene) {
             return;
         }
@@ -402,13 +430,13 @@ fn main() {
             label: Some("Tile"),
         });
 
-        {
+        if let Some(masks_bind_group) = &masks_bind_group {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &mask_texture_view,
+                    view: &mask_texture_views[0],
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        load: wgpu::LoadOp::Load,
                         store: true,
                     },
                     resolve_target: None,
@@ -422,6 +450,11 @@ fn main() {
             pass.set_vertex_buffer(0, masks_vbo.slice(..));
             pass.draw_indexed(0..6, 0, 0..num_gpu_masks);
         }
+
+        builder.mask_uploader.upload(&device, &mut encoder, &mask_upload_copies.pipeline, &quad_ibo, &mask_texture_views);
+        b0.mask_uploader.upload(&device, &mut encoder, &mask_upload_copies.pipeline, &quad_ibo, &mask_texture_views);
+        b1.mask_uploader.upload(&device, &mut encoder, &mask_upload_copies.pipeline, &quad_ibo, &mask_texture_views);
+        b2.mask_uploader.upload(&device, &mut encoder, &mask_upload_copies.pipeline, &quad_ibo, &mask_texture_views);
 
         {
             let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
@@ -446,7 +479,7 @@ fn main() {
             pass.draw_indexed(0..6, 0, 0..num_solid_tiles);
 
             pass.set_pipeline(&masked_tiles.pipeline);
-            pass.set_bind_group(0, &masked_tiles_bind_group, &[]);
+            pass.set_bind_group(0, &mask_textures[0].1, &[]);
             pass.set_vertex_buffer(0, masked_tiles_vbo.slice(..));
             pass.draw_indexed(0..6, 0, 0..num_masked_tiles);
         }

@@ -13,15 +13,12 @@ use crate::Color;
 use crate::gpu::solid_tiles::TileInstance as SolidTile;
 use crate::gpu::masked_tiles::TileInstance as MaskedTile;
 use crate::gpu::masked_tiles::Mask as GpuMask;
+use crate::gpu::masked_tiles::{CpuMask, MaskUploader};
+
+const MASKS_PER_ATLAS: u32 = (2048 * 2048) / (16 * 16);
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Edge(pub Point, pub Point);
-
-#[derive(Copy, Clone, Debug)]
-pub struct CpuMask {
-    pub mask_id: u32,
-    pub byte_offset: u32,
-}
 
 struct Shared {
     next_mask_id: AtomicU32,
@@ -32,32 +29,31 @@ pub struct GpuRasterEncoder {
     pub solid_tiles: Vec<SolidTile>,
     pub mask_tiles: Vec<MaskedTile>,
     pub gpu_masks: Vec<GpuMask>,
-    pub cpu_masks: Vec<CpuMask>,
-    pub rasterized_mask_buffer: Vec<u8>,
     pub color: Color,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub is_opaque: bool,
     pub tolerance: f32,
+    pub mask_uploader: MaskUploader,
     shared: Arc<Shared>,
 
     lock: ExclusiveCheck<()>,
 }
 
 impl GpuRasterEncoder {
-    pub fn new(tolerance: f32) -> Self {
+    pub fn new(tolerance: f32, mask_uploader: MaskUploader) -> Self {
         GpuRasterEncoder {
             edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
             mask_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
-            cpu_masks: Vec::with_capacity(6000),
-            rasterized_mask_buffer: Vec::with_capacity(16*16*128),
             color: Color { r: 0, g: 0, b: 0, a: 0 },
             fill_rule: FillRule::EvenOdd,
             max_edges_per_gpu_tile: 4096,
             is_opaque: true,
             tolerance,
+
+            mask_uploader,
 
             shared: Arc::new(Shared {
                 next_mask_id: AtomicU32::new(0),
@@ -67,19 +63,19 @@ impl GpuRasterEncoder {
         }
     }
 
-    pub fn new_parallel(other: &GpuRasterEncoder) -> Self {
+    pub fn new_parallel(other: &GpuRasterEncoder, mask_uploader: MaskUploader) -> Self {
         GpuRasterEncoder {
             edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
             mask_tiles: Vec::with_capacity(1000),
             gpu_masks: Vec::with_capacity(6000),
-            cpu_masks: Vec::with_capacity(6000),
-            rasterized_mask_buffer: Vec::with_capacity(16*16*128),
             color: Color { r: 0, g: 0, b: 0, a: 0 },
             fill_rule: other.fill_rule,
             max_edges_per_gpu_tile: other.max_edges_per_gpu_tile,
             is_opaque: true,
             tolerance: other.tolerance,
+
+            mask_uploader,
 
             shared: other.shared.clone(),
 
@@ -92,9 +88,17 @@ impl GpuRasterEncoder {
         self.solid_tiles.clear();
         self.mask_tiles.clear();
         self.gpu_masks.clear();
-        self.cpu_masks.clear();
-        self.rasterized_mask_buffer.clear();
+        self.mask_uploader.reset();
         self.shared.next_mask_id.store(0, Ordering::Release);
+    }
+
+    pub fn num_cpu_masks(&self) -> usize {
+        self.mask_uploader.copy_instances().len()
+    }
+
+    pub fn num_mask_atlases(&self) -> u32 {
+        let id = self.shared.next_mask_id.load(Ordering::Acquire);
+        id / MASKS_PER_ATLAS + if id % MASKS_PER_ATLAS != 0 { 1 } else { 0 }
     }
 
     fn allocate_mask_id(&self) -> u32 {
@@ -194,57 +198,45 @@ impl GpuRasterEncoder {
         let mut backdrops = [0.0 as f32; TILE_SIZE];
 
         // "Rasterize" the left edges in the backdrop buffer.
-        let mut prev: Option<SideEvent> = None;
-        for evt in left.events() {
-            if let Some(prev) = prev {
-                let y0 = prev.y - tile.inner_rect.min.y;
-                let y1 = evt.y - tile.inner_rect.min.y;
-                let winding = prev.winding as f32;
-                let y0_px = y0.max(0.0).min(15.0).floor();
-                let y1_px = y1.max(0.0).min(15.0).floor();
-                let first_px = y0_px as usize;
-                let last_px = y1_px as usize;
-                backdrops[first_px] += winding * (1.0 + y0_px - y0);
-                for i in first_px + 1 .. last_px {
-                    backdrops[i] += winding;
-                }
-                if last_px != first_px {
-                    backdrops[last_px] += winding * (y1 - y1_px);
-                }
-            }
+        apply_side_edges_to_backdrop(left, tile.inner_rect.min.y, &mut backdrops);
 
-            if evt.winding != 0 {
-                prev = Some(*evt);
-            } else {
-                prev = None;
-            }
-        }
+        //left.print();
+        //println!("offset {:?} : {:?}", tile.inner_rect.min.y, backdrops);
 
-        let tile_offset = lyon::path::math::vector(tile.outer_rect.min.x, tile.outer_rect.min.y);
+        let tile_offset = tile.inner_rect.min.to_vector();
         for edge in active_edges {
             let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
 
-            let from = (edge.from - tile_offset).clamp(point(0.0, 0.0), point(16.0, 16.0));
-            let to = (edge.to - tile_offset).clamp(point(0.0, 0.0), point(16.0, 16.0));
+            // TODO: we don't want to clamp here (at least not horizontally). Instead the rasterizer
+            // should handle edges that cross the tile boundary
+            let from = edge.from - tile_offset;
+            let to = edge.to - tile_offset;
 
-            draw_line(from, to, &mut accum, &mut backdrops);
+            if edge.ctrl.x.is_nan() {
+                draw_line(from, to, &mut accum);
+            } else {
+                let ctrl = edge.ctrl - tile_offset;
+                draw_curve(from, ctrl, to, self.tolerance, &mut accum);
+            }
         }
-
-        let mask_buffer_offset = self.rasterized_mask_buffer.len();
-        self.rasterized_mask_buffer.reserve(TILE_SIZE * TILE_SIZE);
-        unsafe {
-            // Unfortunately it's measurably faster to leave the bytes uninitialized,
-            // we are going to overwrite them anyway.
-            self.rasterized_mask_buffer.set_len(mask_buffer_offset + TILE_SIZE * TILE_SIZE);
-        }
-
-        accumulate_even_odd(
-            &accum,
-            &backdrops,
-            &mut self.rasterized_mask_buffer[mask_buffer_offset .. mask_buffer_offset + TILE_SIZE * TILE_SIZE],
-        );
 
         let mask_id = self.allocate_mask_id();
+
+        let mask_buffer_range = self.mask_uploader.new_mask(mask_id);
+        unsafe {
+            self.mask_uploader.current_mask_buffer.set_len(mask_buffer_range.end as usize);
+        }
+
+        let accumulate = match self.fill_rule {
+            FillRule::EvenOdd => accumulate_even_odd,
+            FillRule::NonZero => accumulate_non_zero,
+        };
+
+        accumulate(
+            &accum,
+            &backdrops,
+            &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
+        );
 
         let tx = tile.x as f32 * 16.0;
         let ty = tile.y as f32 * 16.0;
@@ -257,10 +249,23 @@ impl GpuRasterEncoder {
             mask: mask_id,
         });
 
-        self.cpu_masks.push(CpuMask {
-            mask_id,
-            byte_offset: mask_buffer_offset as u32,
-        });
+
+        /*
+        let mask_id = self.allocate_mask_id();
+
+        let mask_buffer_range = self.mask_uploader.new_mask(mask_id);
+        unsafe { self.mask_uploader.current_mask_buffer.set_len(mask_buffer_range.end as usize); }
+        let test_buf = &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()];
+
+        for y in 0..16 {
+            for x in 0..y {
+                test_buf[y * 16 + x] = y as u8 * 12;
+            }
+            for x in y..16 {
+                test_buf[y * 16 + x] = (16 - y as u8) * 12;
+            }
+        }
+        */
     }
 }
 
