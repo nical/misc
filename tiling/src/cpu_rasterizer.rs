@@ -143,7 +143,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
                     // computing the already contributed coverage is simple.
                     row[row_idx(start_idx + 1)] += winding_dy * (1.0 - cov_left - cov_right);
                 }
-            } else {
+            } else if start_idx + 1 < TILE_SIZE as i32 {
 
                 // (B) Second pixel (fully overlapping the edge)
                 let cov_b = inv_dx * (x_left + 0.5);
@@ -152,7 +152,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
                 // (C) Subsequent pixels fully overlapping with the edge on the x axis.
                 // For these the covered area has increased linearly so the coverage difference
                 // is constant.
-                for i in (start_idx + 2) .. (x_range_int_end - 1) {
+                for i in (start_idx + 2) .. (x_range_int_end - 1).min(15) {
                     row[row_idx(i)] += winding_dy * inv_dx;
                 }
 

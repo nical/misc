@@ -1,5 +1,4 @@
 use crate::Color;
-use crate::gpu_raster_encoder::Edge;
 use lyon::path::math::Point;
 use lyon::path::FillRule;
 use std::mem::transmute;
@@ -21,6 +20,8 @@ const OP_BLEND_OVER: i32 = 9;
 const OP_PUSH_GROUP: i32 = 10;
 const OP_POP_GROUP: i32 = 11;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Edge(Point, Point);
 
 unsafe impl bytemuck::Pod for Edge {}
 unsafe impl bytemuck::Zeroable for Edge {}

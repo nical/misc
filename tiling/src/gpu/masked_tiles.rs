@@ -172,7 +172,8 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
 }
 
 pub struct Masks {
-    pub evenodd_pipeline: wgpu::RenderPipeline,
+    pub line_evenodd_pipeline: wgpu::RenderPipeline,
+    pub quad_evenodd_pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -187,9 +188,13 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         label: Some("Mask vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.vs.wgsl").into()),
     });
-    let evenodd_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-        label: Some("Mask even-odd fs"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.fs.wgsl").into()),
+    let evenodd_lin_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: Some("Mask fill linear fs"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_lin.fs.wgsl").into()),
+    });
+    let evenodd_quad_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: Some("Mask fill quad fs"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_quad.fs.wgsl").into()),
     });
 
     let mask_globals_buffer_size = std::mem::size_of::<MaskParams>() as u64;
@@ -213,7 +218,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
+                    min_binding_size: wgpu::BufferSize::new(32),
                 },
                 count: None,
             },
@@ -226,7 +231,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         push_constant_ranges: &[],
     });
 
-    let tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+    let line_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Masked tiles"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
@@ -255,7 +260,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &evenodd_fs_module,
+            module: &evenodd_lin_fs_module,
             entry_point: "main",
             targets: &[
                 wgpu::ColorTargetState {
@@ -283,10 +288,69 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         },
     };
 
-    let evenodd_pipeline = device.create_render_pipeline(&tile_pipeline_descriptor);
+    let quad_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("Masked tiles"),
+        layout: Some(&tile_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &vs_module,
+            entry_point: "main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Mask>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        format: wgpu::VertexFormat::Uint32x2,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 8,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 2,
+                    },
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &evenodd_quad_fs_module,
+            entry_point: "main",
+            targets: &[
+                wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                },
+            ],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multiview: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+    };
+
+    let line_evenodd_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
+    let quad_evenodd_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
 
     Masks {
-        evenodd_pipeline,
+        line_evenodd_pipeline,
+        quad_evenodd_pipeline,
         bind_group_layout,
     }
 }

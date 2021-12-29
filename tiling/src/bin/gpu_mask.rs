@@ -15,15 +15,29 @@ use parasol::CachePadded;
 fn main() {
     profiling::register_thread!("Main");
 
+    let args: Vec<String> = std::env::args().collect();
+
+    let mut profile = false;
+    let mut use_quads = false;
+    for arg in &args {
+        if arg == "--profile" { profile = true; }
+        if arg == "--quads" { use_quads = true; }
+    }
+
     // The tile size.
-    let ts = 16;
-    let tolerance = 0.05;
+    let tolerance = 0.1;
     let mut parallel = false;
-    let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 256;
-    let n = 1;
+    let scale_factor = 1.0;
+    let max_edges_per_gpu_tile = 64;
+    let n = if profile { 500 } else { 1 };
 
-
+    let mut tiler_config = TilerConfig {
+        view_box: Box2D::zero(),
+        tile_size: size2(16.0 as f32, 16.0 as f32),
+        tile_padding: 0.5,
+        tolerance,
+        flatten: false,
+    };
 
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();
@@ -54,8 +68,6 @@ fn main() {
     let mask_upload_copies = tiling::gpu::masked_tiles::MaskUploadCopies::new(&device);
 
 
-
-    let args: Vec<String> = std::env::args().collect();
     let (view_box, paths) = if args.len() > 1 {
         load_svg(&args[1], scale_factor)
     } else {
@@ -68,6 +80,8 @@ fn main() {
 
         (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
     };
+
+    tiler_config.view_box = view_box;
 
     for arg in &args {
         if arg == "-p" {
@@ -82,15 +96,7 @@ fn main() {
 
     let mut ctx = thread_pool.pop_context().unwrap();
 
-    let mut tiler = Tiler::new(
-        &TilerConfig {
-            view_box,
-            tile_size: size2(ts as f32, ts as f32),
-            tile_padding: 0.5,
-            tolerance,
-            flatten: false,
-        }
-    );
+    let mut tiler = Tiler::new(&tiler_config);
 
     use tiling::gpu::masked_tiles::MaskUploader;
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout);
@@ -106,9 +112,13 @@ fn main() {
     let mut b2 = CachePadded::new(tiling::gpu_raster_encoder::GpuRasterEncoder::new_parallel(&builder, mask_uploader_2));
 
     builder.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    builder.use_quads = use_quads;
     b0.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b0.use_quads = use_quads;
     b1.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b1.use_quads = use_quads;
     b2.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    b2.use_quads = use_quads;
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -180,21 +190,21 @@ fn main() {
 
         builder.gpu_masks.reserve(b0.gpu_masks.len() + b1.gpu_masks.len() + b2.gpu_masks.len());
         use tiling::gpu::masked_tiles::Mask;
-        let mut offset = builder.edges.len() as u32;
+        let mut offset = builder.quad_edges.len() as u32;
         for mask in &b0.gpu_masks {
             builder.gpu_masks.push(Mask {
                 edges: (mask.edges.0 + offset, mask.edges.1 + offset),
                 ..*mask
             });
         }
-        offset += b0.edges.len() as u32;
+        offset += b0.quad_edges.len() as u32;
         for mask in &b1.gpu_masks {
             builder.gpu_masks.push(Mask {
                 edges: (mask.edges.0 + offset, mask.edges.1 + offset),
                 ..*mask
             });
         }
-        offset += b1.edges.len() as u32;
+        offset += b1.quad_edges.len() as u32;
         for mask in &b2.gpu_masks {
             builder.gpu_masks.push(Mask {
                 edges: (mask.edges.0 + offset, mask.edges.1 + offset),
@@ -203,10 +213,16 @@ fn main() {
         }
 
 
-        builder.edges.reserve(b0.edges.len() + b1.edges.len() + b2.edges.len());
-        builder.edges.extend_from_slice(&b0.edges);
-        builder.edges.extend_from_slice(&b1.edges);
-        builder.edges.extend_from_slice(&b2.edges);
+        builder.quad_edges.reserve(b0.quad_edges.len() + b1.quad_edges.len() + b2.quad_edges.len());
+        builder.quad_edges.extend_from_slice(&b0.quad_edges);
+        builder.quad_edges.extend_from_slice(&b1.quad_edges);
+        builder.quad_edges.extend_from_slice(&b2.quad_edges);
+
+        for i in 0..16 {
+            builder.edge_distributions[i] += b0.edge_distributions[i]
+                + b1.edge_distributions[i]
+                + b2.edge_distributions[i];
+        }
     }
 
     let num_solid_tiles = builder.solid_tiles.len() as u32;
@@ -218,12 +234,13 @@ fn main() {
     let t = (t1 - t0) / n;
 
     println!("view box: {:?}", view_box);
-    //println!("{} edges", builder.edges.len());
     println!("{} solid_tiles", builder.solid_tiles.len());
     println!("{} alpha_tiles", builder.mask_tiles.len());
     println!("{} gpu_masks", builder.gpu_masks.len());
     println!("{} cpu_masks", builder.num_cpu_masks());
-    println!("{} edges", builder.edges.len());
+    println!("{} line edges", builder.line_edges.len());
+    println!("{} quad edges", builder.quad_edges.len());
+    println!("#edge distributions: {:?}", builder.edge_distributions);
     println!("");
     println!("-> {}ns", t);
     println!("-> {:.3}ms", t as f64 / 1000000.0);
@@ -231,7 +248,9 @@ fn main() {
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
     println!("{:?}", ctx.stats());
 
-
+    if profile {
+        return;
+    }
 
     let solid_tiles = tiling::gpu::solid_tiles::SolidTiles::new(&device);
 
@@ -314,12 +333,22 @@ fn main() {
         usage: wgpu::BufferUsages::VERTEX,
     });
 
-    let edges_ssbo = if builder.edges.is_empty() {
+    let line_edges_ssbo = if builder.line_edges.is_empty() {
         None
     } else {
         Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Edges"),
-            contents: bytemuck::cast_slice(&builder.edges),
+            label: Some("Line edges"),
+            contents: bytemuck::cast_slice(&builder.line_edges),
+            usage: wgpu::BufferUsages::STORAGE,
+        }))
+    };
+
+    let quad_edges_ssbo = if builder.quad_edges.is_empty() {
+        None
+    } else {
+        Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad edges"),
+            contents: bytemuck::cast_slice(&builder.quad_edges),
             usage: wgpu::BufferUsages::STORAGE,
         }))
     };
@@ -348,7 +377,7 @@ fn main() {
         ],
     });
 
-    let masks_bind_group = edges_ssbo.map(|edges_ssbo| device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let line_masks_bind_group = line_edges_ssbo.map(|buffer| device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Masks"),
         layout: &masks.bind_group_layout,
         entries: &[
@@ -358,7 +387,22 @@ fn main() {
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Buffer(edges_ssbo.as_entire_buffer_binding()),
+                resource: wgpu::BindingResource::Buffer(buffer.as_entire_buffer_binding()),
+            },
+        ],
+    }));
+
+    let quad_masks_bind_group = quad_edges_ssbo.map(|buffer| device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Masks"),
+        layout: &masks.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(buffer.as_entire_buffer_binding()),
             },
         ],
     }));
@@ -430,7 +474,7 @@ fn main() {
             label: Some("Tile"),
         });
 
-        if let Some(masks_bind_group) = &masks_bind_group {
+        if let Some(line_masks_bind_group) = &line_masks_bind_group {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachment {
@@ -444,8 +488,29 @@ fn main() {
                 depth_stencil_attachment: None,
             });
 
-            pass.set_pipeline(&masks.evenodd_pipeline);
-            pass.set_bind_group(0, &masks_bind_group, &[]);
+            pass.set_pipeline(&masks.line_evenodd_pipeline);
+            pass.set_bind_group(0, &line_masks_bind_group, &[]);
+            pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_vertex_buffer(0, masks_vbo.slice(..));
+            pass.draw_indexed(0..6, 0, 0..num_gpu_masks);
+        }
+
+        if let Some(quad_masks_bind_group) = &quad_masks_bind_group {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &mask_texture_views[0],
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    },
+                    resolve_target: None,
+                }],
+                depth_stencil_attachment: None,
+            });
+
+            pass.set_pipeline(&masks.quad_evenodd_pipeline);
+            pass.set_bind_group(0, &quad_masks_bind_group, &[]);
             pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, masks_vbo.slice(..));
             pass.draw_indexed(0..6, 0, 0..num_gpu_masks);

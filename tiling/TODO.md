@@ -9,13 +9,14 @@
  - [ ] Use SIMD instructions for the CPU rasterizer's prefix sums.
   - Encode rasterized masks in column major (flip it back in the copy shader).
   - do N rows at a time (one per SIMD lane), each with their own prefix sum.
- - [ ] Send quadratic bézier curves to the GPU and flatten them in the mask rasterization shader.
+ - [x] Try to send quadratic bézier curves to the GPU and flatten them in the mask rasterization shader.
+ - [ ] Try a cheaper quad flattening algorithm (knowing we generate few segments most of the time).
  - [ ] Compress the curves sent to the GPU.
  - [ ] Rasterize CPU masks asynchronously (using the job scheduler).
  - [ ] Overlap the row decomposition and row processing stages when running in parallel.
  - [ ] Support multiple atlas textures.
  - [ ] configurable atlas texture sizes.
- - [ ] Better upload paths (write data directly inot mapped gpu buffers).
+ - [ ] Better upload paths (write data directly into mapped gpu buffers).
  - [ ] Stroke mask shader (round joins/caps).
  - [ ] Compute shader version for the rasterization and compositing.
  - [ ] Option to merge consecutive solid tiles.

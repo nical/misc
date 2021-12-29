@@ -10,6 +10,8 @@ pub use crate::z_buffer::{ZBuffer, ZBufferRow};
 
 use parasol::{Context, CachePadded};
 
+use copyless::VecHelper;
+
 /// The output of the tiler.
 ///
 /// encode_tile will be called for each tile that isn't fully empty.
@@ -234,6 +236,8 @@ impl Tiler {
         let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) * inv_tile_height).max(0.0);
         let y_end_tile = f32::ceil((edge.to.y - self.tile_offset_y + self.tile_padding) * inv_tile_height).min(self.num_tiles_y);
 
+        //println!(" --------------- {:?}", edge);
+
         let mut row_f = y_start_tile;
         let mut y_min = self.tile_offset_y + row_f * self.tile_size.height - self.tile_padding;
         let mut y_max = self.tile_offset_y + (row_f + 1.0) * self.tile_size.height + self.tile_padding;
@@ -245,19 +249,19 @@ impl Tiler {
             EdgeKind::Linear => for row in &mut self.rows[start_idx .. end_idx] {
                 let segment = LineSegment { from: edge.from, to: edge.to };
                 let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
-                let mut segment = segment.split_range(range);
-                let intersects_tile_top = (segment.from.y - y_min).abs() < self.tolerance;
-                if intersects_tile_top {
-                    segment.from.y = y_min;
+                let segment = segment.split_range(range);
+
+                if (segment.to - segment.from).square_length() < 0.0001 {
+                    continue;
                 }
-                row.edges.push(RowEdge {
+
+                row.edges.alloc().init(RowEdge {
                     from: segment.from,
                     to: segment.to,
                     ctrl: point(std::f32::NAN, std::f32::NAN),
                     kind: EdgeKind::Linear,
                     winding: edge.winding,
                     min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                    intersects_tile_top,
                 });
 
                 y_min += self.tile_size.height;
@@ -267,20 +271,20 @@ impl Tiler {
             EdgeKind::Quadratic => for row in &mut self.rows[start_idx .. end_idx] {
                 let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
-                let mut segment = segment.split_range(range);
-                let intersects_tile_top = (segment.from.y - y_min).abs() < self.tolerance;
-                if intersects_tile_top {
-                    segment.from.y = y_min;
+                let segment = segment.split_range(range.clone());
+                //println!(" -- range {:?} -> {:?}", range, segment);
+
+                if (segment.to - segment.from).square_length() < 0.0001 {
+                    continue;
                 }
 
-                row.edges.push(RowEdge {
+                row.edges.alloc().init(RowEdge {
                     from: segment.from,
                     to: segment.to,
                     ctrl: segment.ctrl,
                     kind: EdgeKind::Quadratic,
                     winding: edge.winding,
                     min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                    intersects_tile_top,
                 });
 
                 y_min += self.tile_size.height;
@@ -410,7 +414,6 @@ impl Tiler {
             .with_context_data(&mut worker_data)
             .with_group_size(4)
             .with_priority(parasol::Priority::Low)
-            //.filter(|row| !row.edges.is_empty())
             .run(|ctx, args| {
                 //println!("ctx {:?} row {:?}", ctx.id(), row.tile_y);
 
@@ -654,7 +657,6 @@ impl Tiler {
                 winding: edge.winding,
                 kind: edge.kind,
                 max_x: edge.from.x.max(edge.to.x),
-                intersects_tile_top: edge.intersects_tile_top,
             });
 
             while edge.min_x.0 > tile.outer_rect.max.x {
@@ -692,7 +694,6 @@ impl Tiler {
                 winding: edge.winding,
                 kind: edge.kind,
                 max_x: edge.from.x.max(edge.to.x),
-                intersects_tile_top: edge.intersects_tile_top,
             });
 
             current_edge += 1;
@@ -798,7 +799,7 @@ impl MonotonicEdge {
             from: segment.from,
             to: segment.to,
             ctrl: segment.ctrl,
-            kind: EdgeKind::Linear,
+            kind: EdgeKind::Quadratic,
             winding,
         }
     }
@@ -813,7 +814,6 @@ struct RowEdge {
     kind: EdgeKind,
     winding: i16,
     min_x: OrderedFloat<f32>,
-    intersects_tile_top: bool,
 }
 
 
@@ -826,7 +826,6 @@ pub struct ActiveEdge {
     pub kind: EdgeKind,
     pub winding: i16,
     max_x: f32,
-    intersects_tile_top: bool,
 }
 
 impl ActiveEdge {
@@ -856,7 +855,6 @@ impl ActiveEdge {
                     winding: self.winding,
                     kind: EdgeKind::Linear,
                     max_x: 0.0,
-                    intersects_tile_top: self.intersects_tile_top, // TODO
                 }
             }
             EdgeKind::Quadratic => {
@@ -886,7 +884,6 @@ impl ActiveEdge {
                     winding: self.winding,
                     kind: EdgeKind::Quadratic,
                     max_x: 0.0,
-                    intersects_tile_top: self.intersects_tile_top, // TODO
                 }
             }
         }
@@ -916,8 +913,12 @@ fn clip_quadratic_bezier_1d(
     debug_assert!(max >= min);
     debug_assert!(to >= from);
 
-    let a = from + 2.0 * to - 2.0 * ctrl;
-    let b = -2.0 * from + 2.0 * ctrl;
+    // solve a class quadratic formula "a*x² + b*x + c = 0"
+    // using the quadratic bézier's formulation
+    // y = (1 - t)² * from + t*(1 - t) * ctrl + t² * to
+    // replacing y with min and max we get:
+    let a = from + to - 2.0 * ctrl;
+    let b = 2.0 * ctrl - 2.0 * from;
     let c1 = from - min;
     let c2 = from - max;
 
