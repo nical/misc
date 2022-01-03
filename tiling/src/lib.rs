@@ -6,6 +6,7 @@ pub mod z_buffer;
 pub mod load_svg;
 pub mod gpu;
 pub mod buffer;
+pub mod flatten_simd;
 
 pub use tiler::*;
 pub use z_buffer::*;

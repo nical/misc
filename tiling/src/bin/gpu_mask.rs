@@ -17,19 +17,28 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
+    let mut select_path = None;
     let mut profile = false;
     let mut use_quads = false;
+    let mut sp = false;
+    let mut parallel = false;
     for arg in &args {
+        if sp {
+            println!("{:?}", arg);
+            select_path = Some(arg.parse::<u16>().unwrap());
+            sp = false;
+        }
+        if arg == "--path" { sp = true; }
+        if arg == "--parallel" { parallel = true; }
         if arg == "--profile" { profile = true; }
         if arg == "--quads" { use_quads = true; }
     }
 
     // The tile size.
     let tolerance = 0.1;
-    let mut parallel = false;
-    let scale_factor = 1.0;
+    let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 64;
-    let n = if profile { 500 } else { 1 };
+    let n = if profile { 1000 } else { 1 };
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::zero(),
@@ -83,12 +92,6 @@ fn main() {
 
     tiler_config.view_box = view_box;
 
-    for arg in &args {
-        if arg == "-p" {
-            parallel = true;
-        }
-    }
-
     let thread_pool = parasol::ThreadPool::builder()
         .with_worker_threads(3)
         .with_contexts(10)
@@ -138,6 +141,13 @@ fn main() {
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
+            if let Some(idx) = select_path {
+                println!("z-index: {:?}", tiler.z_index);
+                if idx != tiler.z_index {
+                    tiler.z_index -= 1;
+                    continue;
+                }
+            }
 
             builder.color = *color;
 

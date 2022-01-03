@@ -1,5 +1,5 @@
 use ordered_float::OrderedFloat;
-pub use lyon::path::math::{Point, point};
+pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
@@ -92,6 +92,8 @@ pub struct Tiler {
     flatten: bool,
 
     rows: Vec<Row>,
+    active_edges: Vec<ActiveEdge>,
+    side_edges: SideEdgeTracker,
 
     worker_data: Vec<CachePadded<TilerWorkerData>>,
 
@@ -152,6 +154,8 @@ impl Tiler {
             row_decomposition_time_ns: 0,
             tile_decomposition_time_ns: 0,
 
+            active_edges: Vec::with_capacity(64),
+            side_edges: SideEdgeTracker::with_capacity(32),
             rows: Vec::new(),
 
             is_opaque: true,
@@ -238,20 +242,34 @@ impl Tiler {
 
         //println!(" --------------- {:?}", edge);
 
-        let mut row_f = y_start_tile;
-        let mut y_min = self.tile_offset_y + row_f * self.tile_size.height - self.tile_padding;
-        let mut y_max = self.tile_offset_y + (row_f + 1.0) * self.tile_size.height + self.tile_padding;
         let start_idx = y_start_tile as usize;
         let end_idx = y_end_tile as usize;
         self.first_row = self.first_row.min(start_idx);
         self.last_row = self.last_row.max(end_idx);
+
+        //if start_idx <= 5 && end_idx >= 5 {
+        //    println!("<path d=\"M {} {} L {} {}\"/>", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
+        //}
+
+        let offset_min = -self.tile_padding;
+        let offset_max = self.tile_size.height + self.tile_padding;
+        let mut row_idx = start_idx as u32;
         match edge.kind {
             EdgeKind::Linear => for row in &mut self.rows[start_idx .. end_idx] {
-                let segment = LineSegment { from: edge.from, to: edge.to };
-                let range = clip_line_segment_1d(edge.from.y, edge.to.y, y_min, y_max);
-                let segment = segment.split_range(range);
+                let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
 
-                if (segment.to - segment.from).square_length() < 0.0001 {
+                let mut segment = LineSegment { from: edge.from, to: edge.to };
+                segment.from.y -= y_offset;
+                segment.to.y -= y_offset;
+                let range = clip_line_segment_1d(segment.from.y, segment.to.y, offset_min, offset_max);
+                let mut segment = segment.split_range(range);
+
+                if segment.from.y - offset_min < 0.05 { segment.from.y = offset_min };
+                if segment.to.y - offset_min < 0.05 { segment.to.y = offset_min };
+                if offset_max - segment.from.y < 0.05 { segment.from.y = offset_max };
+                if offset_max - segment.to.y < 0.05 { segment.to.y = offset_max };
+
+                if segment.to.y == segment.from.y {
                     continue;
                 }
 
@@ -264,17 +282,25 @@ impl Tiler {
                     min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                 });
 
-                y_min += self.tile_size.height;
-                y_max += self.tile_size.height;
-                row_f += 1.0;
+                row_idx += 1;
             }
             EdgeKind::Quadratic => for row in &mut self.rows[start_idx .. end_idx] {
-                let segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
-                let range = clip_quadratic_bezier_1d(edge.from.y, edge.ctrl.y, edge.to.y, y_min, y_max);
-                let segment = segment.split_range(range.clone());
-                //println!(" -- range {:?} -> {:?}", range, segment);
+                let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
 
-                if (segment.to - segment.from).square_length() < 0.0001 {
+                let mut segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
+                segment.from.y -= y_offset;
+                segment.ctrl.y -= y_offset;
+                segment.to.y -= y_offset;
+                let range = clip_quadratic_bezier_1d(segment.from.y, segment.ctrl.y, segment.to.y, offset_min, offset_max);
+                let mut segment = segment.split_range(range.clone());
+
+                //println!(" -- range {:?} -> {:?}", range, segment);
+                if segment.from.y - offset_min < 0.05 { segment.from.y = offset_min };
+                if segment.to.y - offset_min < 0.05 { segment.to.y = offset_min };
+                if offset_max - segment.from.y < 0.05 { segment.from.y = offset_max };
+                if offset_max - segment.to.y < 0.05 { segment.to.y = offset_max };
+
+                if segment.to.y == segment.from.y {
                     continue;
                 }
 
@@ -287,9 +313,7 @@ impl Tiler {
                     min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                 });
 
-                y_min += self.tile_size.height;
-                y_max += self.tile_size.height;
-                row_f += 1.0;
+                row_idx += 1;
             }
         }
     }
@@ -317,12 +341,14 @@ impl Tiler {
 
     /// Process manually edges and encode them into the output TileEncoder.
     pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
-        let mut active_edges = Vec::with_capacity(64);
+        let mut active_edges = std::mem::take(&mut self.active_edges);
+        active_edges.clear();
+
+        let mut side_edges = std::mem::take(&mut self.side_edges);
+        side_edges.clear();
 
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
-
-        let mut side_edges = SideEdgeTracker::new();
         // This could be done in parallel but it's already quite fast serially.
         for row in &mut rows[self.first_row..self.last_row] {
             if row.edges.is_empty() {
@@ -343,6 +369,8 @@ impl Tiler {
             );
         }
 
+        self.active_edges = active_edges;
+        self.side_edges = side_edges;
         self.rows = rows;
 
         for row in &mut self.rows {
@@ -617,18 +645,15 @@ impl Tiler {
         encoder: &mut dyn TileEncoder,
     ) {
         encoder.begin_row();
-        //println!(" -- process row y {:?} edges {:?} first tile {:?} num tiles x {:?}", tile_y, row.len(), self.tile_offset_x, self.num_tiles_x);
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
         active_edges.clear();
 
-        let row_y = tile_y as f32 * self.tile_size.height + self.tile_offset_x;
-
         let inner_rect = Box2D {
-            min: point(self.tile_offset_x, row_y),
+            min: point(self.tile_offset_x, 0.0),
             max: point(
                 self.tile_offset_x + self.tile_size.width,
-                row_y + self.tile_size.height
+                self.tile_size.height
             ),
         };
 
@@ -719,21 +744,19 @@ impl Tiler {
         z_buffer: &mut ZBufferRow,
         encoder: &mut dyn TileEncoder,
     ) {
-        //side_edges.print();
-        //println!("  <!-- tile {} {} -->", tile.x, tile.y);
-
         tile.solid = false;
-        let mut occluded = false;
+        let mut empty = false;
         if active_edges.is_empty() {
-            if side_edges.is_in(tile.outer_rect.min.y, tile.outer_rect.max.y, self.fill_rule) {
+            let is_in = side_edges.is_in(tile.outer_rect.min.y + 0.1, tile.outer_rect.max.y - 0.1, self.fill_rule);
+            if is_in {
                 tile.solid = true;
             } else if side_edges.is_empty() {
                 // Empty tile.
-                occluded = true;
+                empty = true;
             }
         }
 
-        if !occluded && z_buffer.test(tile.x, self.z_index, tile.solid && self.is_opaque) {
+        if !empty && z_buffer.test(tile.x, self.z_index, tile.solid && self.is_opaque) {
             encoder.encode_tile(tile, active_edges, side_edges);
         }
 
@@ -816,6 +839,36 @@ struct RowEdge {
     min_x: OrderedFloat<f32>,
 }
 
+impl RowEdge {
+    #[allow(unused)]
+    fn print(&self) {
+        match self.kind {
+            EdgeKind::Linear => {
+                println!("Line({:?} {:?} ({:?})) ", self.from, self.to, self.winding);
+            }
+            EdgeKind::Quadratic => {
+                println!("Quad({:?} {:?} {:?} ({:?})) ", self.from, self.ctrl, self.to, self.winding);
+            }
+        }
+    }
+
+    #[allow(unused)]
+    fn print_svg(&self) {
+        self.print_svg_offset(vector(0.0, 0.0));
+    }
+
+    #[allow(unused)]
+    fn print_svg_offset(&self, offset: Vector) {
+        match self.kind {
+            EdgeKind::Linear => {
+                println!("  <path d=\" M {:?} {:?} L {:?} {:?}\"/> <!-- {:?} -->", self.from.x - offset.x, self.from.y - offset.x, self.to.x - offset.x, self.to.y - offset.x, self.winding);
+            }
+            EdgeKind::Quadratic => {
+                println!("  <path d=\" M {:?} {:?} Q {:?} {:?} {:?} {:?}\"/> <!-- {:?} -->", self.from.x - offset.x, self.from.y - offset.x, self.ctrl.x - offset.x, self.ctrl.y - offset.x, self.to.x - offset.x, self.to.y - offset.x, self.winding);
+            }
+        }
+    }
+}
 
 /// The edge representation in the list of active edges of a tile.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -871,7 +924,7 @@ impl ActiveEdge {
 
                 let range = clip_quadratic_bezier_1d(segment.from.x, segment.ctrl.x, segment.to.x, x_range.start, x_range.end);
 
-                let mut segment = segment.split_range(range);
+                let mut segment = split_quad(&segment, range);
 
                 if swap {
                     std::mem::swap(&mut segment.from, &mut segment.to);
@@ -994,14 +1047,30 @@ pub struct SideEdgeTracker {
 impl SideEdgeTracker {
     pub fn new() -> Self {
         SideEdgeTracker {
-            events: Vec::with_capacity(32),
+            events: Vec::new(),
         }
     }
 
+    pub fn with_capacity(cap: usize) -> Self {
+        SideEdgeTracker {
+            events: Vec::with_capacity(cap),
+        }
+    }
+
+    #[allow(unused)]
     pub fn print(&self) {
         print!("side events: [");
         for evt in &self.events {
             print!("{}({}), ", evt.y, evt.winding);
+        }
+        println!("]");
+    }
+
+    #[allow(unused)]
+    pub fn print_offset(&self, offset: f32) {
+        print!("side events: [");
+        for evt in &self.events {
+            print!("{}({}), ", evt.y - offset, evt.winding);
         }
         println!("]");
     }
@@ -1014,7 +1083,26 @@ impl SideEdgeTracker {
 
     pub fn is_empty(&self) -> bool { self.events.is_empty() }
 
-    pub fn is_in(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
+    pub fn is_in(&self, from: f32, _to: f32, fill_rule: FillRule) -> bool {
+        // TODO: In theory when this is called there is no active edge so we should
+        // be either all-in or all-out. In practice there seem to be some precision
+        // issue around the top and bottom of the tile happening somewhere before we
+        // get here and some small edges are maybe lost or the the edge is split in
+        // the wrong spot.
+
+        let p = from + 1.0;
+        let in1 = self.is_in2(p, p, fill_rule);
+        //let in2 = self.is_in2(from, _to, fill_rule);
+        //let in3 = !self.events.is_empty() && fill_rule.is_in(self.events[0].winding);
+        //if in1 != in2 || in1 != in3 {
+        //    println!("----- is_in issue? {:?} {:?} {:?}", in1, in2, in3);
+        //    self.print();
+        //}
+
+        in1
+    }
+
+    pub fn is_in2(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
         let mut i = 0;
         let len = self.events.len();
         while i < len {
@@ -1131,6 +1219,12 @@ impl SideEdgeTracker {
 
             i += 1;
         }
+    }
+}
+
+impl Default for SideEdgeTracker {
+    fn default() -> Self {
+        SideEdgeTracker::new()
     }
 }
 
@@ -1324,4 +1418,15 @@ impl<T> Copy for UnsafeSendPtr<T> {}
 impl<T> Clone for UnsafeSendPtr<T> { fn clone(&self) -> Self { *self } }
 impl<T> UnsafeSendPtr<T> {
     fn get(self) -> *mut T { self.0 }
+}
+
+fn split_quad(curve: &QuadraticBezierSegment<f32>, t_range: std::ops::Range<f32>) -> QuadraticBezierSegment<f32> {
+    let t0 = t_range.start;
+    let t1 = t_range.end;
+
+    let from = if t0 == 0.0 { curve.from } else { curve.sample(t0) };
+    let to = if t1 == 1.0 { curve.to } else { curve.sample(t1) };
+    let ctrl = from + (curve.ctrl - curve.from).lerp(curve.to - curve.ctrl, t0) * (t1 - t0);
+
+    QuadraticBezierSegment { from, ctrl, to }
 }

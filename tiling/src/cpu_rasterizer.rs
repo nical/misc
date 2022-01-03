@@ -334,6 +334,7 @@ fn accum_even_odd_01() {
     assert_eq!(&dst[48..64], &[0, 0, 51, 204, 255, 255, 255, 255,   255, 255, 255, 255, 255, 255, 255, 255]);
 }
 
+/*
 #[test]
 fn simple_line() {
     let mut accum = [0.0; TILE_SIZE * TILE_SIZE];
@@ -361,7 +362,7 @@ fn simple_line() {
     //}
 
 }
-
+*/
 
 // This a rust port of piet's line rasterization routine, just for the sake of
 // understanding and testing the code. There's no reason to run this on the CPU.

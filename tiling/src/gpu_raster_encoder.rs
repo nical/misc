@@ -1,7 +1,6 @@
 use lyon::geom::QuadraticBezierSegment;
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
-use parasol::ExclusiveCheck;
 use std::sync::{
     Arc,
     atomic::{Ordering, AtomicU32},
@@ -51,8 +50,7 @@ pub struct GpuRasterEncoder {
     pub tolerance: f32,
     pub mask_uploader: MaskUploader,
     shared: Arc<Shared>,
-
-    lock: ExclusiveCheck<()>,
+    mask_id_range: std::ops::Range<u32>,
 
     pub edge_distributions: [u32; 16],
 }
@@ -77,8 +75,7 @@ impl GpuRasterEncoder {
             shared: Arc::new(Shared {
                 next_mask_id: AtomicU32::new(0),
             }),
-
-            lock: ExclusiveCheck::new(),
+            mask_id_range: 0..0,
 
             edge_distributions: [0; 16],
         }
@@ -103,6 +100,7 @@ impl GpuRasterEncoder {
         self.mask_uploader.reset();
         self.shared.next_mask_id.store(0, Ordering::Release);
         self.edge_distributions = [0; 16];
+        self.mask_id_range = 0..0;
     }
 
     pub fn num_cpu_masks(&self) -> usize {
@@ -114,8 +112,17 @@ impl GpuRasterEncoder {
         id / MASKS_PER_ATLAS + if id % MASKS_PER_ATLAS != 0 { 1 } else { 0 }
     }
 
-    fn allocate_mask_id(&self) -> u32 {
-        self.shared.next_mask_id.fetch_add(1, Ordering::Relaxed)
+    fn allocate_mask_id(&mut self) -> u32 {
+        if self.mask_id_range.end > self.mask_id_range.start {
+            let id = self.mask_id_range.start;
+            self.mask_id_range.start += 1;
+            return id;
+        }
+        let id = self.shared.next_mask_id.fetch_add(16, Ordering::Relaxed);
+        self.mask_id_range.start = id + 1;
+        self.mask_id_range.end = id + 16;
+
+        id
     }
 
 
@@ -171,7 +178,7 @@ impl GpuRasterEncoder {
                     std::mem::swap(&mut curve.from, &mut curve.to);
                 }
                 let mut from = curve.from;
-                curve.for_each_flattened(self.tolerance, &mut |to| {
+                flatten_quad(&curve, self.tolerance, &mut |to| {
                     self.line_edges.push(LineEdge(from, to));
                     from = to;
                 });
@@ -369,13 +376,6 @@ impl TileEncoder for GpuRasterEncoder {
             self.add_cpu_mask(tile, active_edges, left);
         }
     }
-
-    fn begin_row(&self) {
-        self.lock.begin();
-    }
-    fn end_row(&self) {
-        self.lock.end();
-    }
 }
 
 use std::sync::{Mutex, MutexGuard};
@@ -390,3 +390,28 @@ impl<'l> ParallelRasterEncoder<'l> {
         self.workers[idx].lock().unwrap()
     }
 }
+
+pub fn is_flat(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> bool {
+    let sq_error = (curve.from.lerp(curve.to, 0.5) - curve.ctrl).square_length() * 0.25;
+    sq_error <= tolerance * tolerance
+}
+
+pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(Point)) {
+    let ft = curve.from.lerp(curve.to, 0.5);
+    let sq_error = (ft - curve.ctrl).square_length() * 0.25;
+    let sq_tolerance = tolerance * tolerance;
+
+    if sq_error <= sq_tolerance {
+        cb(curve.to);
+    } else if sq_error * 0.25 <= sq_tolerance {
+        let mid = ft.lerp(curve.ctrl, 0.5);
+        cb(mid);
+        cb(curve.to);
+    } else {
+        // The baseline cost of this is fairly high and then amortized if the number of segments is high.
+        // In practice the number of edges tends to be low in our case due to splitting into small tiles.
+        curve.for_each_flattened(tolerance, cb);
+        //unsafe { crate::flatten_simd::flatten_quad_sse(curve, tolerance, cb); }
+    }
+}
+
