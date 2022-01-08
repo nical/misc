@@ -40,8 +40,8 @@ pub fn new_for_each<'a, 'c, Item: Send>(ctx: &'c mut Context, items: &'a mut [It
     ForEach {
         range: 0..items.len() as u32,
         items,
-        context_data: None,
-        immutable_data: None,
+        context_data: Some(&mut []),
+        immutable_data: Some(&()),
         function: (),
         group_size: 1,
         ctx,
@@ -225,7 +225,7 @@ where
         if parallel.range.start > first_item {
             profiling::scope!("mt:job group");
             let context_data_index = ctx.num_worker_threads() as isize;
-            let context_data = &mut *job_data.ctx_data.offset(context_data_index);
+            let context_data = &mut *job_data.ctx_data.wrapping_offset(context_data_index);
             let immutable_data = &*job_data.immutable_data;
             for item_index in first_item..parallel.range.start {
                 let item = &mut params.items[item_index as usize];
@@ -380,13 +380,13 @@ where
         //
         // As a result it is impossible to craft a pointer that will read or write out of bounds
         // here.
-        let context_data = &mut *this.ctx_data.offset(context_data_index);
+        let context_data = &mut *this.ctx_data.wrapping_offset(context_data_index);
         let immutable_data = &*this.immutable_data;
 
         for item_idx in range {
             // SAFETY: The situation for the item pointer is the same as with context_data.
             // The pointer can be null, but when it is the case, the type is always ().
-            let item = &mut *this.items.offset(item_idx as isize);
+            let item = &mut *this.items.wrapping_offset(item_idx as isize);
             profiling::scope!("job");
             let args = Args {
                 item,
