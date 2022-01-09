@@ -1,5 +1,5 @@
 
-[[group(0), binding(1)]] var mask_texture: texture_2d<f32>;
+[[group(1), binding(0)]] var mask_texture: texture_2d<f32>;
 
 struct FragmentOutput {
     [[location(0)]] color: vec4<f32>;

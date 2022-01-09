@@ -1,7 +1,5 @@
 use lyon::geom::Box2D;
-use super::GpuGlobals;
 
-const MASKS_PER_ATLAS: u32 = (2048 * 2048) / (16 * 16);
 const STAGING_BUFFER_SIZE: u32 = 65536;
 
 use crate::buffer::{Buffer, UniformBufferPool};
@@ -57,12 +55,12 @@ pub struct MaskedTiles {
 }
 
 impl MaskedTiles {
-    pub fn new(device: &wgpu::Device) -> Self {
-        create_tile_pipeline(device)
+    pub fn new(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> Self {
+        create_tile_pipeline(device, globals_bg_layout)
     }
 }
 
-fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
+fn create_tile_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskedTiles {
     let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Masked tiles vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/masked_tile.vs.wgsl").into()),
@@ -72,23 +70,11 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/masked_tile.fs.wgsl").into()),
     });
 
-    let globals_buffer_size = std::mem::size_of::<GpuGlobals>() as u64;
-
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Masked tiles"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(globals_buffer_size),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -102,7 +88,7 @@ fn create_tile_pipeline(device: &wgpu::Device) -> MaskedTiles {
 
     let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Masked tiles"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[&globals_bg_layout, &bind_group_layout],
         push_constant_ranges: &[],
     });
 
@@ -372,12 +358,12 @@ pub struct MaskUploadCopies {
 }
 
 impl MaskUploadCopies {
-    pub fn new(device: &wgpu::Device) -> Self {
-        create_mask_upload_pipeline(device)
+    pub fn new(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> Self {
+        create_mask_upload_pipeline(device, globals_bg_layout)
     }
 }
 
-fn create_mask_upload_pipeline(device: &wgpu::Device) -> MaskUploadCopies {
+fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskUploadCopies {
     let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Mask upload copy vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.vs.wgsl").into()),
@@ -405,7 +391,7 @@ fn create_mask_upload_pipeline(device: &wgpu::Device) -> MaskUploadCopies {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Mask upload copy"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[&globals_bg_layout, &bind_group_layout],
         push_constant_ranges: &[],
     });
 
@@ -486,12 +472,14 @@ pub struct MaskUploader {
     current_instance_start: u32,
 
     pub current_mask_buffer: Buffer<u8>,
+
+    masks_per_atlas: u32,
 }
 
 unsafe impl Send for MaskUploader {}
 
 impl MaskUploader {
-    pub fn new(device: *const wgpu::Device, bind_group_layout: *const wgpu::BindGroupLayout) -> Self {
+    pub fn new(device: *const wgpu::Device, bind_group_layout: *const wgpu::BindGroupLayout, atlas_size: u32) -> Self {
         MaskUploader {
             pool: UniformBufferPool::new(
                 STAGING_BUFFER_SIZE,
@@ -503,6 +491,7 @@ impl MaskUploader {
             current_atlas: 0,
             current_instance_start: 0,
             current_mask_buffer: Buffer::empty(),
+            masks_per_atlas: (atlas_size * atlas_size) / (16 * 16),
         }
     }
 
@@ -520,7 +509,7 @@ impl MaskUploader {
     pub fn new_mask(&mut self, id: u32) -> Range<usize> {
         const TILE_SIZE: usize = 16;
 
-        let atlas_index = id / MASKS_PER_ATLAS;
+        let atlas_index = id / self.masks_per_atlas;
 
         if atlas_index != self.current_atlas || self.current_mask_buffer.remaining_capacity() < TILE_SIZE * TILE_SIZE {
             let instance_end = self.copy_instances.len() as u32;
@@ -560,6 +549,7 @@ impl MaskUploader {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        globals_bind_group: &wgpu::BindGroup,
         pipeline: &wgpu::RenderPipeline,
         quad_ibo: &wgpu::Buffer,
         atlases: &[wgpu::TextureView],
@@ -611,13 +601,14 @@ impl MaskUploader {
             pass.set_pipeline(pipeline);
             pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, instances.slice(..));
+            pass.set_bind_group(0, globals_bind_group, &[]);
 
             let mut idx = batches_start;
             while idx < self.batches.len() && self.batches[idx].dst_atlas == current_atlas {
                 let batch = &self.batches[idx];
                 let bind_group = &self.pool.get_bind_group(batch.src_index);
 
-                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_bind_group(1, bind_group, &[]);
                 pass.draw_indexed(0..6, 0, batch.instances.clone());
 
                 idx += 1;

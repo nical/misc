@@ -1,5 +1,7 @@
 struct Globals {
     resolution: vec2<f32>;
+    tile_size: u32;
+    tile_atlas_size: u32;
 };
 
 [[group(0), binding(0)]] var<uniform> globals: Globals;
@@ -38,11 +40,11 @@ fn main(
     var screen_pos = mix(a_rect.xy, a_rect.zw, uv) / globals.resolution - vec2<f32>(0.5);
     screen_pos.y = -screen_pos.y;
 
-    var TILE_SIZE: f32 = 16.0;
-    var MASKS_PER_ROW: u32 = 2048u / 16u;
-    var tile_x = f32(a_mask % MASKS_PER_ROW) * TILE_SIZE;
-    var tile_y = f32(a_mask / MASKS_PER_ROW) * TILE_SIZE;
-    var mask_uv = vec2<f32>(tile_x, tile_y) + uv * TILE_SIZE;
+    var tile_size = f32(globals.tile_size);
+    var masks_per_row: u32 = globals.tile_atlas_size / globals.tile_size;
+    var tile_x = f32(a_mask % masks_per_row) * tile_size;
+    var tile_y = f32(a_mask / masks_per_row) * tile_size;
+    var mask_uv = vec2<f32>(tile_x, tile_y) + uv * tile_size;
 
     return VertexOutput(
         mask_uv,

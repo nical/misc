@@ -16,8 +16,6 @@ use crate::gpu::masked_tiles::MaskUploader;
 
 use copyless::VecHelper;
 
-const MASKS_PER_ATLAS: u32 = (2048 * 2048) / (16 * 16);
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct QuadEdge(pub Point, pub Point, pub Point, u32, u32);
@@ -51,6 +49,7 @@ pub struct GpuRasterEncoder {
     pub mask_uploader: MaskUploader,
     shared: Arc<Shared>,
     mask_id_range: std::ops::Range<u32>,
+    pub masks_per_atlas: u32,
 
     pub edge_distributions: [u32; 16],
 }
@@ -76,6 +75,7 @@ impl GpuRasterEncoder {
                 next_mask_id: AtomicU32::new(0),
             }),
             mask_id_range: 0..0,
+            masks_per_atlas: (2048 * 2048) / (16 * 16),
 
             edge_distributions: [0; 16],
         }
@@ -87,8 +87,13 @@ impl GpuRasterEncoder {
         encoder.use_quads = other.use_quads;
         encoder.shared = other.shared.clone();
         encoder.fill_rule = other.fill_rule;
+        encoder.masks_per_atlas = other.masks_per_atlas;
 
         encoder
+    }
+
+    pub fn set_tile_texture_size(&mut self, size: u32) {
+        self.masks_per_atlas = (size * size) / (16 * 16);
     }
 
     pub fn reset(&mut self) {
@@ -109,7 +114,7 @@ impl GpuRasterEncoder {
 
     pub fn num_mask_atlases(&self) -> u32 {
         let id = self.shared.next_mask_id.load(Ordering::Acquire);
-        id / MASKS_PER_ATLAS + if id % MASKS_PER_ATLAS != 0 { 1 } else { 0 }
+        id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
     }
 
     fn allocate_mask_id(&mut self) -> u32 {

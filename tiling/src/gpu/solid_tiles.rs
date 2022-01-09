@@ -13,16 +13,15 @@ unsafe impl bytemuck::Zeroable for TileInstance {}
 
 pub struct SolidTiles {
     pub pipeline: wgpu::RenderPipeline,
-    pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl SolidTiles {
-    pub fn new(device: &wgpu::Device) -> Self {
-        create_pipeline(device)
+    pub fn new(device: &wgpu::Device, globals_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
+        create_pipeline(device, globals_bind_group_layout)
     }
 }
 
-fn create_pipeline(device: &wgpu::Device) -> SolidTiles {
+fn create_pipeline(device: &wgpu::Device, globals_bind_group_layout: &wgpu::BindGroupLayout) -> SolidTiles {
     let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Solid tiles vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/solid_tile.vs.wgsl").into()),
@@ -32,27 +31,9 @@ fn create_pipeline(device: &wgpu::Device) -> SolidTiles {
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/solid_tile.fs.wgsl").into()),
     });
 
-    let globals_buffer_byte_size = std::mem::size_of::<GpuGlobals>() as u64;
-
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Solid tiles"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(globals_buffer_byte_size),
-                },
-                count: None,
-            },
-        ],
-    });
-
     let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Solid tiles"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[&globals_bind_group_layout],
         push_constant_ranges: &[],
     });
 
@@ -112,6 +93,5 @@ fn create_pipeline(device: &wgpu::Device) -> SolidTiles {
 
     SolidTiles {
         pipeline,
-        bind_group_layout,
     }
 }
