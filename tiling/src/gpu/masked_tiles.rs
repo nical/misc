@@ -467,6 +467,7 @@ pub struct MaskUploader {
 
     batches: Vec<MaskUploadBatch>,
     copy_instances: Vec<CpuMask>,
+    copy_instance_buffer: Option<wgpu::Buffer>,
 
     current_atlas: u32,
     current_instance_start: u32,
@@ -488,6 +489,7 @@ impl MaskUploader {
             ),
             batches: Vec::new(),
             copy_instances: Vec::new(),
+            copy_instance_buffer: None,
             current_atlas: 0,
             current_instance_start: 0,
             current_mask_buffer: Buffer::empty(),
@@ -545,14 +547,14 @@ impl MaskUploader {
         start..end
     }
 
-    pub fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        globals_bind_group: &wgpu::BindGroup,
-        pipeline: &wgpu::RenderPipeline,
-        quad_ibo: &wgpu::Buffer,
-        atlases: &[wgpu::TextureView],
+    pub fn upload<'a, 'c, 'b: 'a>(
+        &'b mut self,
+        device: &'b wgpu::Device,
+        pass: &'c mut wgpu::RenderPass<'a>,
+        globals_bind_group: &'b wgpu::BindGroup,
+        pipeline: &'b wgpu::RenderPipeline,
+        quad_ibo: &'b wgpu::Buffer,
+        mask_pass_index: u32,
     ) -> bool {
         use wgpu::util::DeviceExt;
 
@@ -575,28 +577,23 @@ impl MaskUploader {
             return false;
         }
 
-        let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mask copy instances"),
-            contents: bytemuck::cast_slice(&self.copy_instances),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        if self.copy_instance_buffer.is_none() {
+            self.copy_instance_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Mask copy instances"),
+                contents: bytemuck::cast_slice(&self.copy_instances),
+                usage: wgpu::BufferUsages::VERTEX,
+            }));
+        }
+
+        let instances = self.copy_instance_buffer.as_ref().unwrap();
 
         let mut batches_start = 0;
         while batches_start < self.batches.len() {
             let current_atlas = self.batches[batches_start].dst_atlas;
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Upload copy"),
-                color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &atlases[current_atlas as usize],
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: true,
-                    },
-                    resolve_target: None,
-                }],
-                depth_stencil_attachment: None,
-            });
+            if current_atlas != mask_pass_index {
+                batches_start += 1;
+                continue;
+            }
 
             pass.set_pipeline(pipeline);
             pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
@@ -617,7 +614,7 @@ impl MaskUploader {
             batches_start = idx;
         }
 
-        self.batches.clear();
+        //self.batches.clear();
 
         true
     }

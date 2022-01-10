@@ -33,8 +33,9 @@ fn main(
     var tile_size = globals.tile_size;
     var masks_per_row = globals.masks_per_row;
 
-    var tile_x = f32(in_mask_id % masks_per_row);
-    var tile_y = f32(in_mask_id / masks_per_row);
+    let mask_index = in_mask_id % (masks_per_row * masks_per_row);
+    var tile_x = f32(mask_index % masks_per_row);
+    var tile_y = f32(mask_index / masks_per_row);
     var normalized_mask_uv = ((vec2<f32>(tile_x, tile_y) + uv) * tile_size) * globals.inv_atlas_width;
 
     var screen_pos = normalized_mask_uv * 2.0 - vec2<f32>(1.0);

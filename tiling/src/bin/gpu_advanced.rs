@@ -110,7 +110,7 @@ fn main() {
     let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Globals"),
         contents: bytemuck::cast_slice(&[
-            GpuGlobals { resolution: Vector::new(size.width as f32, size.height as f32) }
+            GpuGlobals { resolution: Vector::new(size.width as f32, size.height as f32), tile_size: 16, tile_atlas_size: 2048, }
         ]),
         usage: wgpu::BufferUsages::UNIFORM,
     });

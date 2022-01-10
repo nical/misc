@@ -40,10 +40,13 @@ fn main(
     var screen_pos = mix(a_rect.xy, a_rect.zw, uv) / globals.resolution - vec2<f32>(0.5);
     screen_pos.y = -screen_pos.y;
 
-    var tile_size = f32(globals.tile_size);
+    // mod masks per texture
     var masks_per_row: u32 = globals.tile_atlas_size / globals.tile_size;
-    var tile_x = f32(a_mask % masks_per_row) * tile_size;
-    var tile_y = f32(a_mask / masks_per_row) * tile_size;
+    var mask_index = a_mask % (masks_per_row * masks_per_row);
+
+    var tile_size = f32(globals.tile_size);
+    var tile_x = f32(mask_index % masks_per_row) * tile_size;
+    var tile_y = f32(mask_index / masks_per_row) * tile_size;
     var mask_uv = vec2<f32>(tile_x, tile_y) + uv * tile_size;
 
     return VertexOutput(

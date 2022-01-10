@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{Ordering, AtomicU32},
 };
+use std::ops::Range;
 
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
@@ -34,12 +35,27 @@ struct Shared {
     next_mask_id: AtomicU32,
 }
 
+// If we can't fit all masks into the atlas, we have to break the work into
+// multiple passes. Each pass builds the atlas and renders it into the color target.
+#[derive(Debug)]
+pub struct MaskPass {
+    pub gpu_masks: Range<u32>,
+    //pub cpu_masks: Range<u32>,
+    pub masked_tiles: Range<u32>,
+    pub atlas_index: u32,
+}
+
 pub struct GpuRasterEncoder {
     pub quad_edges: Vec<QuadEdge>,
     pub line_edges: Vec<LineEdge>,
     pub solid_tiles: Vec<SolidTile>,
     pub mask_tiles: Vec<MaskedTile>,
     pub gpu_masks: Vec<GpuMask>,
+    pub mask_passes: Vec<MaskPass>,
+    gpu_masks_start: u32,
+    //cpu_masks_start: u32,
+    masked_tiles_start: u32,
+    masks_texture_index: u32,
     pub color: Color,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
@@ -48,7 +64,7 @@ pub struct GpuRasterEncoder {
     pub tolerance: f32,
     pub mask_uploader: MaskUploader,
     shared: Arc<Shared>,
-    mask_id_range: std::ops::Range<u32>,
+    mask_id_range: Range<u32>,
     pub masks_per_atlas: u32,
 
     pub edge_distributions: [u32; 16],
@@ -62,6 +78,11 @@ impl GpuRasterEncoder {
             solid_tiles: Vec::with_capacity(2000),
             mask_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
+            gpu_masks_start: 0,
+            //cpu_masks_start: 0,
+            masked_tiles_start: 0,
+            masks_texture_index: 0,
+            mask_passes: Vec::with_capacity(16),
             color: Color { r: 0, g: 0, b: 0, a: 0 },
             fill_rule: FillRule::EvenOdd,
             max_edges_per_gpu_tile: 4096,
@@ -102,10 +123,32 @@ impl GpuRasterEncoder {
         self.solid_tiles.clear();
         self.mask_tiles.clear();
         self.gpu_masks.clear();
+        self.mask_passes.clear();
         self.mask_uploader.reset();
         self.shared.next_mask_id.store(0, Ordering::Release);
         self.edge_distributions = [0; 16];
         self.mask_id_range = 0..0;
+        self.gpu_masks_start = 0;
+        //self.cpu_masks_start = 0;
+        self.masked_tiles_start = 0;
+        self.masks_texture_index = 0;
+    }
+
+    pub fn end_paths(&mut self) {
+        let gpu_end = self.gpu_masks.len() as u32;
+        //let cpu_end = self.cpu_masks.len() as u32;
+        let masked_tiles_end = self.mask_tiles.len() as u32;
+        if gpu_end != self.gpu_masks_start {
+            self.mask_passes.push(MaskPass {
+                gpu_masks: self.gpu_masks_start..gpu_end,
+                //cpu_masks: self.cpu_masks_start..cpu_end,
+                masked_tiles: self.masked_tiles_start..masked_tiles_end,
+                atlas_index: self.masks_texture_index,
+            });
+            self.gpu_masks_start = gpu_end;
+            //self.cpu_masks_start = cpu_end;
+            self.masked_tiles_start = masked_tiles_end;
+        }
     }
 
     pub fn num_cpu_masks(&self) -> usize {
@@ -126,6 +169,25 @@ impl GpuRasterEncoder {
         let id = self.shared.next_mask_id.fetch_add(16, Ordering::Relaxed);
         self.mask_id_range.start = id + 1;
         self.mask_id_range.end = id + 16;
+
+        let texture_index = id / self.masks_per_atlas;
+        if texture_index != self.masks_texture_index {
+            let gpu_end = self.gpu_masks.len() as u32;
+            //let cpu_end = self.cpu_masks.len() as u32;
+            let masked_tiles_end = self.mask_tiles.len() as u32;
+            if gpu_end != self.gpu_masks_start { // TODO: cpu tiles
+                self.mask_passes.push(MaskPass {
+                    gpu_masks: self.gpu_masks_start..gpu_end,
+                    //cpu_masks: self.cpu_masks_start..cpu_end,
+                    masked_tiles: self.masked_tiles_start..masked_tiles_end,
+                    atlas_index: self.masks_texture_index,
+                });
+                self.gpu_masks_start = gpu_end;
+                //self.cpu_masks_start = cpu_end;
+                self.masked_tiles_start = masked_tiles_end;
+            }
+            self.masks_texture_index = texture_index;
+        }
 
         id
     }

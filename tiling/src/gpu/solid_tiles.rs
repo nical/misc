@@ -1,5 +1,4 @@
 use lyon::geom::Box2D;
-use super::GpuGlobals;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
