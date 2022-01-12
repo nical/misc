@@ -479,6 +479,7 @@ pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mu
         // In practice the number of edges tends to be low in our case due to splitting into small tiles.
         curve.for_each_flattened(tolerance, cb);
         //unsafe { crate::flatten_simd::flatten_quad_sse(curve, tolerance, cb); }
+        //crate::flatten_simd::flatten_quad_ref(curve, tolerance, cb);
     }
 }
 

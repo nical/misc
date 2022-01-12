@@ -135,7 +135,8 @@ pub fn flatten_quad_ref(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb:
     // Note, scale can be NaN, for example with straight lines. When it happens the NaN will
     // propagate to other parameters. We catch it all by setting the iteration count to zero
     // and leave the rest as garbage.
-    let scale = cross.abs() / (ddx.hypot(ddy) * (parabola_to - parabola_from).abs());
+    //let scale = cross.abs() / (ddx.hypot(ddy) * (parabola_to - parabola_from).abs());
+    let scale = cross.abs() / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from).abs());
 
     let integral_from = approx_parabola_integral_ref(parabola_from);
     let integral_to = approx_parabola_integral_ref(parabola_to);
