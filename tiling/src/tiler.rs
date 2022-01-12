@@ -105,6 +105,8 @@ pub struct Tiler {
     pub is_opaque: bool,
     pub fill_rule: FillRule,
     pub z_index: u16,
+    // For debugging.
+    pub selected_row: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -163,6 +165,8 @@ impl Tiler {
             z_index: 0,
 
             worker_data: Vec::new(),
+
+            selected_row: None,
         }
     }
 
@@ -240,16 +244,10 @@ impl Tiler {
         let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) * inv_tile_height).max(0.0);
         let y_end_tile = f32::ceil((edge.to.y - self.tile_offset_y + self.tile_padding) * inv_tile_height).min(self.num_tiles_y);
 
-        //println!(" --------------- {:?}", edge);
-
         let start_idx = y_start_tile as usize;
         let end_idx = y_end_tile as usize;
         self.first_row = self.first_row.min(start_idx);
         self.last_row = self.last_row.max(end_idx);
-
-        //if start_idx <= 5 && end_idx >= 5 {
-        //    println!("<path d=\"M {} {} L {} {}\"/>", edge.from.x, edge.from.y, edge.to.x, edge.to.y);
-        //}
 
         let offset_min = -self.tile_padding;
         let offset_max = self.tile_size.height + self.tile_padding;
@@ -262,25 +260,29 @@ impl Tiler {
                 segment.from.y -= y_offset;
                 segment.to.y -= y_offset;
                 let range = clip_line_segment_1d(segment.from.y, segment.to.y, offset_min, offset_max);
-                let mut segment = segment.split_range(range);
+                let mut segment = segment.split_range(range.clone());
 
-                if segment.from.y - offset_min < 0.05 { segment.from.y = offset_min };
-                if segment.to.y - offset_min < 0.05 { segment.to.y = offset_min };
-                if offset_max - segment.from.y < 0.05 { segment.from.y = offset_max };
-                if offset_max - segment.to.y < 0.05 { segment.to.y = offset_max };
+                // Most of the tiling algorithm isn't affected by float precision hazards except where
+                // we split the edges. Ideally we want the split points for edges that cross tile boundaries
+                // to be exactly at the tile boundaries, so that the side edge tracker can properly sum up to
+                // an empty list of edges by the end of the row (and easily detect full/empty tiles). So we do
+                // a bit of snapping here to paper over the imprecision of splitting the edge.
+                const SNAP: f32 = 0.05;
+                if segment.from.y - offset_min < SNAP { segment.from.y = offset_min };
+                if segment.to.y - offset_min < SNAP { segment.to.y = offset_min };
+                if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
+                if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
 
-                if segment.to.y == segment.from.y {
-                    continue;
+                if segment.from.y != segment.to.y {
+                    row.edges.alloc().init(RowEdge {
+                        from: segment.from,
+                        to: segment.to,
+                        ctrl: point(std::f32::NAN, std::f32::NAN),
+                        kind: EdgeKind::Linear,
+                        winding: edge.winding,
+                        min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
+                    });
                 }
-
-                row.edges.alloc().init(RowEdge {
-                    from: segment.from,
-                    to: segment.to,
-                    ctrl: point(std::f32::NAN, std::f32::NAN),
-                    kind: EdgeKind::Linear,
-                    winding: edge.winding,
-                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                });
 
                 row_idx += 1;
             }
@@ -294,24 +296,22 @@ impl Tiler {
                 let range = clip_quadratic_bezier_1d(segment.from.y, segment.ctrl.y, segment.to.y, offset_min, offset_max);
                 let mut segment = segment.split_range(range.clone());
 
-                //println!(" -- range {:?} -> {:?}", range, segment);
-                if segment.from.y - offset_min < 0.05 { segment.from.y = offset_min };
-                if segment.to.y - offset_min < 0.05 { segment.to.y = offset_min };
-                if offset_max - segment.from.y < 0.05 { segment.from.y = offset_max };
-                if offset_max - segment.to.y < 0.05 { segment.to.y = offset_max };
+                const SNAP: f32 = 0.05;
+                if segment.from.y - offset_min < SNAP { segment.from.y = offset_min };
+                if segment.to.y - offset_min < SNAP { segment.to.y = offset_min };
+                if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
+                if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
 
-                if segment.to.y == segment.from.y {
-                    continue;
+                if segment.from.y != segment.to.y {
+                    row.edges.alloc().init(RowEdge {
+                        from: segment.from,
+                        to: segment.to,
+                        ctrl: segment.ctrl,
+                        kind: EdgeKind::Quadratic,
+                        winding: edge.winding,
+                        min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
+                    });
                 }
-
-                row.edges.alloc().init(RowEdge {
-                    from: segment.from,
-                    to: segment.to,
-                    ctrl: segment.ctrl,
-                    kind: EdgeKind::Quadratic,
-                    winding: edge.winding,
-                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                });
 
                 row_idx += 1;
             }
@@ -346,6 +346,11 @@ impl Tiler {
 
         let mut side_edges = std::mem::take(&mut self.side_edges);
         side_edges.clear();
+
+        if let Some(row) = self.selected_row {
+            self.first_row = row;
+            self.last_row = row + 1;
+        }
 
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
@@ -747,7 +752,7 @@ impl Tiler {
         tile.solid = false;
         let mut empty = false;
         if active_edges.is_empty() {
-            let is_in = side_edges.is_in(tile.outer_rect.min.y + 0.1, tile.outer_rect.max.y - 0.1, self.fill_rule);
+            let is_in = side_edges.is_in(self.fill_rule);
             if is_in {
                 tile.solid = true;
             } else if side_edges.is_empty() {
@@ -966,7 +971,14 @@ fn clip_quadratic_bezier_1d(
     debug_assert!(max >= min);
     debug_assert!(to >= from);
 
-    // solve a class quadratic formula "a*x² + b*x + c = 0"
+    if from >= min && to <= max {
+        return 0.0 .. 1.0;
+    }
+
+    // TODO: this is sensible to float errors, should probably
+    // be using f64 arithmetic
+
+    // Solve a class quadratic formula "a*x² + b*x + c = 0"
     // using the quadratic bézier's formulation
     // y = (1 - t)² * from + t*(1 - t) * ctrl + t² * to
     // replacing y with min and max we get:
@@ -1016,7 +1028,7 @@ pub fn clip_line_segment_1d(
 ) -> std::ops::Range<f32> {
     let d = to - from;
     if d == 0.0 {
-        return 1.0 .. 0.0;
+        return 0.0 .. 1.0;
     }
 
     let inv_d = 1.0 / d;
@@ -1083,26 +1095,13 @@ impl SideEdgeTracker {
 
     pub fn is_empty(&self) -> bool { self.events.is_empty() }
 
-    pub fn is_in(&self, from: f32, _to: f32, fill_rule: FillRule) -> bool {
-        // TODO: In theory when this is called there is no active edge so we should
-        // be either all-in or all-out. In practice there seem to be some precision
-        // issue around the top and bottom of the tile happening somewhere before we
-        // get here and some small edges are maybe lost or the the edge is split in
-        // the wrong spot.
-
-        let p = from + 1.0;
-        let in1 = self.is_in2(p, p, fill_rule);
-        //let in2 = self.is_in2(from, _to, fill_rule);
-        //let in3 = !self.events.is_empty() && fill_rule.is_in(self.events[0].winding);
-        //if in1 != in2 || in1 != in3 {
-        //    println!("----- is_in issue? {:?} {:?} {:?}", in1, in2, in3);
-        //    self.print();
-        //}
-
-        in1
+    // Call this version only if there is no active edge in the current tile,
+    // in which case we expect to be either fully in or fully out.
+    pub fn is_in(&self, fill_rule: FillRule) -> bool {
+        !self.events.is_empty() && fill_rule.is_in(self.events[0].winding)
     }
 
-    pub fn is_in2(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
+    pub fn is_range_in(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
         let mut i = 0;
         let len = self.events.len();
         while i < len {

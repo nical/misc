@@ -23,17 +23,23 @@ fn main() {
     //  - in parallel mode or with quadratic curves, make sure the tile atlas size is large enough to
 
     let mut select_path = None;
+    let mut select_row = None;
     let mut profile = false;
     let mut use_quads = false;
     let mut sp = false;
+    let mut sr = false;
     let mut parallel = false;
     for arg in &args {
         if sp {
-            println!("{:?}", arg);
             select_path = Some(arg.parse::<u16>().unwrap());
             sp = false;
         }
+        if sr {
+            select_row = Some(arg.parse::<usize>().unwrap());
+            sr = false;
+        }
         if arg == "--path" { sp = true; }
+        if arg == "--row" { sr = true; }
         if arg == "--parallel" { parallel = true; }
         if arg == "--profile" { profile = true; }
         if arg == "--quads" { use_quads = true; }
@@ -131,6 +137,7 @@ fn main() {
     let mut ctx = thread_pool.pop_context().unwrap();
 
     let mut tiler = Tiler::new(&tiler_config);
+    tiler.selected_row = select_row;
 
     use tiling::gpu::masked_tiles::MaskUploader;
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
@@ -173,7 +180,6 @@ fn main() {
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
             if let Some(idx) = select_path {
-                println!("z-index: {:?}", tiler.z_index);
                 if idx != tiler.z_index {
                     tiler.z_index -= 1;
                     continue;
