@@ -327,7 +327,7 @@ impl Tiler {
         let num_rows = self.num_tiles_y as usize;
         self.rows.truncate(num_rows);
         for i in self.rows.len()..num_rows {
-            self.rows.push(Row {
+            self.rows.alloc().init(Row {
                 edges: Vec::new(),
                 tile_y: i as u32,
                 z_buffer: TileMask::new(),
@@ -680,7 +680,8 @@ impl Tiler {
                 break;
             }
 
-            active_edges.push(ActiveEdge {
+
+            active_edges.alloc().init(ActiveEdge {
                 from: edge.from,
                 to: edge.to,
                 ctrl: edge.ctrl,
@@ -690,14 +691,7 @@ impl Tiler {
             });
 
             while edge.min_x.0 > tile.outer_rect.max.x {
-                active_edges.retain(|edge| {
-                    if edge.max_x < tile.outer_rect.min.x {
-                        side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
-                        return false
-                    }
-
-                    true
-                });
+                Self::update_active_edges(active_edges, side_edges, tile.outer_rect.min.x);
             }
 
             current_edge += 1;
@@ -717,7 +711,13 @@ impl Tiler {
                 break;
             }
 
-            active_edges.push(ActiveEdge {
+            // Note: it is tempting to flatten here to avoid re-flattening edges that
+            // touch several tiles, however a naive attempt at doing that was slower.
+            // That's partly because other things get slower when the number of active
+            // edges grow (for example the side edges bookkeeping).
+            // Maybe it would make sense to revisit if the size of the active edge
+            // struct can be reduced.
+            active_edges.alloc().init(ActiveEdge {
                 from: edge.from,
                 to: edge.to,
                 ctrl: edge.ctrl,
@@ -771,14 +771,39 @@ impl Tiler {
         tile.outer_rect.max.x += self.tile_size.width;
         tile.x += 1;
 
-        active_edges.retain(|edge| {
-            if edge.max_x < tile.outer_rect.min.x {
+        Self::update_active_edges(active_edges, side_edges, tile.outer_rect.min.x);
+    }
+
+    #[inline]
+    fn update_active_edges(active_edges: &mut Vec<ActiveEdge>, side_edges: &mut SideEdgeTracker, left_x: f32) {
+        // Equivalent to the following snippet but a bit faster and not preserving the
+        // edge ordering.
+        //
+        // active_edges.retain(|edge| {
+        //     if edge.max_x < left_x {
+        //         side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+        //         return false
+        //     }
+        //     true
+        // });
+
+        if active_edges.is_empty() {
+            return;
+        }
+
+        let mut i = active_edges.len() - 1;
+        loop {
+            let edge = &active_edges[i];
+            if edge.max_x < left_x {
                 side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
-                return false
+                active_edges.swap_remove(i);
             }
 
-            true
-        });
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
     }
 }
 
@@ -878,12 +903,20 @@ impl RowEdge {
 /// The edge representation in the list of active edges of a tile.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ActiveEdge {
+    // If we ever decide to flatten early, active edges could be just from/to
+    // and fit in 16 bytes instead of 32.
     pub from: Point,
     pub to: Point,
     pub ctrl: Point,
+    // Members below aren't strictly necessary.
     pub kind: EdgeKind,
     pub winding: i16,
     max_x: f32,
+}
+
+#[test]
+fn active_edge_size() {
+    println!("{}", std::mem::size_of::<ActiveEdge>());
 }
 
 impl ActiveEdge {

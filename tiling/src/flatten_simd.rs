@@ -168,6 +168,7 @@ pub fn flatten_quad_ref(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb:
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn flatten_simd() {
     unsafe {
         let (_, _, _, a) = unpack(approx_parabola_inv_integral(splat(0.5)));
@@ -182,7 +183,7 @@ fn flatten_simd() {
         };
 
         let mut n0: u32 = 0;
-        flatten_quad_simd(&curve, 0.01, &mut |p| {
+        flatten_quad_sse(&curve, 0.01, &mut |p| {
             println!("{:?}", p);
             n0 += 1;
         });
