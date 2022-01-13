@@ -45,7 +45,7 @@ fn main() {
         if arg == "--quads" { use_quads = true; }
     }
 
-    // The tile size.
+    let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 32;
@@ -54,7 +54,7 @@ fn main() {
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::zero(),
-        tile_size: size2(16.0 as f32, 16.0 as f32),
+        tile_size: size2(tile_size, tile_size),
         tile_padding: 0.5,
         tolerance,
         flatten: false,
@@ -93,7 +93,7 @@ fn main() {
         contents: bytemuck::cast_slice(&[
             tiling::gpu::GpuGlobals {
                 resolution: vector(window_size.width as f32, window_size.height as f32),
-                tile_size: 16,
+                tile_size: tile_size as u32,
                 tile_atlas_size,
             }
         ]),
@@ -147,7 +147,7 @@ fn main() {
 
     // Main builder.
     let mut builder = CachePadded::new(GpuRasterEncoder::new(tolerance, mask_uploader));
-    builder.set_tile_texture_size(tile_atlas_size);
+    builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
     // Extra builders for worker threads.
     let mut b0 = CachePadded::new(GpuRasterEncoder::new_parallel(&builder, mask_uploader_0));
     let mut b1 = CachePadded::new(GpuRasterEncoder::new_parallel(&builder, mask_uploader_1));
@@ -426,9 +426,9 @@ fn main() {
         label: Some("Mask params"),
         contents: bytemuck::cast_slice(&[
             tiling::gpu::masked_tiles::MaskParams {
-                tile_size: 16.0,
+                tile_size,
                 inv_atlas_width: 1.0 / (tile_atlas_size as f32),
-                masks_per_row: tile_atlas_size / 16,
+                masks_per_row: tile_atlas_size / (tile_size as u32),
             }
         ]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -525,7 +525,7 @@ fn main() {
                     scene.window_size.width as f32,
                     scene.window_size.height as f32,
                 ),
-                tile_size: 16,
+                tile_size: tile_size as u32,
                 tile_atlas_size,
             }]),
         );

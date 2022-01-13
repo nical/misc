@@ -66,6 +66,7 @@ pub struct GpuRasterEncoder {
     shared: Arc<Shared>,
     mask_id_range: Range<u32>,
     pub masks_per_atlas: u32,
+    tile_size: f32,
 
     pub edge_distributions: [u32; 16],
 }
@@ -89,6 +90,7 @@ impl GpuRasterEncoder {
             is_opaque: true,
             use_quads: false,
             tolerance,
+            tile_size: 16.0,
 
             mask_uploader,
 
@@ -109,12 +111,14 @@ impl GpuRasterEncoder {
         encoder.shared = other.shared.clone();
         encoder.fill_rule = other.fill_rule;
         encoder.masks_per_atlas = other.masks_per_atlas;
+        encoder.tile_size = other.tile_size;
 
         encoder
     }
 
-    pub fn set_tile_texture_size(&mut self, size: u32) {
-        self.masks_per_atlas = (size * size) / (16 * 16);
+    pub fn set_tile_texture_size(&mut self, size: u32, tile_size: u32) {
+        self.masks_per_atlas = (size * size) / (tile_size * tile_size);
+        self.tile_size = tile_size as f32;
     }
 
     pub fn reset(&mut self) {
@@ -194,9 +198,8 @@ impl GpuRasterEncoder {
 
 
     fn add_line_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) -> bool {
-        const TILE_SIZE: f32 = 16.0;
-        let tx = tile.x as f32 * TILE_SIZE;
-        let ty = tile.y as f32 * TILE_SIZE;
+        let tx = tile.x as f32 * self.tile_size;
+        let ty = tile.y as f32 * self.tile_size;
 
         let edges_start = self.line_edges.len();
 
@@ -271,7 +274,7 @@ impl GpuRasterEncoder {
         self.mask_tiles.push(MaskedTile {
             rect: Box2D {
                 min: point(tx, ty),
-                max: point(tx + TILE_SIZE, ty + TILE_SIZE),
+                max: point(tx + self.tile_size, ty + self.tile_size),
             },
             color: self.color.to_u32(),
             mask: mask_id,
@@ -281,9 +284,8 @@ impl GpuRasterEncoder {
     }
 
     fn add_quad_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) -> bool {
-        const TILE_SIZE: f32 = 16.0;
-        let tx = tile.x as f32 * TILE_SIZE;
-        let ty = tile.y as f32 * TILE_SIZE;
+        let tx = tile.x as f32 * self.tile_size;
+        let ty = tile.y as f32 * self.tile_size;
 
         let edges_start = self.quad_edges.len();
 
@@ -353,7 +355,7 @@ impl GpuRasterEncoder {
         self.mask_tiles.push(MaskedTile {
             rect: Box2D {
                 min: point(tx, ty),
-                max: point(tx + TILE_SIZE, ty + TILE_SIZE),
+                max: point(tx + self.tile_size, ty + self.tile_size),
             },
             color: self.color.to_u32(),
             mask: mask_id,
@@ -363,9 +365,9 @@ impl GpuRasterEncoder {
     }
 
     fn add_cpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) {
-        const TILE_SIZE: usize = 16;
-        let mut accum = [0.0; TILE_SIZE * TILE_SIZE];
-        let mut backdrops = [0.0 as f32; TILE_SIZE];
+        debug_assert!(self.tile_size <= 32.0);
+        let mut accum = [0.0; 32 * 32];
+        let mut backdrops = [0.0 as f32; 32];
 
         // "Rasterize" the left edges in the backdrop buffer.
         apply_side_edges_to_backdrop(left, tile.inner_rect.min.y, &mut backdrops);
@@ -406,12 +408,12 @@ impl GpuRasterEncoder {
             &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
         );
 
-        let tx = tile.x as f32 * 16.0;
-        let ty = tile.y as f32 * 16.0;
+        let tx = tile.x as f32 * self.tile_size;
+        let ty = tile.y as f32 * self.tile_size;
         self.mask_tiles.push(MaskedTile {
             rect: Box2D {
                 min: point(tx, ty),
-                max: point(tx + 16.0, ty + 16.0),
+                max: point(tx + self.tile_size, ty + self.tile_size),
             },
             color: self.color.to_u32(),
             mask: mask_id,
@@ -422,15 +424,14 @@ impl GpuRasterEncoder {
 impl TileEncoder for GpuRasterEncoder {
     fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge], left: &SideEdgeTracker) {
 
-        const TILE_SIZE: f32 = 16.0;
-        let tx = tile.x as f32 * TILE_SIZE;
-        let ty = tile.y as f32 * TILE_SIZE;
+        let tx = tile.x as f32 * self.tile_size;
+        let ty = tile.y as f32 * self.tile_size;
 
         if tile.solid {
             self.solid_tiles.push(SolidTile {
                 rect: Box2D {
                     min: point(tx, ty),
-                    max: point(tx + TILE_SIZE, ty + TILE_SIZE),
+                    max: point(tx + self.tile_size, ty + self.tile_size),
                 },
                 color: self.color.to_u32(),
             });
@@ -482,4 +483,3 @@ pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mu
         //crate::flatten_simd::flatten_quad_ref(curve, tolerance, cb);
     }
 }
-

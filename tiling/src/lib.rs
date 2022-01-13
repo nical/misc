@@ -2,14 +2,14 @@ pub mod tiler;
 pub mod gpu_raster_encoder;
 pub mod advanced_raster_encoder;
 pub mod cpu_rasterizer;
-pub mod z_buffer;
+pub mod occlusion;
 pub mod load_svg;
 pub mod gpu;
 pub mod buffer;
 pub mod flatten_simd;
 
 pub use tiler::*;
-pub use z_buffer::*;
+pub use occlusion::*;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {

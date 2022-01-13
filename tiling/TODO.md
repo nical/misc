@@ -14,8 +14,8 @@
  - [ ] Compress the curves sent to the GPU.
  - [ ] Rasterize CPU masks asynchronously (using the job scheduler).
  - [ ] Overlap the row decomposition and row processing stages when running in parallel.
- - [ ] Support multiple atlas textures.
- - [ ] configurable atlas texture sizes.
+ - [x] Support multiple atlas textures.
+ - [x] configurable atlas texture sizes.
  - [ ] Better upload paths (write data directly into mapped gpu buffers).
  - [ ] Stroke mask shader (round joins/caps).
  - [ ] Compute shader version for the rasterization and compositing.

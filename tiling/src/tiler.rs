@@ -6,7 +6,7 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
-pub use crate::z_buffer::{ZBuffer, ZBufferRow};
+pub use crate::occlusion::TileMask;
 
 use parasol::{Context, CachePadded};
 
@@ -44,7 +44,7 @@ where
 struct Row {
     edges: Vec<RowEdge>,
     tile_y: u32,
-    z_buffer: ZBufferRow,
+    z_buffer: TileMask,
 }
 
 impl Row {
@@ -52,7 +52,7 @@ impl Row {
         Row {
             edges: Vec::new(),
             tile_y: 0,
-            z_buffer: ZBufferRow::new()
+            z_buffer: TileMask::new()
         }
     }
 }
@@ -330,7 +330,7 @@ impl Tiler {
             self.rows.push(Row {
                 edges: Vec::new(),
                 tile_y: i as u32,
-                z_buffer: ZBufferRow::new(),
+                z_buffer: TileMask::new(),
             });
         }
 
@@ -506,7 +506,7 @@ impl Tiler {
         // (there is one per row and rows are dispatched in parallel)
         struct Shared<'a, 'b> {
             encoders: &'b mut [&'a mut dyn TileEncoder],
-            z_buffer: &'b mut [ZBufferRow],
+            z_buffer: &'b mut [TileMask],
         }
         unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
         unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
@@ -531,7 +531,7 @@ impl Tiler {
             let mut active_edges = Vec::with_capacity(64);
             let mut side_edges = SideEdgeTracker::new();
 
-            let z_buffer: &mut ZBufferRow = &mut (*shared_ptr.get()).z_buffer[row.tile_y as usize];
+            let z_buffer: &mut TileMask = &mut (*shared_ptr.get()).z_buffer[row.tile_y as usize];
 
             if z_buffer.is_empty() {
                 z_buffer.init(self.num_tiles_x as usize);
@@ -646,7 +646,7 @@ impl Tiler {
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         side_edges: &mut SideEdgeTracker,
-        z_buffer: &mut ZBufferRow,
+        z_buffer: &mut TileMask,
         encoder: &mut dyn TileEncoder,
     ) {
         encoder.begin_row();
@@ -746,7 +746,7 @@ impl Tiler {
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
         side_edges: &mut SideEdgeTracker,
-        z_buffer: &mut ZBufferRow,
+        z_buffer: &mut TileMask,
         encoder: &mut dyn TileEncoder,
     ) {
         tile.solid = false;
@@ -761,7 +761,7 @@ impl Tiler {
             }
         }
 
-        if !empty && z_buffer.test(tile.x, self.z_index, tile.solid && self.is_opaque) {
+        if !empty && z_buffer.test(tile.x, tile.solid && self.is_opaque) {
             encoder.encode_tile(tile, active_edges, side_edges);
         }
 
@@ -1227,7 +1227,7 @@ impl Default for SideEdgeTracker {
     }
 }
 
-pub(crate) fn apply_side_edges_to_backdrop(side: &SideEdgeTracker, y_offset: f32, backdrops: &mut [f32; 16]) {
+pub(crate) fn apply_side_edges_to_backdrop(side: &SideEdgeTracker, y_offset: f32, backdrops: &mut [f32]) {
     let mut prev: Option<SideEvent> = None;
     for evt in side.events() {
         if let Some(prev) = prev {
