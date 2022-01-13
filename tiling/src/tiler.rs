@@ -252,8 +252,8 @@ impl Tiler {
         let offset_min = -self.tile_padding;
         let offset_max = self.tile_size.height + self.tile_padding;
         let mut row_idx = start_idx as u32;
-        match edge.kind {
-            EdgeKind::Linear => for row in &mut self.rows[start_idx .. end_idx] {
+        if edge.is_line() {
+            for row in &mut self.rows[start_idx .. end_idx] {
                 let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
 
                 let mut segment = LineSegment { from: edge.from, to: edge.to };
@@ -273,20 +273,23 @@ impl Tiler {
                 if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
                 if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
 
+                if edge.winding < 0 {
+                    std::mem::swap(&mut segment.from, &mut segment.to);
+                }
+
                 if segment.from.y != segment.to.y {
                     row.edges.alloc().init(RowEdge {
                         from: segment.from,
                         to: segment.to,
-                        ctrl: point(std::f32::NAN, std::f32::NAN),
-                        kind: EdgeKind::Linear,
-                        winding: edge.winding,
+                        ctrl: point(segment.from.x, std::f32::NAN),
                         min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                     });
                 }
 
                 row_idx += 1;
             }
-            EdgeKind::Quadratic => for row in &mut self.rows[start_idx .. end_idx] {
+        } else {
+            for row in &mut self.rows[start_idx .. end_idx] {
                 let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
 
                 let mut segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
@@ -302,13 +305,15 @@ impl Tiler {
                 if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
                 if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
 
+                if edge.winding < 0 {
+                    std::mem::swap(&mut segment.from, &mut segment.to);
+                }
+
                 if segment.from.y != segment.to.y {
                     row.edges.alloc().init(RowEdge {
                         from: segment.from,
                         to: segment.to,
                         ctrl: segment.ctrl,
-                        kind: EdgeKind::Quadratic,
-                        winding: edge.winding,
                         min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
                     });
                 }
@@ -685,9 +690,6 @@ impl Tiler {
                 from: edge.from,
                 to: edge.to,
                 ctrl: edge.ctrl,
-                winding: edge.winding,
-                kind: edge.kind,
-                max_x: edge.from.x.max(edge.to.x),
             });
 
             while edge.min_x.0 > tile.outer_rect.max.x {
@@ -721,9 +723,6 @@ impl Tiler {
                 from: edge.from,
                 to: edge.to,
                 ctrl: edge.ctrl,
-                winding: edge.winding,
-                kind: edge.kind,
-                max_x: edge.from.x.max(edge.to.x),
             });
 
             current_edge += 1;
@@ -780,8 +779,8 @@ impl Tiler {
         // edge ordering.
         //
         // active_edges.retain(|edge| {
-        //     if edge.max_x < left_x {
-        //         side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+        //     if edge.max_x() < left_x {
+        //         side_edges.add_edge(edge.from.y, edge.to.y);
         //         return false
         //     }
         //     true
@@ -794,8 +793,8 @@ impl Tiler {
         let mut i = active_edges.len() - 1;
         loop {
             let edge = &active_edges[i];
-            if edge.max_x < left_x {
-                side_edges.add_edge(edge.from.y, edge.to.y, edge.winding);
+            if edge.max_x() < left_x {
+                side_edges.add_edge(edge.from.y, edge.to.y);
                 active_edges.swap_remove(i);
             }
 
@@ -823,6 +822,8 @@ pub struct MonotonicEdge {
 }
 
 impl MonotonicEdge {
+    fn is_line(&self) -> bool { self.ctrl.y.is_nan() }
+
     pub fn linear(mut segment: LineSegment<f32>) -> Self {
         let winding = if segment.from.y > segment.to.y {
             std::mem::swap(&mut segment.from, &mut segment.to);
@@ -834,7 +835,7 @@ impl MonotonicEdge {
         MonotonicEdge {
             from: segment.from,
             to: segment.to,
-            ctrl: point(std::f32::NAN, std::f32::NAN),
+            ctrl: point(segment.from.x, std::f32::NAN),
             kind: EdgeKind::Linear,
             winding,
         }
@@ -864,21 +865,16 @@ struct RowEdge {
     from: Point,
     to: Point,
     ctrl: Point,
-    kind: EdgeKind,
-    winding: i16,
     min_x: OrderedFloat<f32>,
 }
 
 impl RowEdge {
     #[allow(unused)]
     fn print(&self) {
-        match self.kind {
-            EdgeKind::Linear => {
-                println!("Line({:?} {:?} ({:?})) ", self.from, self.to, self.winding);
-            }
-            EdgeKind::Quadratic => {
-                println!("Quad({:?} {:?} {:?} ({:?})) ", self.from, self.ctrl, self.to, self.winding);
-            }
+        if self.ctrl.y.is_nan() {
+            println!("Line({:?} {:?}) ", self.from, self.to);
+        } else {
+            println!("Quad({:?} {:?} {:?}) ", self.from, self.ctrl, self.to);
         }
     }
 
@@ -889,13 +885,10 @@ impl RowEdge {
 
     #[allow(unused)]
     fn print_svg_offset(&self, offset: Vector) {
-        match self.kind {
-            EdgeKind::Linear => {
-                println!("  <path d=\" M {:?} {:?} L {:?} {:?}\"/> <!-- {:?} -->", self.from.x - offset.x, self.from.y - offset.x, self.to.x - offset.x, self.to.y - offset.x, self.winding);
-            }
-            EdgeKind::Quadratic => {
-                println!("  <path d=\" M {:?} {:?} Q {:?} {:?} {:?} {:?}\"/> <!-- {:?} -->", self.from.x - offset.x, self.from.y - offset.x, self.ctrl.x - offset.x, self.ctrl.y - offset.x, self.to.x - offset.x, self.to.y - offset.x, self.winding);
-            }
+        if self.ctrl.y.is_nan() {
+            println!("  <path d=\" M {:?} {:?} L {:?} {:?}\"/>", self.from.x - offset.x, self.from.y - offset.x, self.to.x - offset.x, self.to.y - offset.x);
+        } else {
+            println!("  <path d=\" M {:?} {:?} Q {:?} {:?} {:?} {:?}\"/>", self.from.x - offset.x, self.from.y - offset.x, self.ctrl.x - offset.x, self.ctrl.y - offset.x, self.to.x - offset.x, self.to.y - offset.x);
         }
     }
 }
@@ -908,10 +901,12 @@ pub struct ActiveEdge {
     pub from: Point,
     pub to: Point,
     pub ctrl: Point,
-    // Members below aren't strictly necessary.
-    pub kind: EdgeKind,
-    pub winding: i16,
-    max_x: f32,
+}
+
+impl ActiveEdge {
+    pub fn is_line(&self) -> bool { self.ctrl.y.is_nan() }
+    pub fn is_curve(&self) -> bool { !self.is_line() }
+    fn max_x(&self) -> f32 { self.from.x.max(self.to.x).max(self.ctrl.x) }
 }
 
 #[test]
@@ -921,61 +916,52 @@ fn active_edge_size() {
 
 impl ActiveEdge {
     pub fn clip_horizontally(&self, x_range: std::ops::Range<f32>) -> Self {
-        match self.kind {
-            EdgeKind::Linear => {
-                let mut segment = LineSegment {
-                    from: self.from,
-                    to: self.to,
-                };
-                let swap = segment.from.x > segment.to.x;
-                if swap {
-                    std::mem::swap(&mut segment.from, &mut segment.to);
-                }
-
-                let range = clip_line_segment_1d(segment.from.x, segment.to.x, x_range.start, x_range.end);
-                let mut segment = segment.split_range(range);
-
-                if swap {
-                    std::mem::swap(&mut segment.from, &mut segment.to);
-                }
-
-                ActiveEdge {
-                    from: segment.from,
-                    to: segment.to,
-                    ctrl: point(std::f32::NAN, std::f32::NAN),
-                    winding: self.winding,
-                    kind: EdgeKind::Linear,
-                    max_x: 0.0,
-                }
+        if self.is_line() {
+            let mut segment = LineSegment {
+                from: self.from,
+                to: self.to,
+            };
+            let swap = segment.from.x > segment.to.x;
+            if swap {
+                std::mem::swap(&mut segment.from, &mut segment.to);
             }
-            EdgeKind::Quadratic => {
-                let mut segment = QuadraticBezierSegment {
-                    from: self.from,
-                    to: self.to,
-                    ctrl: self.ctrl,
-                };
 
-                let swap = segment.from.x > segment.to.x;
-                if swap {
-                    std::mem::swap(&mut segment.from, &mut segment.to);
-                }
+            let range = clip_line_segment_1d(segment.from.x, segment.to.x, x_range.start, x_range.end);
+            let mut segment = segment.split_range(range);
 
-                let range = clip_quadratic_bezier_1d(segment.from.x, segment.ctrl.x, segment.to.x, x_range.start, x_range.end);
+            if swap {
+                std::mem::swap(&mut segment.from, &mut segment.to);
+            }
 
-                let mut segment = split_quad(&segment, range);
+            ActiveEdge {
+                from: segment.from,
+                to: segment.to,
+                ctrl: point(segment.from.x, std::f32::NAN),
+            }
+        } else {
+            let mut segment = QuadraticBezierSegment {
+                from: self.from,
+                to: self.to,
+                ctrl: self.ctrl,
+            };
 
-                if swap {
-                    std::mem::swap(&mut segment.from, &mut segment.to);
-                }
+            let swap = segment.from.x > segment.to.x;
+            if swap {
+                std::mem::swap(&mut segment.from, &mut segment.to);
+            }
 
-                ActiveEdge {
-                    from: segment.from,
-                    to: segment.to,
-                    ctrl: segment.ctrl,
-                    winding: self.winding,
-                    kind: EdgeKind::Quadratic,
-                    max_x: 0.0,
-                }
+            let range = clip_quadratic_bezier_1d(segment.from.x, segment.ctrl.x, segment.to.x, x_range.start, x_range.end);
+
+            let mut segment = split_quad(&segment, range);
+
+            if swap {
+                std::mem::swap(&mut segment.from, &mut segment.to);
+            }
+
+            ActiveEdge {
+                from: segment.from,
+                to: segment.to,
+                ctrl: segment.ctrl,
             }
         }
     }
@@ -1169,14 +1155,15 @@ impl SideEdgeTracker {
         false
     }
 
-    pub fn add_edge(&mut self, from: f32, to: f32, edge_winding: i16) {
+    pub fn add_edge(&mut self, from: f32, to: f32) {
         if from == to {
             return;
         }
 
-        // TODO: I think they are already top to bottom.
         let y0 = from.min(to);
         let y1 = from.max(to);
+
+        let edge_winding = if y0 == from { 1 } else { -1 };
 
         // Keep track of the winding at current y.
         let mut winding = 0;
@@ -1290,7 +1277,7 @@ pub(crate) fn apply_side_edges_to_backdrop(side: &SideEdgeTracker, y_offset: f32
 #[test]
 fn side_edges_backdrop() {
     let mut side = SideEdgeTracker::new();
-    side.add_edge(0.0, 16.0, 1);
+    side.add_edge(0.0, 16.0);
 
     let mut backdrops = [0.0; 16];
     apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
@@ -1298,7 +1285,7 @@ fn side_edges_backdrop() {
     println!("{:?}", backdrops);
 
     let mut side = SideEdgeTracker::new();
-    side.add_edge(0.25, 3.25, 1);
+    side.add_edge(0.25, 3.25);
 
     let mut backdrops = [0.0; 16];
     apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
@@ -1307,7 +1294,7 @@ fn side_edges_backdrop() {
 
 
     let mut side = SideEdgeTracker::new();
-    side.add_edge(0.25, 0.75, 1);
+    side.add_edge(0.25, 0.75);
 
     let mut backdrops = [0.0; 16];
     apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
@@ -1315,8 +1302,8 @@ fn side_edges_backdrop() {
     println!("{:?}", backdrops);
 
     let mut side = SideEdgeTracker::new();
-    side.add_edge(-0.5, 5.0, 1);
-    side.add_edge(10.0, 16.5, 1);
+    side.add_edge(-0.5, 5.0);
+    side.add_edge(10.0, 16.5);
 
     let mut backdrops = [0.0; 16];
     apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
@@ -1330,28 +1317,28 @@ fn side_edges_backdrop() {
 fn side_edges() {
     let mut side = SideEdgeTracker::new();
 
-    side.add_edge(0.2, 0.5, 1);
+    side.add_edge(0.2, 0.5);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
         SideEvent { y: 0.5, winding: 0 },
     ]);
 
-    side.add_edge(0.5, 0.7, 1);
+    side.add_edge(0.5, 0.7);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
         SideEvent { y: 0.7, winding: 0 },
     ]);
 
-    side.add_edge(0.4, 0.7, -1);
+    side.add_edge(0.7, 0.4);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
         SideEvent { y: 0.4, winding: 0 },
     ]);
 
-    side.add_edge(0.8, 0.9, 1);
+    side.add_edge(0.8, 0.9);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1360,7 +1347,7 @@ fn side_edges() {
         SideEvent { y: 0.9, winding: 0 },
     ]);
 
-    side.add_edge(0.4, 0.8, -1);
+    side.add_edge(0.8, 0.4);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1369,7 +1356,7 @@ fn side_edges() {
         SideEvent { y: 0.9, winding: 0 },
     ]);
 
-    side.add_edge(0.4, 0.8, 1);
+    side.add_edge(0.4, 0.8);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1378,26 +1365,27 @@ fn side_edges() {
         SideEvent { y: 0.9, winding: 0 },
     ]);
 
-    side.add_edge(0.4, 0.8, 1);
+    side.add_edge(0.4, 0.8);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
         SideEvent { y: 0.9, winding: 0 },
     ]);
 
-    side.add_edge(0.2, 0.9, 1);
+    side.add_edge(0.2, 0.9);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 2 },
         SideEvent { y: 0.9, winding: 0 },
     ]);
 
-    side.add_edge(0.2, 0.9, -2);
+    side.add_edge(0.9, 0.2);
+    side.add_edge(0.9, 0.2);
 
     assert_eq!(side.events.len(), 0);
 
-    side.add_edge(0.3, 0.6, 1);
-    side.add_edge(0.2, 0.7, 1);
+    side.add_edge(0.3, 0.6);
+    side.add_edge(0.2, 0.7);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1408,8 +1396,8 @@ fn side_edges() {
 
     side.clear();
 
-    side.add_edge(0.2, 0.7, 1);
-    side.add_edge(0.3, 0.6, 1);
+    side.add_edge(0.2, 0.7);
+    side.add_edge(0.3, 0.6);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1420,8 +1408,8 @@ fn side_edges() {
 
     side.clear();
 
-    side.add_edge(0.2, 0.6, 1);
-    side.add_edge(0.3, 0.7, 1);
+    side.add_edge(0.2, 0.6);
+    side.add_edge(0.3, 0.7);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },
@@ -1432,8 +1420,8 @@ fn side_edges() {
 
     side.clear();
 
-    side.add_edge(0.3, 0.7, 1);
-    side.add_edge(0.2, 0.6, 1);
+    side.add_edge(0.3, 0.7);
+    side.add_edge(0.2, 0.6);
 
     assert_eq!(&side.events[..], &[
         SideEvent { y: 0.2, winding: 1 },

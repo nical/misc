@@ -236,17 +236,10 @@ impl GpuRasterEncoder {
         }
 
         for edge in active_edges {
-            if edge.ctrl.x.is_nan() {
-                let mut e = LineEdge(edge.from - offset, edge.to - offset);
-                if edge.winding < 0 {
-                    std::mem::swap(&mut e.0, &mut e.1);
-                }
-                self.line_edges.alloc().init(e);
+            if edge.is_line() {
+                self.line_edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
             } else {
-                let mut curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
-                if edge.winding < 0 {
-                    std::mem::swap(&mut curve.from, &mut curve.to);
-                }
+                let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 let mut from = curve.from;
                 flatten_quad(&curve, self.tolerance, &mut |to| {
                     self.line_edges.push(LineEdge(from, to));
@@ -322,17 +315,11 @@ impl GpuRasterEncoder {
         }
 
         for edge in active_edges {
-            if edge.ctrl.x.is_nan() {
-                let mut e = QuadEdge(edge.from - offset, point(123.0, 456.0), edge.to - offset, 0, 0);
-                if edge.winding < 0 {
-                    std::mem::swap(&mut e.0, &mut e.2);
-                }
+            if edge.is_line() {
+                let e = QuadEdge(edge.from - offset, point(123.0, 456.0), edge.to - offset, 0, 0);
                 self.quad_edges.alloc().init(e);
             } else {
-                let mut curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
-                if edge.winding < 0 {
-                    std::mem::swap(&mut curve.from, &mut curve.to);
-                }
+                let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 self.quad_edges.alloc().init(QuadEdge(curve.from, curve.ctrl, curve.to, 1, 0));
             }
         }
@@ -382,7 +369,7 @@ impl GpuRasterEncoder {
             let from = edge.from - tile_offset;
             let to = edge.to - tile_offset;
 
-            if edge.ctrl.x.is_nan() {
+            if edge.is_line() {
                 draw_line(from, to, &mut accum);
             } else {
                 let ctrl = edge.ctrl - tile_offset;

@@ -356,7 +356,7 @@ fn buffer_pool() {
     let mut pool: BufferPool<u32> = BufferPool::new(2048);
 
     let mut b0 = pool.get_buffer();
-    let mut b1 = pool.get_buffer();
+    let b1 = pool.get_buffer();
 
     assert_eq!(b0.as_slice(), &[]);
     assert_eq!(b1.as_slice(), &[]);
