@@ -41,21 +41,39 @@ This crate contains a work in progress parallel job scheduler.
 ## Overall design
 
 - A parallel job scheduler based on work-stealing via Chase-Lev queues.
-- Each context has two queues: high and low priority.
+- All of the scheduling and execution of work is done via `Context` objects. Each worker thread owns a context, other threads may also have access to contexts in order to schedule work. There is a fixed number of contexts specified when initializing the thread pool and contexts can move between threads but can't be used by multiple threads at the same time (unless there is external synchronization). For the API this is a pretty big constraint, however this is also key to the performance of this system.
 - To make a job available to the thread pool, a job must be inserted into a context queue.
-- Each worker thread owns a context, however there are more contexts than workers. To start a parallel workload, a thread must have exclusive access to a context.
 - Contexts can participate in the work that they submit. This allows a submitter thread to complete work itself if the thread pool (or the CPU) is too busy to pick work up.
 - Worker contexts can steal work, but non-worker contexts cannot (they only have access to their own queue). This is so that a job can be only processed by either a worker thread or the submitting thread instead of potentially any thread that owns a context. The reason we want this is for tasks like glyph rasterization in WebRender where we need to create a font context and register all fonts for each thread that may rasterize some glyphs so we want to keep this number under control. An argument can also be made that we don't want a thread to start processing a potentially heavy job from another thread's workload while waiting for something more important to complete, but that depends on how evenly distributed the cost of jobs is.
+- Each context has two queues: high and low priority.
 - Avoid blocking synchronization primitives using atomics to count remaining work and having thread pariticpate in the workloads they are waiting for as much as possible, to avoid the cost of the blocking primitive and the latency from putting the thread back to sleep and waking it back up.
 - Avoid spinning in worker threads. If a worker can't find useful work to do it goes to sleep immediately. Depending on the application this may or may not be a good thing, for Gecko it is because the browser has many other threads with useful things to do.
 
+
+## Understanding the code
+
+At the core of this system, the most important parts are:
+ - The main API entry point is `Context` objects.
+ - All of the shared state is centralized into the `core::Shared` structure which is broken up into a few parts that each handle a specific piece of the logic (for example `core::Sleep`, `core::Activity`, `core::Stealers`, `core::Shutdown`, etc.).
+ - The main tool for synchronization is `event::Event`. Use it to ensure control doesn't continue until a given number of dependencies are completed. Typically used when a thread will schedule the execution of N units of work and wants to wait until that work (the N dependencies) is done. From a synchronization standpoint `Event` is conceptually a condition variable around a dependency counter. However, `Event`'s raison d'être is to avoid blocking the current thread and instead use it to process jobs until dependencies are met. `Event` can also be used to immediately schedule followup jobs once all dependencies are met.
+
+The pieces above are fairly "low level" but they are enough to efficiently schedule, execute and synchronize multi-threaded workloads. `Event` is typically not seen directly by users of the scheduler. Instead, higher-level cencepts are built on top of it, for example the parallel `for_each` which provides nice and safe APIs to execute a callback on a slice or vector of inputs (see `array.rs`). It could probably live in its own crate.
+
+If we were to add, say, a parallel DAG processing abstraction, it would be implemented on top of the same building blocks as the parallel `for_each` implementation.
+
+To summarize, at the lower level we have the main building blocks:
+ - Most of the job scheduling logic living in `context.rs` and `core.rs`
+ - The main synchronization logic in `event.rs`
+
+And on top of the building blocks, at a higher level:
+ - specific APIs geared towards processing workloads of certain types, like a parallel for-each over vectors or slice, which provide a safe API.
 
 ## Overhead of going to sleep and waking up
 
 Interacting with condition variables, in particular waking threads up is not cheap. To mitigate that:
 
  - Instead of using a traditional Condvar/Mutex pair directly, each worker thread uses a Parker (from crossbeam_utils) which internally uses a condition variable, but also does various tricks with atomics to avoid interacting with the condvar, and also avoids holding the lock while notifying the thread so that they don't have to block as soon as they wake up (crossbeam_utils's source code explains this better than I can).
- - We track the sleepy thread using an atomic bitfield, and avoid attempting to wake threads if they are not alseep. As a result, when all worker threads a already awake, calling Context::wake is fairly cheap.
+ - We track the sleepy thread using an atomic bitfield (see `core::Activity`, and avoid attempting to wake threads if they are not alseep. As a result, when all worker threads a already awake, calling Context::wake is fairly cheap.
 
 Still, for short workloads waking threads up is pretty big cost (if the thread pool was idle), so the best way to avoid it is to keep the thread pool busy. Rayon handles this by spinning for a while in the hope that new work will come. It with helps reducing latency when new work does come soon enough, however it also takes a fair amount of CPU resources, which in some context (a web browser for example) is not very desirable. So for now, this crate doesn't do that and workers go to sleep as soon as they can't find useful work to do.
 
@@ -64,7 +82,7 @@ There are context objects, and only they can process submitted work. There are m
 
 ## How to get good performance
 
-To have good performance it is best to either:
+To have good performance with this system, it is best to either:
  - Ensure that arrays of items concurrently accessed are L1 cache-line padded (for example use crossbeam_utils::CachePadded which is reexported at the root of this crate for conveience).
  - have rather heavy workloads so that the help provided by worker threads is not eclipsed by the time we spent waking them up.
  - or with smaller workloads it is best to be able to overlap them before blocking.

@@ -17,21 +17,15 @@
 //       belongs to the same thread pool.
 
 mod core;
-mod job;
-mod context;
-mod event;
 mod array;
-mod util;
-mod thread_pool;
-mod shutdown;
-pub mod sync;
+pub mod util;
 
-pub use job::Priority;
-pub use context::*;
-pub use event::Event;
 pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload, new_for_each};
-pub use thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder};
-pub use shutdown::ShutdownHandle;
-pub use util::ExclusiveCheck;
+pub use crate::core::job::Priority;
+pub use crate::core::context::*;
+pub use crate::core::event::Event;
+pub use crate::core::thread_pool::{ThreadPool, ThreadPoolId, ThreadPoolBuilder};
+pub use crate::core::shutdown::ShutdownHandle;
+pub use crate::core::sync;
 
 pub use crossbeam_utils::CachePadded;

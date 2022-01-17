@@ -1,11 +1,11 @@
-use crate::sync::{Ordering, AtomicI32, AtomicPtr, Mutex, Condvar};
-use crate::Context;
-use crate::job::JobRef;
-use crate::thread_pool::ThreadPoolId;
+use super::sync::{Ordering, AtomicI32, AtomicPtr, Mutex, Condvar};
+use super::Context;
+use super::job::JobRef;
+use super::thread_pool::ThreadPoolId;
 
 use crossbeam_utils::Backoff;
 
-// for debugging.
+// For debugging.
 // Use std's atomic type explicitly here because loom's doesn't support static initialization.
 static NEXT_EVENT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(12345);
 
@@ -13,6 +13,18 @@ const STATE_DEFAULT: i32 = 0;
 const STATE_SIGNALING: i32 = 1;
 const STATE_SIGNALED: i32 = 2;
 
+
+/// The main synchronization utility.
+///
+/// An event is can be used to wait until a given number of dependencies are met.
+///
+/// When waiting, the event tries to steal and execute jobs to avoid putting the current
+/// thread to sleep.
+///
+/// The completion of dependencies is communicated to the event by calling `Event::signal`.
+///
+/// A job can be automatically scheduled by the event as soon as all dependencies are met
+/// by registering it via `Event::then`.
 pub struct Event {
     // The number of unresolved dependency.
     deps: AtomicI32,
@@ -165,7 +177,7 @@ impl Event {
     }
 
 
-    pub fn try_wait(&self, ctx: &mut Context) -> bool {
+    fn try_wait(&self, ctx: &mut Context) -> bool {
         profiling::scope!("steal jobs");
         loop {
             if self.is_signaled() {
@@ -187,7 +199,7 @@ impl Event {
     /// Wait until all dependencies of this event are met, and until
     /// it is safe to destroy the event (no other threads are going to read or write
     /// into it)
-    pub fn wait(&self, ctx: &mut Context) {
+    pub(crate) fn wait(&self, ctx: &mut Context) {
         profiling::scope!("wait");
 
         //assert_eq!(self.thread_pool_id, ctx.thread_pool_id());

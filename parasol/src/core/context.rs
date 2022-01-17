@@ -2,11 +2,13 @@ use crate::sync::{Mutex, Arc};
 
 use crossbeam_deque::{Worker as WorkerQueue};
 
-use crate::core::Shared;
-use crate::job::{HeapJob, JobRef, Priority};
-use crate::event::Event;
+use super::Shared;
+use super::job::{HeapJob, JobRef, Priority};
+use super::event::Event;
+use super::thread_pool::{ThreadPool, ThreadPoolId};
+// In principle there should not be this dependency, but it's nice to be able
+// to do ctx.for_each(...). It'll probably move into an extension trait.
 use crate::array::{ForEach, new_for_each};
-use crate::thread_pool::{ThreadPool, ThreadPoolId};
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -36,36 +38,7 @@ pub struct Context {
 unsafe impl Send for Context {}
 
 impl Context {
-    pub(crate) fn new_worker(id: u32, num_contexts: u32, queues: [WorkerQueue<JobRef>; 2], shared: Arc<Shared>) -> Self {
-        Context {
-            id,
-            is_worker: true,
-            steal_from_other_contexts: true,
-            num_contexts: num_contexts as u8,
-            queues,
-            may_have_work: [false, false],
-            shared,
-            stats: Stats::new(),
-        }
-    }
-
-    pub(crate) fn new(id: u32, num_contexts: u32, queues: [WorkerQueue<JobRef>; 2], shared: Arc<Shared>) -> Self {
-        Context {
-            id,
-            is_worker: false,
-            steal_from_other_contexts: false,
-            num_contexts: num_contexts as u8,
-            queues,
-            may_have_work: [false, false],
-            shared,
-            stats: Stats::new(),
-        }
-    }
-
-    pub(crate) fn get_queue(&self, priority: Priority) -> &WorkerQueue<JobRef> {
-        &self.queues[priority.index()]
-    }
-
+    // Get some stats for debugging purposes.
     pub fn stats(&self) -> &Stats { &self.stats }
 
     pub fn id(&self) -> ContextId { ContextId(self.id) }
@@ -94,35 +67,18 @@ impl Context {
         event.wait(self);
     }
 
+    ///
     pub fn schedule_one<F>(&mut self, job: F, priority: Priority) where F: FnOnce(&mut Context) + Send {
         unsafe {
             self.schedule_job(HeapJob::new_ref(job).with_priority(priority));
         }
     }
 
+    /// TODO: move this into an extension trait.
     #[inline]
     pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
         new_for_each(self, items)
     }
-
-    pub(crate) fn schedule_job(&mut self, job: JobRef) {
-        profiling::scope!("schedule_job");
-
-        self.enqueue_job(job);
-
-        self.wake(1);
-    }
-
-    pub(crate) fn enqueue_job(&mut self, job: JobRef) {
-        let priority = job.priority().index();
-        if !self.may_have_work[priority] {
-            self.may_have_work[priority] = true;
-            self.shared.activity.mark_context_active(self.id().0, job.priority());
-        }
-
-        self.queues[priority].push(job);
-    }
-
 
     /// Attempt to fetch or steal one job and execute it.
     ///
@@ -153,8 +109,16 @@ impl Context {
         false
     }
 
-    pub(crate) fn index(&self) -> usize { self.id as usize }
-
+    // When executing a workload we are guaranteed that only the context that
+    // submitted the work and the worker contexts can access the jobs for that
+    // particular workload. This function returns an index that is always inferior
+    // to the number of worker context + 1, and is guaranteed to never be used
+    // on multiple threads at the same time.
+    // Some higher level utilities like the parallel for_each take advantage of
+    // that to manage some per-context data.
+    //
+    // TODO: I'm not sure what the best/cleanest way to expose this in the API.
+    // Maybe it's fine in its current form.
     #[doc(hidden)]
     pub fn data_index(&self) -> usize {
         if self.is_worker_thread() {
@@ -162,6 +126,56 @@ impl Context {
         } else {
             self.num_worker_threads() as usize
         }
+    }
+
+    pub(crate) fn index(&self) -> usize { self.id as usize }
+
+    pub(crate) fn new_worker(id: u32, num_contexts: u32, queues: [WorkerQueue<JobRef>; 2], shared: Arc<Shared>) -> Self {
+        Context {
+            id,
+            is_worker: true,
+            steal_from_other_contexts: true,
+            num_contexts: num_contexts as u8,
+            queues,
+            may_have_work: [false, false],
+            shared,
+            stats: Stats::new(),
+        }
+    }
+
+    pub(crate) fn new(id: u32, num_contexts: u32, queues: [WorkerQueue<JobRef>; 2], shared: Arc<Shared>) -> Self {
+        Context {
+            id,
+            is_worker: false,
+            steal_from_other_contexts: false,
+            num_contexts: num_contexts as u8,
+            queues,
+            may_have_work: [false, false],
+            shared,
+            stats: Stats::new(),
+        }
+    }
+
+    pub(crate) fn get_queue(&self, priority: Priority) -> &WorkerQueue<JobRef> {
+        &self.queues[priority.index()]
+    }
+
+    pub(crate) fn schedule_job(&mut self, job: JobRef) {
+        profiling::scope!("schedule_job");
+
+        self.enqueue_job(job);
+
+        self.wake(1);
+    }
+
+    pub(crate) fn enqueue_job(&mut self, job: JobRef) {
+        let priority = job.priority().index();
+        if !self.may_have_work[priority] {
+            self.may_have_work[priority] = true;
+            self.shared.activity.mark_context_active(self.id().0, job.priority());
+        }
+
+        self.queues[priority].push(job);
     }
 
     pub(crate) fn fetch_local_job(&mut self, priority: Priority) -> Option<JobRef> {

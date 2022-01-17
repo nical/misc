@@ -1,35 +1,47 @@
+pub mod job;
+pub mod context;
+pub mod event;
+pub mod thread_pool;
+pub mod shutdown;
+/// basic std::sync types reexported here so that we can hook loom into them for
+/// testing.
+pub mod sync;
 
 use crossbeam_deque::{Stealer, Steal, Worker as WorkerQueue};
 use crossbeam_utils::{CachePadded, sync::{Parker, Unparker}};
 
-use crate::sync::{Arc, Ordering, AtomicU32, thread};
-use crate::job::{JobRef, Priority};
-use crate::thread_pool::{ThreadPool, ThreadPoolBuilder, ThreadPoolId};
-use crate::context::{Context, ContextId, ContextPool};
-use crate::shutdown::Shutdown;
+use sync::{Arc, Ordering, AtomicU32, thread};
+use job::{JobRef, Priority};
+use thread_pool::{ThreadPool, ThreadPoolBuilder, ThreadPoolId};
+use context::{Context, ContextId, ContextPool};
+use shutdown::Shutdown;
 
 // Use std's atomic type explicitly here because loom's doesn't support static initialization.
 static NEXT_THREADPOOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Data accessible by all contexts from any thread.
+///
+/// If you are familiar with rayon's code, this is somewhat equivalent to their
+/// `Registry` struct.
 pub(crate) struct Shared {
     /// Number of dedicated worker threads.
     pub num_workers: u32,
     /// Number of contexts. Always greater than the number of workers.
     pub num_contexts: u32,
-
-    pub activity: Activity,
-
+    ///
     pub stealers: Stealers,
-
+    /// keeps track of active worker threads.
+    pub activity: Activity,
+    /// State and logic to put worker threads to sleep and wake them up.
     pub sleep: Sleep,
-
+    /// The unused contexts that can be requested by threads.
     pub context_pool: ContextPool,
-
+    /// A unique ID per thread pool to sanity-check that we aren't trying
+    /// to move work from a pool to another if there several of them.
     pub id: ThreadPoolId,
-
+    /// state and logic to handle shutting down.
     pub shutdown: Shutdown,
-
+    // A few hooks to register work
     handlers: ThreadPoolHooks,
 }
 
@@ -201,24 +213,30 @@ impl Sleep {
         }
     }
 
-    pub fn mark_sleepy(&self, worker: u32) -> u32 {
+    fn mark_sleepy(&self, worker: u32) -> u32 {
         let sleepy_bit = 1 << worker;
         self.sleepy_workers.fetch_or(sleepy_bit, Ordering::SeqCst) | sleepy_bit
     }
 
-    pub fn get_waker_hint(&self, worker_index: usize) -> usize {
+    /// Who woke me up? They are likely the best candidate for work stealing.
+    fn get_waker_hint(&self, worker_index: usize) -> usize {
         self.sleep_states[worker_index]
             .next_target
             .load(Ordering::Relaxed) as usize
     }
 
-    pub fn set_waker_hint(&self, worker_index: usize, waker: usize) {
+    /// Tell the worker at the given index what context to try to steal from first.
+    fn set_waker_hint(&self, worker_index: usize, waker: usize) {
         self.sleep_states[worker_index]
             .next_target
             .store(waker as u32, Ordering::Release);
     }
 
-    pub fn wake_all(&self) {
+    /// Wake all workers.
+    ///
+    /// This is a bit heavy handed and mostly intended for the shutdown code. In the majority
+    /// of cases (other than shutdown), using `wake` is better.
+    fn wake_all(&self) {
         for state in &self.sleep_states {
             state.unparker.unpark();
         }
@@ -317,8 +335,9 @@ pub(crate) struct Activity {
     // be too limiting in practice. To increase the limit we just need to have an array
     // of atomics per priority instead of just one atomic and do some bit shifting. It
     // doesn't matter whether the bits are stored in different atomics because we don't
-    // need any form of synchronization between the bits.
-    // storing them inline instead of on the heap is measurably faster.
+    // need any form of synchronization between the bits. Packing the bits helps with
+    // performance, though.
+    // Storing them inline instead of on the heap is measurably faster.
     activity: [AtomicU32; 2],
     num_contexts: u32,
 }

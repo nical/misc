@@ -1,7 +1,7 @@
-use crate::sync::Arc;
-use crate::core::{Shared, WorkerHook};
-use crate::context::{Context, ContextPool};
-use crate::shutdown::{Shutdown, ShutdownHandle};
+use super::{Shared, WorkerHook};
+use super::sync::Arc;
+use super::context::{Context, ContextPool};
+use super::shutdown::{Shutdown, ShutdownHandle};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ThreadPoolId(pub(crate) u32);

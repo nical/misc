@@ -1,7 +1,7 @@
-use crate::event::{Event, EventRef};
-use crate::job::{JobRef, Job, Priority};
-use crate::context::Context;
-use crate::thread_pool::ThreadPoolId;
+use crate::core::event::{Event, EventRef};
+use crate::core::job::{JobRef, Job, Priority};
+use crate::Context;
+use crate::ThreadPoolId;
 use crate::sync::Arc;
 
 use std::mem;

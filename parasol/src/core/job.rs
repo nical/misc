@@ -1,16 +1,21 @@
 use std::ops::Range;
 use std::cell::UnsafeCell;
 use std::mem;
-use crate::context::Context;
+use crate::core::context::Context;
 
+/// The priority of a job.
+///
+/// High pritority jobs are more likely to be processed early, even
+/// if the workers are saturated with low-pritority work.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Priority {
     High,
     Low,
 }
 
-// TODO: move into job.rs
 impl Priority {
+    // For convenience, some per-priority data (like queues) are internally
+    // stored in arrays.
     pub(crate) fn index(&self) -> usize {
         match self {
             Priority::High => 0,
@@ -23,8 +28,9 @@ impl Priority {
 /// A `Job` is used to advertise work for other threads that they may
 /// want to steal. In accordance with time honored tradition, jobs are
 /// arranged in a deque, so that thieves can take from the top of the
-/// deque while the main worker manages the bottom of the deque. This
-/// deque is managed by the `thread_pool` module.
+/// deque while the main worker manages the bottom of the deque.
+///
+/// This trait is heavily inspired by rayon's `Job` trait.
 pub trait Job {
     /// Unsafe: this may be called from a different thread than the one
     /// which scheduled the job, so the implementer must ensure the
@@ -32,14 +38,23 @@ pub trait Job {
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>);
 }
 
-/// Effectively a Job trait object. Each JobRef **must** be executed
-/// exactly once, or else data may leak.
+/// Effectively a Job trait object with types and lifetime erased. Each JobRef
+/// **must** be executed exactly once, or else data may leak ot be freed twice.
+///
+/// This is what gets pushed/popped/stolen from the queues.
 ///
 /// Internally, we store the job's data in a `*const ()` pointer.  The
 /// true type is something like `*const StackJob<...>`, but we hide
 /// it. We also carry the "execute fn" from the `Job` trait.
 ///
 /// The interesting parts of this type are taken from Rayon.
+///
+/// In addition, JobRef contains start and end indices that can be
+/// optionally used by the underlying implementation to represent sub-ranges of
+/// a workload that can be split automatically by the scheduler.
+///
+/// Note that if a JobRef can be split, it will result in multiple JobRefs pointing
+/// to the same pointer and execute_fn.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct JobRef {
     // The "deconstructed trait object" part, taken directly from rayon.
@@ -94,12 +109,12 @@ impl JobRef {
     pub fn priority(&self) -> Priority { self.priority }
 
     #[inline]
-    pub unsafe fn execute(&self, ctx: &mut Context) {
+    pub(crate) unsafe fn execute(&self, ctx: &mut Context) {
         (self.execute_fn)(self.pointer, mem::transmute(ctx), self.start..self.end)
     }
 
     #[inline]
-    pub fn split(&mut self) -> Option<Self> {
+    pub(crate) fn split(&mut self) -> Option<Self> {
         if self.end - self.start <= self.split_thresold {
             return None;
         }

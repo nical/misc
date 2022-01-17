@@ -1,5 +1,9 @@
 use crate::sync::{AtomicBool, Ordering};
 
+/// A simple utility to dynamically assert that a section of code or data is
+/// accessed by a sngle thread at a time.
+///
+/// Only use this for debugging.
 pub struct ExclusiveCheck<T> {
     lock: AtomicBool,
     tag: T
