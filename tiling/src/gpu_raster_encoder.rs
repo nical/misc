@@ -446,19 +446,14 @@ impl<'l> ParallelRasterEncoder<'l> {
     }
 }
 
-pub fn is_flat(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> bool {
-    let sq_error = (curve.from.lerp(curve.to, 0.5) - curve.ctrl).square_length() * 0.25;
-    sq_error <= tolerance * tolerance
-}
-
 pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(Point)) {
-    let ft = curve.from.lerp(curve.to, 0.5);
-    let sq_error = (ft - curve.ctrl).square_length() * 0.25;
-    let sq_tolerance = tolerance * tolerance;
+    let sq_error = square_distance_to_point(&curve.baseline().to_line(), curve.ctrl) * 0.25;
 
+    let sq_tolerance = tolerance * tolerance;
     if sq_error <= sq_tolerance {
         cb(curve.to);
-    } else if sq_error * 0.25 <= sq_tolerance {
+    } else if sq_error <= sq_tolerance * 4.0 {
+        let ft = curve.from.lerp(curve.to, 0.5);
         let mid = ft.lerp(curve.ctrl, 0.5);
         cb(mid);
         cb(curve.to);
@@ -470,3 +465,13 @@ pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mu
         //crate::flatten_simd::flatten_quad_ref(curve, tolerance, cb);
     }
 }
+
+use lyon::geom::Line;
+
+#[inline]
+fn square_distance_to_point(line: &Line<f32>, p: Point) -> f32 {
+    let v = p - line.point;
+    let c = line.vector.cross(v);
+    (c * c) / line.vector.square_length()
+}
+

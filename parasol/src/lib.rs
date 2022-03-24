@@ -18,9 +18,12 @@
 
 mod core;
 mod array;
+mod join;
 pub mod util;
+pub mod helpers;
 
-pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload, new_for_each};
+pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload};
+pub use join::*;
 pub use crate::core::job::Priority;
 pub use crate::core::context::*;
 pub use crate::core::event::Event;

@@ -9,6 +9,8 @@ use super::thread_pool::{ThreadPool, ThreadPoolId};
 // In principle there should not be this dependency, but it's nice to be able
 // to do ctx.for_each(...). It'll probably move into an extension trait.
 use crate::array::{ForEach, new_for_each};
+use crate::join::{new_join};
+use crate::helpers::*;
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -24,9 +26,9 @@ pub struct Context {
     steal_from_other_contexts: bool,
     num_contexts: u8,
     queues: [WorkerQueue<JobRef>; 2],
-    // Keep track of whether we may have work in our local queues. This is is simple
+    // Keep track of whether we may have work in our local queues. This is simple
     // because only the context can insert into its queues, so we can update this
-    // when pushing and poping from the queues.
+    // when pushing and popping from the queues.
     // Only when this value changes do we propagate this information to a shared array
     // of atomics that is visible from other threads (a more expensive operation).
     may_have_work: [bool; 2],
@@ -77,7 +79,31 @@ impl Context {
     /// TODO: move this into an extension trait.
     #[inline]
     pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
-        new_for_each(self, items)
+        new_for_each(self.with_priority(Priority::High), items)
+    }
+
+    /// TODO: move this into an extension trait.
+    #[inline]
+    pub fn join<'c, F1, F2>(&'c mut self, f1: F1, f2: F2)
+    where
+        F1: FnOnce(&mut Context) + Send,
+        F2: FnOnce(&mut Context) + Send,
+    {
+        new_join(
+            self.with_priority(Priority::High),
+            |ctx, _| f1(ctx),
+            |ctx, _| f2(ctx),
+        ).run();
+    }
+
+    pub fn with_priority<'c>(&'c mut self, priority: Priority) -> Parameters<'c, 'static, 'static, (), ()> {
+        Parameters {
+            ctx: self,
+            // TODO: these two used to be None, maybe we don't actually need them to be options.
+            context_data: Some(&mut []),
+            immutable_data: Some(&()),
+            priority
+        }
     }
 
     /// Attempt to fetch or steal one job and execute it.
@@ -289,4 +315,3 @@ impl Stats {
         }
     }
 }
-
