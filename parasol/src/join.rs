@@ -5,6 +5,7 @@ use crate::Context;
 
 use std::mem;
 use std::ops::Range;
+use std::cell::UnsafeCell;
 
 
 pub struct Args<'l, ContextData, ImmutableData> {
@@ -80,7 +81,7 @@ where
 
             let job = JoinJob {
                 data: ContextDataRef::from_ref(&mut self.inner),
-                function: Some(self.f2),
+                function: UnsafeCell::new(Some(self.f2)),
                 event: event.unsafe_ref(),
             };
 
@@ -100,7 +101,7 @@ where
 
 struct JoinJob<ContextData, ImmutableData, Func> {
     data: ContextDataRef<ContextData, ImmutableData>,
-    function: Option<Func>,
+    function: UnsafeCell<Option<Func>>,
     event: EventRef,
 }
 
@@ -109,11 +110,11 @@ where
     Func: FnOnce(&mut Context, Args<ContextData, ImmutableData>) + Send,
 {
     unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
-        let this: &mut Self = mem::transmute(this);
+        let this: &Self = mem::transmute(this);
 
         let (context_data, immutable_data) = this.data.get(ctx);
 
-        this.function.take().map(|f| f(ctx, Args { context_data, immutable_data }));
+        (*this.function.get()).take().map(|f| f(ctx, Args { context_data, immutable_data }));
 
         this.event.signal(ctx, 1);
     }
@@ -180,4 +181,5 @@ fn test_simple_join() {
         count.store(0, Ordering::Relaxed);
     }
 
+    pool.shut_down().wait();
 }

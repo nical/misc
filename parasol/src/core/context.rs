@@ -99,9 +99,8 @@ impl Context {
     pub fn with_priority<'c>(&'c mut self, priority: Priority) -> Parameters<'c, 'static, 'static, (), ()> {
         Parameters {
             ctx: self,
-            // TODO: these two used to be None, maybe we don't actually need them to be options.
-            context_data: Some(&mut []),
-            immutable_data: Some(&()),
+            context_data: &mut [],
+            immutable_data: &(),
             priority
         }
     }

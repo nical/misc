@@ -13,8 +13,8 @@ use std::sync::Arc;
 /// A builder for common execution parameters such as priority and context data.
 pub struct Parameters<'c, 'cd, 'id, ContextData, ImmutableData> {
     pub(crate) ctx: &'c mut Context,
-    pub(crate) context_data: Option<&'cd mut [ContextData]>,
-    pub(crate) immutable_data: Option<&'id ImmutableData>,
+    pub(crate) context_data: &'cd mut [ContextData],
+    pub(crate) immutable_data: &'id ImmutableData,
     pub(crate) priority: Priority,
 }
 
@@ -37,7 +37,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
         );
 
         Parameters {
-            context_data: Some(context_data),
+            context_data,
             immutable_data: self.immutable_data,
             priority: self.priority,
             ctx: self.ctx
@@ -48,7 +48,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
     pub fn with_immutable_data<'id2, Data>(self, immutable_data: &'id2 Data) -> Parameters<'c, 'cd, 'id2, ContextData, Data> {
         Parameters {
             context_data: self.context_data,
-            immutable_data: Some(immutable_data),
+            immutable_data: immutable_data,
             priority: self.priority,
             ctx: self.ctx
         }
@@ -94,15 +94,17 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
 /// Similar to `Parameters`, but owns its data.and does not hold a reference to the context.
 pub struct OwnedParameters<ContextData, ImmutableData> {
     immutable_data: Option<Arc<ImmutableData>>,
-    context_data: Option<Vec<ContextData>>,
+    context_data: Vec<ContextData>,
     priority: Priority,
+    has_context_data: bool,
 }
 
 pub fn owned_parameters() -> OwnedParameters<(), ()> {
     OwnedParameters {
         immutable_data: None,
-        context_data: None,
+        context_data: Vec::new(),
         priority: Priority::High,
+        has_context_data: false,
     }
 }
 
@@ -110,9 +112,12 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     #[inline]
     pub fn with_context_data<T>(self, data: Vec<T>) -> OwnedParameters<T, ImmutableData> {
         OwnedParameters {
-            context_data: Some(data),
+            context_data: data,
             immutable_data: self.immutable_data,
             priority: self.priority,
+            // Since we don't have access to the context here, we remember to check the size
+            // later in from_owned.
+            has_context_data: true,
         }
     }
 
@@ -122,6 +127,7 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
             context_data: self.context_data,
             immutable_data: Some(data),
             priority: self.priority,
+            has_context_data: self.has_context_data,
         }
     }
 
@@ -138,23 +144,24 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     }
 
     #[inline]
-    pub fn context_data(&mut self) -> Option<&mut [ContextData]> {
-        self.context_data.as_mut().map(|data| &mut data[..])        
+    pub fn context_data(&mut self) -> &mut [ContextData] {
+        &mut self.context_data
     }
 
     #[inline]
     pub fn take(&mut self) -> Self {
         OwnedParameters {
             immutable_data: self.immutable_data.take(),
-            context_data: self.context_data.take(),
+            context_data: std::mem::take(&mut self.context_data),
             priority: self.priority,
+            has_context_data: self.has_context_data,
         }
     }
 }
 
 /// Erases the lifetime of references to the context data and immutable data.
 ///
-/// This does now own/destroys the referenced data, it is on you to ensure that
+/// This does not own/destroys the referenced data, it is on you to ensure that
 /// the data outlives the ContextDataRef.
 ///
 /// Used internally by various job implementations.
@@ -186,8 +193,8 @@ impl<ContextData, ImmutableData> ContextDataRef<ContextData, ImmutableData> {
     #[inline]
     pub unsafe fn from_ref<'c, 'cd, 'id>(parameters: &mut Parameters<'c, 'cd, 'id, ContextData, ImmutableData>) -> ContextDataRef<ContextData, ImmutableData> {
         ContextDataRef {
-            ctx_data: parameters.context_data.as_mut().map_or(std::ptr::null_mut(), |arr| arr.as_mut_ptr()),
-            immutable_data: parameters.immutable_data.map_or(std::ptr::null_mut(), |ptr| ptr),
+            ctx_data: parameters.context_data.as_mut_ptr(),
+            immutable_data: parameters.immutable_data,
         }
     }
 
@@ -198,22 +205,24 @@ impl<ContextData, ImmutableData> ContextDataRef<ContextData, ImmutableData> {
     /// outlines the unsafe ref.
     #[inline]
     pub unsafe fn from_owned(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ContextDataRef<ContextData, ImmutableData> {
+        if parameters.has_context_data {
+            // Note: This check is important for the safety of ContextDataRef::get.
+            let min = ctx.num_worker_threads() as usize + 1;
+            let count = parameters.context_data.len();
+            assert!(count >= min, "Got {:?} context items, need at least {:?}", count, min);
+        }
 
+        let ctx_data = parameters.context_data.as_mut_ptr();
+
+        // If immutable_data is None, then it s always the unit type (), in which case we don't care
+        // about what the address points to since no interaction with the unit type translates to actual
+        // reads or writes to memory. We could default to pass std::ptr::null(), however miri has checks
+        // that fail when we dereference null pointers, even if they are the unit type.
+        // So instead we use a dummy empty slice and take its pointer.
+        let dummy: &[ImmutableData] = &[];
         let immutable_data = parameters.immutable_data
             .as_ref()
-            .map_or(std::ptr::null(), |boxed| &*boxed.deref());
-
-        let ctx_data = parameters.context_data
-            .as_mut()
-            .map_or(std::ptr::null_mut(), |array| {
-                assert!(
-                    array.len() >= ctx.num_worker_threads() as usize + 1,
-                    "Got {:?} context items, need at least {:?}",
-                    array.len(), ctx.num_worker_threads() + 1,
-                );
-                array.as_mut_ptr()
-            });
-
+            .map_or(dummy.as_ptr(), |boxed| &*boxed.deref());
 
         ContextDataRef {
             ctx_data,
@@ -221,4 +230,3 @@ impl<ContextData, ImmutableData> ContextDataRef<ContextData, ImmutableData> {
         }
     }
 }
-

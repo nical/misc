@@ -431,12 +431,6 @@ impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
 pub struct Workload<Item, ContextData, ImmutableData> {
     pub items: Vec<Item>,
     parameters: OwnedParameters<ContextData, ImmutableData>,
-
-    //pub immutable_data: Option<Arc<ImmutableData>>,
-    //// Can't give direct access to this to preserve safety guarantees of ArrayJob.
-    //context_data: Option<Vec<ContextData>>,
-    //priority: Priority,
-
     range: Range<u32>,
     group_size: u32,
     event: Box<Event>,
@@ -446,9 +440,6 @@ pub struct Workload<Item, ContextData, ImmutableData> {
 pub struct RunningWorkload<Item, ContextData, ImmutableData> {
     items: Vec<Item>,
     parameters: OwnedParameters<ContextData, ImmutableData>,
-    //context_data: Option<Vec<ContextData>>,
-    //immutable_data: Option<Arc<ImmutableData>>,
-    //priority: Priority,
     range: Range<u32>,
     group_size: u32,
     #[allow(unused)]
@@ -520,8 +511,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         self
     }
 
-    // TODO: take?
-    pub fn take_context_data(&mut self) -> Option<&mut [ContextData]> {
+    pub fn context_data(&mut self) -> &mut [ContextData] {
         self.parameters.context_data()
     }
 
