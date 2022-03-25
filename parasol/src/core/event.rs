@@ -4,6 +4,7 @@ use super::job::JobRef;
 use super::thread_pool::ThreadPoolId;
 
 use crossbeam_utils::Backoff;
+use aliasable::boxed::AliasableBox;
 
 // For debugging.
 // Use std's atomic type explicitly here because loom's doesn't support static initialization.
@@ -13,6 +14,12 @@ const STATE_DEFAULT: i32 = 0;
 const STATE_SIGNALING: i32 = 1;
 const STATE_SIGNALED: i32 = 2;
 
+/// Use this instead of Box<Event>.
+/// 
+/// This is very much like a Box<Event>, however, it allows mixing `*const Event` and and `&Event`
+/// access to its content, which according to miri's current borrowing model is not allowed for
+/// the content of a standard Box.
+pub type BoxedEvent = AliasableBox<Event>;
 
 /// The main synchronization utility.
 ///
@@ -64,6 +71,11 @@ impl Event {
             thread_pool_id: pool_id,
             id: NEXT_EVENT_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// Creates a boxed event.
+    pub fn new_boxed(deps: u32, pool_id: ThreadPoolId) -> BoxedEvent {
+        AliasableBox::from_unique(Box::new(Event::new(deps, pool_id)))
     }
 
     pub fn reset(&mut self, deps: u32, thread_pool_id: ThreadPoolId) {
@@ -189,7 +201,7 @@ impl Event {
             }
 
             // Steal a job and execute it. If we are lucky our dependencies will
-            // be met by the time we run out of useful thin to do.
+            // be met by the time we run out of useful things to do.
             if !ctx.keep_busy() {
                 return false;
             }

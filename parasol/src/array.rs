@@ -1,4 +1,4 @@
-use crate::core::event::{Event, EventRef};
+use crate::core::event::{Event, BoxedEvent, EventRef};
 use crate::core::job::{JobRef, Job, Priority};
 use crate::Context;
 use crate::helpers::{Parameters, ContextDataRef, OwnedParameters, owned_parameters};
@@ -282,7 +282,7 @@ where
     unsafe {
         let parallel = params.dispatch_parameters();
 
-        let event = Box::new(Event::new(params.range.end - params.range.start, params.inner.context().thread_pool_id()));
+        let event = Event::new_boxed(params.range.end - params.range.start, params.inner.context().thread_pool_id());
 
         let data = Box::new(ArrayJob::new(
             params.items,
@@ -410,7 +410,7 @@ where
 }
 
 pub struct JoinHandle<'a, 'b> {
-    event: Box<Event>,
+    event: BoxedEvent,
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
     _marker: PhantomData<(&'a (), &'b ())>,
@@ -433,7 +433,7 @@ pub struct Workload<Item, ContextData, ImmutableData> {
     parameters: OwnedParameters<ContextData, ImmutableData>,
     range: Range<u32>,
     group_size: u32,
-    event: Box<Event>,
+    event: BoxedEvent,
     ext: Option<Box<WorkloadExtension<Item>>>,
 }
 
@@ -444,7 +444,7 @@ pub struct RunningWorkload<Item, ContextData, ImmutableData> {
     group_size: u32,
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
-    event: Option<Box<Event>>,
+    event: Option<BoxedEvent>,
     ext: Option<Box<WorkloadExtension<Item>>>,
 }
 
@@ -458,7 +458,7 @@ pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
         items,
         parameters: owned_parameters(),
         group_size: 1,
-        event: Box::new(Event::new(0, ThreadPoolId(std::u32::MAX))),
+        event: Event::new_boxed(0, ThreadPoolId(std::u32::MAX)),
         ext: None,
     }
 }
