@@ -7,6 +7,7 @@ pub mod load_svg;
 pub mod gpu;
 pub mod buffer;
 pub mod flatten_simd;
+pub mod tile_renderer;
 
 pub use tiler::*;
 pub use occlusion::*;
