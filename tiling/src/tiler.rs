@@ -20,7 +20,6 @@ pub trait TileEncoder: Send {
         &mut self,
         tile: &TileInfo,
         active_edges: &[ActiveEdge],
-        side_edges: &SideEdgeTracker,
     );
 
     fn begin_row(&self) {}
@@ -29,15 +28,14 @@ pub trait TileEncoder: Send {
 
 impl<T> TileEncoder for T
 where
-    T: Send + FnMut(&TileInfo, &[ActiveEdge], &SideEdgeTracker)
+    T: Send + FnMut(&TileInfo, &[ActiveEdge])
 {
     fn encode_tile(
         &mut self,
         tile: &TileInfo,
         active_edges: &[ActiveEdge],
-        side_edges: &SideEdgeTracker,
     ) {
-        (*self)(tile, active_edges, side_edges)
+        (*self)(tile, active_edges)
     }
 }
 
@@ -93,7 +91,6 @@ pub struct Tiler {
 
     rows: Vec<Row>,
     active_edges: Vec<ActiveEdge>,
-    side_edges: SideEdgeTracker,
 
     worker_data: Vec<CachePadded<TilerWorkerData>>,
 
@@ -111,14 +108,12 @@ pub struct Tiler {
 
 #[derive(Clone)]
 struct TilerWorkerData {
-    side_edges: SideEdgeTracker,
     active_edges: Vec<ActiveEdge>,
 }
 
 impl TilerWorkerData {
     fn new() -> Self {
         TilerWorkerData {
-            side_edges: SideEdgeTracker::new(),
             active_edges: Vec::with_capacity(64),
         }
     }
@@ -157,7 +152,6 @@ impl Tiler {
             tile_decomposition_time_ns: 0,
 
             active_edges: Vec::with_capacity(64),
-            side_edges: SideEdgeTracker::with_capacity(32),
             rows: Vec::new(),
 
             is_opaque: true,
@@ -220,14 +214,14 @@ impl Tiler {
         self.tile_decomposition_time_ns = t2 - t1;
     }
 
-    /// Can be use to tile a path manually.
+    /// Can be used to tile a segment manually.
     ///
     /// Should only be called between begin_path and end_path.
     pub fn add_line_segment(&mut self, edge: &LineSegment<f32>) {
         self.add_monotonic_edge(&MonotonicEdge::linear(*edge));
     }
 
-    /// Can be use to tile a path manually.
+    /// Can be used to tile a segment manually.
     ///
     /// Should only be called between begin_path and end_path.
     pub fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
@@ -349,9 +343,6 @@ impl Tiler {
         let mut active_edges = std::mem::take(&mut self.active_edges);
         active_edges.clear();
 
-        let mut side_edges = std::mem::take(&mut self.side_edges);
-        side_edges.clear();
-
         if let Some(row) = self.selected_row {
             self.first_row = row;
             self.last_row = row + 1;
@@ -368,19 +359,17 @@ impl Tiler {
             if row.z_buffer.is_empty() {
                 row.z_buffer.init(self.num_tiles_x as usize);
             }
-            side_edges.clear();
+
             self.process_row(
                 row.tile_y,
                 &mut row.edges[..],
                 &mut active_edges,
-                &mut side_edges,
                 &mut row.z_buffer,
                 encoder,
             );
         }
 
         self.active_edges = active_edges;
-        self.side_edges = side_edges;
         self.rows = rows;
 
         for row in &mut self.rows {
@@ -468,7 +457,6 @@ impl Tiler {
 
                 unsafe {
                     worker_data.active_edges.clear();
-                    worker_data.side_edges.clear();
 
                     if row.z_buffer.is_empty() {
                         row.z_buffer.init(self.num_tiles_x as usize);
@@ -479,7 +467,6 @@ impl Tiler {
                         row.tile_y,
                         &mut row.edges[..],
                         &mut worker_data.active_edges,
-                        &mut worker_data.side_edges,
                         &mut row.z_buffer,
                         (*shared_ptr.get()).encoders[idx],
                     );
@@ -650,10 +637,10 @@ impl Tiler {
         tile_y: u32,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
-        side_edges: &mut SideEdgeTracker,
         z_buffer: &mut TileMask,
         encoder: &mut dyn TileEncoder,
     ) {
+        //println!("--------- row {}", tile_y);
         encoder.begin_row();
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
@@ -673,6 +660,7 @@ impl Tiler {
             inner_rect,
             outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
             solid: false,
+            backdrop: 0,
         };
 
         let mut current_edge = 0;
@@ -685,7 +673,6 @@ impl Tiler {
                 break;
             }
 
-
             active_edges.alloc().init(ActiveEdge {
                 from: edge.from,
                 to: edge.to,
@@ -693,7 +680,7 @@ impl Tiler {
             });
 
             while edge.min_x.0 > tile.outer_rect.max.x {
-                Self::update_active_edges(active_edges, side_edges, tile.outer_rect.min.x);
+                Self::update_active_edges(active_edges, tile.outer_rect.min.x, tile.outer_rect.min.y, &mut tile.backdrop);
             }
 
             current_edge += 1;
@@ -706,7 +693,7 @@ impl Tiler {
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x {
-                self.finish_tile(&mut tile, active_edges, side_edges, z_buffer, encoder);
+                self.finish_tile(&mut tile, active_edges, z_buffer, encoder);
             }
 
             if tile.x >= self.num_tiles_x {
@@ -730,7 +717,7 @@ impl Tiler {
 
         // At this point we visited all edges but not necessarily all tiles.
         while tile.x < self.num_tiles_x {
-            self.finish_tile(&mut tile, active_edges, side_edges, z_buffer, encoder);
+            self.finish_tile(&mut tile, active_edges, z_buffer, encoder);
 
             if active_edges.is_empty() {
                 break;
@@ -744,24 +731,23 @@ impl Tiler {
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
-        side_edges: &mut SideEdgeTracker,
         z_buffer: &mut TileMask,
         encoder: &mut dyn TileEncoder,
     ) {
         tile.solid = false;
         let mut empty = false;
         if active_edges.is_empty() {
-            let is_in = side_edges.is_in(self.fill_rule);
+            let is_in = self.fill_rule.is_in(tile.backdrop);
             if is_in {
                 tile.solid = true;
-            } else if side_edges.is_empty() {
+            } else {
                 // Empty tile.
                 empty = true;
             }
         }
 
         if !empty && z_buffer.test(tile.x, tile.solid && self.is_opaque) {
-            encoder.encode_tile(tile, active_edges, side_edges);
+            encoder.encode_tile(tile, active_edges);
         }
 
         tile.inner_rect.min.x += self.tile_size.width;
@@ -770,17 +756,23 @@ impl Tiler {
         tile.outer_rect.max.x += self.tile_size.width;
         tile.x += 1;
 
-        Self::update_active_edges(active_edges, side_edges, tile.outer_rect.min.x);
+        Self::update_active_edges(
+            active_edges,
+            tile.outer_rect.min.x,
+            tile.outer_rect.min.y,
+            &mut tile.backdrop);
     }
 
     #[inline]
-    fn update_active_edges(active_edges: &mut Vec<ActiveEdge>, side_edges: &mut SideEdgeTracker, left_x: f32) {
+    fn update_active_edges(active_edges: &mut Vec<ActiveEdge>, left_x: f32, tile_y: f32, backdrop: &mut i16) {
         // Equivalent to the following snippet but a bit faster and not preserving the
         // edge ordering.
         //
         // active_edges.retain(|edge| {
         //     if edge.max_x() < left_x {
-        //         side_edges.add_edge(edge.from.y, edge.to.y);
+        //         if edge.from.y == tile_y || edge.to.y == tile_y && edge.from.y != edge.to.y {
+        //             *backdrop += if edge.from.y < edge.to.y { 1 } else { -1 };
+        //         }
         //         return false
         //     }
         //     true
@@ -794,7 +786,13 @@ impl Tiler {
         loop {
             let edge = &active_edges[i];
             if edge.max_x() < left_x {
-                side_edges.add_edge(edge.from.y, edge.to.y);
+                if edge.from.y == tile_y || edge.to.y == tile_y && edge.from.y != edge.to.y {
+                    *backdrop += if edge.from.y < edge.to.y { 1 } else { -1 };
+                    //println!(" # bacdrop {} (removing edge {:?})", *backdrop, edge);
+                } else {
+                    //println!(" # remove {:?}", edge);
+                }
+
                 active_edges.swap_remove(i);
             }
 
@@ -978,6 +976,8 @@ pub struct TileInfo {
     pub outer_rect: Box2D<f32>,
     /// True if the tile is entirely covered by the current path. 
     pub solid: bool,
+
+    pub backdrop: i16,
 }
 
 fn clip_quadratic_bezier_1d(

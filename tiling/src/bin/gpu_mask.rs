@@ -48,7 +48,7 @@ fn main() {
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 32;
+    let max_edges_per_gpu_tile = 256;
     let n = if profile { 1000 } else { 1 };
     let tile_atlas_size: u32 = 2024;
 
@@ -114,7 +114,7 @@ fn main() {
 
     let mask_upload_copies = tiling::gpu::masked_tiles::MaskUploadCopies::new(&device, &globals_bind_group_layout);
 
-    let (view_box, paths) = if args.len() > 1 {
+    let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
     } else {
         let mut builder = lyon::path::Path::builder();

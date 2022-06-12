@@ -16,3 +16,10 @@ loom = "0.5.4"
 
 [features]
 tracy = ["profiling/profile-with-tracy"]
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "benchmark"
+harness = false
