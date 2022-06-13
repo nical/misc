@@ -45,13 +45,14 @@ pub struct MaskPass {
     pub atlas_index: u32,
 }
 
-pub struct GpuRasterEncoder {
+pub struct TileEncoder {
     pub quad_edges: Vec<QuadEdge>,
     pub line_edges: Vec<LineEdge>,
     pub solid_tiles: Vec<SolidTile>,
     pub mask_tiles: Vec<MaskedTile>,
     pub gpu_masks: Vec<GpuMask>,
     pub mask_passes: Vec<MaskPass>,
+    current_solid_tile: f32,
     gpu_masks_start: u32,
     //cpu_masks_start: u32,
     masked_tiles_start: u32,
@@ -61,6 +62,7 @@ pub struct GpuRasterEncoder {
     pub max_edges_per_gpu_tile: usize,
     pub is_opaque: bool,
     pub use_quads: bool,
+    pub merge_solid_tiles: bool,
     pub tolerance: f32,
     pub mask_uploader: MaskUploader,
     shared: Arc<Shared>,
@@ -71,24 +73,27 @@ pub struct GpuRasterEncoder {
     pub edge_distributions: [u32; 16],
 }
 
-impl GpuRasterEncoder {
+impl TileEncoder {
     pub fn new(tolerance: f32, mask_uploader: MaskUploader) -> Self {
-        GpuRasterEncoder {
+        TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
             mask_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
+            current_solid_tile: std::f32::NAN,
             gpu_masks_start: 0,
             //cpu_masks_start: 0,
             masked_tiles_start: 0,
             masks_texture_index: 0,
             mask_passes: Vec::with_capacity(16),
+            // TODO: move rendering parameters in separate struct.
             color: Color { r: 0, g: 0, b: 0, a: 0 },
-            fill_rule: FillRule::EvenOdd,
+            fill_rule: FillRule::NonZero,
             max_edges_per_gpu_tile: 4096,
             is_opaque: true,
             use_quads: false,
+            merge_solid_tiles: true,
             tolerance,
             tile_size: 16.0,
 
@@ -104,8 +109,8 @@ impl GpuRasterEncoder {
         }
     }
 
-    pub fn new_parallel(other: &GpuRasterEncoder, mask_uploader: MaskUploader) -> Self {
-        let mut encoder = GpuRasterEncoder::new(other.tolerance, mask_uploader);
+    pub fn new_parallel(other: &TileEncoder, mask_uploader: MaskUploader) -> Self {
+        let mut encoder = TileEncoder::new(other.tolerance, mask_uploader);
         encoder.max_edges_per_gpu_tile = other.max_edges_per_gpu_tile;
         encoder.use_quads = other.use_quads;
         encoder.shared = other.shared.clone();
@@ -164,6 +169,44 @@ impl GpuRasterEncoder {
         id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
     }
 
+    pub fn begin_row(&mut self) {
+        self.current_solid_tile = std::f32::NAN;
+    }
+
+    pub fn end_row(&mut self) {}
+
+    pub fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
+
+        let tx = tile.x as f32 * self.tile_size;
+        let ty = tile.y as f32 * self.tile_size;
+
+        if tile.solid {
+            let tx_max = tx + self.tile_size;
+            if self.merge_solid_tiles && (self.current_solid_tile - tx).abs() < 0.01 {
+                if let Some(solid) = self.solid_tiles.last_mut() {
+                    solid.rect.max.x = tx_max;
+                }
+            } else {
+                self.solid_tiles.push(SolidTile {
+                    rect: Box2D {
+                        min: point(tx, ty),
+                        max: point(tx_max, ty + self.tile_size),
+                    },
+                    color: self.color.to_u32(),
+                });
+            }
+            self.current_solid_tile = tx_max;
+
+            return;
+        }
+
+        if active_edges.len() > self.max_edges_per_gpu_tile
+            || (self.use_quads && !self.add_quad_gpu_mask(tile, active_edges))
+            || (!self.use_quads && !self.add_line_gpu_mask(tile, active_edges)) {
+            self.add_cpu_mask(tile, active_edges);
+        }
+    }
+
     fn allocate_mask_id(&mut self) -> u32 {
         if self.mask_id_range.end > self.mask_id_range.start {
             let id = self.mask_id_range.start;
@@ -205,7 +248,6 @@ impl GpuRasterEncoder {
 
         let edges_start = self.line_edges.len();
 
-        // TODO: should it be the outer rect?
         let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
@@ -215,41 +257,32 @@ impl GpuRasterEncoder {
             return false;
         }
 
-        for _ in 0..tile.backdrop.abs() {
+        // Handle backdrop Auxiliary edges.
+        {
             let mut from = tile.outer_rect.min.y;
             let mut to = tile.outer_rect.max.y;
             if tile.backdrop < 0 {
                 std::mem::swap(&mut from, &mut to);
             }
-            self.line_edges.alloc().init(LineEdge(point(-10.0, from), point(-10.0, to)));
+            for _ in 0..tile.backdrop.abs() {
+                self.line_edges.alloc().init(LineEdge(point(-10.0, from), point(-10.0, to)));
+            }
         }
 
         for edge in active_edges {
-            // Check if the edge crosses the left side.
+            // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
-                let (a, b) = if edge.from.y > edge.to.y {
-                    (edge.from.y, tile.outer_rect.max.y)
-                } else {
-                    (tile.outer_rect.max.y, edge.from.y)
-                };
-
                 self.line_edges.alloc().init(LineEdge(
-                    point(-10.0, a - offset.y),
-                    point(-10.0, b - offset.y),
+                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, edge.from.y),
                 ));
                 //println!("   aux edge (enter) {:?}", self.line_edges.last().as_ref().map(|e| (e.0.y, e.1.y)).unwrap());
             }
 
             if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
-                let (a, b) = if edge.from.y > edge.to.y {
-                    (edge.to.y, tile.outer_rect.max.y)
-                } else {
-                    (tile.outer_rect.max.y, edge.to.y)
-                };
-
                 self.line_edges.alloc().init(LineEdge(
-                    point(-10.0, a - offset.y),
-                    point(-10.0, b - offset.y),
+                    point(-10.0, edge.to.y),
+                    point(-10.0, tile.outer_rect.max.y),
                 ));
                 //println!("   aux edge (leave) {:?}", self.line_edges.last().as_ref().map(|e| (e.0.y, e.1.y)).unwrap());
             }
@@ -295,13 +328,11 @@ impl GpuRasterEncoder {
     }
 
     fn add_quad_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) -> bool {
-        panic!();
         let tx = tile.x as f32 * self.tile_size;
         let ty = tile.y as f32 * self.tile_size;
 
         let edges_start = self.quad_edges.len();
 
-        // TODO: should it be the outer rect?
         let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
@@ -312,31 +343,19 @@ impl GpuRasterEncoder {
         }
 
         for edge in active_edges {
-            // Check if the edge crosses the left side.
+            // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
-                let (a, b) = if edge.from.y > edge.to.y {
-                    (edge.from.y, tile.outer_rect.max.y)
-                } else {
-                    (tile.outer_rect.max.y, edge.from.y)
-                };
-
                 self.line_edges.alloc().init(LineEdge(
-                    point(-10.0, a - offset.y),
-                    point(-10.0, b - offset.y),
+                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, edge.from.y),
                 ));
                 //println!("   aux edge (enter) {:?}", self.line_edges.last().as_ref().map(|e| (e.0.y, e.1.y)).unwrap());
             }
 
             if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
-                let (a, b) = if edge.from.y > edge.to.y {
-                    (edge.to.y, tile.outer_rect.max.y)
-                } else {
-                    (tile.outer_rect.max.y, edge.to.y)
-                };
-
                 self.line_edges.alloc().init(LineEdge(
-                    point(-10.0, a - offset.y),
-                    point(-10.0, b - offset.y),
+                    point(-10.0, edge.to.y),
+                    point(-10.0, tile.outer_rect.max.y),
                 ));
                 //println!("   aux edge (leave) {:?}", self.line_edges.last().as_ref().map(|e| (e.0.y, e.1.y)).unwrap());
             }
@@ -379,17 +398,24 @@ impl GpuRasterEncoder {
 
     fn add_cpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
         debug_assert!(self.tile_size <= 32.0);
-        let mut accum = [0.0; 32 * 32];
-        let mut backdrops = [0.0 as f32; 32];
 
-        // "Rasterize" the left edges in the backdrop buffer.
-        //apply_side_edges_to_backdrop(left, tile.inner_rect.min.y, &mut backdrops);
+        let mut accum = [0.0; 32 * 32];
+        let mut backdrops = [tile.backdrop as f32; 32];
 
         //left.print();
         //println!("offset {:?} : {:?}", tile.inner_rect.min.y, backdrops);
 
         let tile_offset = tile.inner_rect.min.to_vector();
         for edge in active_edges {
+            // Handle auxiliary edges for edges that cross the tile's left side.
+            if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
+                add_backdrop(edge.from.y, 1.0, &mut backdrops[0..self.tile_size as usize]);
+            }
+
+            if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
+                add_backdrop(edge.to.y, -1.0, &mut backdrops[0..self.tile_size as usize]);
+            }
+
             //let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
             let from = edge.from - tile_offset;
             let to = edge.to - tile_offset;
@@ -433,39 +459,14 @@ impl GpuRasterEncoder {
     }
 }
 
-impl TileEncoder for GpuRasterEncoder {
-    fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
-
-        let tx = tile.x as f32 * self.tile_size;
-        let ty = tile.y as f32 * self.tile_size;
-
-        if tile.solid {
-            self.solid_tiles.push(SolidTile {
-                rect: Box2D {
-                    min: point(tx, ty),
-                    max: point(tx + self.tile_size, ty + self.tile_size),
-                },
-                color: self.color.to_u32(),
-            });
-            return;
-        }
-
-        if active_edges.len() > self.max_edges_per_gpu_tile
-            || (self.use_quads && !self.add_quad_gpu_mask(tile, active_edges))
-            || (!self.use_quads && !self.add_line_gpu_mask(tile, active_edges)) {
-            self.add_cpu_mask(tile, active_edges);
-        }
-    }
-}
-
 use std::sync::{Mutex, MutexGuard};
 
 pub struct ParallelRasterEncoder<'l> {
-    pub workers: Vec<Mutex<&'l mut dyn TileEncoder>>,
+    pub workers: Vec<Mutex<&'l mut TileEncoder>>,
 }
 
 impl<'l> ParallelRasterEncoder<'l> {
-    pub fn lock_encoder(&self) -> MutexGuard<&'l mut dyn TileEncoder> {
+    pub fn lock_encoder(&self) -> MutexGuard<&'l mut TileEncoder> {
         let idx = rayon::current_thread_index().unwrap_or(self.workers.len() - 1);
         self.workers[idx].lock().unwrap()
     }
@@ -483,11 +484,27 @@ pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mu
         cb(mid);
         cb(curve.to);
     } else {
+
         // The baseline cost of this is fairly high and then amortized if the number of segments is high.
         // In practice the number of edges tends to be low in our case due to splitting into small tiles.
         curve.for_each_flattened(tolerance, cb);
         //unsafe { crate::flatten_simd::flatten_quad_sse(curve, tolerance, cb); }
         //crate::flatten_simd::flatten_quad_ref(curve, tolerance, cb);
+
+        // This one is comes from font-rs. It's less work than for_each_flattened but generates
+        // more edges, the overall performance is about the same from a quick measurement.
+        // Maybe try using a lookup table?
+        //let ddx = curve.from.x - 2.0 * curve.ctrl.x + curve.to.x;
+        //let ddy = curve.from.y - 2.0 * curve.ctrl.y + curve.to.y;
+        //let square_dev = ddx * ddx + ddy * ddy;
+        //let n = 1 + (3.0 * square_dev).sqrt().sqrt().floor() as u32;
+        //let inv_n = (n as f32).recip();
+        //let mut t = 0.0;
+        //for _ in 0..(n - 1) {
+        //    t += inv_n;
+        //    cb(curve.sample(t));
+        //}
+        //cb(curve.to);
     }
 }
 

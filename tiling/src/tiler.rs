@@ -7,37 +7,11 @@ pub use lyon::geom;
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::occlusion::TileMask;
+use crate::tile_encoder::TileEncoder;
 
 use parasol::{Context, CachePadded};
 
 use copyless::VecHelper;
-
-/// The output of the tiler.
-///
-/// encode_tile will be called for each tile that isn't fully empty.
-pub trait TileEncoder: Send {
-    fn encode_tile(
-        &mut self,
-        tile: &TileInfo,
-        active_edges: &[ActiveEdge],
-    );
-
-    fn begin_row(&self) {}
-    fn end_row(&self) {}
-}
-
-impl<T> TileEncoder for T
-where
-    T: Send + FnMut(&TileInfo, &[ActiveEdge])
-{
-    fn encode_tile(
-        &mut self,
-        tile: &TileInfo,
-        active_edges: &[ActiveEdge],
-    ) {
-        (*self)(tile, active_edges)
-    }
-}
 
 struct Row {
     edges: Vec<RowEdge>,
@@ -109,6 +83,7 @@ pub struct Tiler {
 #[derive(Clone)]
 struct TilerWorkerData {
     active_edges: Vec<ActiveEdge>,
+    // TODO: put the (parallel) tile encoder here.
 }
 
 impl TilerWorkerData {
@@ -188,7 +163,7 @@ impl Tiler {
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        encoder: &mut dyn TileEncoder,
+        encoder: &mut TileEncoder,
     ) {
         profiling::scope!("tile_path");
         let t0 = time::precise_time_ns();
@@ -338,8 +313,8 @@ impl Tiler {
         }
     }
 
-    /// Process manually edges and encode them into the output TileEncoder.
-    pub fn end_path(&mut self, encoder: &mut dyn TileEncoder) {
+    /// Process manually edges and encode them into the output encoder.
+    pub fn end_path(&mut self, encoder: &mut TileEncoder) {
         let mut active_edges = std::mem::take(&mut self.active_edges);
         active_edges.clear();
 
@@ -382,7 +357,7 @@ impl Tiler {
         ctx: &mut Context,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
-        encoders: &mut [&mut dyn TileEncoder],
+        encoders: &mut [&mut TileEncoder],
     ) where {
         profiling::scope!("tile_path_parallel");
         let t0 = time::precise_time_ns();
@@ -400,7 +375,6 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-
         if self.first_row < self.last_row {
             if self.last_row - self.first_row > 16 {
                 self.end_path_parallel(ctx, encoders);
@@ -415,17 +389,16 @@ impl Tiler {
         self.tile_decomposition_time_ns = t2 - t1;
     }
 
-    pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut dyn TileEncoder]) {
+    pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut TileEncoder]) {
         if self.worker_data.is_empty() {
             self.worker_data = vec![CachePadded::new(TilerWorkerData::new()); ctx.num_contexts() as usize];
         }
         // Basically what we are doing here is passing the encoders rows to the
         // worker threads in the most unsafe of ways, and being careful to never have multiple
         // worker threads accessing the same encoder (there's one per parallel context)
-        // we should be using the context_data thing instead but the whole passing &mut dyn TileEncoder
-        // around is tedious.
+        // we should be using the context_data thing instead.
         struct Shared<'a, 'b> {
-            encoders: &'b mut [&'a mut dyn TileEncoder],
+            encoders: &'b mut [&'a mut TileEncoder],
         }
         unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
         unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
@@ -485,7 +458,7 @@ impl Tiler {
     // A very hacky proof of concept of processing the rows in parallel via rayon.
     // So far it's a spectacular fiasco due to spending all of our time in rayon's glue
     // and less than 10% of the time doing usueful work on worker threads. 
-    pub fn end_path_rayon(&mut self, encoders: &mut [&mut dyn TileEncoder]) {
+    pub fn end_path_rayon(&mut self, encoders: &mut [&mut TileEncoder]) {
         use rayon::prelude::*;
 
         // borrow-ck dance.
@@ -497,7 +470,7 @@ impl Tiler {
         // worker threads accessing the same encoder (there's one per worker), nor the same z buffers
         // (there is one per row and rows are dispatched in parallel)
         struct Shared<'a, 'b> {
-            encoders: &'b mut [&'a mut dyn TileEncoder],
+            encoders: &'b mut [&'a mut TileEncoder],
             z_buffer: &'b mut [TileMask],
         }
         unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
@@ -638,7 +611,7 @@ impl Tiler {
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         z_buffer: &mut TileMask,
-        encoder: &mut dyn TileEncoder,
+        encoder: &mut TileEncoder,
     ) {
         //println!("--------- row {}", tile_y);
         encoder.begin_row();
@@ -654,11 +627,22 @@ impl Tiler {
             ),
         };
 
+        let outer_rect = Box2D {
+            min: point(
+                inner_rect.min.x - self.tile_padding,
+                -self.tile_padding,
+            ),
+            max: point(
+                inner_rect.max.x + self.tile_padding,
+                self.tile_size.height + self.tile_padding,
+            ),
+        };
+
         let mut tile = TileInfo {
             x: self.tile_offset_x as u32,
             y: tile_y,
             inner_rect,
-            outer_rect: inner_rect.inflate(self.tile_padding, self.tile_padding),
+            outer_rect,
             solid: false,
             backdrop: 0,
         };
@@ -732,7 +716,7 @@ impl Tiler {
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
         z_buffer: &mut TileMask,
-        encoder: &mut dyn TileEncoder,
+        encoder: &mut TileEncoder,
     ) {
         tile.solid = false;
         let mut empty = false;
@@ -760,7 +744,8 @@ impl Tiler {
             active_edges,
             tile.outer_rect.min.x,
             tile.outer_rect.min.y,
-            &mut tile.backdrop);
+            &mut tile.backdrop
+        );
     }
 
     #[inline]
@@ -1056,379 +1041,6 @@ pub fn clip_line_segment_1d(
     let t1 = ((max - from) * inv_d).min(1.0);
 
     t0 .. t1
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub struct SideEvent {
-    pub y: f32,
-    pub winding: i16,
-}
-
-impl std::fmt::Debug for SideEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        (self.y, self.winding).fmt(f)
-    }
-}
-
-#[derive(Clone)]
-pub struct SideEdgeTracker {
-    events: Vec<SideEvent>,
-}
-
-impl SideEdgeTracker {
-    pub fn new() -> Self {
-        SideEdgeTracker {
-            events: Vec::new(),
-        }
-    }
-
-    pub fn with_capacity(cap: usize) -> Self {
-        SideEdgeTracker {
-            events: Vec::with_capacity(cap),
-        }
-    }
-
-    #[allow(unused)]
-    pub fn print(&self) {
-        print!("side events: [");
-        for evt in &self.events {
-            print!("{}({}), ", evt.y, evt.winding);
-        }
-        println!("]");
-    }
-
-    #[allow(unused)]
-    pub fn print_offset(&self, offset: f32) {
-        print!("side events: [");
-        for evt in &self.events {
-            print!("{}({}), ", evt.y - offset, evt.winding);
-        }
-        println!("]");
-    }
-
-    pub fn clear(&mut self) {
-        self.events.clear();
-    }
-
-    pub fn events(&self) -> &[SideEvent] { &self.events }
-
-    pub fn is_empty(&self) -> bool { self.events.is_empty() }
-
-    // Call this version only if there is no active edge in the current tile,
-    // in which case we expect to be either fully in or fully out.
-    pub fn is_in(&self, fill_rule: FillRule) -> bool {
-        !self.events.is_empty() && fill_rule.is_in(self.events[0].winding)
-    }
-
-    pub fn is_range_in(&self, from: f32, to: f32, fill_rule: FillRule) -> bool {
-        let mut i = 0;
-        let len = self.events.len();
-        while i < len {
-            let evt = &self.events[i];
-            i += 1;
-
-            if evt.y > from {
-                return false;
-            }
-
-            if fill_rule.is_in(evt.winding) {
-                break;
-            }
-        }
-
-        while i < len {
-            let evt = &self.events[i];
-            i += 1;
-
-            if evt.y >= to {
-                return true;
-            }
-
-            if fill_rule.is_out(evt.winding) {
-                //println!("B {} {:?}", evt.y, fill_rule);
-                return false;
-            }
-        }
-
-        //println!("A");
-
-        false
-    }
-
-    pub fn add_edge(&mut self, from: f32, to: f32) {
-        if from == to {
-            return;
-        }
-
-        let y0 = from.min(to);
-        let y1 = from.max(to);
-
-        let edge_winding = if y0 == from { 1 } else { -1 };
-
-        // Keep track of the winding at current y.
-        let mut winding = 0;
-        let mut i = 0;
-
-        // Iterate over events up to the start of the range.
-        loop {
-            if i >= self.events.len() {
-                self.events.push(SideEvent { y: y0, winding: edge_winding });
-                self.events.push(SideEvent { y: y1, winding: 0 });
-                return;
-            }
-
-            let e = self.events[i];
-            if e.y == y0 {
-                if e.winding + edge_winding == winding {
-                    // Simplify consecutive events as winding is the same.
-                    //  +      +
-                    //  |      |
-                    // -+- -> -|-
-                    //  |      |
-                    self.events.remove(i);
-                } else {
-                    //  +      +
-                    //  |      |
-                    // -+- -> -+-
-                    //  |      |
-                    winding = e.winding + edge_winding;
-                    self.events[i].winding = winding;
-                    i += 1;
-                }
-
-                break;
-            } else if e.y > y0 {
-                //  +      +
-                //  |      |
-                // -|- -> -+-
-                //  |      |
-                //  +      +
-                winding = winding + edge_winding;
-                self.events.insert(i, SideEvent { y: y0, winding });
-                i += 1;
-                break;
-            }
-
-            winding = e.winding;
-            i += 1;
-        }
-
-        // Iterate over events up to the end of the range.
-        loop {
-            if i == self.events.len() {
-                self.events.push(SideEvent { y: y1, winding: winding - edge_winding });
-                break;
-            }
-
-            let e = self.events[i];
-            if e.y > y1 {
-                self.events.insert(i, SideEvent { y: y1, winding: winding - edge_winding });
-                break;
-            } else if e.y == y1 {
-                if e.winding == winding {
-                    self.events.remove(i);
-                }
-
-                break;
-            } else {
-                self.events[i].winding += edge_winding;
-            }
-
-            winding = e.winding + edge_winding;
-
-            i += 1;
-        }
-    }
-}
-
-impl Default for SideEdgeTracker {
-    fn default() -> Self {
-        SideEdgeTracker::new()
-    }
-}
-
-pub(crate) fn apply_side_edges_to_backdrop(side: &SideEdgeTracker, y_offset: f32, backdrops: &mut [f32]) {
-    let mut prev: Option<SideEvent> = None;
-    for evt in side.events() {
-        if let Some(prev) = prev {
-            let y0 = (prev.y - y_offset).max(0.0).min(15.0);
-            let y1 = (evt.y - y_offset).max(0.0).min(15.0);
-            let winding = prev.winding as f32;
-            let y0_px = y0.floor();
-            let y1_px = y1.floor();
-            let first_px = y0_px as usize;
-            let last_px = y1_px as usize;
-
-            backdrops[first_px] += winding * (y0_px + 1.0 - y0);
-            for i in first_px + 1 ..= last_px {
-                backdrops[i] += winding;
-            }
-            backdrops[last_px] -= winding * (y1_px + 1.0 - y1);
-        }
-
-        if evt.winding != 0 {
-            prev = Some(*evt);
-        } else {
-            prev = None;
-        }
-    }
-}
-
-#[test]
-fn side_edges_backdrop() {
-    let mut side = SideEdgeTracker::new();
-    side.add_edge(0.0, 16.0);
-
-    let mut backdrops = [0.0; 16];
-    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
-
-    println!("{:?}", backdrops);
-
-    let mut side = SideEdgeTracker::new();
-    side.add_edge(0.25, 3.25);
-
-    let mut backdrops = [0.0; 16];
-    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
-
-    println!("{:?}", backdrops);
-
-
-    let mut side = SideEdgeTracker::new();
-    side.add_edge(0.25, 0.75);
-
-    let mut backdrops = [0.0; 16];
-    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
-
-    println!("{:?}", backdrops);
-
-    let mut side = SideEdgeTracker::new();
-    side.add_edge(-0.5, 5.0);
-    side.add_edge(10.0, 16.5);
-
-    let mut backdrops = [0.0; 16];
-    apply_side_edges_to_backdrop(&side, 0.0, &mut backdrops);
-
-    println!("{:?}", backdrops);
-
-    //panic!();
-}
-
-#[test]
-fn side_edges() {
-    let mut side = SideEdgeTracker::new();
-
-    side.add_edge(0.2, 0.5);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.5, winding: 0 },
-    ]);
-
-    side.add_edge(0.5, 0.7);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.7, winding: 0 },
-    ]);
-
-    side.add_edge(0.7, 0.4);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.4, winding: 0 },
-    ]);
-
-    side.add_edge(0.8, 0.9);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.4, winding: 0 },
-        SideEvent { y: 0.8, winding: 1 },
-        SideEvent { y: 0.9, winding: 0 },
-    ]);
-
-    side.add_edge(0.8, 0.4);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.4, winding: -1 },
-        SideEvent { y: 0.8, winding: 1 },
-        SideEvent { y: 0.9, winding: 0 },
-    ]);
-
-    side.add_edge(0.4, 0.8);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.4, winding: 0 },
-        SideEvent { y: 0.8, winding: 1 },
-        SideEvent { y: 0.9, winding: 0 },
-    ]);
-
-    side.add_edge(0.4, 0.8);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.9, winding: 0 },
-    ]);
-
-    side.add_edge(0.2, 0.9);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 2 },
-        SideEvent { y: 0.9, winding: 0 },
-    ]);
-
-    side.add_edge(0.9, 0.2);
-    side.add_edge(0.9, 0.2);
-
-    assert_eq!(side.events.len(), 0);
-
-    side.add_edge(0.3, 0.6);
-    side.add_edge(0.2, 0.7);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.3, winding: 2 },
-        SideEvent { y: 0.6, winding: 1 },
-        SideEvent { y: 0.7, winding: 0 },
-    ]);
-
-    side.clear();
-
-    side.add_edge(0.2, 0.7);
-    side.add_edge(0.3, 0.6);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.3, winding: 2 },
-        SideEvent { y: 0.6, winding: 1 },
-        SideEvent { y: 0.7, winding: 0 },
-    ]);
-
-    side.clear();
-
-    side.add_edge(0.2, 0.6);
-    side.add_edge(0.3, 0.7);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.3, winding: 2 },
-        SideEvent { y: 0.6, winding: 1 },
-        SideEvent { y: 0.7, winding: 0 },
-    ]);
-
-    side.clear();
-
-    side.add_edge(0.3, 0.7);
-    side.add_edge(0.2, 0.6);
-
-    assert_eq!(&side.events[..], &[
-        SideEvent { y: 0.2, winding: 1 },
-        SideEvent { y: 0.3, winding: 2 },
-        SideEvent { y: 0.6, winding: 1 },
-        SideEvent { y: 0.7, winding: 0 },
-    ]);
 }
 
 struct UnsafeSendPtr<T>(pub *mut T);

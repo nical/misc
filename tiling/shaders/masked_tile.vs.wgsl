@@ -37,7 +37,7 @@ fn main(
 
     var uv = vertices[vertex_index];
 
-    var screen_pos = mix(a_rect.xy, a_rect.zw, uv) / globals.resolution - vec2<f32>(0.5);
+    var screen_pos = (mix(a_rect.xy, a_rect.zw, uv) / globals.resolution) * 2.0 - vec2<f32>(1.0);
     screen_pos.y = -screen_pos.y;
 
     // mod masks per texture
@@ -49,9 +49,18 @@ fn main(
     var tile_y = f32(mask_index / masks_per_row) * tile_size;
     var mask_uv = vec2<f32>(tile_x, tile_y) + uv * tile_size;
 
+    var color = decode_color(a_color);
+
+    // Uncomment to get a checkerboard-ish pattern on the tiles (to help with visualizing
+    // tile boundaries).
+    //if (mask_index % 2u == 0u) {
+    //    color.b = color.b + 0.25;
+    //    color.r = color.r - 0.25;
+    //}
+
     return VertexOutput(
         mask_uv,
-        decode_color(a_color),
+        color,
         vec4<f32>(screen_pos.x, screen_pos.y, 0.0, 1.0)
     );
 }

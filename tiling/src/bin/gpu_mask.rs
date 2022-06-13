@@ -12,7 +12,7 @@ use futures::executor::block_on;
 
 use parasol::CachePadded;
 
-use tiling::gpu_raster_encoder::{GpuRasterEncoder, MaskPass};
+use tiling::tile_encoder::{TileEncoder, MaskPass};
 
 fn main() {
     profiling::register_thread!("Main");
@@ -48,7 +48,7 @@ fn main() {
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 256;
+    let max_edges_per_gpu_tile = 64;
     let n = if profile { 1000 } else { 1 };
     let tile_atlas_size: u32 = 2024;
 
@@ -146,12 +146,12 @@ fn main() {
     let mask_uploader_2 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = CachePadded::new(GpuRasterEncoder::new(tolerance, mask_uploader));
+    let mut builder = CachePadded::new(TileEncoder::new(tolerance, mask_uploader));
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
     // Extra builders for worker threads.
-    let mut b0 = CachePadded::new(GpuRasterEncoder::new_parallel(&builder, mask_uploader_0));
-    let mut b1 = CachePadded::new(GpuRasterEncoder::new_parallel(&builder, mask_uploader_1));
-    let mut b2 = CachePadded::new(GpuRasterEncoder::new_parallel(&builder, mask_uploader_2));
+    let mut b0 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_0));
+    let mut b1 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_1));
+    let mut b2 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_2));
 
     builder.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     builder.use_quads = use_quads;

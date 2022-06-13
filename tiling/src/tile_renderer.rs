@@ -9,8 +9,7 @@ use crate::gpu::masked_tiles::MaskUploader;
 use crate::gpu::masked_tiles::Mask;
 use crate::gpu::solid_tiles::SolidTiles;
 
-use crate::gpu_raster_encoder::{GpuRasterEncoder, MaskPass};
-use lyon::math::vector;
+use crate::tile_encoder::{TileEncoder, MaskPass};
 
 use wgpu::util::DeviceExt;
 
@@ -165,10 +164,10 @@ impl TileRenderer {
 
     pub fn update(
         &mut self,
-        builder: &mut GpuRasterEncoder,
-        b0: &mut GpuRasterEncoder,
-        b1: &mut GpuRasterEncoder,
-        b2: &mut GpuRasterEncoder,
+        builder: &mut TileEncoder,
+        b0: &mut TileEncoder,
+        b1: &mut TileEncoder,
+        b2: &mut TileEncoder,
         parallel: bool,
     ) {
 
@@ -262,7 +261,7 @@ impl TileRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        builder: &GpuRasterEncoder,
+        builder: &TileEncoder,
         target_width: f32,
         target_height: f32,
     ) {

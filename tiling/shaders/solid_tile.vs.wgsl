@@ -33,7 +33,7 @@ fn main(
 
     var uv = vertices[vertex_index];
 
-    var screen_pos = mix(a_rect.xy, a_rect.zw, uv) / globals.resolution - vec2<f32>(0.5);
+    var screen_pos = (mix(a_rect.xy, a_rect.zw, uv) / globals.resolution) * 2.0 - vec2<f32>(1.0);
     screen_pos.y = -screen_pos.y;
 
     return VertexOutput(

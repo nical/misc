@@ -181,6 +181,15 @@ pub fn draw_curve(from: Point2D<f32>, ctrl: Point2D<f32>, to: Point2D<f32>, tole
     });
 }
 
+// Write the winding numbers for auxiliary (backdrop) edges on the left side of the tile that contribute to the tile. 
+pub fn add_backdrop(y: f32, winding: f32, dst: &mut[f32]) {
+    let start = y as usize;
+    let cov = 1.0 - y.fract();
+    dst[start] += cov * winding;
+    for e in &mut dst[(start + 1)..] {
+        *e += winding;
+    }
+}
 
 // TODO: this is closer to what font-rs does, would it be better?
 //pub fn draw_curve(from: Point2D<f32>, ctrl: Point2D<f32>, to: Point2D<f32>, _tolerance: f32, dst: &mut[f32], backdrops: &mut[f32]) {

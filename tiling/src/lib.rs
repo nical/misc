@@ -1,5 +1,5 @@
 pub mod tiler;
-pub mod gpu_raster_encoder;
+pub mod tile_encoder;
 pub mod advanced_raster_encoder;
 pub mod cpu_rasterizer;
 pub mod occlusion;
