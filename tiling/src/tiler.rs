@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use ordered_float::OrderedFloat;
 pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
@@ -8,15 +9,20 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::occlusion::TileMask;
 use crate::tile_encoder::TileEncoder;
+use crate::api::Pattern;
+use crate::Color;
 
 use parasol::{Context, CachePadded};
 
 use copyless::VecHelper;
 
+const INVALID_TILE_ID: u32 = std::u32::MAX;
+
 struct Row {
     edges: Vec<RowEdge>,
     tile_y: u32,
-    z_buffer: TileMask,
+    coarse_mask: TileMask,
+    output_indirection_buffer: Vec<u32>,
 }
 
 impl Row {
@@ -24,9 +30,23 @@ impl Row {
         Row {
             edges: Vec::new(),
             tile_y: 0,
-            z_buffer: TileMask::new()
+            coarse_mask: TileMask::new(),
+            output_indirection_buffer: Vec::new(),
         }
     }
+}
+
+pub struct DrawParams {
+    pub pattern: Pattern,
+    pub tolerance: f32,
+    pub tile_size: Size2D<f32>,
+    pub fill_rule: FillRule,
+    pub is_opaque: bool,
+    pub z_index: u16,
+    pub is_clip_in: bool,
+    pub max_edges_per_gpu_tile: usize,
+    pub use_quads: bool,
+    pub merge_solid_tiles: bool,
 }
 
 /// A context object that can bin path edges into tile grids.
@@ -51,16 +71,15 @@ impl Row {
 /// tiler.end_path(&mut encoder);
 /// ```
 pub struct Tiler {
-    tile_size: Size2D<f32>,
-    // offset of the first tile
-    tile_offset_x: f32,
-    tile_offset_y: f32,
+    pub draw: DrawParams,
+
+    size: Size2D<f32>,
+    scissor: Box2D<f32>,
     tile_padding: f32,
 
     num_tiles_x: u32,
     num_tiles_y: f32,
 
-    tolerance: f32,
     flatten: bool,
 
     rows: Vec<Row>,
@@ -73,11 +92,13 @@ pub struct Tiler {
 
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
-    pub is_opaque: bool,
-    pub fill_rule: FillRule,
-    pub z_index: u16,
+    pub output_is_tiled: bool,
     // For debugging.
     pub selected_row: Option<usize>,
+
+    next_color_tile_id: AtomicU32,
+    solid_color_tile_id: u32,
+    pub color_tiles_per_row: u32,
 }
 
 #[derive(Clone)]
@@ -108,16 +129,26 @@ unsafe impl Sync for Tiler {}
 impl Tiler {
     /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
-        let rect = config.view_box;
-        let num_tiles_y = f32::ceil(rect.size().height / config.tile_size.height);
+        let size = config.view_box.size();
+        let num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         Tiler {
-            tile_size: config.tile_size,
-            tile_offset_x: rect.min.x,
-            tile_offset_y: rect.min.y,
+            draw: DrawParams {
+                pattern: Pattern::Color(Color { r: 0, g: 0, b: 0, a: 0 }),
+                z_index: 0,
+                is_opaque: true,
+                tolerance: config.tolerance,
+                tile_size: config.tile_size,
+                fill_rule: FillRule::EvenOdd,
+                is_clip_in: false,
+                max_edges_per_gpu_tile: 4096,
+                use_quads: false,
+                merge_solid_tiles: true,
+            },
+            size,
+            scissor: Box2D::from_size(size),
             tile_padding: config.tile_padding,
-            num_tiles_x: f32::ceil(rect.size().width / config.tile_size.width) as u32,
+            num_tiles_x: f32::ceil(size.width / config.tile_size.width) as u32,
             num_tiles_y,
-            tolerance: config.tolerance,
             flatten: config.flatten,
 
             first_row: 0,
@@ -129,28 +160,42 @@ impl Tiler {
             active_edges: Vec::with_capacity(64),
             rows: Vec::new(),
 
-            is_opaque: true,
-            fill_rule: FillRule::EvenOdd,
-            z_index: 0,
+            output_is_tiled: false,
 
             worker_data: Vec::new(),
 
             selected_row: None,
+
+            next_color_tile_id: AtomicU32::new(0),
+            solid_color_tile_id: 0,
+            color_tiles_per_row: 0,
         }
     }
 
     /// Using init instead of creating a new tiler allows recycling allocations from
     /// a previous tiling run.
     pub fn init(&mut self, config: &TilerConfig) {
-        let rect = config.view_box;
-        self.tile_size = config.tile_size;
-        self.tile_offset_x = rect.min.x;
-        self.tile_offset_y = rect.min.y;
+        let size = config.view_box.size();
+        self.size = size;
+        self.scissor = Box2D::from_size(size);
+        self.draw.tile_size = config.tile_size;
         self.tile_padding = config.tile_padding;
-        self.num_tiles_x = f32::ceil(rect.size().width / config.tile_size.width) as u32;
-        self.num_tiles_y = f32::ceil(rect.size().height / config.tile_size.height);
-        self.tolerance = config.tolerance;
+        self.num_tiles_x = f32::ceil(size.width / config.tile_size.width) as u32;
+        self.num_tiles_y = f32::ceil(size.height / config.tile_size.height);
+        self.draw.tolerance = config.tolerance;
         self.flatten = config.flatten;
+    }
+
+    pub fn set_scissor(&mut self, scissor: &Box2D<f32>) {
+        self.scissor = scissor.intersection_unchecked(&Box2D::from_size(self.size));
+    }
+
+    pub fn set_pattern(&mut self, pattern: Pattern) {
+        self.draw.is_opaque = match pattern {
+            Pattern::Color(color) => color.a == 255,
+            Pattern::Image(_) => false,
+        };
+        self.draw.pattern = pattern;
     }
 
     /// Tile an entire path.
@@ -202,28 +247,31 @@ impl Tiler {
     pub fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
         debug_assert!(edge.from.y <= edge.to.y);
 
-        let min = self.tile_offset_y - self.tile_padding;
-        let max = self.tile_offset_y + self.num_tiles_y * self.tile_size.height + self.tile_padding;
+        let min = -self.tile_padding;
+        let max = self.num_tiles_y * self.draw.tile_size.height + self.tile_padding;
 
         if edge.from.y > max || edge.to.y < min {
             return;
         }
 
-        let inv_tile_height = 1.0 / self.tile_size.height;
-        let y_start_tile = f32::floor((edge.from.y - self.tile_offset_y - self.tile_padding) * inv_tile_height).max(0.0);
-        let y_end_tile = f32::ceil((edge.to.y - self.tile_offset_y + self.tile_padding) * inv_tile_height).min(self.num_tiles_y);
+        let inv_tile_height = 1.0 / self.draw.tile_size.height;
+        let first_row_y = (self.scissor.min.y * inv_tile_height).floor();
+        let last_row_y = (self.scissor.max.y * inv_tile_height).ceil();
+
+        let y_start_tile = f32::floor((edge.from.y - self.tile_padding) * inv_tile_height).max(first_row_y);
+        let y_end_tile = f32::ceil((edge.to.y + self.tile_padding) * inv_tile_height).min(last_row_y);
 
         let start_idx = y_start_tile as usize;
-        let end_idx = y_end_tile as usize;
+        let end_idx = (y_end_tile as usize).max(start_idx);
         self.first_row = self.first_row.min(start_idx);
         self.last_row = self.last_row.max(end_idx);
 
         let offset_min = -self.tile_padding;
-        let offset_max = self.tile_size.height + self.tile_padding;
+        let offset_max = self.draw.tile_size.height + self.tile_padding;
         let mut row_idx = start_idx as u32;
         if edge.is_line() {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
+                let y_offset = row_idx as f32 * self.draw.tile_size.height;
 
                 let mut segment = LineSegment { from: edge.from, to: edge.to };
                 segment.from.y -= y_offset;
@@ -259,7 +307,7 @@ impl Tiler {
             }
         } else {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = self.tile_offset_y + row_idx as f32 * self.tile_size.height;
+                let y_offset = row_idx as f32 * self.draw.tile_size.height;
 
                 let mut segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 segment.from.y -= y_offset;
@@ -297,19 +345,25 @@ impl Tiler {
         self.first_row = self.rows.len();
         self.last_row = 0;
 
-
         let num_rows = self.num_tiles_y as usize;
         self.rows.truncate(num_rows);
         for i in self.rows.len()..num_rows {
             self.rows.alloc().init(Row {
                 edges: Vec::new(),
                 tile_y: i as u32,
-                z_buffer: TileMask::new(),
+                coarse_mask: TileMask::new(),
+                output_indirection_buffer: Vec::new(),
             });
         }
 
         for row in &mut self.rows {
             row.edges.clear();
+        }
+
+        if self.output_is_tiled && self.draw.is_opaque {
+            // TODO: if the previous path has the same pattern we don't need to allocate
+            // a new solid tile.
+            self.solid_color_tile_id = self.next_color_tile_id.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -331,15 +385,23 @@ impl Tiler {
                 continue;
             }
 
-            if row.z_buffer.is_empty() {
-                row.z_buffer.init(self.num_tiles_x as usize);
+            if row.coarse_mask.is_empty() {
+                row.coarse_mask.init(self.num_tiles_x as usize);
+            }
+
+            if self.output_is_tiled && row.output_indirection_buffer.is_empty() {
+                row.output_indirection_buffer.reserve(self.num_tiles_x as usize);
+                for _ in 0..self.num_tiles_x {
+                    row.output_indirection_buffer.push(INVALID_TILE_ID);
+                }
             }
 
             self.process_row(
                 row.tile_y,
                 &mut row.edges[..],
                 &mut active_edges,
-                &mut row.z_buffer,
+                &mut row.coarse_mask,
+                &mut row.output_indirection_buffer,
                 encoder,
             );
         }
@@ -349,6 +411,27 @@ impl Tiler {
 
         for row in &mut self.rows {
             row.edges.clear();
+        }
+    }
+
+    pub fn render_indirect_tiles(&mut self) {
+        for row in &self.rows {
+            for (i, &src_tile_id) in row.output_indirection_buffer.iter().enumerate() {
+                if src_tile_id == INVALID_TILE_ID {
+                    continue;
+                }
+
+                let src_x = (src_tile_id * self.color_tiles_per_row) as f32 * self.draw.tile_size.width;
+                let src_y = (src_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size.height;
+
+                let dst_x = i as f32 + self.draw.tile_size.width;
+                let dst_y = row.tile_y as f32 * self.draw.tile_size.height;
+
+                let src_rect = Box2D::from_origin_and_size(point(src_x, src_y), self.draw.tile_size);
+                let dst_rect = Box2D::from_origin_and_size(point(dst_x, dst_y), self.draw.tile_size);
+
+                unimplemented!();
+            }
         }
     }
 
@@ -431,8 +514,8 @@ impl Tiler {
                 unsafe {
                     worker_data.active_edges.clear();
 
-                    if row.z_buffer.is_empty() {
-                        row.z_buffer.init(self.num_tiles_x as usize);
+                    if row.coarse_mask.is_empty() {
+                        row.coarse_mask.init(self.num_tiles_x as usize);
                     }
 
                     let idx = if ctx.is_worker_thread()  { ctx.id().index() } else { ctx.num_worker_threads() as usize };
@@ -440,7 +523,8 @@ impl Tiler {
                         row.tile_y,
                         &mut row.edges[..],
                         &mut worker_data.active_edges,
-                        &mut row.z_buffer,
+                        &mut row.coarse_mask,
+                        &mut row.output_indirection_buffer,
                         (*shared_ptr.get()).encoders[idx],
                     );
                 }
@@ -454,74 +538,10 @@ impl Tiler {
         self.rows = rows;
     }
 
-/*
-    // A very hacky proof of concept of processing the rows in parallel via rayon.
-    // So far it's a spectacular fiasco due to spending all of our time in rayon's glue
-    // and less than 10% of the time doing usueful work on worker threads. 
-    pub fn end_path_rayon(&mut self, encoders: &mut [&mut TileEncoder]) {
-        use rayon::prelude::*;
-
-        // borrow-ck dance.
-        let mut rows = std::mem::take(&mut self.rows);
-        let mut z_buffer = std::mem::take(&mut self.z_buffer);
-
-        // Basically what we are doing here is passing the encoders and z_buffer rows to the
-        // worker threads in the most unsafe of ways, and being careful to never have multiple
-        // worker threads accessing the same encoder (there's one per worker), nor the same z buffers
-        // (there is one per row and rows are dispatched in parallel)
-        struct Shared<'a, 'b> {
-            encoders: &'b mut [&'a mut TileEncoder],
-            z_buffer: &'b mut [TileMask],
-        }
-        unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
-        unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
-
-        {
-        let mut shared = Shared {
-            encoders,
-            z_buffer: &mut z_buffer[..],
-        };
-
-        let shared_ptr: UnsafeSendPtr<Shared> = UnsafeSendPtr(&mut shared);
-
-        rows.par_iter_mut()
-            .for_each(|row| {
-
-            if row.edges.is_empty() {
-                return;
-            }
-
-            unsafe {
-
-            let mut active_edges = Vec::with_capacity(64);
-            let mut side_edges = SideEdgeTracker::new();
-
-            let z_buffer: &mut TileMask = &mut (*shared_ptr.get()).z_buffer[row.tile_y as usize];
-
-            if z_buffer.is_empty() {
-                z_buffer.init(self.num_tiles_x as usize);
-            }
-            side_edges.clear();
-
-            let idx = rayon::current_thread_index().unwrap();
-            self.process_row(row.tile_y, &mut row.edges[..], &mut active_edges, &mut side_edges, z_buffer, (*shared_ptr.get()).encoders[idx]);
-
-            }
-        });
-
-        }
-
-        self.rows = rows;
-        self.z_buffer = z_buffer;
-
-        for row in &mut self.rows {
-            row.edges.clear();
-        }
-    }
-*/
     pub fn clear_depth(&mut self) {
         for row in &mut self.rows {
-            row.z_buffer.clear();
+            row.coarse_mask.clear();
+            row.output_indirection_buffer.clear();
         }
     }
 
@@ -553,7 +573,7 @@ impl Tiler {
                 }
                 PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
-                    segment.for_each_quadratic_bezier(self.tolerance, &mut|segment| {
+                    segment.for_each_quadratic_bezier(self.draw.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = MonotonicEdge::quadratic(*monotonic.segment());
                             self.add_monotonic_edge(&edge);
@@ -586,7 +606,7 @@ impl Tiler {
                 PathEvent::Quadratic { from, ctrl, to } => {
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
                     let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                    segment.for_each_flattened(self.draw.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
                         self.add_monotonic_edge(&edge);
@@ -595,7 +615,7 @@ impl Tiler {
                 PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
                     let mut from = segment.from;
-                    segment.for_each_flattened(self.tolerance, &mut|to| {
+                    segment.for_each_flattened(self.draw.tolerance, &mut|to| {
                         let edge = MonotonicEdge::linear(LineSegment { from, to });
                         from = to;
                         self.add_monotonic_edge(&edge);
@@ -610,7 +630,8 @@ impl Tiler {
         tile_y: u32,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
-        z_buffer: &mut TileMask,
+        coarse_mask: &mut TileMask,
+        output_indirection_buffer: &mut Vec<u32>,
         encoder: &mut TileEncoder,
     ) {
         //println!("--------- row {}", tile_y);
@@ -619,12 +640,22 @@ impl Tiler {
 
         active_edges.clear();
 
+        let inv_tw = 1.0 / self.draw.tile_size.width;
+        let tiles_start = (self.scissor.min.x * inv_tw).floor();
+        let tiles_end = (self.scissor.max.x * inv_tw).ceil() as u32;
+
+        let tx = tiles_start * self.draw.tile_size.width;
+        let ty = tile_y as f32 * self.draw.tile_size.height;
+        let output_rect = Box2D {
+            min: point(tx, ty),
+            max: point(tx + self.draw.tile_size.width, ty + self.draw.tile_size.height)
+        };
+
+        // The inner rect is equivalent to the output rect with an y offset so that
+        // its upper side is at y=0.
         let inner_rect = Box2D {
-            min: point(self.tile_offset_x, 0.0),
-            max: point(
-                self.tile_offset_x + self.tile_size.width,
-                self.tile_size.height
-            ),
+            min: point(output_rect.min.x, 0.0),
+            max: point(output_rect.max.x, self.draw.tile_size.height),
         };
 
         let outer_rect = Box2D {
@@ -634,15 +665,16 @@ impl Tiler {
             ),
             max: point(
                 inner_rect.max.x + self.tile_padding,
-                self.tile_size.height + self.tile_padding,
+                self.draw.tile_size.height + self.tile_padding,
             ),
         };
 
         let mut tile = TileInfo {
-            x: self.tile_offset_x as u32,
+            x: tiles_start as u32,
             y: tile_y,
             inner_rect,
             outer_rect,
+            output_rect,
             solid: false,
             backdrop: 0,
         };
@@ -653,7 +685,7 @@ impl Tiler {
         // During this phase we only need to keep track of the backdrop winding number
         // and detect edges that end in the tiling area.
         for edge in &row[..] {
-            if edge.min_x.0 >= self.tile_offset_x {
+            if edge.min_x.0 >= tile.outer_rect.min.x {
                 break;
             }
 
@@ -676,11 +708,11 @@ impl Tiler {
         // Each time we get to a new tile, we remove all active edges that end side of the tile.
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
-            while edge.min_x.0 > tile.outer_rect.max.x {
-                self.finish_tile(&mut tile, active_edges, z_buffer, encoder);
+            while edge.min_x.0 > tile.outer_rect.max.x && tile.x < tiles_end {
+                self.finish_tile(&mut tile, active_edges, coarse_mask, output_indirection_buffer, encoder);
             }
 
-            if tile.x >= self.num_tiles_x {
+            if tile.x >= tiles_end {
                 break;
             }
 
@@ -700,9 +732,9 @@ impl Tiler {
         }
 
         // At this point we visited all edges but not necessarily all tiles.
-        while tile.x < self.num_tiles_x {
-            self.finish_tile(&mut tile, active_edges, z_buffer, encoder);
-
+        // TODO: presumably this is unnecessary unless we are doing something like clip-out.
+        while tile.x < tiles_end {
+            self.finish_tile(&mut tile, active_edges, coarse_mask, output_indirection_buffer, encoder);
             if active_edges.is_empty() {
                 break;
             }
@@ -715,13 +747,14 @@ impl Tiler {
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
-        z_buffer: &mut TileMask,
+        coarse_mask: &mut TileMask,
+        output_indirection_buffer: &mut[u32],
         encoder: &mut TileEncoder,
     ) {
         tile.solid = false;
         let mut empty = false;
         if active_edges.is_empty() {
-            let is_in = self.fill_rule.is_in(tile.backdrop);
+            let is_in = self.draw.fill_rule.is_in(tile.backdrop);
             if is_in {
                 tile.solid = true;
             } else {
@@ -730,14 +763,50 @@ impl Tiler {
             }
         }
 
-        if !empty && z_buffer.test(tile.x, tile.solid && self.is_opaque) {
-            encoder.encode_tile(tile, active_edges);
+        // Decide where to draw the tile.
+        // Two configurations: Either we render in a plain target in which case the position
+        // corresponds to the actual coordinates of the tile's content, or we are rendering
+        // to a tiled intermediate target in which case the destination is linearly allocated.
+        // The indirection buffer is used to determine whether a location is already allocated
+        // for this position.
+        if self.output_is_tiled && !empty {
+            let mut color_tile_id = output_indirection_buffer[tile.x as usize];
+            if color_tile_id == INVALID_TILE_ID {
+                if tile.solid && self.draw.is_opaque {
+                    // Since we are processing content front-to-back, all solid opaque tiles for
+                    // a given path are the same, we easily can de-duplicate it.
+                    // TODO: we are still drawing multiple times over the same opaque tile.
+                    color_tile_id = self.solid_color_tile_id;
+                } else {
+                    // allocate a spot in.
+                    color_tile_id = self.next_color_tile_id.fetch_add(1, Ordering::Relaxed);
+                }
+                output_indirection_buffer[tile.x as usize] = color_tile_id;
+            }
+            let tx = (color_tile_id % self.color_tiles_per_row) as f32 * self.draw.tile_size.width;
+            let ty = (color_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size.height;
+            tile.output_rect.min.x = tx;
+            tile.output_rect.min.y = ty;
+            tile.output_rect.max.x = tx + self.draw.tile_size.width;
+            tile.output_rect.max.y = ty + self.draw.tile_size.height;
+        } else {
+            tile.output_rect.min.x = tile.x as f32 * self.draw.tile_size.width;
+            tile.output_rect.max.x = (tile.x as f32 + 1.0) * self.draw.tile_size.width;
         }
 
-        tile.inner_rect.min.x += self.tile_size.width;
-        tile.inner_rect.max.x += self.tile_size.width;
-        tile.outer_rect.min.x += self.tile_size.width;
-        tile.outer_rect.max.x += self.tile_size.width;
+        if !empty && coarse_mask.test(tile.x, tile.solid && self.draw.is_opaque) {
+            encoder.encode_tile(tile, &self.draw, active_edges);
+        }
+
+        if empty && self.draw.is_clip_in {
+            // For clip-in it's the empty tiles that completely mask content out.
+            coarse_mask.write_clip(tile.x);
+        }
+
+        tile.inner_rect.min.x += self.draw.tile_size.width;
+        tile.inner_rect.max.x += self.draw.tile_size.width;
+        tile.outer_rect.min.x += self.draw.tile_size.width;
+        tile.outer_rect.max.x += self.draw.tile_size.width;
         tile.x += 1;
 
         Self::update_active_edges(
@@ -959,6 +1028,9 @@ pub struct TileInfo {
     pub inner_rect: Box2D<f32>,
     /// Rectangle including the tile padding.
     pub outer_rect: Box2D<f32>,
+    /// Where to render the tile in pixels.
+    pub output_rect: Box2D<f32>,
+
     /// True if the tile is entirely covered by the current path. 
     pub solid: bool,
 
@@ -1062,3 +1134,4 @@ fn split_quad(curve: &QuadraticBezierSegment<f32>, t_range: std::ops::Range<f32>
 
     QuadraticBezierSegment { from, ctrl, to }
 }
+

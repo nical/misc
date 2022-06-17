@@ -1,3 +1,4 @@
+pub mod api;
 pub mod tiler;
 pub mod tile_encoder;
 pub mod advanced_raster_encoder;
@@ -21,6 +22,10 @@ pub struct Color {
 }
 
 impl Color {
+    pub fn is_opaque(&self) -> bool {
+        self.a == 255
+    }
+
     pub fn to_u32(&self) -> u32 {
         (self.r as u32) << 24
         | (self.g as u32) << 16

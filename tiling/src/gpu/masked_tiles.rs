@@ -497,6 +497,20 @@ impl MaskUploader {
         }
     }
 
+    pub fn create_similar(&self) -> Self {
+        MaskUploader {
+            // TODO: we should use the same pool instead.
+            pool: self.pool.create_similar(),
+            batches: Vec::new(),
+            copy_instances: Vec::new(),
+            copy_instance_buffer: None,
+            current_atlas: 0,
+            current_instance_start: 0,
+            current_mask_buffer: Buffer::empty(),
+            masks_per_atlas: self.masks_per_atlas,
+        }
+    }
+
     pub fn reset(&mut self) {
         if self.current_mask_buffer.capacity() > 0 {
             self.pool.return_buffer(std::mem::replace(&mut self.current_mask_buffer, Buffer::empty()));

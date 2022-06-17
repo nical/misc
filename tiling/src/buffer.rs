@@ -254,6 +254,17 @@ impl<T> UniformBufferPool<T> {
         }
     }
 
+    pub fn create_similar(&self) -> Self {
+        UniformBufferPool {
+            available_buffers: Vec::new(),
+            used_buffers: Vec::new(),
+            cap: self.cap,
+            device: self.device,
+            bind_group_layout: self.bind_group_layout,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
     pub fn reset(&mut self) {
         self.deallocate_buffers();
     }

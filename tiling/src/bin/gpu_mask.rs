@@ -175,42 +175,38 @@ fn main() {
 
         builder.reset();
         tiler.clear_depth();
-        tiler.z_index = paths.len() as u16;
+        tiler.draw.z_index = paths.len() as u16;
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
             if let Some(idx) = select_path {
-                if idx != tiler.z_index {
-                    tiler.z_index -= 1;
+                if idx != tiler.draw.z_index {
+                    tiler.draw.z_index -= 1;
                     continue;
                 }
             }
 
-            builder.color = *color;
+            tiler.draw.pattern = Pattern::Color(*color);
 
             if parallel {
-                b0.color = *color;
-                b1.color = *color;
-                b2.color = *color;
-
                 tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [
                     &mut *b0, &mut *b1, &mut *b2, &mut *builder
                 ]);
 
                 // The order of the mask tiles doesn't matter within a path but it does between paths,
                 // so extend the main builder's mask tiles buffer between each path.
-                builder.mask_tiles.reserve(b0.mask_tiles.len() + b1.mask_tiles.len() + b2.mask_tiles.len());
-                builder.mask_tiles.extend_from_slice(&b0.mask_tiles);
-                builder.mask_tiles.extend_from_slice(&b1.mask_tiles);
-                builder.mask_tiles.extend_from_slice(&b2.mask_tiles);
-                b0.mask_tiles.clear();
-                b1.mask_tiles.clear();
-                b2.mask_tiles.clear();
+                builder.masked_tiles.reserve(b0.masked_tiles.len() + b1.masked_tiles.len() + b2.masked_tiles.len());
+                builder.masked_tiles.extend_from_slice(&b0.masked_tiles);
+                builder.masked_tiles.extend_from_slice(&b1.masked_tiles);
+                builder.masked_tiles.extend_from_slice(&b2.masked_tiles);
+                b0.masked_tiles.clear();
+                b1.masked_tiles.clear();
+                b2.masked_tiles.clear();
             } else {
                 tiler.tile_path(path.iter(), Some(&transform), &mut *builder);
             }
 
-            tiler.z_index -= 1;
+            tiler.draw.z_index -= 1;
 
             row_time += tiler.row_decomposition_time_ns;
             tile_time += tiler.tile_decomposition_time_ns;
@@ -224,7 +220,7 @@ fn main() {
         // Since the paths were processed front-to-back we have to reverse
         // the alpha tiles to render then back-to-front.
         // This doesn't show up in profiles.
-        builder.mask_tiles.reverse();
+        builder.masked_tiles.reverse();
     }
 
     let t1 = time::precise_time_ns();
@@ -233,7 +229,7 @@ fn main() {
 
     println!("view box: {:?}", view_box);
     println!("{} solid_tiles", builder.solid_tiles.len());
-    println!("{} alpha_tiles", builder.mask_tiles.len());
+    println!("{} alpha_tiles", builder.masked_tiles.len());
     println!("{} gpu_masks", builder.gpu_masks.len());
     println!("{} cpu_masks", builder.num_cpu_masks());
     println!("{} line edges", builder.line_edges.len());
@@ -263,7 +259,7 @@ fn main() {
         &globals_bind_group_layout,
     );
 
-    tile_renderer.update(&mut builder, &mut b0, &mut b1, &mut b2, parallel);
+    tile_renderer.update2(&mut builder, &mut b0, &mut b1, &mut b2, parallel);
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

@@ -14,6 +14,8 @@ use crate::gpu::solid_tiles::TileInstance as SolidTile;
 use crate::gpu::masked_tiles::TileInstance as MaskedTile;
 use crate::gpu::masked_tiles::Mask as GpuMask;
 use crate::gpu::masked_tiles::MaskUploader;
+use crate::api::Pattern;
+
 
 use copyless::VecHelper;
 
@@ -32,7 +34,7 @@ unsafe impl bytemuck::Pod for LineEdge {}
 unsafe impl bytemuck::Zeroable for LineEdge {}
 
 struct Shared {
-    next_mask_id: AtomicU32,
+    next_mask_tile_id: AtomicU32,
 }
 
 // If we can't fit all masks into the atlas, we have to break the work into
@@ -46,61 +48,87 @@ pub struct MaskPass {
 }
 
 pub struct TileEncoder {
+    // State and output associated with the current group/layer:
+
     pub quad_edges: Vec<QuadEdge>,
     pub line_edges: Vec<LineEdge>,
     pub solid_tiles: Vec<SolidTile>,
-    pub mask_tiles: Vec<MaskedTile>,
+    pub masked_tiles: Vec<MaskedTile>,
     pub gpu_masks: Vec<GpuMask>,
     pub mask_passes: Vec<MaskPass>,
-    current_solid_tile: f32,
+    pub mask_uploader: MaskUploader,
+
+    // First mask index of the current mask pass.
     gpu_masks_start: u32,
     //cpu_masks_start: u32,
+    // First masked color tile of the current mask pass.
     masked_tiles_start: u32,
+    // Index of the current mask texture (increments every time we run out of space in the
+    // mask atlas, which is the primary reason for starting a new mask pass).
     masks_texture_index: u32,
-    pub color: Color,
-    pub fill_rule: FillRule,
-    pub max_edges_per_gpu_tile: usize,
-    pub is_opaque: bool,
-    pub use_quads: bool,
-    pub merge_solid_tiles: bool,
-    pub tolerance: f32,
-    pub mask_uploader: MaskUploader,
-    shared: Arc<Shared>,
+
     mask_id_range: Range<u32>,
     pub masks_per_atlas: u32,
-    tile_size: f32,
+    shared: Arc<Shared>,
+
+    // Transient state (only useful within a path):
+
+    /// x coordinate of the last opaque solid tile in the current path. Used to detect
+    /// consecutive solid tiles that can be merged.
+    current_solid_tile: f32,
+
+    // State associated with the current pattern and shape.
+
+    // Debugging
 
     pub edge_distributions: [u32; 16],
 }
 
 impl TileEncoder {
-    pub fn new(tolerance: f32, mask_uploader: MaskUploader) -> Self {
+    pub fn new(mask_uploader: MaskUploader) -> Self {
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
-            mask_tiles: Vec::with_capacity(6000),
+            masked_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
+            mask_passes: Vec::with_capacity(16),
             current_solid_tile: std::f32::NAN,
             gpu_masks_start: 0,
             //cpu_masks_start: 0,
             masked_tiles_start: 0,
             masks_texture_index: 0,
-            mask_passes: Vec::with_capacity(16),
-            // TODO: move rendering parameters in separate struct.
-            color: Color { r: 0, g: 0, b: 0, a: 0 },
-            fill_rule: FillRule::NonZero,
-            max_edges_per_gpu_tile: 4096,
-            is_opaque: true,
-            use_quads: false,
-            merge_solid_tiles: true,
-            tolerance,
-            tile_size: 16.0,
 
             mask_uploader,
 
             shared: Arc::new(Shared {
-                next_mask_id: AtomicU32::new(0),
+                next_mask_tile_id: AtomicU32::new(0),
+            }),
+            mask_id_range: 0..0,
+            masks_per_atlas: (2048 * 2048) / (16 * 16),
+
+            edge_distributions: [0; 16],
+        }
+    }
+
+    pub fn create_similar(&self) -> Self {
+        TileEncoder {
+            quad_edges: Vec::with_capacity(8196),
+            line_edges: Vec::with_capacity(8196),
+            solid_tiles: Vec::with_capacity(2000),
+            masked_tiles: Vec::with_capacity(6000),
+            gpu_masks: Vec::with_capacity(6000),
+            mask_passes: Vec::with_capacity(16),
+            current_solid_tile: std::f32::NAN,
+            gpu_masks_start: 0,
+            //cpu_masks_start: 0,
+            masked_tiles_start: 0,
+            masks_texture_index: 0,
+
+            mask_uploader: self.mask_uploader.create_similar(),
+
+            shared: Arc::new(Shared {
+                next_mask_tile_id: AtomicU32::new(0),
             }),
             mask_id_range: 0..0,
             masks_per_atlas: (2048 * 2048) / (16 * 16),
@@ -110,31 +138,26 @@ impl TileEncoder {
     }
 
     pub fn new_parallel(other: &TileEncoder, mask_uploader: MaskUploader) -> Self {
-        let mut encoder = TileEncoder::new(other.tolerance, mask_uploader);
-        encoder.max_edges_per_gpu_tile = other.max_edges_per_gpu_tile;
-        encoder.use_quads = other.use_quads;
+        let mut encoder = TileEncoder::new(mask_uploader);
         encoder.shared = other.shared.clone();
-        encoder.fill_rule = other.fill_rule;
         encoder.masks_per_atlas = other.masks_per_atlas;
-        encoder.tile_size = other.tile_size;
 
         encoder
     }
 
     pub fn set_tile_texture_size(&mut self, size: u32, tile_size: u32) {
         self.masks_per_atlas = (size * size) / (tile_size * tile_size);
-        self.tile_size = tile_size as f32;
     }
 
     pub fn reset(&mut self) {
         self.quad_edges.clear();
         self.line_edges.clear();
         self.solid_tiles.clear();
-        self.mask_tiles.clear();
+        self.masked_tiles.clear();
         self.gpu_masks.clear();
         self.mask_passes.clear();
         self.mask_uploader.reset();
-        self.shared.next_mask_id.store(0, Ordering::Release);
+        self.shared.next_mask_tile_id.store(0, Ordering::Release);
         self.edge_distributions = [0; 16];
         self.mask_id_range = 0..0;
         self.gpu_masks_start = 0;
@@ -146,7 +169,7 @@ impl TileEncoder {
     pub fn end_paths(&mut self) {
         let gpu_end = self.gpu_masks.len() as u32;
         //let cpu_end = self.cpu_masks.len() as u32;
-        let masked_tiles_end = self.mask_tiles.len() as u32;
+        let masked_tiles_end = self.masked_tiles.len() as u32;
         if gpu_end != self.gpu_masks_start {
             self.mask_passes.push(MaskPass {
                 gpu_masks: self.gpu_masks_start..gpu_end,
@@ -165,7 +188,7 @@ impl TileEncoder {
     }
 
     pub fn num_mask_atlases(&self) -> u32 {
-        let id = self.shared.next_mask_id.load(Ordering::Acquire);
+        let id = self.shared.next_mask_tile_id.load(Ordering::Acquire);
         id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
     }
 
@@ -175,35 +198,31 @@ impl TileEncoder {
 
     pub fn end_row(&mut self) {}
 
-    pub fn encode_tile(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
-
-        let tx = tile.x as f32 * self.tile_size;
-        let ty = tile.y as f32 * self.tile_size;
+    pub fn encode_tile(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) {
 
         if tile.solid {
-            let tx_max = tx + self.tile_size;
-            if self.merge_solid_tiles && (self.current_solid_tile - tx).abs() < 0.01 {
+            if draw.merge_solid_tiles && (self.current_solid_tile - tile.output_rect.min.x).abs() < 0.01 {
                 if let Some(solid) = self.solid_tiles.last_mut() {
-                    solid.rect.max.x = tx_max;
+                    solid.rect.max.x = tile.output_rect.max.x;
                 }
             } else {
                 self.solid_tiles.push(SolidTile {
-                    rect: Box2D {
-                        min: point(tx, ty),
-                        max: point(tx_max, ty + self.tile_size),
+                    rect: tile.output_rect,
+                    color: match draw.pattern {
+                        Pattern::Color(color) => color.to_u32(),
+                        Pattern::Image(id) => id,
                     },
-                    color: self.color.to_u32(),
                 });
             }
-            self.current_solid_tile = tx_max;
+            self.current_solid_tile = tile.output_rect.max.x;
 
             return;
         }
 
-        if active_edges.len() > self.max_edges_per_gpu_tile
-            || (self.use_quads && !self.add_quad_gpu_mask(tile, active_edges))
-            || (!self.use_quads && !self.add_line_gpu_mask(tile, active_edges)) {
-            self.add_cpu_mask(tile, active_edges);
+        if active_edges.len() > draw.max_edges_per_gpu_tile
+            || (draw.use_quads && !self.add_quad_gpu_mask(tile, draw, active_edges))
+            || (!draw.use_quads && !self.add_line_gpu_mask(tile, draw, active_edges)) {
+            self.add_cpu_mask(tile, draw, active_edges);
         }
     }
 
@@ -213,7 +232,7 @@ impl TileEncoder {
             self.mask_id_range.start += 1;
             return id;
         }
-        let id = self.shared.next_mask_id.fetch_add(16, Ordering::Relaxed);
+        let id = self.shared.next_mask_tile_id.fetch_add(16, Ordering::Relaxed);
         self.mask_id_range.start = id + 1;
         self.mask_id_range.end = id + 16;
 
@@ -221,7 +240,7 @@ impl TileEncoder {
         if texture_index != self.masks_texture_index {
             let gpu_end = self.gpu_masks.len() as u32;
             //let cpu_end = self.cpu_masks.len() as u32;
-            let masked_tiles_end = self.mask_tiles.len() as u32;
+            let masked_tiles_end = self.masked_tiles.len() as u32;
             if gpu_end != self.gpu_masks_start { // TODO: cpu tiles
                 self.mask_passes.push(MaskPass {
                     gpu_masks: self.gpu_masks_start..gpu_end,
@@ -240,10 +259,7 @@ impl TileEncoder {
     }
 
 
-    fn add_line_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) -> bool {
-        let tx = tile.x as f32 * self.tile_size;
-        let ty = tile.y as f32 * self.tile_size;
-
+    fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> bool {
         //println!(" * tile ({:?}, {:?}), backdrop: {}, {:?}", tile.x, tile.y, tile.backdrop, active_edges);
 
         let edges_start = self.line_edges.len();
@@ -252,7 +268,7 @@ impl TileEncoder {
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
         // rasterizing them on the CPU.
-        if (self.line_edges.len() - edges_start) + active_edges.len() > self.max_edges_per_gpu_tile {
+        if (self.line_edges.len() - edges_start) + active_edges.len() > draw.max_edges_per_gpu_tile {
             self.line_edges.resize(edges_start, LineEdge(point(0.0, 0.0), point(0.0, 0.0)));
             return false;
         }
@@ -292,7 +308,7 @@ impl TileEncoder {
             } else {
                 let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 let mut from = curve.from;
-                flatten_quad(&curve, self.tolerance, &mut |to| {
+                flatten_quad(&curve, draw.tolerance, &mut |to| {
                     self.line_edges.push(LineEdge(from, to));
                     from = to;
                 });
@@ -309,35 +325,32 @@ impl TileEncoder {
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
             mask_id,
-            fill_rule: match self.fill_rule {
+            fill_rule: match draw.fill_rule {
                 FillRule::EvenOdd => 0,
                 FillRule::NonZero => 1,
             }
         });
 
-        self.mask_tiles.push(MaskedTile {
-            rect: Box2D {
-                min: point(tx, ty),
-                max: point(tx + self.tile_size, ty + self.tile_size),
+        self.masked_tiles.push(MaskedTile {
+            rect: tile.output_rect,
+            color: match draw.pattern {
+                Pattern::Color(color) => color.to_u32(),
+                Pattern::Image(id) => id,
             },
-            color: self.color.to_u32(),
             mask: mask_id,
         });
 
         true
     }
 
-    fn add_quad_gpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) -> bool {
-        let tx = tile.x as f32 * self.tile_size;
-        let ty = tile.y as f32 * self.tile_size;
-
+    fn add_quad_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> bool {
         let edges_start = self.quad_edges.len();
 
         let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
         // rasterizing them on the CPU.
-        if (self.quad_edges.len() - edges_start) + active_edges.len() > self.max_edges_per_gpu_tile {
+        if (self.quad_edges.len() - edges_start) + active_edges.len() > draw.max_edges_per_gpu_tile {
             self.quad_edges.resize(edges_start, QuadEdge(point(0.0, 0.0), point(123.0, 456.0), point(0.0, 0.0), 0, 0));
             return false;
         }
@@ -378,26 +391,27 @@ impl TileEncoder {
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
             mask_id,
-            fill_rule: match self.fill_rule {
+            fill_rule: match draw.fill_rule {
                 FillRule::EvenOdd => 0,
                 FillRule::NonZero => 1,
             }
         });
 
-        self.mask_tiles.push(MaskedTile {
-            rect: Box2D {
-                min: point(tx, ty),
-                max: point(tx + self.tile_size, ty + self.tile_size),
+        self.masked_tiles.push(MaskedTile {
+            rect: tile.output_rect,
+            color: match draw.pattern {
+                Pattern::Color(color) => color.to_u32(),
+                Pattern::Image(id) => id,
             },
-            color: self.color.to_u32(),
             mask: mask_id,
         });
 
         true
     }
 
-    fn add_cpu_mask(&mut self, tile: &TileInfo, active_edges: &[ActiveEdge]) {
-        debug_assert!(self.tile_size <= 32.0);
+    fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) {
+        debug_assert!(draw.tile_size.width <= 32.0);
+        debug_assert!(draw.tile_size.height <= 32.0);
 
         let mut accum = [0.0; 32 * 32];
         let mut backdrops = [tile.backdrop as f32; 32];
@@ -409,11 +423,11 @@ impl TileEncoder {
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
-                add_backdrop(edge.from.y, 1.0, &mut backdrops[0..self.tile_size as usize]);
+                add_backdrop(edge.from.y, 1.0, &mut backdrops[0..draw.tile_size.height as usize]);
             }
 
             if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
-                add_backdrop(edge.to.y, -1.0, &mut backdrops[0..self.tile_size as usize]);
+                add_backdrop(edge.to.y, -1.0, &mut backdrops[0..draw.tile_size.height as usize]);
             }
 
             //let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
@@ -424,7 +438,7 @@ impl TileEncoder {
                 draw_line(from, to, &mut accum);
             } else {
                 let ctrl = edge.ctrl - tile_offset;
-                draw_curve(from, ctrl, to, self.tolerance, &mut accum);
+                draw_curve(from, ctrl, to, draw.tolerance, &mut accum);
             }
         }
 
@@ -435,7 +449,7 @@ impl TileEncoder {
             self.mask_uploader.current_mask_buffer.set_len(mask_buffer_range.end as usize);
         }
 
-        let accumulate = match self.fill_rule {
+        let accumulate = match draw.fill_rule {
             FillRule::EvenOdd => accumulate_even_odd,
             FillRule::NonZero => accumulate_non_zero,
         };
@@ -446,14 +460,12 @@ impl TileEncoder {
             &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
         );
 
-        let tx = tile.x as f32 * self.tile_size;
-        let ty = tile.y as f32 * self.tile_size;
-        self.mask_tiles.push(MaskedTile {
-            rect: Box2D {
-                min: point(tx, ty),
-                max: point(tx + self.tile_size, ty + self.tile_size),
+        self.masked_tiles.push(MaskedTile {
+            rect: tile.output_rect,
+            color: match draw.pattern {
+                Pattern::Color(color) => color.to_u32(),
+                Pattern::Image(id) => id,
             },
-            color: self.color.to_u32(),
             mask: mask_id,
         });
     }

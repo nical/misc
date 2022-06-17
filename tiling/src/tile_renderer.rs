@@ -165,6 +165,14 @@ impl TileRenderer {
     pub fn update(
         &mut self,
         builder: &mut TileEncoder,
+    ) {
+        std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
+        self.num_masked_tiles = builder.masked_tiles.len() as u32;
+    }
+
+    pub fn update2(
+        &mut self,
+        builder: &mut TileEncoder,
         b0: &mut TileEncoder,
         b1: &mut TileEncoder,
         b2: &mut TileEncoder,
@@ -253,7 +261,7 @@ impl TileRenderer {
             std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
         }
 
-        self.num_masked_tiles = builder.mask_tiles.len() as u32;
+        self.num_masked_tiles = builder.masked_tiles.len() as u32;
     }
 
     // TODO: this should be part of update
@@ -276,7 +284,7 @@ impl TileRenderer {
         queue.write_buffer(
             &self.masked_tiles_vbo,
             0,
-            bytemuck::cast_slice(&builder.mask_tiles),
+            bytemuck::cast_slice(&builder.masked_tiles),
         );
 
         queue.write_buffer(

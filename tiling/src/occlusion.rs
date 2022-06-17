@@ -29,6 +29,10 @@ impl TileMask {
         self.data[offset as usize] != 0
     }
 
+    pub fn write_clip(&mut self, offset: u32) {
+        self.data[offset as usize] |= 2
+    }
+
     /// Returns true if the tile at the provided offset wasn't masked.
     ///
     /// If 'write' is true, mark tile as masked.
