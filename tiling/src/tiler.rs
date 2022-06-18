@@ -144,7 +144,7 @@ impl Tiler {
                 is_opaque: true,
                 tolerance: config.tolerance,
                 tile_size: config.tile_size,
-                fill_rule: FillRule::EvenOdd,
+                fill_rule: FillRule::NonZero,
                 is_clip_in: false,
                 max_edges_per_gpu_tile: 4096,
                 use_quads: false,
