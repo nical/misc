@@ -166,17 +166,17 @@ impl TileEncoder {
     }
 
     pub fn end_paths(&mut self) {
-        let gpu_end = self.gpu_masks.len() as u32;
+        let gpu_masks_end = self.gpu_masks.len() as u32;
         //let cpu_end = self.cpu_masks.len() as u32;
         let masked_tiles_end = self.masked_tiles.len() as u32;
-        if gpu_end != self.gpu_masks_start {
+        if gpu_masks_end != self.gpu_masks_start {
             self.mask_passes.push(MaskPass {
-                gpu_masks: self.gpu_masks_start..gpu_end,
+                gpu_masks: self.gpu_masks_start..gpu_masks_end,
                 //cpu_masks: self.cpu_masks_start..cpu_end,
                 masked_tiles: self.masked_tiles_start..masked_tiles_end,
                 atlas_index: self.masks_texture_index,
             });
-            self.gpu_masks_start = gpu_end;
+            self.gpu_masks_start = gpu_masks_end;
             //self.cpu_masks_start = cpu_end;
             self.masked_tiles_start = masked_tiles_end;
         }
@@ -199,7 +199,7 @@ impl TileEncoder {
 
     pub fn encode_tile(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) {
 
-        if tile.solid {
+        if tile.solid && draw.is_opaque {
             if draw.merge_solid_tiles && (self.current_solid_tile - tile.output_rect.min.x).abs() < 0.01 {
                 if let Some(solid) = self.solid_tiles.last_mut() {
                     solid.rect.max.x = tile.output_rect.max.x;
@@ -218,6 +218,20 @@ impl TileEncoder {
             return;
         }
 
+        // Use masked tiles pipeline for blended full tiles to avoid breaking batches.
+        if tile.solid && !draw.is_opaque {
+            self.masked_tiles.push(MaskedTile {
+                rect: tile.output_rect,
+                color: match draw.pattern {
+                    TiledPattern::Color(color) => color.to_u32(),
+                    _ => { unimplemented!() },
+                },
+                mask: 0, // First mask is always fully opaque.
+            });
+
+            return;
+        }
+
         if active_edges.len() > draw.max_edges_per_gpu_tile
             || (draw.use_quads && !self.add_quad_gpu_mask(tile, draw, active_edges))
             || (!draw.use_quads && !self.add_line_gpu_mask(tile, draw, active_edges)) {
@@ -231,23 +245,31 @@ impl TileEncoder {
             self.mask_id_range.start += 1;
             return id;
         }
-        let id = self.shared.next_mask_tile_id.fetch_add(16, Ordering::Relaxed);
+        let mut id = self.shared.next_mask_tile_id.fetch_add(16, Ordering::Relaxed);
         self.mask_id_range.start = id + 1;
         self.mask_id_range.end = id + 16;
 
+        if id % self.masks_per_atlas == 0 {
+            // ID 0 is reserved for full mask.
+            self.mask_id_range.start += 1;
+            id += 1;
+        }
+
+
         let texture_index = id / self.masks_per_atlas;
         if texture_index != self.masks_texture_index {
-            let gpu_end = self.gpu_masks.len() as u32;
+            // Add 1 to account for the special tile 0 which isn't in gpu_mask.
+            let gpu_masks_end = self.gpu_masks.len() as u32;
             //let cpu_end = self.cpu_masks.len() as u32;
             let masked_tiles_end = self.masked_tiles.len() as u32;
-            if gpu_end != self.gpu_masks_start { // TODO: cpu tiles
+            if gpu_masks_end != self.gpu_masks_start { // TODO: cpu tiles
                 self.mask_passes.push(MaskPass {
-                    gpu_masks: self.gpu_masks_start..gpu_end,
+                    gpu_masks: self.gpu_masks_start..gpu_masks_end,
                     //cpu_masks: self.cpu_masks_start..cpu_end,
                     masked_tiles: self.masked_tiles_start..masked_tiles_end,
                     atlas_index: self.masks_texture_index,
                 });
-                self.gpu_masks_start = gpu_end;
+                self.gpu_masks_start = gpu_masks_end;
                 //self.cpu_masks_start = cpu_end;
                 self.masked_tiles_start = masked_tiles_end;
             }
@@ -270,18 +292,6 @@ impl TileEncoder {
         if (self.line_edges.len() - edges_start) + active_edges.len() > draw.max_edges_per_gpu_tile {
             self.line_edges.resize(edges_start, LineEdge(point(0.0, 0.0), point(0.0, 0.0)));
             return false;
-        }
-
-        // Handle backdrop Auxiliary edges.
-        {
-            let mut from = tile.outer_rect.min.y;
-            let mut to = tile.outer_rect.max.y;
-            if tile.backdrop < 0 {
-                std::mem::swap(&mut from, &mut to);
-            }
-            for _ in 0..tile.backdrop.abs() {
-                self.line_edges.alloc().init(LineEdge(point(-10.0, from), point(-10.0, to)));
-            }
         }
 
         for edge in active_edges {
@@ -316,18 +326,17 @@ impl TileEncoder {
 
         let edges_start = edges_start as u32;
         let edges_end = self.line_edges.len() as u32;
-        assert!(edges_end > edges_start, "{:?}", active_edges);
-        assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
+        debug_assert!(edges_end > edges_start, "{:?}", active_edges);
+        debug_assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
         let mask_id = self.allocate_mask_id();
+        debug_assert!(mask_id != 0);
 
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
             mask_id,
-            fill_rule: match draw.fill_rule {
-                FillRule::EvenOdd => 0,
-                FillRule::NonZero => 1,
-            }
+            backdrop: tile.backdrop + 8192,
+            fill_rule: draw.encoded_fill_rule,
         });
 
         self.masked_tiles.push(MaskedTile {
@@ -390,10 +399,8 @@ impl TileEncoder {
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
             mask_id,
-            fill_rule: match draw.fill_rule {
-                FillRule::EvenOdd => 0,
-                FillRule::NonZero => 1,
-            }
+            backdrop: tile.backdrop + 8192,
+            fill_rule: draw.encoded_fill_rule,
         });
 
         self.masked_tiles.push(MaskedTile {

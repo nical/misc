@@ -25,8 +25,8 @@ fn non_zero(winding_number: f32) -> f32 {
 fn rasterize_edge(from: vec2<f32>, to: vec2<f32>) -> f32 {
     // The overlap range on the y axis between the current tow of pixels and the segment.
     // It can be a negative range (negative edge winding).
-    var y1 = min(max(0.0, from.y), 1.0);
-    var y0 = min(max(0.0, to.y), 1.0);
+    var y0 = min(max(0.0, from.y), 1.0);
+    var y1 = min(max(0.0, to.y), 1.0);
 
     if (y0 == y1) {
         return 0.0;
@@ -79,9 +79,10 @@ fn main(
     [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
     [[location(2), interpolate(flat)]] in_fill_rule: u32,
+    [[location(3), interpolate(flat)]] backdrop: f32,
 ) -> FragmentOutput {
 
-    var winding_number = 0.0;
+    var winding_number = backdrop;
 
     var edge_idx = in_edges_range.x;
     loop {

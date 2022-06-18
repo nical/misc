@@ -12,7 +12,7 @@ use futures::executor::block_on;
 
 use parasol::CachePadded;
 
-use tiling::tile_encoder::{TileEncoder, MaskPass};
+use tiling::tile_encoder::TileEncoder;
 
 fn main() {
     profiling::register_thread!("Main");
@@ -58,6 +58,7 @@ fn main() {
         tile_padding: 0.5,
         tolerance,
         flatten: false,
+        mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
     };
 
     let event_loop = EventLoop::new();

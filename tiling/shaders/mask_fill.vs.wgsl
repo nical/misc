@@ -10,6 +10,7 @@ struct VertexOutput {
     [[location(0), interpolate(linear)]] uv: vec2<f32>;
     [[location(1), interpolate(flat)]] edges: vec2<u32>;
     [[location(2), interpolate(flat)]] fill_rule: u32;
+    [[location(3), interpolate(flat)]] backdrop: f32;
     [[builtin(position)]] position: vec4<f32>;
 };
 
@@ -20,6 +21,9 @@ fn main(
     [[location(2)]] in_fill_rule: u32,
     [[builtin(vertex_index)]] vertex_index: u32,
 ) -> VertexOutput {
+
+    var fill_rule = in_fill_rule & 0xFFFFu;
+    var backdrop = f32(in_fill_rule >> 16u) - 8192.0;
 
     var vertices = array<vec2<f32>, 4>(
         vec2<f32>(0.0, 0.0),
@@ -44,7 +48,8 @@ fn main(
     return VertexOutput(
         uv * tile_size,
         in_edges,
-        in_fill_rule,
+        fill_rule,
+        backdrop,
         vec4<f32>(screen_pos.x, screen_pos.y, 0.0, 1.0),
     );
 }

@@ -39,6 +39,7 @@ fn main(
     [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
     [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
     [[location(2), interpolate(flat)]] in_fill_rule: u32,
+    [[location(3), interpolate(flat)]] in_backdrop: f32,
 ) -> FragmentOutput {
 
     var winding_number = 0.0;

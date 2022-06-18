@@ -32,7 +32,8 @@ unsafe impl bytemuck::Zeroable for TileInstance {}
 pub struct Mask {
     pub edges: (u32, u32),
     pub mask_id: u32,
-    pub fill_rule: u32,
+    pub fill_rule: u16,
+    pub backdrop: i16,
 }
 
 unsafe impl bytemuck::Pod for Mask {}
@@ -158,8 +159,8 @@ fn create_tile_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGro
 }
 
 pub struct Masks {
-    pub line_evenodd_pipeline: wgpu::RenderPipeline,
-    pub quad_evenodd_pipeline: wgpu::RenderPipeline,
+    pub line_pipeline: wgpu::RenderPipeline,
+    pub quad_pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -174,11 +175,11 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         label: Some("Mask vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.vs.wgsl").into()),
     });
-    let evenodd_lin_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let lin_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Mask fill linear fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_lin.fs.wgsl").into()),
     });
-    let evenodd_quad_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let quad_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Mask fill quad fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_quad.fs.wgsl").into()),
     });
@@ -218,7 +219,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
     });
 
     let line_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-        label: Some("Masked tiles"),
+        label: Some("Tile mask linear"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &vs_module,
@@ -246,7 +247,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &evenodd_lin_fs_module,
+            module: &lin_fs_module,
             entry_point: "main",
             targets: &[
                 wgpu::ColorTargetState {
@@ -275,7 +276,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
     };
 
     let quad_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-        label: Some("Masked tiles"),
+        label: Some("Tile mask quad"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &vs_module,
@@ -303,7 +304,7 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &evenodd_quad_fs_module,
+            module: &quad_fs_module,
             entry_point: "main",
             targets: &[
                 wgpu::ColorTargetState {
@@ -331,12 +332,12 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
         },
     };
 
-    let line_evenodd_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
-    let quad_evenodd_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
+    let line_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
+    let quad_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
 
     Masks {
-        line_evenodd_pipeline,
-        quad_evenodd_pipeline,
+        line_pipeline,
+        quad_pipeline,
         bind_group_layout,
     }
 }
@@ -368,7 +369,7 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
         label: Some("Mask upload copy vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.vs.wgsl").into()),
     });
-    let evenodd_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("Mask upload copy fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.fs.wgsl").into()),
     });
@@ -419,7 +420,7 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &evenodd_fs_module,
+            module: &fs_module,
             entry_point: "main",
             targets: &[
                 wgpu::ColorTargetState {

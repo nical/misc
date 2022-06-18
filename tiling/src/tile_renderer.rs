@@ -111,8 +111,6 @@ impl TileRenderer {
             mapped_at_creation: false,
         });
 
-        println!("Tile size: {}", tile_size);
-
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
             contents: bytemuck::cast_slice(&[
@@ -315,12 +313,13 @@ impl TileRenderer {
         mask_uploaders: &mut[&mut MaskUploader],
     ) {
         let masked_tiles_in_first_pass = {
+            // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Mask atlas"),
                 color_attachments: &[wgpu::RenderPassColorAttachment {
                     view: &self.mask_texture_view,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                         store: true,
                     },
                     resolve_target: None,
@@ -332,7 +331,7 @@ impl TileRenderer {
 
                 let mask_range = self.mask_passes.last().unwrap();
 
-                pass.set_pipeline(&self.masks.line_evenodd_pipeline);
+                pass.set_pipeline(&self.masks.line_pipeline);
                 pass.set_bind_group(0, &self.masks_bind_group, &[]);
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, self.masks_vbo.slice(..));
@@ -343,7 +342,7 @@ impl TileRenderer {
 
 /*
             if let Some(quad_masks_bind_group) = &quad_masks_bind_group {
-                pass.set_pipeline(&masks.quad_evenodd_pipeline);
+                pass.set_pipeline(&masks.quad_pipeline);
                 pass.set_bind_group(0, &quad_masks_bind_group, &[]);
                 pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, masks_vbo.slice(..));
@@ -402,7 +401,7 @@ impl TileRenderer {
                         color_attachments: &[wgpu::RenderPassColorAttachment {
                             view: &self.mask_texture_view,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                                 store: true,
                             },
                             resolve_target: None,
@@ -410,7 +409,7 @@ impl TileRenderer {
                         depth_stencil_attachment: None,
                     });
 
-                    mask_pass.set_pipeline(&self.masks.line_evenodd_pipeline);
+                    mask_pass.set_pipeline(&self.masks.line_pipeline);
                     mask_pass.set_bind_group(0, &self.masks_bind_group, &[]);
                     mask_pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                     mask_pass.set_vertex_buffer(0, self.masks_vbo.slice(..));

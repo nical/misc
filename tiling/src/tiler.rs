@@ -52,6 +52,7 @@ pub struct DrawParams {
     pub max_edges_per_gpu_tile: usize,
     pub use_quads: bool,
     pub merge_solid_tiles: bool,
+    pub encoded_fill_rule: u16,
 }
 
 /// A context object that can bin path edges into tile grids.
@@ -149,6 +150,7 @@ impl Tiler {
                 max_edges_per_gpu_tile: 4096,
                 use_quads: false,
                 merge_solid_tiles: true,
+                encoded_fill_rule: 1,
             },
             size,
             scissor: Box2D::from_size(size),
@@ -190,6 +192,14 @@ impl Tiler {
         self.num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         self.draw.tolerance = config.tolerance;
         self.flatten = config.flatten;
+    }
+
+    pub fn set_fill_rule(&mut self, fill_rule: FillRule) {
+        self.draw.fill_rule = fill_rule;
+        self.draw.encoded_fill_rule = match fill_rule {
+            FillRule::EvenOdd => 0,
+            FillRule::NonZero => 1,
+        };
     }
 
     pub fn set_scissor(&mut self, scissor: &Box2D<f32>) {
