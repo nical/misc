@@ -146,21 +146,15 @@ fn main() {
     let mask_uploader_2 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = CachePadded::new(TileEncoder::new(tolerance, mask_uploader));
+    let mut builder = CachePadded::new(TileEncoder::new(&tiler_config, mask_uploader));
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
     // Extra builders for worker threads.
-    let mut b0 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_0));
-    let mut b1 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_1));
-    let mut b2 = CachePadded::new(TileEncoder::new_parallel(&builder, mask_uploader_2));
+    let mut b0 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_0));
+    let mut b1 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_1));
+    let mut b2 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_2));
 
-    builder.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-    builder.use_quads = use_quads;
-    b0.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-    b0.use_quads = use_quads;
-    b1.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-    b1.use_quads = use_quads;
-    b2.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-    b2.use_quads = use_quads;
+    tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    tiler.draw.use_quads = use_quads;
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -186,7 +180,7 @@ fn main() {
                 }
             }
 
-            tiler.draw.pattern = Pattern::Color(*color);
+            tiler.set_pattern(TiledPattern::Color(*color));
 
             if parallel {
                 tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [

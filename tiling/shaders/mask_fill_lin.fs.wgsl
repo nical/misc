@@ -36,29 +36,42 @@ fn main(
         var edge = edges.data[edge_idx];
         edge_idx = edge_idx + 1u;
 
+        // Move to coordinates local to the current pixel.
         var from = edge.xy - in_uv;
         var to = edge.zw - in_uv;
 
-        var window = vec2<f32>(
-            min(max(0.0, from.y), 1.0),
-            min(max(0.0, to.y), 1.0)
-        );
+        // The overlap range on the y axis between the current tow of pixels and the segment.
+        // It can be a negative range (negative edge winding).
+        var y1 = min(max(0.0, from.y), 1.0);
+        var y0 = min(max(0.0, to.y), 1.0);
 
-        if (window.x != window.y) {
-            var t = (window - vec2<f32>(from.y, from.y)) / (to.y - from.y);
-            var xs = vec2<f32>(
-                from.x * (1.0 - t.x) + to.x * t.x,
-                from.x * (1.0 - t.y) + to.x * t.y,
-            );
-            var xmin = min(min(xs.x, xs.y), 1.0) - 1e-6; 
-            var xmax = max(xs.x, xs.y);
-            var b = min(xmax, 1.0);
-            var c = max(b, 0.0);
-            var d = max(xmin, 0.0);
-            var area = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
-
-            winding_number = winding_number + area * (window.x - window.y);
+        if (y0 == y1) {
+            continue;
         }
+
+        var inv_dy = 1.0 / (to.y - from.y);
+        // The interpolation factors at the start and end of the intersection between the edge
+        // and the row of pixels.
+        var t0 = (y0 - from.y) * inv_dy;
+        var t1 = (y1 - from.y) * inv_dy;
+        // X positions at t0 and t1
+        var x0 = from.x * (1.0 - t0) + to.x * t0;
+        var x1 = from.x * (1.0 - t1) + to.x * t1;
+
+        // Jitter to avoid NaN when dividing by xmin-xmax (for example vertical edges).
+        // The original value was 1e-5 but it wasn't sufficient to avoid issues with 32px tiles.
+        // TODO: although rare, edges with a certain slope will still cause NaN. Is there a way to
+        // make this more robust with a big perf hit?
+        var jitter = 1e-5;
+
+        var xmin = min(min(x1, x0), 1.0) - jitter;
+        var xmax = max(x1, x0);
+        var b = min(xmax, 1.0);
+        var c = max(b, 0.0);
+        var d = max(xmin, 0.0);
+        var area = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+
+        winding_number = winding_number + area * (y1 - y0);
     }
 
     var mask = even_odd(winding_number);

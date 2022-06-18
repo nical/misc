@@ -9,7 +9,6 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use crate::occlusion::TileMask;
 use crate::tile_encoder::TileEncoder;
-use crate::api::Pattern;
 use crate::Color;
 
 use parasol::{Context, CachePadded};
@@ -17,6 +16,12 @@ use parasol::{Context, CachePadded};
 use copyless::VecHelper;
 
 const INVALID_TILE_ID: u32 = std::u32::MAX;
+
+pub enum TiledPattern {
+    Color(Color),
+    ImageRect { image_id: u32, rect_id: u32, opaque: bool, },
+    ScreenTile { image_id: u32, opaque: bool, },
+}
 
 struct Row {
     edges: Vec<RowEdge>,
@@ -37,7 +42,7 @@ impl Row {
 }
 
 pub struct DrawParams {
-    pub pattern: Pattern,
+    pub pattern: TiledPattern,
     pub tolerance: f32,
     pub tile_size: Size2D<f32>,
     pub fill_rule: FillRule,
@@ -122,6 +127,7 @@ pub struct TilerConfig {
     pub tile_padding: f32,
     pub tolerance: f32,
     pub flatten: bool,
+    pub mask_atlas_size: Size2D<u32>,
 }
 
 unsafe impl Sync for Tiler {}
@@ -133,7 +139,7 @@ impl Tiler {
         let num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         Tiler {
             draw: DrawParams {
-                pattern: Pattern::Color(Color { r: 0, g: 0, b: 0, a: 0 }),
+                pattern: TiledPattern::Color(Color { r: 0, g: 0, b: 0, a: 0 }),
                 z_index: 0,
                 is_opaque: true,
                 tolerance: config.tolerance,
@@ -190,10 +196,11 @@ impl Tiler {
         self.scissor = scissor.intersection_unchecked(&Box2D::from_size(self.size));
     }
 
-    pub fn set_pattern(&mut self, pattern: Pattern) {
+    pub fn set_pattern(&mut self, pattern: TiledPattern) {
         self.draw.is_opaque = match pattern {
-            Pattern::Color(color) => color.a == 255,
-            Pattern::Image(_) => false,
+            TiledPattern::Color(color) => color.a == 255,
+            TiledPattern::ImageRect { opaque, .. } => opaque,
+            TiledPattern::ScreenTile { opaque, .. } => opaque,
         };
         self.draw.pattern = pattern;
     }
@@ -731,13 +738,9 @@ impl Tiler {
             current_edge += 1;
         }
 
-        // At this point we visited all edges but not necessarily all tiles.
-        // TODO: presumably this is unnecessary unless we are doing something like clip-out.
-        while tile.x < tiles_end {
+        // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
+        while tile.x < tiles_end || !active_edges.is_empty() {
             self.finish_tile(&mut tile, active_edges, coarse_mask, output_indirection_buffer, encoder);
-            if active_edges.is_empty() {
-                break;
-            }
         }
 
         encoder.end_row();
@@ -964,59 +967,6 @@ impl ActiveEdge {
 #[test]
 fn active_edge_size() {
     println!("{}", std::mem::size_of::<ActiveEdge>());
-}
-
-impl ActiveEdge {
-    pub fn clip_horizontally(&self, x_range: std::ops::Range<f32>) -> Self {
-        if self.is_line() {
-            let mut segment = LineSegment {
-                from: self.from,
-                to: self.to,
-            };
-            let swap = segment.from.x > segment.to.x;
-            if swap {
-                std::mem::swap(&mut segment.from, &mut segment.to);
-            }
-
-            let range = clip_line_segment_1d(segment.from.x, segment.to.x, x_range.start, x_range.end);
-            let mut segment = segment.split_range(range);
-
-            if swap {
-                std::mem::swap(&mut segment.from, &mut segment.to);
-            }
-
-            ActiveEdge {
-                from: segment.from,
-                to: segment.to,
-                ctrl: point(segment.from.x, std::f32::NAN),
-            }
-        } else {
-            let mut segment = QuadraticBezierSegment {
-                from: self.from,
-                to: self.to,
-                ctrl: self.ctrl,
-            };
-
-            let swap = segment.from.x > segment.to.x;
-            if swap {
-                std::mem::swap(&mut segment.from, &mut segment.to);
-            }
-
-            let range = clip_quadratic_bezier_1d(segment.from.x, segment.ctrl.x, segment.to.x, x_range.start, x_range.end);
-
-            let mut segment = split_quad(&segment, range);
-
-            if swap {
-                std::mem::swap(&mut segment.from, &mut segment.to);
-            }
-
-            ActiveEdge {
-                from: segment.from,
-                to: segment.to,
-                ctrl: segment.ctrl,
-            }
-        }
-    }
 }
 
 pub struct TileInfo {

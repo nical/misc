@@ -42,6 +42,7 @@ pub struct TileRenderer {
 
 impl TileRenderer {
     pub fn new(device: &wgpu::Device, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
+
         let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
         let masks = Masks::new(&device);
         let masked_tiles = MaskedTiles::new(&device, &globals_bind_group_layout);
@@ -109,6 +110,8 @@ impl TileRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        println!("Tile size: {}", tile_size);
 
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),

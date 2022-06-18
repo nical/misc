@@ -20,6 +20,13 @@ fn decode_color(color: u32) -> vec4<f32> {
     return vec4<f32>(r, g, b, a);
 }
 
+fn tile_uv(tile_idx: u32, tiles_per_row: u32, uv: vec2<f32>) -> vec2<f32> {
+    var tile_size = f32(globals.tile_size);
+    var tile_x = f32(tile_idx % tiles_per_row) * tile_size;
+    var tile_y = f32(tile_idx / tiles_per_row) * tile_size;
+    return vec2<f32>(tile_x, tile_y) + uv * tile_size;
+}
+
 [[stage(vertex)]]
 fn main(
     [[location(0)]] a_rect: vec4<f32>,
@@ -44,10 +51,7 @@ fn main(
     var masks_per_row: u32 = globals.tile_atlas_size / globals.tile_size;
     var mask_index = a_mask % (masks_per_row * masks_per_row);
 
-    var tile_size = f32(globals.tile_size);
-    var tile_x = f32(mask_index % masks_per_row) * tile_size;
-    var tile_y = f32(mask_index / masks_per_row) * tile_size;
-    var mask_uv = vec2<f32>(tile_x, tile_y) + uv * tile_size;
+    var mask_uv = tile_uv(mask_index, masks_per_row, uv);
 
     var color = decode_color(a_color);
 

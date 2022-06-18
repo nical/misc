@@ -9,12 +9,10 @@ use std::ops::Range;
 
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
-use crate::Color;
 use crate::gpu::solid_tiles::TileInstance as SolidTile;
 use crate::gpu::masked_tiles::TileInstance as MaskedTile;
 use crate::gpu::masked_tiles::Mask as GpuMask;
 use crate::gpu::masked_tiles::MaskUploader;
-use crate::api::Pattern;
 
 
 use copyless::VecHelper;
@@ -68,6 +66,7 @@ pub struct TileEncoder {
     masks_texture_index: u32,
 
     mask_id_range: Range<u32>,
+    // TODO: move to drawing parameters.
     pub masks_per_atlas: u32,
     shared: Arc<Shared>,
 
@@ -85,7 +84,7 @@ pub struct TileEncoder {
 }
 
 impl TileEncoder {
-    pub fn new(mask_uploader: MaskUploader) -> Self {
+    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
@@ -105,7 +104,7 @@ impl TileEncoder {
                 next_mask_tile_id: AtomicU32::new(0),
             }),
             mask_id_range: 0..0,
-            masks_per_atlas: (2048 * 2048) / (16 * 16),
+            masks_per_atlas: config.mask_atlas_size.area() / config.tile_size.area() as u32,
 
             edge_distributions: [0; 16],
         }
@@ -131,14 +130,14 @@ impl TileEncoder {
                 next_mask_tile_id: AtomicU32::new(0),
             }),
             mask_id_range: 0..0,
-            masks_per_atlas: (2048 * 2048) / (16 * 16),
+            masks_per_atlas: self.masks_per_atlas,
 
             edge_distributions: [0; 16],
         }
     }
 
-    pub fn new_parallel(other: &TileEncoder, mask_uploader: MaskUploader) -> Self {
-        let mut encoder = TileEncoder::new(mask_uploader);
+    pub fn new_parallel(other: &TileEncoder, config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
+        let mut encoder = TileEncoder::new(config, mask_uploader);
         encoder.shared = other.shared.clone();
         encoder.masks_per_atlas = other.masks_per_atlas;
 
@@ -209,8 +208,8 @@ impl TileEncoder {
                 self.solid_tiles.push(SolidTile {
                     rect: tile.output_rect,
                     color: match draw.pattern {
-                        Pattern::Color(color) => color.to_u32(),
-                        Pattern::Image(id) => id,
+                        TiledPattern::Color(color) => color.to_u32(),
+                        _ => { unimplemented!() },
                     },
                 });
             }
@@ -334,8 +333,8 @@ impl TileEncoder {
         self.masked_tiles.push(MaskedTile {
             rect: tile.output_rect,
             color: match draw.pattern {
-                Pattern::Color(color) => color.to_u32(),
-                Pattern::Image(id) => id,
+                TiledPattern::Color(color) => color.to_u32(),
+                _ => { unimplemented!() },
             },
             mask: mask_id,
         });
@@ -400,8 +399,8 @@ impl TileEncoder {
         self.masked_tiles.push(MaskedTile {
             rect: tile.output_rect,
             color: match draw.pattern {
-                Pattern::Color(color) => color.to_u32(),
-                Pattern::Image(id) => id,
+                TiledPattern::Color(color) => color.to_u32(),
+                _ => { unimplemented!() }
             },
             mask: mask_id,
         });
@@ -430,7 +429,6 @@ impl TileEncoder {
                 add_backdrop(edge.to.y, -1.0, &mut backdrops[0..draw.tile_size.height as usize]);
             }
 
-            //let edge = edge.clip_horizontally(tile.outer_rect.min.x .. tile.outer_rect.max.x);
             let from = edge.from - tile_offset;
             let to = edge.to - tile_offset;
 
@@ -463,8 +461,8 @@ impl TileEncoder {
         self.masked_tiles.push(MaskedTile {
             rect: tile.output_rect,
             color: match draw.pattern {
-                Pattern::Color(color) => color.to_u32(),
-                Pattern::Image(id) => id,
+                TiledPattern::Color(color) => color.to_u32(),
+                _ => { unimplemented!() }
             },
             mask: mask_id,
         });
