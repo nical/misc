@@ -4,11 +4,16 @@
 
 use crate::array::{ForEach, new_for_each};
 use crate::join::{Join, new_join};
-use crate::{Context, Priority};
+use crate::{Context, Priority, Event};
 
 use std::ops::Deref;
 use std::sync::Arc;
 
+pub trait TaskDependency {
+    type Output;
+    fn get_output(&self) -> Self::Output;
+    fn get_event(&self) -> Option<&Event>;
+}
 
 /// A builder for common execution parameters such as priority and context data.
 pub struct Parameters<'c, 'cd, 'id, ContextData, ImmutableData> {
@@ -91,33 +96,97 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
     }
 }
 
+/// An atomic reference counted container for data that can be mutably accessed by
+/// contexts concurrently and safely.
+///
+/// Think of it as an `Arc<[T]>` with some extra constraints and gurarantees:
+///  - The size of the array must be at least as large as the number of contexts.
+///  - since contexts have their own index and can't be used by multiple threads
+///  - concurrently, the the presence of a context is enough to guarantee exclusive
+///    mutable access to the item at its index.
+pub struct HeapContextData<T> {
+    data: Option<Arc<[T]>>,
+}
+
+impl<T> Clone for HeapContextData<T> {
+    fn clone(&self) -> Self {
+        HeapContextData { data: self.data.clone() }
+    }
+}
+
+pub fn heap_context_data() -> HeapContextData<()> {
+    HeapContextData { data: None }
+}
+
+impl<C> HeapContextData<C> {
+    pub fn from_vec(self, data: Vec<C>) -> Self {
+        HeapContextData {
+            data: Some(data.into()),
+        }
+    }
+
+    pub fn as_mut_slice(&mut self) -> Option<&mut [C]> {
+        if let Some(data) = &mut self.data {
+            Arc::get_mut(data)
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn get_ref(&self, ctx: &Context) -> ContextDataRef<C> {
+        let ctx_data: *mut C = if let Some(data) = &self.data {
+            // Note: This check is important for the safety of ContextDataRef::get.
+            let min = ctx.num_worker_threads() as usize + 1;
+            let count = data.len();
+            assert!(count >= min, "Got {:?} context items, need at least {:?}", count, min);
+
+            std::mem::transmute(data.as_ptr())
+        } else {
+            std::ptr::null_mut()
+        };
+
+        ContextDataRef { ptr: ctx_data }
+    }
+
+    // TODO:
+    // This is actually not quite safe because a thread can create multiple unique references
+    // to the same item via multiple context data refs.
+    // pub fn get_item_mut(&mut self, ctx: &Context) -> &mut C {
+    //     unsafe {
+    //         let data_ref = self.get_ref(ctx);
+    //         data_ref.get(ctx)
+    //     }
+    // }
+
+    pub fn strong_count(&self) -> usize {
+        self.data.as_ref()
+            .map(|data| Arc::strong_count(&data))
+            .unwrap_or(1)
+    }
+}
+
 /// Similar to `Parameters`, but owns its data.and does not hold a reference to the context.
 pub struct OwnedParameters<ContextData, ImmutableData> {
+    context_data: HeapContextData<ContextData>,
     immutable_data: Option<Arc<ImmutableData>>,
-    context_data: Vec<ContextData>,
     priority: Priority,
-    has_context_data: bool,
 }
 
 pub fn owned_parameters() -> OwnedParameters<(), ()> {
     OwnedParameters {
+        context_data: heap_context_data(),
         immutable_data: None,
-        context_data: Vec::new(),
         priority: Priority::High,
-        has_context_data: false,
     }
 }
 
 impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     #[inline]
-    pub fn with_context_data<T>(self, data: Vec<T>) -> OwnedParameters<T, ImmutableData> {
+    pub fn with_context_data<T>(self, data: HeapContextData<T>) -> OwnedParameters<T, ImmutableData> {
         OwnedParameters {
             context_data: data,
             immutable_data: self.immutable_data,
             priority: self.priority,
-            // Since we don't have access to the context here, we remember to check the size
-            // later in from_owned.
-            has_context_data: true,
         }
     }
 
@@ -127,7 +196,6 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
             context_data: self.context_data,
             immutable_data: Some(data),
             priority: self.priority,
-            has_context_data: self.has_context_data,
         }
     }
 
@@ -144,7 +212,7 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     }
 
     #[inline]
-    pub fn context_data(&mut self) -> &mut [ContextData] {
+    pub fn context_data(&mut self) -> &mut HeapContextData<ContextData> {
         &mut self.context_data
     }
 
@@ -152,9 +220,8 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     pub fn take(&mut self) -> Self {
         OwnedParameters {
             immutable_data: self.immutable_data.take(),
-            context_data: std::mem::take(&mut self.context_data),
+            context_data: self.context_data.clone(), // TODO
             priority: self.priority,
-            has_context_data: self.has_context_data,
         }
     }
 }
@@ -165,24 +232,87 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
 /// the data outlives the ContextDataRef.
 ///
 /// Used internally by various job implementations.
-pub struct ContextDataRef<ContextData, ImmutableData> {
-    ctx_data: *mut ContextData,
-    immutable_data: *const ImmutableData,    
+pub struct ContextDataRef<ContextData> {
+    ptr: *mut ContextData,
 }
 
-impl<ContextData, ImmutableData> ContextDataRef<ContextData, ImmutableData> {
-    pub unsafe fn get(&self, ctx: &Context) -> (&mut ContextData, &ImmutableData) {
+impl<ContextData> ContextDataRef<ContextData> {
+    pub unsafe fn get<'l>(&self, ctx: &Context) -> &'l mut ContextData {
         let context_data_index = ctx.data_index() as isize;
+        // SAFETY: Here we rely two very important things:
+        // - If there is no context data, then it's type is `()`, which means reads and writes
+        //   to the pointer are ALWAYS noop whatever the address of the pointer.
+        // - If a context data array was provided, its size has been checked in `with_context_data`.
+        //
+        // As a result it is impossible to craft a pointer that will read or write out of bounds
+        // here.
+        &mut *self.ptr.wrapping_offset(context_data_index)
+    }
+
+    /// Returns unsafe references to the context data and immutable data.
+    ///
+    /// The caller is responsible for ensuring that the context data and immutable data
+    /// outlines the unsafe ref.
+    #[inline]
+    pub unsafe fn from_ref<'c, 'cd, 'id, ImmutableData>(parameters: &mut Parameters<'c, 'cd, 'id, ContextData, ImmutableData>) -> ContextDataRef<ContextData> {
+        ContextDataRef {
+            ptr: parameters.context_data.as_mut_ptr(),
+        }
+    }
+
+
+    /// Returns unsafe references to the context data and immutable data.
+    ///
+    /// The caller is responsible for ensuring that the context data and immutable data
+    /// outlines the unsafe ref.
+    #[inline]
+    pub unsafe fn from_owned<ImmutableData>(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ContextDataRef<ContextData> {
+        parameters.context_data.get_ref(ctx)
+    }
+}
+
+pub struct ImmutableDataRef<ImmutableData> {
+    ptr: *const ImmutableData,
+}
+
+impl<ImmutableData> ImmutableDataRef<ImmutableData> {
+    #[inline]
+    pub unsafe fn from_ref<'c, 'cd, 'id, ContextData>(parameters: &mut Parameters<'c, 'cd, 'id, ContextData, ImmutableData>) -> ImmutableDataRef<ImmutableData> {
+        ImmutableDataRef { ptr: parameters.immutable_data }
+    }
+
+    #[inline]
+    pub unsafe fn from_owned<ContextData>(parameters: &mut OwnedParameters<ContextData, ImmutableData>) -> ImmutableDataRef<ImmutableData> {
+        // If immutable_data is None, then it s always the unit type (), in which case we don't care
+        // about what the address points to since no interaction with the unit type translates to actual
+        // reads or writes to memory. We could default to pass std::ptr::null(), however miri has checks
+        // that fail when we dereference null pointers, even if they are the unit type.
+        // So instead we use a dummy empty slice and take its pointer.
+        let dummy: &[ImmutableData] = &[];
+        let ptr = parameters.immutable_data
+            .as_ref()
+            .map_or(dummy.as_ptr(), |boxed| &*boxed.deref());
+
+        ImmutableDataRef {
+            ptr
+        }
+    }
+
+    pub unsafe fn get(&self) -> &ImmutableData {
+        &*self.ptr
+    }
+}
+
+pub struct ConcurrentDataRef<ContextData, ImmutableData> {
+    pub context_data: ContextDataRef<ContextData>,
+    pub immutable_data: ImmutableDataRef<ImmutableData>,
+}
+
+impl<ContextData, ImmutableData> ConcurrentDataRef<ContextData, ImmutableData> {
+    pub unsafe fn get(&self, ctx: &Context) -> (&mut ContextData, &ImmutableData) {
         (
-            // SAFETY: Here we rely two very important things:
-            // - If there is no context data, then it's type is `()`, which means reads and writes
-            //   to the pointer are ALWAYS noop whatever the address of the pointer.
-            // - If a context data array was provided, its size has been checked in `with_context_data`.
-            //
-            // As a result it is impossible to craft a pointer that will read or write out of bounds
-            // here.
-            &mut *self.ctx_data.wrapping_offset(context_data_index),
-            &*self.immutable_data,
+            self.context_data.get(ctx),
+            self.immutable_data.get(),
         )
     }
 
@@ -191,42 +321,22 @@ impl<ContextData, ImmutableData> ContextDataRef<ContextData, ImmutableData> {
     /// The caller is responsible for ensuring that the context data and immutable data
     /// outlines the unsafe ref.
     #[inline]
-    pub unsafe fn from_ref<'c, 'cd, 'id>(parameters: &mut Parameters<'c, 'cd, 'id, ContextData, ImmutableData>) -> ContextDataRef<ContextData, ImmutableData> {
-        ContextDataRef {
-            ctx_data: parameters.context_data.as_mut_ptr(),
-            immutable_data: parameters.immutable_data,
+    pub unsafe fn from_ref<'c, 'cd, 'id>(parameters: &mut Parameters<'c, 'cd, 'id, ContextData, ImmutableData>) -> ConcurrentDataRef<ContextData, ImmutableData> {
+        ConcurrentDataRef {
+            context_data: ContextDataRef::from_ref(parameters),
+            immutable_data: ImmutableDataRef::from_ref(parameters),
         }
     }
-
 
     /// Returns unsafe references to the context data and immutable data.
     ///
     /// The caller is responsible for ensuring that the context data and immutable data
     /// outlines the unsafe ref.
     #[inline]
-    pub unsafe fn from_owned(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ContextDataRef<ContextData, ImmutableData> {
-        if parameters.has_context_data {
-            // Note: This check is important for the safety of ContextDataRef::get.
-            let min = ctx.num_worker_threads() as usize + 1;
-            let count = parameters.context_data.len();
-            assert!(count >= min, "Got {:?} context items, need at least {:?}", count, min);
-        }
-
-        let ctx_data = parameters.context_data.as_mut_ptr();
-
-        // If immutable_data is None, then it s always the unit type (), in which case we don't care
-        // about what the address points to since no interaction with the unit type translates to actual
-        // reads or writes to memory. We could default to pass std::ptr::null(), however miri has checks
-        // that fail when we dereference null pointers, even if they are the unit type.
-        // So instead we use a dummy empty slice and take its pointer.
-        let dummy: &[ImmutableData] = &[];
-        let immutable_data = parameters.immutable_data
-            .as_ref()
-            .map_or(dummy.as_ptr(), |boxed| &*boxed.deref());
-
-        ContextDataRef {
-            ctx_data,
-            immutable_data,
+    pub unsafe fn from_owned(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ConcurrentDataRef<ContextData, ImmutableData> {
+        ConcurrentDataRef {
+            context_data: ContextDataRef::from_owned(parameters, ctx),
+            immutable_data: ImmutableDataRef::from_owned(parameters),
         }
     }
 }

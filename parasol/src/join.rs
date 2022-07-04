@@ -1,6 +1,6 @@
 use crate::core::event::{Event, EventRef};
 use crate::core::job::{JobRef, Job, Priority};
-use crate::helpers::{Parameters, ContextDataRef};
+use crate::helpers::{Parameters, ConcurrentDataRef};
 use crate::Context;
 
 use std::mem;
@@ -80,7 +80,7 @@ where
             let event = Event::new(1, self.inner.context().thread_pool_id());
 
             let job = JoinJob {
-                data: ContextDataRef::from_ref(&mut self.inner),
+                data: ConcurrentDataRef::from_ref(&mut self.inner),
                 function: UnsafeCell::new(Some(self.f2)),
                 event: event.unsafe_ref(),
             };
@@ -100,7 +100,7 @@ where
 
 
 struct JoinJob<ContextData, ImmutableData, Func> {
-    data: ContextDataRef<ContextData, ImmutableData>,
+    data: ConcurrentDataRef<ContextData, ImmutableData>,
     function: UnsafeCell<Option<Func>>,
     event: EventRef,
 }

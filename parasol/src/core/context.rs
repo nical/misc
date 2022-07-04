@@ -11,6 +11,7 @@ use super::thread_pool::{ThreadPool, ThreadPoolId};
 use crate::array::{ForEach, new_for_each};
 use crate::join::{new_join};
 use crate::helpers::*;
+use crate::task::{Task, new_task};
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -94,6 +95,12 @@ impl Context {
             |ctx, _| f1(ctx),
             |ctx, _| f2(ctx),
         ).run();
+    }
+
+    /// TODO: move this into an extension trait.
+    #[inline]
+    pub fn task(&mut self) -> Task<(), (), (), ()> {
+        new_task(self)
     }
 
     pub fn with_priority<'c>(&'c mut self, priority: Priority) -> Parameters<'c, 'static, 'static, (), ()> {

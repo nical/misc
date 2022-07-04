@@ -1,9 +1,10 @@
 use crate::core::event::{Event, BoxedEvent, EventRef};
 use crate::core::job::{JobRef, Job, Priority};
 use crate::Context;
-use crate::helpers::{Parameters, ContextDataRef, OwnedParameters, owned_parameters};
+use crate::helpers::{Parameters, ConcurrentDataRef, OwnedParameters, owned_parameters, HeapContextData};
 use crate::ThreadPoolId;
 use crate::sync::Arc;
+use crate::handle::*;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
@@ -185,7 +186,7 @@ where
         let job_data: ArrayJob<Item, ContextData, ImmutableData, F> = ArrayJob::new(
             params.items,
             params.group_size,
-            ContextDataRef::from_ref(&mut params.inner),
+            ConcurrentDataRef::from_ref(&mut params.inner),
             params.function,
             &event,
         );
@@ -287,7 +288,7 @@ where
         let data = Box::new(ArrayJob::new(
             params.items,
             params.group_size,
-            ContextDataRef::from_ref(&mut params.inner),
+            ConcurrentDataRef::from_ref(&mut params.inner),
             params.function,
             &event,
         ));
@@ -343,7 +344,7 @@ impl DispatchParameters {
 /// frame (see `for_each`) or on the heap otherwise.
 struct ArrayJob<Item, ContextData, ImmutableData, Func> {
     items: *mut Item,
-    data: ContextDataRef<ContextData, ImmutableData>,
+    data: ConcurrentDataRef<ContextData, ImmutableData>,
     function: Func,
     event: EventRef,
     range: Range<u32>,
@@ -388,7 +389,7 @@ where
     pub unsafe fn new(
         items: &mut[Item],
         split_thresold: u32,
-        data: ContextDataRef<ContextData, ImmutableData>,
+        data: ConcurrentDataRef<ContextData, ImmutableData>,
         function: Func,
         event: &Event,
     ) -> Self {
@@ -465,7 +466,7 @@ pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
 
 impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData> {
     #[inline]
-    pub fn with_context_data<CtxData>(self, ctx_data: Vec<CtxData>) -> Workload<Item, CtxData, ImmutableData> {
+    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> Workload<Item, CtxData, ImmutableData> {
         Workload {
             items: self.items,
             parameters: self.parameters.with_context_data(ctx_data),
@@ -511,7 +512,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         self
     }
 
-    pub fn context_data(&mut self) -> &mut [ContextData] {
+    pub fn context_data(&mut self) -> &mut HeapContextData<ContextData> {
         self.parameters.context_data()
     }
 
@@ -530,7 +531,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
             let data = Box::new(ArrayJob::new(
                 &mut self.items[..],
                 self.group_size,
-                ContextDataRef::from_owned(&mut self.parameters, ctx),
+                ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
                 function,
                 &self.event,
             ));
@@ -658,7 +659,7 @@ impl<'l, Item, ContextData, ImmutableData> WorkloadExt<'l, Item, ContextData, Im
             let data = Box::new(ArrayJob::new(
                 &mut ext.items[..],
                 self.workload.group_size,
-                ContextDataRef::from_owned(&mut self.workload.parameters, ctx),
+                ConcurrentDataRef::from_owned(&mut self.workload.parameters, ctx),
                 function,
                 &ext.event,
             ));

@@ -20,7 +20,9 @@ mod core;
 mod array;
 mod join;
 pub mod util;
+mod task;
 pub mod helpers;
+pub mod handle;
 
 pub use array::{ForEach, workload, range_workload, Workload, RunningWorkload};
 pub use join::*;
@@ -32,3 +34,33 @@ pub use crate::core::shutdown::ShutdownHandle;
 pub use crate::core::sync;
 
 pub use crossbeam_utils::CachePadded;
+
+/*
+
+TaskData<I, O> {
+    output: Option<O>,
+    event: Event,
+}
+
+TaskHandle<O> {
+    output: *mut Option<O>,
+    event: *mut Event,
+}
+
+
+
+let handle = ctx.job().run(|ctx, data| {
+    let task = ctx.for_each(&data.elements).run(|ctx, args| {
+        // ...
+    });
+
+    task.run_async();
+
+    data
+})
+
+let data = handle.wait();
+
+
+
+*/
