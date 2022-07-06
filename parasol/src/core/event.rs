@@ -278,33 +278,6 @@ impl Event {
         ctx.stats.spinned += i;
     }
 
-    /// Block the current thread until all of the event's dependencies are met.
-    ///
-    /// This does not attempt to steal/execute jobs.
-    ///
-    /// In general this should be avoided in favor of `Context::wait`.
-    /// Only call this if you need to wait but don't have a `Context` available.
-    pub(crate) fn wait_no_context(&self) {
-        if self.is_signaled() {
-            return;
-        }
-
-        profiling::scope!("wait");
-
-        let mut guard = self.mutex.lock().unwrap();
-
-        while self.state.load(Ordering::SeqCst) == STATE_DEFAULT {
-            guard = self.cond.wait(guard).unwrap();
-        }
-
-        // Ensure state has been stored
-
-        let backoff = Backoff::new();
-        while self.state.load(Ordering::Acquire) != STATE_SIGNALED {
-            backoff.spin();
-        }
-    }
-
     pub fn unsafe_ref(&self) -> EventRef {
         EventRef { event: self }
     }

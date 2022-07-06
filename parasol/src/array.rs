@@ -7,7 +7,6 @@ use crate::handle::*;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 pub struct Args<'l, Item, ContextData, ImmutableData> {
@@ -134,20 +133,6 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
         }
     }
 
-    /// Run this workload asynchronously on the worker threads
-    ///
-    /// Returns an object to wait on.
-    #[inline]
-    pub fn run_async<Func>(self, function: Func) -> JoinHandle<'a, 'b>
-    where
-        Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
-        Item: Sync + Send + 'static,
-        ContextData: 'static,
-        ImmutableData: 'static,
-    {
-        for_each_async(self.with_parallel_ratio(Ratio::ONE).apply(function))
-    }
-
     #[inline]
     fn apply<Func>(self, function: Func) -> ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
     where
@@ -271,41 +256,6 @@ unsafe fn for_each_dispatch(
     // Right now we wake at most half of the workers. Workers themselves will wake other workers
     // up if they have enough work.
     ctx.wake(actual_group_count.min((ctx.num_worker_threads() + 1) / 2));
-}
-
-fn for_each_async<'a, 'b, Item, ContextData, ImmutableData, F>(mut params: ForEach<Item, ContextData, ImmutableData, F>) -> JoinHandle<'a, 'b>
-where
-    F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
-    Item: Sync + Send + 'static,
-    ContextData: 'static,
-    ImmutableData: 'static,
-{
-    profiling::scope!("for_each_async");
-
-    unsafe {
-        let parallel = params.dispatch_parameters();
-
-        let data = Box::new(ArrayJob::new(
-            params.items,
-            params.group_size,
-            ConcurrentDataRef::from_ref(&mut params.inner),
-            params.function,
-            Event::new(params.range.end - params.range.start, params.inner.context().thread_pool_id()),
-        ));
-
-        let priority = params.inner.priority();
-
-        for_each_dispatch(
-            params.inner.context_mut(),
-            data.as_job_ref(priority),
-            &parallel,
-            params.group_size,
-        );
-
-        let event: *const Event = &data.event;
-
-        JoinHandle { event, data: data, _marker: PhantomData }
-    }
 }
 
 #[derive(Debug)]
@@ -455,25 +405,6 @@ where
     }
 }
 
-pub struct JoinHandle<'a, 'b> {
-    event: *const Event,
-    #[allow(unused)]
-    data: Box<dyn std::any::Any>,
-    _marker: PhantomData<(&'a (), &'b ())>,
-}
-
-impl<'a, 'b> JoinHandle<'a, 'b> {
-    pub fn wait(self, ctx: &mut Context) {
-        ctx.wait(unsafe { &*self.event });
-    }
-}
-
-impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
-    fn drop(&mut self) {
-        unsafe { &*self.event }.wait_no_context();
-    }
-}
-
 pub struct HeapForEach<'l, Item, ContextData, ImmutableData> {
     pub items: Vec<Item>,
     parameters: OwnedParameters<ContextData, ImmutableData>,
@@ -499,7 +430,8 @@ pub fn heap_for_each<Item>(ctx: &mut Context, items: Vec<Item>) -> HeapForEach<I
 }
 
 impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, ImmutableData> {
-    // TODO: fn with_input<Dep: TaskDependency<Output = Vec<Item>>>(self, dep: Dep)
+    // TODO: fn with_input<Dep: TaskDependency<Output = Vec<Item>>>(self, dep: Dep) -> ...
+    // TODO: fn after(self, handle: Handle) -> ...
 
     #[inline]
     pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> HeapForEach<'l, Item, CtxData, ImmutableData> {
@@ -753,32 +685,6 @@ fn test_simple_for_each() {
         assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
     }
 
-    for _i in 0..300 {
-        //println!(" - {:?}", _i);
-        let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-        let handle = ctx.for_each(input).run_async(|ctx, mut args| {
-
-            for _ in 0..10 {
-                let nested_input = &mut [0i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-                let handle = ctx.for_each(nested_input).run_async(|_, mut item| { *item += 1; });
-                handle.wait(ctx);
-
-                for item in nested_input {
-                    assert_eq!(*item, 1);
-                }
-            }
-
-            *args *= 2;
-            *args.context_data = ();
-        });
-
-        handle.wait(&mut ctx);
-
-        assert_eq!(input, &[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]);
-    }
-
     let handle = pool.shut_down();
     handle.wait();
 
@@ -798,9 +704,8 @@ fn test_few_items() {
 
             ctx.for_each(&mut input).run(|_, mut item| { *item += 1; });
 
-            let handle = ctx.for_each(&mut input).run_async(|_, mut item| { *item += 1; });
-
-            handle.wait(&mut ctx);
+            let handle = ctx.heap().for_each(input).run(|_, mut item| { *item += 1; });
+            let input = handle.resolve(&mut ctx);
 
             for val in &input {
                 assert_eq!(*val, 2);
