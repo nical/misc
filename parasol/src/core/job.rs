@@ -79,24 +79,25 @@ impl JobRef {
     where
         T: Job,
     {
-        Self::with_range(data, 0..1, 1)
-    }
-
-    pub unsafe fn with_range<T>(data: *const T, range: Range<u32>, split_thresold: u32) -> JobRef
-    where
-        T: Job,
-    {
-        debug_assert!(range.start < range.end);
         let fn_ptr: unsafe fn(*const T, &mut Context, range: Range<u32>) = <T as Job>::execute;
         // erase types:
         JobRef {
             pointer: data as *const (),
             execute_fn: mem::transmute(fn_ptr),
-            start: range.start,
-            end: range.end,
-            split_thresold: split_thresold.max(1),
+            start: 0,
+            end: 1,
+            split_thresold: 1,
             priority: Priority::High,
         }
+    }
+
+    #[inline]
+    pub unsafe fn with_range(mut self, range: Range<u32>, split_thresold: u32) -> Self {
+        debug_assert!(range.start < range.end, "{:?}", range);
+        self.start = range.start;
+        self.end = range.end;
+        self.split_thresold = split_thresold.max(1);
+        self
     }
 
     #[inline]

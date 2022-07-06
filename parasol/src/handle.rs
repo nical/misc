@@ -10,10 +10,12 @@
 //! that goes away at the end of the work. This way the job data isn't deleted until all
 //! handles are gone and the job is done.
 
-use crate::{Context, Event};
+use crate::{Context, Event, Priority};
+use crate::core::job::{Job, JobRef};
 use crate::helpers::TaskDependency;
 use crate::sync::{AtomicI32, Ordering};
 use std::cell::UnsafeCell;
+use std::ops::Range;
 
 /// This implements reference counting by hand so that the job can release its own refcount, which is hard to do with `Arc`.
 pub trait RefCounted {
@@ -24,6 +26,26 @@ pub trait RefCounted {
 pub struct InlineRefCounted<T> {
     ref_count: AtomicI32,
     payload: T,
+}
+
+impl<T> InlineRefCounted<T> {
+    pub fn inner(&self) -> &T {
+        &self.payload
+    }
+
+    pub unsafe fn as_job_ref(&self, priority: Priority) -> JobRef where T: Job {
+        JobRef::new(self).with_priority(priority)
+    }
+}
+
+// TODO: In retrospect, implementing Job automatically is probably a mistake
+// because it works very poorly with splitable jobs which need to release only
+// when the event is signaled.
+impl<T: Job> Job for InlineRefCounted<T> {
+    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
+        T::execute((*this).inner() as *const _, ctx, range);
+        (*this).release_ref();
+    }
 }
 
 impl<T> RefCounted for InlineRefCounted<T> {
@@ -46,7 +68,7 @@ pub struct RefPtr<T> {
 impl<T: 'static> RefPtr<T> {
     pub fn new(payload: T) -> Self {
         let ptr = Box::new(InlineRefCounted {
-            ref_count: AtomicI32::new(1),
+            ref_count: AtomicI32::new(2),
             payload,
         });
 
@@ -133,21 +155,28 @@ pub struct OwnedHandle<Output> {
     // Maintains the task's data alive.
     job_data: AnyRefPtr,
     event: *const Event,
-    output: *mut OutputSlot<Output>,
+    output: *const OutputSlot<Output>,
 }
 
 impl<Output> OwnedHandle<Output> {
     pub unsafe fn new(
         job_data: AnyRefPtr,
         event: *const Event,
-        output: *mut OutputSlot<Output>,
+        output: *const OutputSlot<Output>,
     ) -> Self {
         OwnedHandle { job_data, event, output }
     }
 
-    pub fn wait(self, ctx: &mut Context) -> Output {
+    pub fn wait(&self, ctx: &mut Context) {
         unsafe {
             (*self.event).wait(ctx);
+            debug_assert!((*self.event).is_signaled());
+        }
+    }
+
+    pub fn resolve(self, ctx: &mut Context) -> Output {
+        self.wait(ctx);
+        unsafe {
             (*self.output).take()
         }
     }

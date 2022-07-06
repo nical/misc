@@ -1,14 +1,14 @@
-use crate::core::event::{Event, BoxedEvent, EventRef};
+use crate::core::event::Event;
 use crate::core::job::{JobRef, Job, Priority};
 use crate::Context;
 use crate::helpers::{Parameters, ConcurrentDataRef, OwnedParameters, owned_parameters, HeapContextData};
-use crate::ThreadPoolId;
 use crate::sync::Arc;
 use crate::handle::*;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 pub struct Args<'l, Item, ContextData, ImmutableData> {
     pub item: &'l mut Item,
@@ -188,7 +188,7 @@ where
             params.group_size,
             ConcurrentDataRef::from_ref(&mut params.inner),
             params.function,
-            &event,
+            event,
         );
 
         let priority = params.inner.priority();
@@ -198,7 +198,12 @@ where
         // and wakes some workers up if need be.
         // The items from `params.range.start` to `parallel.range.start` are reserved. we will
         // execute them last without exposing them to the worker threads.
-        for_each_dispatch(ctx, &job_data, &parallel, priority);
+        for_each_dispatch(
+            ctx,
+            job_data.as_job_ref(priority),
+            &parallel,
+            params.group_size,
+        );
 
         // Now the interesting bits: We kept around a range of items that for this thread to
         // execute, that workers threads cannot steal. The goal here is to make it as likely
@@ -210,7 +215,7 @@ where
         //    OS as soon as the condvar is signaled.
 
         // Pull work from our queue and execute it.
-        while !event.is_signaled() && ctx.keep_busy() {}
+        while !job_data.event.is_signaled() && ctx.keep_busy() {}
 
         // Execute the reserved batch of items that we didn't make available to worker threads.
         // Doing this removes some potential for parallelism, but greatly increase the likelihood
@@ -231,24 +236,21 @@ where
                 (job_data.function)(ctx, args);
             }
 
-            event.signal(ctx, parallel.range.start - first_item);
+            job_data.event.signal(ctx, parallel.range.start - first_item);
         }
 
         // Hopefully by now all items have been processed. If so, wait will return quickly,
         // otherwise we'll have to block on a condition variable.
-        ctx.wait(&event);
+        ctx.wait(&job_data.event);
     }
 }
 
-unsafe fn for_each_dispatch<Item, ContextData, ImmutableData, F>(
+unsafe fn for_each_dispatch(
     ctx: &mut Context,
-    job_data: &ArrayJob<Item, ContextData, ImmutableData, F>,
+    job_ref: JobRef,
     dispatch: &DispatchParameters,
-    priority: Priority,
-)
-where
-    F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
-{
+    group_size: u32,
+) {
     let mut actual_group_count = dispatch.group_count;
     for group_idx in 0..dispatch.group_count {
         let start = dispatch.range.start + dispatch.initial_group_size * group_idx;
@@ -260,7 +262,7 @@ where
             continue;
         }
 
-        ctx.enqueue_job(job_data.as_job_ref(start..end).with_priority(priority));
+        ctx.enqueue_job(job_ref.with_range(start..end, group_size));
     }
 
     // Waking up worker threads is the expensive part.
@@ -283,24 +285,24 @@ where
     unsafe {
         let parallel = params.dispatch_parameters();
 
-        let event = Event::new_boxed(params.range.end - params.range.start, params.inner.context().thread_pool_id());
-
         let data = Box::new(ArrayJob::new(
             params.items,
             params.group_size,
             ConcurrentDataRef::from_ref(&mut params.inner),
             params.function,
-            &event,
+            Event::new(params.range.end - params.range.start, params.inner.context().thread_pool_id()),
         ));
 
         let priority = params.inner.priority();
 
         for_each_dispatch(
             params.inner.context_mut(),
-            &data,
+            data.as_job_ref(priority),
             &parallel,
-            priority,
+            params.group_size,
         );
+
+        let event: *const Event = &data.event;
 
         JoinHandle { event, data: data, _marker: PhantomData }
     }
@@ -346,9 +348,74 @@ struct ArrayJob<Item, ContextData, ImmutableData, Func> {
     items: *mut Item,
     data: ConcurrentDataRef<ContextData, ImmutableData>,
     function: Func,
-    event: EventRef,
     range: Range<u32>,
     split_thresold: u32,
+    event: Event,
+}
+
+struct HeapArrayJob<Item, ContextData, ImmutableData, Func> {
+    job: ArrayJob<Item, ContextData, ImmutableData, Func>,
+    #[allow(dead_code)]
+    parameters: OwnedParameters<ContextData, ImmutableData>,
+    output: OutputSlot<Vec<Item>>,
+    ref_count: AtomicI32,
+}
+
+impl<Item, ContextData, ImmutableData, Func> Job for HeapArrayJob<Item, ContextData, ImmutableData, Func>
+where
+    Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
+{
+    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
+        if execute_impl(&(*this).job, ctx, range) {
+            (*this).release_ref();
+        }
+    }
+}
+
+impl<Item, ContextData, ImmutableData, Func> RefCounted for HeapArrayJob<Item, ContextData, ImmutableData, Func> {
+    unsafe fn add_ref(&self) {
+        self.ref_count.fetch_add(1, Ordering::Acquire);
+    }
+
+    unsafe fn release_ref(&self) {
+        let refs = self.ref_count.fetch_add(-1, Ordering::Release) - 1;
+        debug_assert!(refs >= 0);
+        if refs == 0 {
+            let this : *mut Self = std::mem::transmute(self);
+            let _ = Box::from_raw(this);
+        }
+    }
+}
+
+// Returns true if this execution was the one that put the vent in the signaled state.
+unsafe fn execute_impl<I, CD, ID, F>(this: *const ArrayJob<I, CD, ID, F>, ctx: &mut Context, range: Range<u32>) -> bool
+where
+    F: Fn(&mut Context, Args<I, CD, ID>) + Send,
+
+{
+    let this: &ArrayJob<I, CD, ID, F> = mem::transmute(this);
+    let n = range.end - range.start;
+
+    assert!(range.start >= this.range.start && range.end <= this.range.end);
+
+    let (context_data, immutable_data) = this.data.get(ctx);
+
+    for item_idx in range {
+        // SAFETY: The situation for the item pointer is the same as with context_data.
+        // The pointer can be null, but when it is the case, the type is always ().
+        let item = &mut *this.items.wrapping_offset(item_idx as isize);
+        profiling::scope!("job");
+        let args = Args {
+            item,
+            item_index: item_idx,
+            context_data,
+            immutable_data,
+        };
+
+        (this.function)(ctx, args);
+    }
+
+    this.event.signal(ctx, n)
 }
 
 impl<Item, ContextData, ImmutableData, Func> Job for ArrayJob<Item, ContextData, ImmutableData, Func>
@@ -356,29 +423,7 @@ where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
 {
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
-        let this: &Self = mem::transmute(this);
-        let n = range.end - range.start;
-
-        assert!(range.start >= this.range.start && range.end <= this.range.end);
-
-        let (context_data, immutable_data) = this.data.get(ctx);
-
-        for item_idx in range {
-            // SAFETY: The situation for the item pointer is the same as with context_data.
-            // The pointer can be null, but when it is the case, the type is always ().
-            let item = &mut *this.items.wrapping_offset(item_idx as isize);
-            profiling::scope!("job");
-            let args = Args {
-                item,
-                item_index: item_idx,
-                context_data,
-                immutable_data,
-            };
-
-            (this.function)(ctx, args);
-        }
-
-        this.event.signal(ctx, n);
+        execute_impl(this, ctx, range);
     }
 }
 
@@ -391,27 +436,27 @@ where
         split_thresold: u32,
         data: ConcurrentDataRef<ContextData, ImmutableData>,
         function: Func,
-        event: &Event,
+        event: Event
     ) -> Self {
         ArrayJob {
             items: items.as_mut_ptr(),
             data,
             function,
-            event: event.unsafe_ref(),
+            event,
             range: 0..(items.len() as u32),
             split_thresold,
         }
     }
 
-    pub unsafe fn as_job_ref(&self, range: Range<u32>) -> JobRef {
-        assert!(range.start >= self.range.start);
-        assert!(range.end <= self.range.end);
-        JobRef::with_range(self, range, self.split_thresold)
+    pub unsafe fn as_job_ref(&self, priority: Priority) -> JobRef {
+        JobRef::new(self)
+            .with_range(self.range.start .. self.range.end.max(1), self.split_thresold)
+            .with_priority(priority)
     }
 }
 
 pub struct JoinHandle<'a, 'b> {
-    event: BoxedEvent,
+    event: *const Event,
     #[allow(unused)]
     data: Box<dyn std::any::Any>,
     _marker: PhantomData<(&'a (), &'b ())>,
@@ -419,68 +464,62 @@ pub struct JoinHandle<'a, 'b> {
 
 impl<'a, 'b> JoinHandle<'a, 'b> {
     pub fn wait(self, ctx: &mut Context) {
-        ctx.wait(&self.event);
+        ctx.wait(unsafe { &*self.event });
     }
 }
 
 impl<'a, 'b> Drop for JoinHandle<'a, 'b> {
     fn drop(&mut self) {
-        self.event.wait_no_context();
+        unsafe { &*self.event }.wait_no_context();
     }
 }
 
-pub struct Workload<Item, ContextData, ImmutableData> {
+pub struct HeapForEach<'l, Item, ContextData, ImmutableData> {
     pub items: Vec<Item>,
     parameters: OwnedParameters<ContextData, ImmutableData>,
     range: Range<u32>,
     group_size: u32,
-    event: BoxedEvent,
+    ctx: &'l mut Context,
 }
 
-pub struct RunningWorkload<Item, ContextData, ImmutableData> {
-    items: Vec<Item>,
-    parameters: OwnedParameters<ContextData, ImmutableData>,
-    range: Range<u32>,
-    group_size: u32,
-    #[allow(unused)]
-    data: Box<dyn std::any::Any>,
-    event: Option<BoxedEvent>,
+#[inline]
+pub fn heap_range_for_each(ctx: &mut Context, range: Range<u32>) -> HeapForEach<(), (), ()> {
+    heap_for_each(ctx, vec![(); range.end as usize]).with_range(range)
 }
 
-pub fn range_workload(range: Range<u32>) -> Workload<(), (), ()> {
-    workload(vec![(); range.end as usize]).with_range(range)
-}
-
-pub fn workload<Item>(items: Vec<Item>) -> Workload<Item, (), ()> {
-    Workload {
+#[inline]
+pub fn heap_for_each<Item>(ctx: &mut Context, items: Vec<Item>) -> HeapForEach<Item, (), ()> {
+    HeapForEach {
         range: 0..(items.len() as u32),
         items,
         parameters: owned_parameters(),
         group_size: 1,
-        event: Event::new_boxed(0, ThreadPoolId(std::u32::MAX)),
+        ctx,
     }
 }
 
-impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData> {
+impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, ImmutableData> {
+    // TODO: fn with_input<Dep: TaskDependency<Output = Vec<Item>>>(self, dep: Dep)
+
     #[inline]
-    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> Workload<Item, CtxData, ImmutableData> {
-        Workload {
+    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> HeapForEach<'l, Item, CtxData, ImmutableData> {
+        HeapForEach {
             items: self.items,
             parameters: self.parameters.with_context_data(ctx_data),
             range: self.range,
             group_size: self.group_size,
-            event: self.event,
+            ctx: self.ctx,
         }
     }
 
     #[inline]
-    pub fn with_immutable_data<Data>(self, immutable_data: Arc<Data>) -> Workload<Item, ContextData, Data> {
-        Workload {
+    pub fn with_immutable_data<Data>(self, immutable_data: Arc<Data>) -> HeapForEach<'l, Item, ContextData, Data> {
+        HeapForEach {
             items: self.items,
             parameters: self.parameters.with_immutable_data(immutable_data),
             range: self.range,
             group_size: self.group_size,
-            event: self.event,
+            ctx: self.ctx,
         }
     }
 
@@ -511,7 +550,7 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         self.parameters.context_data()
     }
 
-    pub fn submit<F>(mut self, ctx: &mut Context, function: F) -> RunningWorkload<Item, ContextData, ImmutableData>
+    pub fn run<F>(mut self, function: F) -> OwnedHandle<Vec<Item>>
     where
         F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
         ContextData: 'static,
@@ -519,63 +558,47 @@ impl<Item, ContextData, ImmutableData> Workload<Item, ContextData, ImmutableData
         Item: 'static,
     {
         unsafe {
+            let ctx = self.ctx;
+
             let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
+            let priority = self.parameters.priority();
 
-            self.event.reset(self.range.end - self.range.start, ctx.thread_pool_id());
+            let data = Box::new(HeapArrayJob {
+                job: ArrayJob {
+                    items: self.items.as_mut_ptr(),
+                    range: 0..(self.items.len() as u32),
+                    split_thresold: self.group_size,
+                    data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
+                    function,
+                    event: Event::new(self.range.end - self.range.start, ctx.thread_pool_id()),
+                },
+                output: OutputSlot::new(),
+                parameters: self.parameters,
+                // One reference for the AnyRefPtr and one that will be released by
+                // the last execute callback.
+                ref_count: AtomicI32::new(2),
+            });
 
-            let data = Box::new(ArrayJob::new(
-                &mut self.items[..],
-                self.group_size,
-                ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
-                function,
-                &self.event,
-            ));
+            // We can already place the item vector in the output slot even though the items will
+            // be written to later during the execute callback.
+            // This also serves the prupose of holding the vector.
+            data.output.set(self.items);
 
             for_each_dispatch(
                 ctx,
-                &data,
+                JobRef::new(&*data).with_priority(priority),
                 &dispatch,
-                self.parameters.priority(),
+                self.group_size,
             );
 
-            RunningWorkload {
-                items: self.items,
-                parameters: self.parameters,
-                range: self.range,
-                group_size: self.group_size,
-                data,
-                event: Some(self.event),
-            }
-        }
-    }
+            let event: *const Event = &data.job.event;
+            let output: *const OutputSlot<Vec<Item>> = &data.output;
 
-    pub fn pop_items(&mut self) -> Option<Vec<Item>> {
-        if !self.items.is_empty() {
-            return Some(std::mem::take(&mut self.items));
-        }
+            let data = AnyRefPtr::already_reffed(
+                Box::into_raw(data) as *mut dyn RefCounted
+            );
 
-        None
-    }
-}
-
-impl<Item, ContextData, ImmutableData> RunningWorkload<Item, ContextData, ImmutableData> {
-    pub fn wait(mut self, ctx: &mut Context) -> Workload<Item, ContextData, ImmutableData> {
-        self.event.as_ref().unwrap().wait(ctx);
-
-        Workload {
-            items: std::mem::take(&mut self.items),
-            parameters: self.parameters.take(),
-            range: self.range.clone(),
-            group_size: self.group_size,
-            event: self.event.take().unwrap(),
-        }
-    }
-}
-
-impl<Item, ContextData, ImmutableData> Drop for RunningWorkload<Item, ContextData, ImmutableData> {
-    fn drop(&mut self) {
-        if let Some(event) = &self.event {
-            event.wait_no_context();
+            OwnedHandle::new(data, event, output)
         }
     }
 }
@@ -602,49 +625,61 @@ fn div_ceil(a: u32, b: u32) -> u32 {
 }
 
 #[test]
-fn test_workload() {
+fn test_heap_for_each() {
     use crate::ThreadPool;
 
     let pool = ThreadPool::builder().with_worker_threads(3).build();
 
     let mut ctx = pool.pop_context().unwrap();
 
-    let mut workload_1 = workload(vec![0u32; 8192]).with_group_size(16);
-    let mut workload_2 = workload(vec![0u32; 8192]).with_group_size(16);
-    let mut workload_3 = workload(vec![0u32; 8192]).with_group_size(16);
+    let mut items1 = vec![0u32; 8192];
+    let mut items2 = vec![0u32; 8192];
+    let mut items3 = vec![0u32; 8192];
 
     for i in 0..3000 {
-        let handle_1 = workload_1.submit(&mut ctx, |_, mut item| { *item += 1; });
-        let handle_2 = workload_2.submit(&mut ctx, |_, mut item| { *item += 1; });
-        let handle_3 = workload_3.submit(&mut ctx, |_, mut item| { *item += 1; });
-        workload_1 = handle_1.wait(&mut ctx);
-        workload_2 = handle_2.wait(&mut ctx);
-        workload_3 = handle_3.wait(&mut ctx);
-        for item in &workload_1.items {
+        use std::mem::take;
+        let handle_1 = ctx.heap()
+            .for_each(take(&mut items1))
+            .with_group_size(16)
+            .run(|_, mut item| { *item += 1; });
+        let handle_2 = ctx.heap()
+            .for_each(take(&mut items2))
+            .with_group_size(16)
+            .run(|_, mut item| { *item += 1; });
+        let handle_3 = ctx.heap()
+            .for_each(take(&mut items3))
+            .with_group_size(16)
+            .run(|_, mut item| { *item += 1; });
+
+        items1 = handle_1.resolve(&mut ctx);
+        items2 = handle_2.resolve(&mut ctx);
+        items3 = handle_3.resolve(&mut ctx);
+        for item in &items1 {
+            assert_eq!(*item, i + 1); // left: 0, right: 1625
+        }
+        for item in &items2 {
             assert_eq!(*item, i + 1);
         }
-        for item in &workload_2.items {
-            assert_eq!(*item, i + 1);
-        }
-        for item in &workload_3.items {
+        for item in &items3 {
             assert_eq!(*item, i + 1);
         }
     }
 
     pool.shut_down().wait();
+    // double-free vec (easier to reproduce when CPU under load)
 }
 
 #[test]
-fn test_range_workload() {
+fn test_heap_range_for_each() {
     use crate::ThreadPool;
 
     let pool = ThreadPool::builder().with_worker_threads(3).build();
 
     let mut ctx = pool.pop_context().unwrap();
 
-    let w = range_workload(20..100)
+    let w = ctx.heap().range_for_each(20..100)
         .with_immutable_data(Arc::new(1234u32))
-        .submit(&mut ctx, |_, args| {
+        .run(|_, args| {
             assert!(args.item_index >= 20, "Error: {} should be in 20..100", args.item_index);
             assert!(args.item_index < 100, "Error: {} should be in 20..100", args.item_index);
             assert_eq!(args.immutable_data, &1234);

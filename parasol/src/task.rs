@@ -1,5 +1,5 @@
 use crate::core::event::{Event};
-use crate::core::job::{Job, JobRef, Priority};
+use crate::core::job::{Job, Priority};
 use crate::Context;
 use crate::helpers::*;
 use crate::handle::*;
@@ -99,7 +99,7 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
         ImmutableData: 'static,
     {
         let mut task = self.with_function(function);
-
+        let priority = task.parameters.priority();
         unsafe {
             let ctx = task.ctx;
 
@@ -120,7 +120,7 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
             let event: *const Event = &task_job.event;
             let output: *mut OutputSlot<Output> = mem::transmute(&task_job.output);
 
-            let job_ref = task_job.as_job_ref();
+            let job_ref = task_job.as_job_ref(priority);
             if let Some(evt) = task_job.input.get_event() {
                 evt.then(ctx, job_ref);
             } else {
@@ -140,32 +140,19 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
 struct TaskJobData<Output, ContextData, ImmutableData, Dependency, F> {
     function: F,
     input: Dependency,
+    #[allow(dead_code)] // Not really dead code, needed to keep the strong references alive.
     parameters: OwnedParameters<ContextData, ImmutableData>,
     data: ConcurrentDataRef<ContextData, ImmutableData>,
     output: OutputSlot<Output>,
     event: Event,
 }
 
-type TaskJob<Output, ContextData, ImmutableData, Dependency, F> = InlineRefCounted<TaskJobData<Output, ContextData, ImmutableData, Dependency, F>>;
-
-impl<Output, ContextData, ImmutableData, Dependency, F> TaskJob<Output, ContextData, ImmutableData, Dependency, F>
-where
-    Dependency: TaskDependency,
-    F: Fn(&mut Context, Args<Dependency::Output, ContextData, ImmutableData>) -> Output + Send,
-{
-    unsafe fn as_job_ref(&self) -> JobRef {
-        JobRef::new(self).with_priority(self.parameters.priority())
-    }
-}
-
-impl<Output, ContextData, ImmutableData, Dependency, Func> Job for TaskJob<Output, ContextData, ImmutableData, Dependency, Func>
+impl<Output, ContextData, ImmutableData, Dependency, Func> Job for TaskJobData<Output, ContextData, ImmutableData, Dependency, Func>
 where
     Dependency: TaskDependency,
     Func: Fn(&mut Context, Args<Dependency::Output, ContextData, ImmutableData>) -> Output + Send,
 {
     unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
-        let this: *mut Self = mem::transmute(this);
-
         let (context_data, immutable_data) = (*this).data.get(ctx);
         (*this).output.set(((*this).function)(ctx, Args {
             input: (*this).input.get_output(),
@@ -173,8 +160,6 @@ where
             immutable_data,
         }));
         (*this).event.signal(ctx, 1);
-
-        (*this).release_ref();
     }
 }
 
@@ -197,7 +182,7 @@ fn simple_task() {
     }
 
     for handle in handles {
-        assert_eq!(handle.wait(&mut ctx), 2);
+        assert_eq!(handle.resolve(&mut ctx), 2);
     }
 
     // Task t1 produces an output which becomes which is the input of task t2.
@@ -206,7 +191,7 @@ fn simple_task() {
     let t2 = ctx.task().with_input(t1).run(|_, args| {
         args.input as u32 + 1
     });
-    assert_eq!(t2.wait(&mut ctx), 3);
+    assert_eq!(t2.resolve(&mut ctx), 3);
 
     for _ in 0..100_000 {
         ctx.task().run(|_ctx, _args| { 1u32 + 1 });

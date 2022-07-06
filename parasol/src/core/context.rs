@@ -8,7 +8,7 @@ use super::event::Event;
 use super::thread_pool::{ThreadPool, ThreadPoolId};
 // In principle there should not be this dependency, but it's nice to be able
 // to do ctx.for_each(...). It'll probably move into an extension trait.
-use crate::array::{ForEach, new_for_each};
+use crate::array::{ForEach, HeapForEach, new_for_each, heap_for_each, heap_range_for_each};
 use crate::join::{new_join};
 use crate::helpers::*;
 use crate::task::{Task, new_task};
@@ -244,6 +244,34 @@ impl Context {
 
     pub(crate) fn queues_are_empty(&self) -> bool {
         self.queues[0].is_empty() && self.queues[1].is_empty()
+    }
+
+    pub fn heap(&mut self) -> OnHeap {
+        OnHeap(self)
+    }
+}
+
+/// A builder for workloads that point to heap allocated data.
+///
+/// For example `ctx.heap().for_each(vec)` is the heap allocated equivalent of
+/// `ctx.for_each(&slice[..])`.
+///
+/// Heap allocated workloads can be easier to manage since they aren't bound by any
+/// lifetime, at the cost of more allocations.
+pub struct OnHeap<'l>(&'l mut Context);
+
+impl<'l> OnHeap<'l> {
+    pub fn for_each<Item>(self, items: Vec<Item>) -> HeapForEach<'l, Item, (), ()> {
+        heap_for_each(self.0, items)
+    }
+
+    pub fn range_for_each(self, range: std::ops::Range<u32>) -> HeapForEach<'l, (), (), ()> {
+        heap_range_for_each(self.0, range)
+    }
+
+    #[inline]
+    pub fn task(self) -> Task<'l, (), (), (), ()> {
+        new_task(self.0)
     }
 }
 
