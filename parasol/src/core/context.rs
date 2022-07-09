@@ -11,7 +11,7 @@ use super::thread_pool::{ThreadPool, ThreadPoolId};
 use crate::array::{ForEach, new_for_each};
 use crate::join::{new_join};
 use crate::helpers::*;
-
+use crate::task::{task_builder, TaskBuilder, TaskDependency};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ContextId(pub(crate) u32);

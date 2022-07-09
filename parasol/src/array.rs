@@ -4,6 +4,7 @@ use crate::Context;
 use crate::sync::Arc;
 use crate::helpers::*;
 use crate::handle::*;
+use crate::task::{TaskBuilder, TaskDependency};
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
@@ -732,7 +733,7 @@ fn test_simple_for_each() {
 
     let mut ctx = pool.pop_context().unwrap();
 
-    for _ in 0..300 {
+    for _ in 0..200 {
         let input = &mut [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let worker_data = &mut [0i32, 0, 0, 0];
 

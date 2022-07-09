@@ -11,7 +11,7 @@
 //! handles are gone and the job is done.
 
 use crate::{Context, Event};
-use crate::helpers::TaskDependency;
+use crate::task::TaskDependency;
 use crate::sync::{AtomicI32, Ordering};
 use std::cell::UnsafeCell;
 
