@@ -10,12 +10,10 @@
 //! that goes away at the end of the work. This way the job data isn't deleted until all
 //! handles are gone and the job is done.
 
-use crate::{Context, Event, Priority};
-use crate::core::job::{Job, JobRef};
+use crate::{Context, Event};
 use crate::helpers::TaskDependency;
 use crate::sync::{AtomicI32, Ordering};
 use std::cell::UnsafeCell;
-use std::ops::Range;
 
 /// This implements reference counting by hand so that the job can release its own refcount, which is hard to do with `Arc`.
 pub trait RefCounted {
@@ -32,20 +30,6 @@ impl<T> InlineRefCounted<T> {
     pub fn inner(&self) -> &T {
         &self.payload
     }
-
-    pub unsafe fn as_job_ref(&self, priority: Priority) -> JobRef where T: Job {
-        JobRef::new(self).with_priority(priority)
-    }
-}
-
-// TODO: In retrospect, implementing Job automatically is probably a mistake
-// because it works very poorly with splitable jobs which need to release only
-// when the event is signaled.
-impl<T: Job> Job for InlineRefCounted<T> {
-    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
-        T::execute((*this).inner() as *const _, ctx, range);
-        (*this).release_ref();
-    }
 }
 
 impl<T> RefCounted for InlineRefCounted<T> {
@@ -54,7 +38,9 @@ impl<T> RefCounted for InlineRefCounted<T> {
     }
 
     unsafe fn release_ref(&self) {
-        if self.ref_count.fetch_add(-1, Ordering::Release) - 1 == 0 {
+        let ref_count = self.ref_count.fetch_sub(1, Ordering::Release) - 1;
+        debug_assert!(ref_count >= 0);
+        if ref_count == 0 {
             let this : *mut Self = std::mem::transmute(self);
             let _ = Box::from_raw(this);
         }
@@ -79,6 +65,14 @@ impl<T: 'static> RefPtr<T> {
 
     pub fn into_any(self) -> AnyRefPtr {
         AnyRefPtr::already_reffed(self.ptr as *mut dyn RefCounted)
+    }
+
+    pub unsafe fn mut_payload_unchecked(this: &Self) -> *mut T {
+        &mut (*this.ptr).payload
+    }
+
+    pub fn as_raw(this: &Self) -> *const InlineRefCounted<T> {
+        (*this).ptr
     }
 }
 
@@ -122,29 +116,59 @@ impl Drop for AnyRefPtr {
     }
 }
 
-pub struct OutputSlot<T> {
+/// An unsynchronized, internally mutable slot where data can be placed, for example
+/// to store the output or input of a job.
+pub struct DataSlot<T> {
     cell: UnsafeCell<Option<T>>,
 }
 
-impl<T> OutputSlot<T> {
+impl<T> DataSlot<T> {
+    /// Create a data slot.
     #[inline]
     pub fn new() -> Self {
-        OutputSlot {
+        DataSlot {
             cell: UnsafeCell::new(None)
         }
     }
 
+    #[inline]
+    /// Create an already-set data slot.
+    pub fn from(data: T) -> Self {
+        DataSlot {
+            cell: UnsafeCell::new(Some(data))
+        }
+    }
+
+    /// Place data in the slot.
+    /// 
+    /// Safety:
+    ///  - `set` must be called at most once.
+    ///  - `set` must not be called if the slot was created with `from`.
     #[inline]
     pub unsafe fn set(&self, payload: T) {
         debug_assert!((*self.cell.get()).is_none());
         (*self.cell.get()) = Some(payload);
     }
 
+    /// Move the data out of the slot.
+    ///
+    /// Safety:
+    ///  - `take` must be called at most once, *after* the
+    ///    slot is set (either after `set` was called or if the slot
+    ///    was created with `from`).
+    ///  - `take` and `get_ref` must not be called concurrently.
     #[inline]
     pub unsafe fn take(&self) -> T {
         (*self.cell.get()).take().unwrap()
     }
 
+    /// Get a reference on the data.
+    ///
+    /// Safety:
+    ///  - This must be called *after* the slot is set (either
+    ///    after `set` was called or if the slot was created with
+    ///    `from`).
+    ///  - `take` and `get_ref` must not be called concurrently.
     pub unsafe fn get_ref(&self) -> &T {
         (*self.cell.get()).as_ref().unwrap()
     }
@@ -155,14 +179,14 @@ pub struct OwnedHandle<Output> {
     // Maintains the task's data alive.
     job_data: AnyRefPtr,
     event: *const Event,
-    output: *const OutputSlot<Output>,
+    output: *const DataSlot<Output>,
 }
 
 impl<Output> OwnedHandle<Output> {
     pub unsafe fn new(
         job_data: AnyRefPtr,
         event: *const Event,
-        output: *const OutputSlot<Output>,
+        output: *const DataSlot<Output>,
     ) -> Self {
         OwnedHandle { job_data, event, output }
     }
@@ -211,7 +235,7 @@ impl<Output> SharedHandle<Output> {
     pub unsafe fn new(
         job_data: AnyRefPtr,
         event: *const Event,
-        output: *mut OutputSlot<Output>,
+        output: *mut DataSlot<Output>,
     ) -> Self {
         SharedHandle {
             inner: OwnedHandle::new(job_data, event, output)
@@ -279,6 +303,7 @@ impl<T> TaskDependency for OwnedHandle<T> {
     type Output = T;
     fn get_output(&self) -> T {
         unsafe {
+            debug_assert!((*self.event).is_signaled());
             (*self.output).take()
         }
     }
@@ -300,4 +325,14 @@ impl TaskDependency for () {
     type Output = ();
     fn get_output(&self) -> () { () }
     fn get_event(&self) -> Option<&Event> { None }
+}
+
+impl<T> TaskDependency for DataSlot<T> {
+    type Output = T;
+    fn get_output(&self) -> T {
+        unsafe { self.take() }
+    }
+    fn get_event(&self) -> Option<&Event> {
+        None
+    }
 }

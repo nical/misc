@@ -55,7 +55,11 @@ pub struct Event {
 }
 
 impl Event {
+    pub const MAX_DEPENDECIES: u32 = std::i32::MAX as u32;
+
     pub fn new(deps: u32, pool_id: ThreadPoolId) -> Self {
+        debug_assert!(deps <= Self::MAX_DEPENDECIES);
+
         let state = if deps == 0 {
             STATE_SIGNALED
         } else {
@@ -73,6 +77,10 @@ impl Event {
         }
     }
 
+    // pub(crate) fn log_deps(&self) {
+    //     println!("event {:?}: {}", self as *const _, self.deps.load(Ordering::SeqCst));
+    // }
+    
     /// Creates a boxed event.
     pub fn new_boxed(deps: u32, pool_id: ThreadPoolId) -> BoxedEvent {
         AliasableBox::from_unique(Box::new(Event::new(deps, pool_id)))
@@ -92,6 +100,9 @@ impl Event {
     }
 
     pub fn signal(&self, ctx: &mut Context, n: u32) -> bool {
+        if n > 2000 {
+            println!("signaling {:?} of {:?}", n, self.deps.load(Ordering::SeqCst));
+        }
         debug_assert!(!self.is_signaled(), "already signaled {:?}:{:?}", self as *const _, self.id); // TODO: this fails
         debug_assert!(self.deps.load(Ordering::SeqCst) >= 1);
         //assert_eq!(self.thread_pool_id, ctx.thread_pool_id());

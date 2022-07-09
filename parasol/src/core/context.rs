@@ -12,6 +12,7 @@ use crate::array::{ForEach, HeapForEach, new_for_each, heap_for_each, heap_range
 use crate::join::{new_join};
 use crate::helpers::*;
 use crate::task::{Task, new_task};
+use crate::handle::DataSlot;
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -261,17 +262,25 @@ impl Context {
 pub struct OnHeap<'l>(&'l mut Context);
 
 impl<'l> OnHeap<'l> {
-    pub fn for_each<Item>(self, items: Vec<Item>) -> HeapForEach<'l, Item, (), ()> {
+    pub fn for_each<Item>(self, items: Vec<Item>) -> HeapForEach<'l, DataSlot<Vec<Item>>, (), ()> {
         heap_for_each(self.0, items)
     }
 
-    pub fn range_for_each(self, range: std::ops::Range<u32>) -> HeapForEach<'l, (), (), ()> {
+    pub fn for_each_with_dependency<Item, Dep: TaskDependency<Output = Vec<Item>>>(self, input: Dep) -> HeapForEach<'l, Dep, (), ()> {
+        crate::array::heap_for_each_dep(self.0, input)
+    }
+
+    pub fn range_for_each(self, range: std::ops::Range<u32>) -> HeapForEach<'l, DataSlot<Vec<()>>, (), ()> {
         heap_range_for_each(self.0, range)
     }
 
     #[inline]
     pub fn task(self) -> Task<'l, (), (), (), ()> {
         new_task(self.0)
+    }
+
+    pub fn create_context_data<T>(&self, data: Vec<T>) -> HeapContextData<T> {
+        HeapContextData::from_vec(data, self.0.id())
     }
 }
 

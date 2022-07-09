@@ -4,7 +4,7 @@
 
 use crate::array::{ForEach, new_for_each};
 use crate::join::{Join, new_join};
-use crate::{Context, Priority, Event};
+use crate::{Context, ContextId, Priority, Event};
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -105,23 +105,26 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
 ///  - concurrently, the the presence of a context is enough to guarantee exclusive
 ///    mutable access to the item at its index.
 pub struct HeapContextData<T> {
+    // Both options should only ever be None when the type is ().
     data: Option<Arc<[T]>>,
+    ctx: Option<ContextId>,
 }
 
 impl<T> Clone for HeapContextData<T> {
     fn clone(&self) -> Self {
-        HeapContextData { data: self.data.clone() }
+        HeapContextData { data: self.data.clone(), ctx: self.ctx.clone() }
     }
 }
 
 pub fn heap_context_data() -> HeapContextData<()> {
-    HeapContextData { data: None }
+    HeapContextData { data: None, ctx: None, }
 }
 
 impl<C> HeapContextData<C> {
-    pub fn from_vec(self, data: Vec<C>) -> Self {
+    pub fn from_vec(data: Vec<C>, ctx: ContextId) -> Self {
         HeapContextData {
             data: Some(data.into()),
+            ctx: Some(ctx),
         }
     }
 
@@ -134,6 +137,13 @@ impl<C> HeapContextData<C> {
     }
 
     pub unsafe fn get_ref(&self, ctx: &Context) -> ContextDataRef<C> {
+        if !ctx.is_worker_thread() && self.ctx.is_some() {
+            // There is a single slot in the context data array for non-worker
+            // contexts, so we have to ensure that it isn't used by multiple
+            // non-worker contexts by associating the context data to only one
+            // of them at any given time.
+            assert_eq!(self.ctx, Some(ctx.id()));
+        }
         let ctx_data: *mut C = if let Some(data) = &self.data {
             // Note: This check is important for the safety of ContextDataRef::get.
             let min = ctx.num_worker_threads() as usize + 1;

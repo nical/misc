@@ -1,13 +1,13 @@
 use crate::core::event::Event;
 use crate::core::job::{JobRef, Job, Priority};
 use crate::Context;
-use crate::helpers::{Parameters, ConcurrentDataRef, OwnedParameters, owned_parameters, HeapContextData};
+use crate::helpers::{Parameters, ConcurrentDataRef, OwnedParameters, owned_parameters, HeapContextData, TaskDependency};
 use crate::sync::Arc;
 use crate::handle::*;
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::cell::UnsafeCell;
 
 pub struct Args<'l, Item, ContextData, ImmutableData> {
     pub item: &'l mut Item,
@@ -38,6 +38,7 @@ pub(crate) fn new_for_each<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData>(
     inner: Parameters<'c, 'cd, 'id, ContextData, ImmutableData>,
     items: &'i mut [Item],
 ) -> ForEach<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData, ()> {
+    assert!(items.len() <= Event::MAX_DEPENDECIES as usize);
     ForEach {
         range: 0..items.len() as u32,
         items,
@@ -304,36 +305,85 @@ struct ArrayJob<Item, ContextData, ImmutableData, Func> {
 }
 
 struct HeapArrayJob<Item, ContextData, ImmutableData, Func> {
-    job: ArrayJob<Item, ContextData, ImmutableData, Func>,
+    array_job: ArrayJob<Item, ContextData, ImmutableData, Func>,
     #[allow(dead_code)]
     parameters: OwnedParameters<ContextData, ImmutableData>,
-    output: OutputSlot<Vec<Item>>,
-    ref_count: AtomicI32,
+    output: DataSlot<Vec<Item>>,
+    strong_ref: Option<*const dyn RefCounted>,
 }
+
+struct DeferredArrayJob<Dep, Item, ContextData, ImmutableData, Func> {
+    heap_job: UnsafeCell<HeapArrayJob<Item, ContextData, ImmutableData, Func>>,
+    input: Dep,
+    group_size: u32,
+}
+
 
 impl<Item, ContextData, ImmutableData, Func> Job for HeapArrayJob<Item, ContextData, ImmutableData, Func>
 where
     Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
 {
     unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
-        if execute_impl(&(*this).job, ctx, range) {
-            (*this).release_ref();
+        if execute_impl(&(*this).array_job, ctx, range) {
+            if let Some(strong_ref) = &(*this).strong_ref {
+                (&**strong_ref).release_ref();
+            }
         }
     }
 }
 
-impl<Item, ContextData, ImmutableData, Func> RefCounted for HeapArrayJob<Item, ContextData, ImmutableData, Func> {
-    unsafe fn add_ref(&self) {
-        self.ref_count.fetch_add(1, Ordering::Acquire);
-    }
+impl<Dep, Item, ContextData, ImmutableData, Func> Job for DeferredArrayJob<Dep, Item, ContextData, ImmutableData, Func>
+where
+    Dep: TaskDependency<Output = Vec<Item>>,
+    Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Send,
+{
+    unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
+        // Fetch the input from our dependency. We rely on being scheduled after
+        // our dependency is done, and on having exclusive access to its output
+        // for this to be safe.
+        let mut items = (*this).input.get_output();
+        assert!(items.len() <= Event::MAX_DEPENDECIES as usize);
 
-    unsafe fn release_ref(&self) {
-        let refs = self.ref_count.fetch_add(-1, Ordering::Release) - 1;
-        debug_assert!(refs >= 0);
-        if refs == 0 {
-            let this : *mut Self = std::mem::transmute(self);
-            let _ = Box::from_raw(this);
+        // We need to mutate the array_job to set some of the parameters, now that
+        // we have the location and size of the workload.
+        // It is safe because at this stage there is no other job pointing to this
+        // memory location. It won't be safe to make new mutations during and after
+        // the for_each_dispatch call.
+        let heap_job: *mut _ = (*this).heap_job.get();
+        let array_job: *mut _ = &mut (*heap_job).array_job;
+
+        (*array_job).items = items.as_mut_ptr();
+
+        // u32::MAX is the special value meaning we didn't specify a range.
+        if (*array_job).range.start == std::u32::MAX {
+            (*array_job).range.start = 0;
+            (*array_job).range.end = items.len() as u32;
+        } else {
+            assert!((*array_job).range.end <= items.len() as u32);
         }
+
+        // The event was initialized with u32::MAX dependency because we didn't
+        // know when scheduling this what the size of the input would be, fix that
+        // up now.
+        let num_items = (*array_job).range.end - (*array_job).range.start;
+        (*array_job).event.signal(ctx, Event::MAX_DEPENDECIES - num_items);
+
+        // Store it directly in our output slot.
+        (*heap_job).output.set(items);
+
+        let dispatch = DispatchParameters::new(
+            ctx,
+            (*array_job).range.clone(),
+            (*this).group_size,
+            Ratio::ONE
+        );
+
+        for_each_dispatch(
+            ctx,
+            JobRef::new(&*heap_job).with_priority((*heap_job).parameters.priority()),
+            &dispatch,
+            (*this).group_size,
+        );
     }
 }
 
@@ -405,8 +455,8 @@ where
     }
 }
 
-pub struct HeapForEach<'l, Item, ContextData, ImmutableData> {
-    pub items: Vec<Item>,
+pub struct HeapForEach<'l, Input, ContextData, ImmutableData> {
+    pub input: Input,
     parameters: OwnedParameters<ContextData, ImmutableData>,
     range: Range<u32>,
     group_size: u32,
@@ -414,29 +464,41 @@ pub struct HeapForEach<'l, Item, ContextData, ImmutableData> {
 }
 
 #[inline]
-pub fn heap_range_for_each(ctx: &mut Context, range: Range<u32>) -> HeapForEach<(), (), ()> {
+pub fn heap_range_for_each(ctx: &mut Context, range: Range<u32>) -> HeapForEach<DataSlot<Vec<()>>, (), ()> {
     heap_for_each(ctx, vec![(); range.end as usize]).with_range(range)
 }
 
 #[inline]
-pub fn heap_for_each<Item>(ctx: &mut Context, items: Vec<Item>) -> HeapForEach<Item, (), ()> {
+pub fn heap_for_each<Item>(ctx: &mut Context, items: Vec<Item>) -> HeapForEach<DataSlot<Vec<Item>>, (), ()> {
+    assert!(items.len() <= Event::MAX_DEPENDECIES as usize);
     HeapForEach {
         range: 0..(items.len() as u32),
-        items,
+        input: DataSlot::from(items),
         parameters: owned_parameters(),
         group_size: 1,
         ctx,
     }
 }
 
-impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, ImmutableData> {
+#[inline]
+pub fn heap_for_each_dep<Dependency>(ctx: &mut Context, input: Dependency) -> HeapForEach<Dependency, (), ()> {
+    HeapForEach {
+        range: std::u32::MAX..std::u32::MAX,
+        input,
+        parameters: owned_parameters(),
+        group_size: 1,
+        ctx,
+    }
+}
+
+impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, ContextData, ImmutableData> {
     // TODO: fn with_input<Dep: TaskDependency<Output = Vec<Item>>>(self, dep: Dep) -> ...
     // TODO: fn after(self, handle: Handle) -> ...
 
     #[inline]
-    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> HeapForEach<'l, Item, CtxData, ImmutableData> {
+    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> HeapForEach<'l, Dependency, CtxData, ImmutableData> {
         HeapForEach {
-            items: self.items,
+            input: self.input,
             parameters: self.parameters.with_context_data(ctx_data),
             range: self.range,
             group_size: self.group_size,
@@ -445,9 +507,9 @@ impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, Im
     }
 
     #[inline]
-    pub fn with_immutable_data<Data>(self, immutable_data: Arc<Data>) -> HeapForEach<'l, Item, ContextData, Data> {
+    pub fn with_immutable_data<Data>(self, immutable_data: Arc<Data>) -> HeapForEach<'l, Dependency, ContextData, Data> {
         HeapForEach {
-            items: self.items,
+            input: self.input,
             parameters: self.parameters.with_immutable_data(immutable_data),
             range: self.range,
             group_size: self.group_size,
@@ -458,7 +520,7 @@ impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, Im
     #[inline]
     pub fn with_range(mut self, range: Range<u32>) -> Self {
         assert!(range.end >= range.start);
-        assert!(range.end <= self.items.len() as u32);
+        //assert!(range.end <= self.items.len() as u32); // TODO!
         self.range = range;
 
         self
@@ -482,8 +544,84 @@ impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, Im
         self.parameters.context_data()
     }
 
-    pub fn run<F>(mut self, function: F) -> OwnedHandle<Vec<Item>>
+    pub fn run<F, Item>(self, function: F) -> OwnedHandle<Vec<Item>>
     where
+        Dependency: TaskDependency<Output = Vec<Item>> + 'static,
+        F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
+        ContextData: 'static,
+        ImmutableData: 'static,
+        Item: 'static,
+    {
+        if self.input.get_event().is_some() {
+            self.schedule_after_dependency(function)
+        } else {
+            self.schedle_now(function)
+        }
+    }
+
+    pub fn schedle_now<F, Item>(mut self, function: F) -> OwnedHandle<Vec<Item>>
+    where
+        Dependency: TaskDependency<Output = Vec<Item>>,
+        F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
+        ContextData: 'static,
+        ImmutableData: 'static,
+        Item: 'static,
+    {
+        unsafe {
+            let mut items = self.input.get_output();
+            assert!(self.range.end as usize <= items.len());
+
+            let ctx = self.ctx;
+
+            let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
+            let priority = self.parameters.priority();
+
+            let strong_ref: Option<*const dyn RefCounted> = None;
+            let data = RefPtr::new(
+                HeapArrayJob {
+                    array_job: ArrayJob {
+                        items: items.as_mut_ptr(),
+                        range: 0..(items.len() as u32),
+                        split_thresold: self.group_size,
+                        data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
+                        function,
+                        event: Event::new(self.range.end - self.range.start, ctx.thread_pool_id()),
+                    },
+                    output: DataSlot::new(),
+                    parameters: self.parameters,
+                    // One reference for the AnyRefPtr and one that will be released by
+                    // the last execute callback.
+                    strong_ref,
+                }
+            );
+
+            data.add_ref();
+            (*RefPtr::mut_payload_unchecked(&data)).strong_ref = Some(RefPtr::as_raw(&data));
+
+            // We can already place the item vector in the output slot even though the items will
+            // be written to later during the execute callback.
+            // This also serves the prupose of holding the vector.
+            data.output.set(items);
+
+            for_each_dispatch(
+                ctx,
+                JobRef::new(&data.array_job).with_priority(priority),
+                &dispatch,
+                self.group_size,
+            );
+
+            let event: *const Event = &data.array_job.event;
+            let output: *const DataSlot<Vec<Item>> = &data.output;
+
+            let data = data.into_any();
+
+            OwnedHandle::new(data, event, output)
+        }
+    }
+
+    pub fn schedule_after_dependency<F, Item>(mut self, function: F) -> OwnedHandle<Vec<Item>>
+    where
+        Dependency: TaskDependency<Output = Vec<Item>> + 'static,
         F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
         ContextData: 'static,
         ImmutableData: 'static,
@@ -491,44 +629,45 @@ impl<'l, Item, ContextData, ImmutableData> HeapForEach<'l, Item, ContextData, Im
     {
         unsafe {
             let ctx = self.ctx;
-
-            let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
             let priority = self.parameters.priority();
-
-            let data = Box::new(HeapArrayJob {
-                job: ArrayJob {
-                    items: self.items.as_mut_ptr(),
-                    range: 0..(self.items.len() as u32),
-                    split_thresold: self.group_size,
-                    data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
-                    function,
-                    event: Event::new(self.range.end - self.range.start, ctx.thread_pool_id()),
-                },
-                output: OutputSlot::new(),
-                parameters: self.parameters,
-                // One reference for the AnyRefPtr and one that will be released by
-                // the last execute callback.
-                ref_count: AtomicI32::new(2),
+            let strong_ref: Option<*const dyn RefCounted> = None;
+            let data = RefPtr::new(DeferredArrayJob {
+                heap_job: UnsafeCell::new(HeapArrayJob {
+                    array_job: ArrayJob {
+                        items: std::ptr::null_mut(),
+                        range: self.range.clone(),
+                        split_thresold: self.group_size,
+                        data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
+                        function,
+                        // Hack: we don't know yet how many items we will process so we initialize
+                        // the event with the maximum number of dependencies and will adjust down
+                        // during the setup task.
+                        event: Event::new(Event::MAX_DEPENDECIES, ctx.thread_pool_id()),
+                    },
+                    output: DataSlot::new(),
+                    parameters: self.parameters,
+                    // One reference for the AnyRefPtr and one that will be released by
+                    // the last execute callback.
+                    strong_ref,
+                }),
+                group_size: self.group_size,
+                input: self.input,
             });
 
-            // We can already place the item vector in the output slot even though the items will
-            // be written to later during the execute callback.
-            // This also serves the prupose of holding the vector.
-            data.output.set(self.items);
+            let heap_job: *mut _ = (*RefPtr::mut_payload_unchecked(&data)).heap_job.get();
+            data.add_ref();
+            (*heap_job).strong_ref = Some(RefPtr::as_raw(&data));
 
-            for_each_dispatch(
-                ctx,
-                JobRef::new(&*data).with_priority(priority),
-                &dispatch,
-                self.group_size,
-            );
+            let event: *const Event = &(*data.heap_job.get()).array_job.event;
+            let output: *const DataSlot<Vec<Item>> = &(*heap_job).output;
 
-            let event: *const Event = &data.job.event;
-            let output: *const OutputSlot<Vec<Item>> = &data.output;
+            // Schedule this task to run after its dependency is done.
+            data.input
+                .get_event()
+                .unwrap()
+                .then(ctx, JobRef::new(data.inner()).with_priority(priority));
 
-            let data = AnyRefPtr::already_reffed(
-                Box::into_raw(data) as *mut dyn RefCounted
-            );
+            let data = data.into_any();
 
             OwnedHandle::new(data, event, output)
         }
@@ -712,6 +851,31 @@ fn test_few_items() {
             }
         }
     }
+}
+
+#[test]
+fn test_heap_for_each_dependencies() {
+    let pool = crate::ThreadPool::builder()
+    .with_worker_threads(2)
+    .with_contexts(1)
+    .build();
+
+    let mut ctx = pool.pop_context().unwrap();
+
+    let t1 = ctx.heap().task().run(|_, _| { vec![10u32; 1024] });
+    let t2 = ctx.heap().for_each_with_dependency(t1).run(|_, mut item| *item += 1);
+    let result = t2.resolve(&mut ctx);
+
+    assert_eq!(result, vec![11u32; 1024]);
+
+    // Sme test but producing/consuming an empty array.
+    let t1 = ctx.heap().task().run(|_, _| { Vec::<u32>::new() });
+    let t2 = ctx.heap().for_each_with_dependency(t1).run(|_, mut item| *item += 1);
+    let result = t2.resolve(&mut ctx);
+
+    assert_eq!(result, Vec::new());
+
+    pool.shut_down().wait();
 }
 
 #[cfg(loom)]

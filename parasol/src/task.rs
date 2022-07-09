@@ -1,5 +1,5 @@
 use crate::core::event::{Event};
-use crate::core::job::{Job, Priority};
+use crate::core::job::{Job, Priority, JobRef};
 use crate::Context;
 use crate::helpers::*;
 use crate::handle::*;
@@ -24,6 +24,17 @@ pub struct Task<'l, ContextData, ImmutableData, Dependency, Function> {
 #[inline]
 pub fn new_task(ctx: &mut Context) -> Task<(), (), (), ()> {
     Task { parameters: owned_parameters(), input: (), function: (), ctx, }
+}
+
+impl<Output, ContextData, ImmutableData, Dependency, Function> Job for InlineRefCounted<TaskJobData<Output, ContextData, ImmutableData, Dependency, Function>>
+where
+    Dependency: TaskDependency,
+    Function: Fn(&mut Context, Args<Dependency::Output, ContextData, ImmutableData>) -> Output + Send,
+{
+    unsafe fn execute(this: *const Self, ctx: &mut Context, range: Range<u32>) {
+        TaskJobData::execute((*this).inner() as *const _, ctx, range);
+        (*this).release_ref();
+    }
 }
 
 impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData, ImmutableData, Dependency, Function> {
@@ -56,6 +67,20 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
 
     #[inline]
     pub fn with_input<Dep: TaskDependency>(self, input: Dep) -> Task<'l, ContextData, ImmutableData, Dep, Function> {
+        Task {
+            parameters: self.parameters,
+            function: self.function,
+            input,
+            ctx: self.ctx,
+        }
+    }
+
+    #[inline]
+    pub fn with_input_data<T>(self, data: T) -> Task<'l, ContextData, ImmutableData, DataSlot<T>, Function> {
+        let input = DataSlot::new();
+        unsafe {
+            input.set(data);
+        }
         Task {
             parameters: self.parameters,
             function: self.function,
@@ -109,7 +134,7 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
                     input: task.input,
                     data: ConcurrentDataRef::from_owned(&mut task.parameters, ctx),
                     parameters: task.parameters,
-                    output: OutputSlot::new(),
+                    output: DataSlot::new(),
                     event: Event::new(1, ctx.thread_pool_id()),
                 }
             );
@@ -118,9 +143,10 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
             task_job.add_ref();
 
             let event: *const Event = &task_job.event;
-            let output: *mut OutputSlot<Output> = mem::transmute(&task_job.output);
+            let output: *mut DataSlot<Output> = mem::transmute(&task_job.output);
 
-            let job_ref = task_job.as_job_ref(priority);
+            let job_ref = JobRef::new(task_job.inner()).with_priority(priority);
+
             if let Some(evt) = task_job.input.get_event() {
                 evt.then(ctx, job_ref);
             } else {
@@ -143,7 +169,7 @@ struct TaskJobData<Output, ContextData, ImmutableData, Dependency, F> {
     #[allow(dead_code)] // Not really dead code, needed to keep the strong references alive.
     parameters: OwnedParameters<ContextData, ImmutableData>,
     data: ConcurrentDataRef<ContextData, ImmutableData>,
-    output: OutputSlot<Output>,
+    output: DataSlot<Output>,
     event: Event,
 }
 
@@ -186,8 +212,8 @@ fn simple_task() {
     }
 
     // Task t1 produces an output which becomes which is the input of task t2.
-    let input = 1.0;
-    let t1 = ctx.task().run(move |_, _| { input + 1.0 });
+    let input: f32 = 1.0;
+    let t1 = ctx.task().with_input_data(input).run(|_, args| { args.input + 1.0 });
     let t2 = ctx.task().with_input(t1).run(|_, args| {
         args.input as u32 + 1
     });
