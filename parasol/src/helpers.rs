@@ -2,9 +2,10 @@
 //!
 //! 
 
-use crate::array::{ForEach, new_for_each};
+use crate::array::{ForEach, new_for_each, ForEachTaskBuilder};
 use crate::join::{Join, new_join};
 use crate::{Context, ContextId, Priority, Event};
+use crate::handle::{Handle, DataSlot};
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -176,36 +177,84 @@ impl<C> HeapContextData<C> {
 }
 
 /// Similar to `Parameters`, but owns its data.and does not hold a reference to the context.
-pub struct OwnedParameters<ContextData, ImmutableData> {
+pub struct OwnedParameters<Input, ContextData, ImmutableData> {
+    pub context_data: HeapContextData<ContextData>,
+    pub immutable_data: Option<Arc<ImmutableData>>,
+    pub priority: Priority,
+    pub input: Input,
+}
+
+pub struct TaskBuilder<'l, Input, ContextData, ImmutableData> {
     context_data: HeapContextData<ContextData>,
     immutable_data: Option<Arc<ImmutableData>>,
     priority: Priority,
+    input: Input,
+    ctx: &'l mut Context,
 }
 
-pub fn owned_parameters() -> OwnedParameters<(), ()> {
-    OwnedParameters {
+pub fn task_builder(ctx: &mut Context) -> TaskBuilder<(), (), ()> {
+    TaskBuilder {
         context_data: heap_context_data(),
         immutable_data: None,
         priority: Priority::High,
+        input: (),
+        ctx,
     }
 }
 
-impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
+impl<'l, Input, ContextData, ImmutableData> TaskBuilder<'l, Input, ContextData, ImmutableData> {
     #[inline]
-    pub fn with_context_data<T>(self, data: HeapContextData<T>) -> OwnedParameters<T, ImmutableData> {
-        OwnedParameters {
+    pub fn with_context_data<T>(self, data: HeapContextData<T>) -> TaskBuilder<'l, Input, T, ImmutableData> {
+        TaskBuilder {
             context_data: data,
             immutable_data: self.immutable_data,
             priority: self.priority,
+            input: self.input,
+            ctx: self.ctx,
         }
     }
 
     #[inline]
-    pub fn with_immutable_data<T>(self, data: Arc<T>) -> OwnedParameters<ContextData, T> {
-        OwnedParameters {
+    pub fn with_immutable_data<T>(self, data: Arc<T>) -> TaskBuilder<'l, Input, ContextData, T> {
+        TaskBuilder {
             context_data: self.context_data,
             immutable_data: Some(data),
             priority: self.priority,
+            input: self.input,
+            ctx: self.ctx,
+        }
+    }
+
+    #[inline]
+    pub fn with_input<Dep: TaskDependency>(self, dep: Dep) -> TaskBuilder<'l, Dep, ContextData, ImmutableData> {
+        TaskBuilder {
+            context_data: self.context_data,
+            immutable_data: self.immutable_data,
+            priority: self.priority,
+            input: dep,
+            ctx: self.ctx,
+        }
+    }
+
+    #[inline]
+    pub fn with_data<T>(self, data: T) -> TaskBuilder<'l, DataSlot<T>, ContextData, ImmutableData> {
+        TaskBuilder {
+            context_data: self.context_data,
+            immutable_data: self.immutable_data,
+            priority: self.priority,
+            input: DataSlot::from(data),
+            ctx: self.ctx,
+        }
+    }
+
+    #[inline]
+    pub fn after(self, handle: Handle) -> TaskBuilder<'l, Handle, ContextData, ImmutableData> {
+        TaskBuilder {
+            context_data: self.context_data,
+            immutable_data: self.immutable_data,
+            priority: self.priority,
+            input: handle,
+            ctx: self.ctx,
         }
     }
 
@@ -214,6 +263,10 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
         self.priority = priority;
 
         self
+    }
+
+    pub fn for_each(self) -> ForEachTaskBuilder<'l, Input, ContextData, ImmutableData> {
+        ForEachTaskBuilder::from(self)
     }
 
     #[inline]
@@ -227,12 +280,29 @@ impl<ContextData, ImmutableData> OwnedParameters<ContextData, ImmutableData> {
     }
 
     #[inline]
-    pub fn take(&mut self) -> Self {
-        OwnedParameters {
-            immutable_data: self.immutable_data.take(),
-            context_data: self.context_data.clone(), // TODO
-            priority: self.priority,
-        }
+    pub fn has_event_dependency(&self) -> bool where Input: TaskDependency {
+        self.input.get_event().is_some()
+    }
+
+    #[inline]
+    pub fn finish(self) -> (&'l mut Context, OwnedParameters<Input, ContextData, ImmutableData>) {
+        (
+            self.ctx,
+            OwnedParameters {
+                input: self.input,
+                context_data: self.context_data,
+                immutable_data: self.immutable_data,
+                priority: self.priority,
+            }
+        )
+    }
+}
+
+impl<'l, ContextData, ImmutableData> TaskBuilder<'l, (), ContextData, ImmutableData> {
+    pub fn range_for_each(self, range: std::ops::Range<u32>) -> ForEachTaskBuilder<'l, DataSlot<Vec<()>>, ContextData, ImmutableData> {
+        self.with_data(vec![(); range.end as usize])
+            .for_each()
+            .with_range(range)
     }
 }
 
@@ -276,7 +346,7 @@ impl<ContextData> ContextDataRef<ContextData> {
     /// The caller is responsible for ensuring that the context data and immutable data
     /// outlines the unsafe ref.
     #[inline]
-    pub unsafe fn from_owned<ImmutableData>(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ContextDataRef<ContextData> {
+    pub unsafe fn from_owned<Input, ImmutableData>(parameters: &mut OwnedParameters<Input, ContextData, ImmutableData>, ctx: &Context) -> ContextDataRef<ContextData> {
         parameters.context_data.get_ref(ctx)
     }
 }
@@ -292,7 +362,7 @@ impl<ImmutableData> ImmutableDataRef<ImmutableData> {
     }
 
     #[inline]
-    pub unsafe fn from_owned<ContextData>(parameters: &mut OwnedParameters<ContextData, ImmutableData>) -> ImmutableDataRef<ImmutableData> {
+    pub unsafe fn from_owned<Input, ContextData>(parameters: &mut OwnedParameters<Input, ContextData, ImmutableData>) -> ImmutableDataRef<ImmutableData> {
         // If immutable_data is None, then it s always the unit type (), in which case we don't care
         // about what the address points to since no interaction with the unit type translates to actual
         // reads or writes to memory. We could default to pass std::ptr::null(), however miri has checks
@@ -343,7 +413,7 @@ impl<ContextData, ImmutableData> ConcurrentDataRef<ContextData, ImmutableData> {
     /// The caller is responsible for ensuring that the context data and immutable data
     /// outlines the unsafe ref.
     #[inline]
-    pub unsafe fn from_owned(parameters: &mut OwnedParameters<ContextData, ImmutableData>, ctx: &Context) -> ConcurrentDataRef<ContextData, ImmutableData> {
+    pub unsafe fn from_owned<Input>(parameters: &mut OwnedParameters<Input, ContextData, ImmutableData>, ctx: &Context) -> ConcurrentDataRef<ContextData, ImmutableData> {
         ConcurrentDataRef {
             context_data: ContextDataRef::from_owned(parameters, ctx),
             immutable_data: ImmutableDataRef::from_owned(parameters),

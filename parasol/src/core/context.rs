@@ -8,11 +8,9 @@ use super::event::Event;
 use super::thread_pool::{ThreadPool, ThreadPoolId};
 // In principle there should not be this dependency, but it's nice to be able
 // to do ctx.for_each(...). It'll probably move into an extension trait.
-use crate::array::{ForEach, HeapForEach, new_for_each, heap_for_each, heap_range_for_each};
+use crate::array::{ForEach, new_for_each};
 use crate::join::{new_join};
 use crate::helpers::*;
-use crate::task::{Task, new_task};
-use crate::handle::DataSlot;
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -71,8 +69,9 @@ impl Context {
         event.wait(self);
     }
 
-    ///
-    pub fn schedule_one<F>(&mut self, job: F, priority: Priority) where F: FnOnce(&mut Context) + Send {
+    /// Run a simple function asynchronously, without providing a way to wait
+    /// until it terminates.
+    pub fn run<F>(&mut self, job: F, priority: Priority) where F: FnOnce(&mut Context) + Send {
         unsafe {
             self.schedule_job(HeapJob::new_ref(job).with_priority(priority));
         }
@@ -100,8 +99,19 @@ impl Context {
 
     /// TODO: move this into an extension trait.
     #[inline]
-    pub fn task(&mut self) -> Task<(), (), (), ()> {
-        new_task(self)
+    pub fn task(&mut self) -> TaskBuilder<(), (), ()> {
+        task_builder(self)
+    }
+
+    /// TODO: move this into an extension trait.
+    pub fn then<Dep>(&mut self, dep: Dep) -> TaskBuilder<Dep, (), ()>
+    where Dep: TaskDependency
+    {
+        self.task().with_input(dep)
+    }
+
+    pub fn create_context_data<T>(&self, data: Vec<T>) -> HeapContextData<T> {
+        HeapContextData::from_vec(data, self.id())
     }
 
     pub fn with_priority<'c>(&'c mut self, priority: Priority) -> Parameters<'c, 'static, 'static, (), ()> {
@@ -245,42 +255,6 @@ impl Context {
 
     pub(crate) fn queues_are_empty(&self) -> bool {
         self.queues[0].is_empty() && self.queues[1].is_empty()
-    }
-
-    pub fn heap(&mut self) -> OnHeap {
-        OnHeap(self)
-    }
-}
-
-/// A builder for workloads that point to heap allocated data.
-///
-/// For example `ctx.heap().for_each(vec)` is the heap allocated equivalent of
-/// `ctx.for_each(&slice[..])`.
-///
-/// Heap allocated workloads can be easier to manage since they aren't bound by any
-/// lifetime, at the cost of more allocations.
-pub struct OnHeap<'l>(&'l mut Context);
-
-impl<'l> OnHeap<'l> {
-    pub fn for_each<Item>(self, items: Vec<Item>) -> HeapForEach<'l, DataSlot<Vec<Item>>, (), ()> {
-        heap_for_each(self.0, items)
-    }
-
-    pub fn for_each_with_dependency<Item, Dep: TaskDependency<Output = Vec<Item>>>(self, input: Dep) -> HeapForEach<'l, Dep, (), ()> {
-        crate::array::heap_for_each_dep(self.0, input)
-    }
-
-    pub fn range_for_each(self, range: std::ops::Range<u32>) -> HeapForEach<'l, DataSlot<Vec<()>>, (), ()> {
-        heap_range_for_each(self.0, range)
-    }
-
-    #[inline]
-    pub fn task(self) -> Task<'l, (), (), (), ()> {
-        new_task(self.0)
-    }
-
-    pub fn create_context_data<T>(&self, data: Vec<T>) -> HeapContextData<T> {
-        HeapContextData::from_vec(data, self.0.id())
     }
 }
 

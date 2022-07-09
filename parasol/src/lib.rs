@@ -24,7 +24,7 @@ mod task;
 pub mod helpers;
 pub mod handle;
 
-pub use array::{ForEach, HeapForEach};
+pub use array::{ForEach};
 pub use join::*;
 pub use crate::core::job::Priority;
 pub use crate::core::context::*;

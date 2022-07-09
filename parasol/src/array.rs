@@ -1,8 +1,8 @@
 use crate::core::event::Event;
 use crate::core::job::{JobRef, Job, Priority};
 use crate::Context;
-use crate::helpers::{Parameters, ConcurrentDataRef, OwnedParameters, owned_parameters, HeapContextData, TaskDependency};
 use crate::sync::Arc;
+use crate::helpers::*;
 use crate::handle::*;
 
 use std::mem;
@@ -306,8 +306,10 @@ struct ArrayJob<Item, ContextData, ImmutableData, Func> {
 
 struct HeapArrayJob<Item, ContextData, ImmutableData, Func> {
     array_job: ArrayJob<Item, ContextData, ImmutableData, Func>,
-    #[allow(dead_code)]
-    parameters: OwnedParameters<ContextData, ImmutableData>,
+    // Context and immtable data string references to maintain the memory
+    // alive.
+    #[allow(dead_code)] context_data: HeapContextData<ContextData>,
+    #[allow(dead_code)] immutable_data: Option<Arc<ImmutableData>>,
     output: DataSlot<Vec<Item>>,
     strong_ref: Option<*const dyn RefCounted>,
 }
@@ -315,6 +317,7 @@ struct HeapArrayJob<Item, ContextData, ImmutableData, Func> {
 struct DeferredArrayJob<Dep, Item, ContextData, ImmutableData, Func> {
     heap_job: UnsafeCell<HeapArrayJob<Item, ContextData, ImmutableData, Func>>,
     input: Dep,
+    priority: Priority,
     group_size: u32,
 }
 
@@ -380,7 +383,7 @@ where
 
         for_each_dispatch(
             ctx,
-            JobRef::new(&*heap_job).with_priority((*heap_job).parameters.priority()),
+            JobRef::new(&*heap_job).with_priority((*this).priority),
             &dispatch,
             (*this).group_size,
         );
@@ -455,73 +458,25 @@ where
     }
 }
 
-pub struct HeapForEach<'l, Input, ContextData, ImmutableData> {
-    pub input: Input,
-    parameters: OwnedParameters<ContextData, ImmutableData>,
-    range: Range<u32>,
+pub struct ForEachTaskBuilder<'l, Input, ContextData, ImmutableData> {
+    builder: TaskBuilder<'l, Input, ContextData, ImmutableData>,
+    range: Option<Range<u32>>,
     group_size: u32,
-    ctx: &'l mut Context,
 }
 
-#[inline]
-pub fn heap_range_for_each(ctx: &mut Context, range: Range<u32>) -> HeapForEach<DataSlot<Vec<()>>, (), ()> {
-    heap_for_each(ctx, vec![(); range.end as usize]).with_range(range)
-}
-
-#[inline]
-pub fn heap_for_each<Item>(ctx: &mut Context, items: Vec<Item>) -> HeapForEach<DataSlot<Vec<Item>>, (), ()> {
-    assert!(items.len() <= Event::MAX_DEPENDECIES as usize);
-    HeapForEach {
-        range: 0..(items.len() as u32),
-        input: DataSlot::from(items),
-        parameters: owned_parameters(),
-        group_size: 1,
-        ctx,
-    }
-}
-
-#[inline]
-pub fn heap_for_each_dep<Dependency>(ctx: &mut Context, input: Dependency) -> HeapForEach<Dependency, (), ()> {
-    HeapForEach {
-        range: std::u32::MAX..std::u32::MAX,
-        input,
-        parameters: owned_parameters(),
-        group_size: 1,
-        ctx,
-    }
-}
-
-impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, ContextData, ImmutableData> {
-    // TODO: fn with_input<Dep: TaskDependency<Output = Vec<Item>>>(self, dep: Dep) -> ...
-    // TODO: fn after(self, handle: Handle) -> ...
-
-    #[inline]
-    pub fn with_context_data<CtxData>(self, ctx_data: HeapContextData<CtxData>) -> HeapForEach<'l, Dependency, CtxData, ImmutableData> {
-        HeapForEach {
-            input: self.input,
-            parameters: self.parameters.with_context_data(ctx_data),
-            range: self.range,
-            group_size: self.group_size,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    pub fn with_immutable_data<Data>(self, immutable_data: Arc<Data>) -> HeapForEach<'l, Dependency, ContextData, Data> {
-        HeapForEach {
-            input: self.input,
-            parameters: self.parameters.with_immutable_data(immutable_data),
-            range: self.range,
-            group_size: self.group_size,
-            ctx: self.ctx,
+impl<'l, Dependency, ContextData, ImmutableData> ForEachTaskBuilder<'l, Dependency, ContextData, ImmutableData> {
+    pub fn from(builder: TaskBuilder<'l, Dependency, ContextData, ImmutableData>) -> Self {
+        ForEachTaskBuilder {
+            builder,
+            range: None,
+            group_size: 1,
         }
     }
 
     #[inline]
     pub fn with_range(mut self, range: Range<u32>) -> Self {
         assert!(range.end >= range.start);
-        //assert!(range.end <= self.items.len() as u32); // TODO!
-        self.range = range;
+        self.range = Some(range);
 
         self
     }
@@ -533,17 +488,6 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
         self
     }
 
-    #[inline]
-    pub fn with_priority(mut self, priority: Priority) -> Self {
-        self.parameters = self.parameters.with_priority(priority);
-
-        self
-    }
-
-    pub fn context_data(&mut self) -> &mut HeapContextData<ContextData> {
-        self.parameters.context_data()
-    }
-
     pub fn run<F, Item>(self, function: F) -> OwnedHandle<Vec<Item>>
     where
         Dependency: TaskDependency<Output = Vec<Item>> + 'static,
@@ -552,14 +496,14 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
         ImmutableData: 'static,
         Item: 'static,
     {
-        if self.input.get_event().is_some() {
+        if self.builder.has_event_dependency() {
             self.schedule_after_dependency(function)
         } else {
-            self.schedle_now(function)
+            self.schedule_now(function)
         }
     }
 
-    pub fn schedle_now<F, Item>(mut self, function: F) -> OwnedHandle<Vec<Item>>
+    pub fn schedule_now<F, Item>(self, function: F) -> OwnedHandle<Vec<Item>>
     where
         Dependency: TaskDependency<Output = Vec<Item>>,
         F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
@@ -568,13 +512,13 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
         Item: 'static,
     {
         unsafe {
-            let mut items = self.input.get_output();
-            assert!(self.range.end as usize <= items.len());
+            let (ctx, mut parameters) = self.builder.finish();
+            let mut items = parameters.input.get_output();
+            let range = self.range.unwrap_or(0..(items.len() as u32));
+            assert!(range.end as usize <= items.len());
 
-            let ctx = self.ctx;
-
-            let dispatch = DispatchParameters::new(ctx, self.range.clone(), self.group_size, Ratio::ONE);
-            let priority = self.parameters.priority();
+            let dispatch = DispatchParameters::new(ctx, range.clone(), self.group_size, Ratio::ONE);
+            let priority = parameters.priority;
 
             let strong_ref: Option<*const dyn RefCounted> = None;
             let data = RefPtr::new(
@@ -583,12 +527,13 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
                         items: items.as_mut_ptr(),
                         range: 0..(items.len() as u32),
                         split_thresold: self.group_size,
-                        data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
+                        data: ConcurrentDataRef::from_owned(&mut parameters, ctx),
                         function,
-                        event: Event::new(self.range.end - self.range.start, ctx.thread_pool_id()),
+                        event: Event::new(range.end - range.start, ctx.thread_pool_id()),
                     },
                     output: DataSlot::new(),
-                    parameters: self.parameters,
+                    context_data: parameters.context_data,
+                    immutable_data: parameters.immutable_data,
                     // One reference for the AnyRefPtr and one that will be released by
                     // the last execute callback.
                     strong_ref,
@@ -619,7 +564,7 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
         }
     }
 
-    pub fn schedule_after_dependency<F, Item>(mut self, function: F) -> OwnedHandle<Vec<Item>>
+    pub fn schedule_after_dependency<F, Item>(self, function: F) -> OwnedHandle<Vec<Item>>
     where
         Dependency: TaskDependency<Output = Vec<Item>> + 'static,
         F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send + 'static,
@@ -628,16 +573,20 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
         Item: 'static,
     {
         unsafe {
-            let ctx = self.ctx;
-            let priority = self.parameters.priority();
+            let (ctx, mut parameters) = self.builder.finish();
+            // Since we don't know the size of the array yet, we
+            // hack around it by treating u32::MAX as a special
+            // value.
+            let range = self.range.unwrap_or(std::u32::MAX..std::u32::MAX);
+            let priority = parameters.priority;
             let strong_ref: Option<*const dyn RefCounted> = None;
             let data = RefPtr::new(DeferredArrayJob {
                 heap_job: UnsafeCell::new(HeapArrayJob {
                     array_job: ArrayJob {
                         items: std::ptr::null_mut(),
-                        range: self.range.clone(),
+                        range,
                         split_thresold: self.group_size,
-                        data: ConcurrentDataRef::from_owned(&mut self.parameters, ctx),
+                        data: ConcurrentDataRef::from_owned(&mut parameters, ctx),
                         function,
                         // Hack: we don't know yet how many items we will process so we initialize
                         // the event with the maximum number of dependencies and will adjust down
@@ -645,13 +594,15 @@ impl<'l, Dependency, ContextData, ImmutableData> HeapForEach<'l, Dependency, Con
                         event: Event::new(Event::MAX_DEPENDECIES, ctx.thread_pool_id()),
                     },
                     output: DataSlot::new(),
-                    parameters: self.parameters,
+                    context_data: parameters.context_data,
+                    immutable_data: parameters.immutable_data,
                     // One reference for the AnyRefPtr and one that will be released by
                     // the last execute callback.
                     strong_ref,
                 }),
                 group_size: self.group_size,
-                input: self.input,
+                input: parameters.input,
+                priority: parameters.priority,
             });
 
             let heap_job: *mut _ = (*RefPtr::mut_payload_unchecked(&data)).heap_job.get();
@@ -709,16 +660,19 @@ fn test_heap_for_each() {
 
     for i in 0..3000 {
         use std::mem::take;
-        let handle_1 = ctx.heap()
-            .for_each(take(&mut items1))
+        let handle_1 = ctx.task()
+            .with_data(take(&mut items1))
+            .for_each()
             .with_group_size(16)
             .run(|_, mut item| { *item += 1; });
-        let handle_2 = ctx.heap()
-            .for_each(take(&mut items2))
+        let handle_2 = ctx.task()
+            .with_data(take(&mut items2))
+            .for_each()
             .with_group_size(16)
             .run(|_, mut item| { *item += 1; });
-        let handle_3 = ctx.heap()
-            .for_each(take(&mut items3))
+        let handle_3 = ctx.task()
+            .with_data(take(&mut items3))
+            .for_each()
             .with_group_size(16)
             .run(|_, mut item| { *item += 1; });
 
@@ -748,8 +702,9 @@ fn test_heap_range_for_each() {
 
     let mut ctx = pool.pop_context().unwrap();
 
-    let w = ctx.heap().range_for_each(20..100)
+    let w = ctx.task()
         .with_immutable_data(Arc::new(1234u32))
+        .range_for_each(20..100)
         .run(|_, args| {
             assert!(args.item_index >= 20, "Error: {} should be in 20..100", args.item_index);
             assert!(args.item_index < 100, "Error: {} should be in 20..100", args.item_index);
@@ -843,7 +798,10 @@ fn test_few_items() {
 
             ctx.for_each(&mut input).run(|_, mut item| { *item += 1; });
 
-            let handle = ctx.heap().for_each(input).run(|_, mut item| { *item += 1; });
+            let handle = ctx.task()
+                .with_data(input)
+                .for_each()
+                .run(|_, mut item| { *item += 1; });
             let input = handle.resolve(&mut ctx);
 
             for val in &input {
@@ -862,15 +820,18 @@ fn test_heap_for_each_dependencies() {
 
     let mut ctx = pool.pop_context().unwrap();
 
-    let t1 = ctx.heap().task().run(|_, _| { vec![10u32; 1024] });
-    let t2 = ctx.heap().for_each_with_dependency(t1).run(|_, mut item| *item += 1);
+    let t1 = ctx.task().run(|_, _| { vec![10u32; 1024] });
+    let t2 = ctx.task().with_input(t1).for_each().run(|_, mut item| *item += 1);
     let result = t2.resolve(&mut ctx);
 
     assert_eq!(result, vec![11u32; 1024]);
 
-    // Sme test but producing/consuming an empty array.
-    let t1 = ctx.heap().task().run(|_, _| { Vec::<u32>::new() });
-    let t2 = ctx.heap().for_each_with_dependency(t1).run(|_, mut item| *item += 1);
+    // Some test but producing/consuming an empty array.
+    let t1 = ctx.task().run(|_, _| { Vec::<u32>::new() });
+    let t2 = ctx.task()
+        .with_input(t1)
+        .for_each()
+        .run(|_, mut item| *item += 1);
     let result = t2.resolve(&mut ctx);
 
     assert_eq!(result, Vec::new());

@@ -1,9 +1,8 @@
 use crate::core::event::{Event};
-use crate::core::job::{Job, Priority, JobRef};
+use crate::core::job::{Job, JobRef};
 use crate::Context;
 use crate::helpers::*;
 use crate::handle::*;
-use crate::sync::Arc;
 
 use std::mem;
 use std::ops::{Range};
@@ -12,18 +11,6 @@ pub struct Args<'l, Input, ContextData, ImmutableData> {
     pub input: Input,
     pub context_data: &'l mut ContextData,
     pub immutable_data: &'l ImmutableData,
-}
-
-pub struct Task<'l, ContextData, ImmutableData, Dependency, Function> {
-    parameters: OwnedParameters<ContextData, ImmutableData>,
-    input: Dependency,
-    function: Function,
-    ctx: &'l mut Context,
-}
-
-#[inline]
-pub fn new_task(ctx: &mut Context) -> Task<(), (), (), ()> {
-    Task { parameters: owned_parameters(), input: (), function: (), ctx, }
 }
 
 impl<Output, ContextData, ImmutableData, Dependency, Function> Job for InlineRefCounted<TaskJobData<Output, ContextData, ImmutableData, Dependency, Function>>
@@ -37,83 +24,7 @@ where
     }
 }
 
-impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData, ImmutableData, Dependency, Function> {
-    #[inline]
-    pub fn with_context_data<T>(self, data: HeapContextData<T>) -> Task<'l, T, ImmutableData, Dependency, Function> {
-        Task {
-            parameters: self.parameters.with_context_data(data),
-            function: self.function,
-            input: self.input,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    pub fn with_immutable_data<T>(self, data: Arc<T>) -> Task<'l, ContextData, T, Dependency, Function> {
-        Task {
-            parameters: self.parameters.with_immutable_data(data),
-            function: self.function,
-            input: self.input,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    pub fn with_priority(mut self, priority: Priority) -> Self {
-        self.parameters = self.parameters.with_priority(priority);
-
-        self
-    }
-
-    #[inline]
-    pub fn with_input<Dep: TaskDependency>(self, input: Dep) -> Task<'l, ContextData, ImmutableData, Dep, Function> {
-        Task {
-            parameters: self.parameters,
-            function: self.function,
-            input,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    pub fn with_input_data<T>(self, data: T) -> Task<'l, ContextData, ImmutableData, DataSlot<T>, Function> {
-        let input = DataSlot::new();
-        unsafe {
-            input.set(data);
-        }
-        Task {
-            parameters: self.parameters,
-            function: self.function,
-            input,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    pub fn after(self, handle: Handle) -> Task<'l, ContextData, ImmutableData, Handle, Function> {
-        Task {
-            parameters: self.parameters,
-            function: self.function,
-            input: handle,
-            ctx: self.ctx,
-        }
-    }
-
-    #[inline]
-    fn with_function<F, Output>(self, function: F) -> Task<'l, ContextData, ImmutableData, Dependency, F>
-    where
-        Dependency: TaskDependency,
-        F: Fn(&mut Context, Args<Dependency::Output, ContextData, ImmutableData>) -> Output + Send,
-        Output: Send,
-    {
-        Task {
-            parameters: self.parameters,
-            function,
-            input: self.input,
-            ctx: self.ctx,
-        }
-    }
-
+impl<'l, Dependency, ContextData, ImmutableData> TaskBuilder<'l, Dependency, ContextData, ImmutableData> {
     #[inline]
     pub fn run<F, Output>(self, function: F) -> OwnedHandle<Output>
     where
@@ -123,17 +34,15 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
         ContextData: 'static,
         ImmutableData: 'static,
     {
-        let mut task = self.with_function(function);
-        let priority = task.parameters.priority();
+        let (ctx, mut parameters) = self.finish();
+        let priority = parameters.priority;
         unsafe {
-            let ctx = task.ctx;
 
             let task_job: RefPtr<TaskJobData<Output, ContextData, ImmutableData, Dependency, F>> = RefPtr::new(
                 TaskJobData {
-                    function: task.function,
-                    input: task.input,
-                    data: ConcurrentDataRef::from_owned(&mut task.parameters, ctx),
-                    parameters: task.parameters,
+                    data: ConcurrentDataRef::from_owned(&mut parameters, ctx),
+                    parameters,
+                    function,
                     output: DataSlot::new(),
                     event: Event::new(1, ctx.thread_pool_id()),
                 }
@@ -147,7 +56,7 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
 
             let job_ref = JobRef::new(task_job.inner()).with_priority(priority);
 
-            if let Some(evt) = task_job.input.get_event() {
+            if let Some(evt) = task_job.parameters.input.get_event() {
                 evt.then(ctx, job_ref);
             } else {
                 ctx.schedule_job(job_ref);
@@ -164,10 +73,9 @@ impl<'l, ContextData, ImmutableData, Dependency, Function> Task<'l, ContextData,
 }
 
 struct TaskJobData<Output, ContextData, ImmutableData, Dependency, F> {
-    function: F,
-    input: Dependency,
     #[allow(dead_code)] // Not really dead code, needed to keep the strong references alive.
-    parameters: OwnedParameters<ContextData, ImmutableData>,
+    parameters: OwnedParameters<Dependency, ContextData, ImmutableData>,
+    function: F,
     data: ConcurrentDataRef<ContextData, ImmutableData>,
     output: DataSlot<Output>,
     event: Event,
@@ -181,7 +89,7 @@ where
     unsafe fn execute(this: *const Self, ctx: &mut Context, _range: Range<u32>) {
         let (context_data, immutable_data) = (*this).data.get(ctx);
         (*this).output.set(((*this).function)(ctx, Args {
-            input: (*this).input.get_output(),
+            input: (*this).parameters.input.get_output(),
             context_data,
             immutable_data,
         }));
@@ -191,7 +99,7 @@ where
 
 #[test]
 fn simple_task() {
-    use crate::sync::{AtomicI32, Ordering};
+    use crate::sync::{Arc, AtomicI32, Ordering};
     use crate::ThreadPool;
     let pool = ThreadPool::builder()
         .with_worker_threads(3)
@@ -213,7 +121,7 @@ fn simple_task() {
 
     // Task t1 produces an output which becomes which is the input of task t2.
     let input: f32 = 1.0;
-    let t1 = ctx.task().with_input_data(input).run(|_, args| { args.input + 1.0 });
+    let t1 = ctx.task().with_data(input).run(|_, args| { args.input + 1.0 });
     let t2 = ctx.task().with_input(t1).run(|_, args| {
         args.input as u32 + 1
     });
