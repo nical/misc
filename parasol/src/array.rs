@@ -5,11 +5,13 @@ use crate::sync::Arc;
 use crate::helpers::*;
 use crate::handle::*;
 use crate::task::{TaskBuilder, TaskDependency};
+use crate::ref_counted::{RefCounted, RefPtr};
 
 use std::mem;
 use std::ops::{Range, Deref, DerefMut};
 use std::cell::UnsafeCell;
 
+/// Input parameter of parallel `for_each` closures.
 pub struct Args<'l, Item, ContextData, ImmutableData> {
     pub item: &'l mut Item,
     pub item_index: u32,
@@ -26,7 +28,7 @@ impl<'l, Item, ContextData, ImmutableData> DerefMut for Args<'l, Item, ContextDa
     fn deref_mut(&mut self) -> &mut Item { self.item }
 }
 
-pub struct ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
+pub struct ForEachBuilder<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
     pub items: &'a mut [Item],
     pub inner: Parameters<'c, 'b, 'g, ContextData, ImmutableData>,
     pub function: Func,
@@ -38,9 +40,9 @@ pub struct ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func> {
 pub(crate) fn new_for_each<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData>(
     inner: Parameters<'c, 'cd, 'id, ContextData, ImmutableData>,
     items: &'i mut [Item],
-) -> ForEach<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData, ()> {
+) -> ForEachBuilder<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData, ()> {
     assert!(items.len() <= Event::MAX_DEPENDECIES as usize);
-    ForEach {
+    ForEachBuilder {
         range: 0..items.len() as u32,
         items,
         inner,
@@ -50,7 +52,7 @@ pub(crate) fn new_for_each<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData>(
     }
 }
 
-impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F>
+impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEachBuilder<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F>
 {
     /// Specify some per-context data that can be mutably accessed by the run function.
     ///
@@ -61,8 +63,8 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     ///
     /// For best performance make sure the size of the data is a multiple of L1 cache line size (see `CachePadded`).
     #[inline]
-    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEach<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
-        ForEach {
+    pub fn with_context_data<'w, CtxData: Send>(self, context_data: &'w mut [CtxData]) -> ForEachBuilder<'a, 'w, 'g, 'c, Item, CtxData, ImmutableData, F> {
+        ForEachBuilder {
             items: self.items,
             inner: self.inner.with_context_data(context_data),
             function: self.function,
@@ -73,8 +75,8 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     }
 
     #[inline]
-    pub fn with_immutable_data<'i, Data>(self, immutable_data: &'i Data) -> ForEach<'a, 'b, 'i, 'c, Item, ContextData, Data, F> {
-        ForEach {
+    pub fn with_immutable_data<'i, Data: Sync>(self, immutable_data: &'i Data) -> ForEachBuilder<'a, 'b, 'i, 'c, Item, ContextData, Data, F> {
+        ForEachBuilder {
             items: self.items,
             inner: self.inner.with_immutable_data(immutable_data),
             function: self.function,
@@ -136,11 +138,11 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     }
 
     #[inline]
-    fn apply<Func>(self, function: Func) -> ForEach<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
+    fn apply<Func>(self, function: Func) -> ForEachBuilder<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, Func>
     where
         Func: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
     {
-        ForEach {
+        ForEachBuilder {
             items: self.items,
             inner: self.inner,
             function,
@@ -155,7 +157,7 @@ impl<'a, 'b, 'g, 'c, Item, ContextData, ImmutableData, F> ForEach<'a, 'b, 'g, 'c
     }
 }
 
-fn for_each<Item, ContextData, ImmutableData, F>(mut params: ForEach<Item, ContextData, ImmutableData, F>)
+fn for_each<Item, ContextData, ImmutableData, F>(mut params: ForEachBuilder<Item, ContextData, ImmutableData, F>)
 where
     F: Fn(&mut Context, Args<Item, ContextData, ImmutableData>) + Sync + Send,
     Item: Sync + Send,

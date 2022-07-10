@@ -8,7 +8,7 @@ use super::event::Event;
 use super::thread_pool::{ThreadPool, ThreadPoolId};
 // In principle there should not be this dependency, but it's nice to be able
 // to do ctx.for_each(...). It'll probably move into an extension trait.
-use crate::array::{ForEach, new_for_each};
+use crate::array::{ForEachBuilder, new_for_each};
 use crate::join::{new_join};
 use crate::helpers::*;
 use crate::task::{task_builder, TaskBuilder, TaskDependency};
@@ -20,6 +20,7 @@ impl ContextId {
     pub fn index(&self) -> usize { self.0 as usize }
 }
 
+/// The main entry point for submitting and processing work in parallel.
 pub struct Context {
     id: u32,
     is_worker: bool,
@@ -79,7 +80,7 @@ impl Context {
 
     /// TODO: move this into an extension trait.
     #[inline]
-    pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEach<'a, 'static, 'static, 'c, Item, (), (), ()> {
+    pub fn for_each<'a, 'c, Item: Send>(&'c mut self, items: &'a mut [Item]) -> ForEachBuilder<'a, 'static, 'static, 'c, Item, (), (), ()> {
         new_for_each(self.with_priority(Priority::High), items)
     }
 
@@ -97,23 +98,7 @@ impl Context {
         ).run();
     }
 
-    /// TODO: move this into an extension trait.
     #[inline]
-    pub fn task(&mut self) -> TaskBuilder<(), (), ()> {
-        task_builder(self)
-    }
-
-    /// TODO: move this into an extension trait.
-    pub fn then<Dep>(&mut self, dep: Dep) -> TaskBuilder<Dep, (), ()>
-    where Dep: TaskDependency
-    {
-        self.task().with_input(dep)
-    }
-
-    pub fn create_context_data<T>(&self, data: Vec<T>) -> HeapContextData<T> {
-        HeapContextData::from_vec(data, self.id())
-    }
-
     pub fn with_priority<'c>(&'c mut self, priority: Priority) -> Parameters<'c, 'static, 'static, (), ()> {
         Parameters {
             ctx: self,
@@ -121,6 +106,29 @@ impl Context {
             immutable_data: &(),
             priority
         }
+    }
+
+    #[inline]
+    pub fn with_context_data<'c, 'cd, Data: Send>(&'c mut self, data: &'cd mut [Data]) -> Parameters<'c, 'cd, 'static, Data, ()> {
+        self.with_priority(Priority::High).with_context_data(data)
+    }
+
+    /// TODO: move this into an extension trait.
+    #[inline]
+    pub fn task(&mut self) -> TaskBuilder<(), (), ()> {
+        task_builder(self)
+    }
+
+    /// TODO: move this into an extension trait.
+    #[inline]
+    pub fn then<Dep>(&mut self, dep: Dep) -> TaskBuilder<Dep, (), ()>
+    where Dep: TaskDependency
+    {
+        self.task().with_input(dep)
+    }
+
+    pub fn create_context_data<T: Send>(&self, data: Vec<T>) -> HeapContextData<T> {
+        HeapContextData::from_vec(data, self.id())
     }
 
     /// Attempt to fetch or steal one job and execute it.

@@ -4,7 +4,7 @@ use crate::{Context, Priority};
 use crate::helpers::*;
 use crate::handle::*;
 use crate::array::ForEachTaskBuilder;
-
+use crate::ref_counted::{RefPtr, RefCounted, InlineRefCounted};
 use crate::sync::Arc;
 
 use std::mem;

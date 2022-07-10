@@ -2,8 +2,8 @@
 //!
 //! 
 
-use crate::array::{ForEach, new_for_each};
-use crate::join::{Join, new_join};
+use crate::array::{ForEachBuilder, new_for_each};
+use crate::join::{JoinBuilder, new_join};
 use crate::{Context, ContextId, Priority};
 use crate::task::TaskParameters;
 
@@ -45,7 +45,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
     }
 
     #[inline]
-    pub fn with_immutable_data<'id2, Data>(self, immutable_data: &'id2 Data) -> Parameters<'c, 'cd, 'id2, ContextData, Data> {
+    pub fn with_immutable_data<'id2, Data: Sync>(self, immutable_data: &'id2 Data) -> Parameters<'c, 'cd, 'id2, ContextData, Data> {
         Parameters {
             context_data: self.context_data,
             immutable_data: immutable_data,
@@ -77,7 +77,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
     }
 
     #[inline]
-    pub fn join<F1, F2>(self, f1: F1, f2: F2) -> Join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>
+    pub fn join<F1, F2>(self, f1: F1, f2: F2) -> JoinBuilder<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>
     where
         F1: FnOnce(&mut Context, crate::join::Args<ContextData, ImmutableData>) + Send,
         F2: FnOnce(&mut Context, crate::join::Args<ContextData, ImmutableData>) + Send,
@@ -86,7 +86,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData> Parameters<'c, 'cd, 'id, ContextD
     }
 
     #[inline]
-    pub fn for_each<'i, Item>(self, items: &'i mut[Item]) -> ForEach<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData, ()> {
+    pub fn for_each<'i, Item>(self, items: &'i mut[Item]) -> ForEachBuilder<'i, 'cd, 'id, 'c, Item, ContextData, ImmutableData, ()> {
         new_for_each(self, items)
     }
 }
@@ -115,14 +115,19 @@ pub fn heap_context_data() -> HeapContextData<()> {
     HeapContextData { data: None, ctx: None, }
 }
 
-impl<C> HeapContextData<C> {
+
+impl<C: Send> HeapContextData<C> {
     pub fn from_vec(data: Vec<C>, ctx: ContextId) -> Self {
         HeapContextData {
             data: Some(data.into()),
             ctx: Some(ctx),
         }
     }
+}
 
+impl<C> HeapContextData<C> {
+    /// Returns a mutable slice only if this is the only remaining reference to
+    /// the context data, None otherwise.
     pub fn as_mut_slice(&mut self) -> Option<&mut [C]> {
         if let Some(data) = &mut self.data {
             Arc::get_mut(data)

@@ -13,26 +13,26 @@ pub struct Args<'l, ContextData, ImmutableData> {
     pub immutable_data: &'l ImmutableData,
 }
 
-pub struct Join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> {
+pub struct JoinBuilder<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> {
     inner: Parameters<'c, 'cd, 'id, ContextData, ImmutableData>,
     f1: F1,
     f2: F2,
 }
 
 #[inline]
-pub (crate) fn new_join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>(inner: Parameters<'c, 'cd, 'id, ContextData, ImmutableData>, f1: F1, f2: F2) -> Join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> 
+pub (crate) fn new_join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>(inner: Parameters<'c, 'cd, 'id, ContextData, ImmutableData>, f1: F1, f2: F2) -> JoinBuilder<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> 
 where
     F1: FnOnce(&mut Context, Args<ContextData, ImmutableData>) + Send,
     F2: FnOnce(&mut Context, Args<ContextData, ImmutableData>) + Send,
 {
-    Join {
+    JoinBuilder {
         inner,
         f1,
         f2,
     }
 }
 
-impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>
+impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> JoinBuilder<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2>
 {
     /// Specify some per-context data that can be mutably accessed by the run function.
     ///
@@ -43,8 +43,8 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, Contex
     ///
     /// For best performance make sure the size of the data is a multiple of L1 cache line size (see `CachePadded`).
     #[inline]
-    pub fn with_context_data<'cd2, CtxData: Send>(self, context_data: &'cd2 mut [CtxData]) -> Join<'c, 'cd2, 'id, CtxData, ImmutableData, F1, F2> {
-        Join {
+    pub fn with_context_data<'cd2, CtxData: Send>(self, context_data: &'cd2 mut [CtxData]) -> JoinBuilder<'c, 'cd2, 'id, CtxData, ImmutableData, F1, F2> {
+        JoinBuilder {
             inner: self.inner.with_context_data(context_data),
             f1: self.f1,
             f2: self.f2,
@@ -52,8 +52,8 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, Contex
     }
 
     #[inline]
-    pub fn with_immutable_data<'id2, Data>(self, immutable_data: &'id2 Data) -> Join<'c, 'cd, 'id2, ContextData, Data, F1, F2> {
-        Join {
+    pub fn with_immutable_data<'id2, Data: Sync>(self, immutable_data: &'id2 Data) -> JoinBuilder<'c, 'cd, 'id2, ContextData, Data, F1, F2> {
+        JoinBuilder {
             inner: self.inner.with_immutable_data(immutable_data),
             f1: self.f1,
             f2: self.f2,
@@ -62,7 +62,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, Contex
 
     #[inline]
     pub fn with_priority(self, priority: Priority) -> Self {
-        Join {
+        JoinBuilder {
             inner: self.inner.with_priority(priority),
             f1: self.f1,
             f2: self.f2,
@@ -70,7 +70,7 @@ impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, Contex
     }
 }
 
-impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> Join<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> 
+impl<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> JoinBuilder<'c, 'cd, 'id, ContextData, ImmutableData, F1, F2> 
 where
     F1: FnOnce(&mut Context, Args<ContextData, ImmutableData>) + Send,
     F2: FnOnce(&mut Context, Args<ContextData, ImmutableData>) + Send,
