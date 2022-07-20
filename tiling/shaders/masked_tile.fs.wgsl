@@ -1,14 +1,14 @@
 
-[[group(1), binding(0)]] var mask_texture: texture_2d<f32>;
+@group(1) @binding(0) var mask_texture: texture_2d<f32>;
 
 struct FragmentOutput {
-    [[location(0)]] color: vec4<f32>;
+    @location(0) color: vec4<f32>,
 };
 
-[[stage(fragment)]]
+@fragment
 fn main(
-    [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
-    [[location(1), interpolate(flat)]] in_color: vec4<f32>,
+    @location(0) @interpolate(linear) in_uv: vec2<f32>,
+    @location(1) @interpolate(flat) in_color: vec4<f32>,
 ) -> FragmentOutput {
 
     var color = in_color;

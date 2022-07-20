@@ -18,11 +18,11 @@ pub struct AdvancedTiles {
 }
 
 pub fn create_pipeline(device: &wgpu::Device) -> AdvancedTiles {
-    let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let vs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Advanced tiles vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/tile.vs.wgsl").into()),
     });
-    let fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Advanced tiles fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/tile_raster.fs.wgsl").into()),
     });
@@ -98,11 +98,11 @@ pub fn create_pipeline(device: &wgpu::Device) -> AdvancedTiles {
             module: &fs_module,
             entry_point: "main",
             targets: &[
-                wgpu::ColorTargetState {
+                Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
-                },
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState {

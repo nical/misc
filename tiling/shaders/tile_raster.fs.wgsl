@@ -12,19 +12,19 @@
 // fragment shader.
 
 struct FragmentOutput {
-    [[location(0)]] color: vec4<f32>;
+    @location(0) color: vec4<f32>;
 };
 
 struct Commands {
-    data: [[stride(4)]] array<i32>;
+    data: array<i32>;
 };
 
 struct Edges {
-    data: [[stride(16)]] array<vec4<f32>>;
+    data: array<vec4<f32>>;
 };
 
-[[group(0), binding(1)]] var<storage> commands: Commands;
-[[group(0), binding(2)]] var<storage> edges: Edges;
+@group(0) @binding(1) var<storage> commands: Commands;
+@group(0) @binding(2) var<storage> edges: Edges;
 
 fn even_odd(mask: f32) -> f32 {
     return 1.0 - abs((abs(mask) % 2.0) - 1.0);
@@ -45,10 +45,10 @@ fn blend_over(a: vec4<f32>, b: vec4<f32>, mask: f32) -> vec4<f32> {
     );
 }
 
-[[stage(fragment)]]
+@fragment
 fn main(
-    [[location(0), interpolate(linear)]] in_uv_res: vec4<f32>,
-    [[location(1), interpolate(flat)]] in_cmd_range: vec2<u32>,
+    @location(0) @interpolate(linear) in_uv_res: vec4<f32>,
+    @location(1) @interpolate(flat) in_cmd_range: vec2<u32>,
 ) -> FragmentOutput {
 
     // TODO: piet-gpu was originally doing this for their blend stack and is moving away

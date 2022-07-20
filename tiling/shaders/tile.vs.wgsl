@@ -1,8 +1,8 @@
 struct Globals {
-    resolution: vec2<f32>;
+    resolution: vec2<f32>,
 };
 
-[[group(0), binding(0)]] var<uniform> globals: Globals;
+@group(0) @binding(0) var<uniform> globals: Globals;
 
 struct VertexOutput {
     [[location(0), interpolate(linear)]] uv_res: vec4<f32>;
@@ -10,11 +10,11 @@ struct VertexOutput {
     [[builtin(position)]] position: vec4<f32>;
 };
 
-[[stage(vertex)]]
+@vertex
 fn main(
-    [[location(0)]] a_rect: vec4<f32>,
-    [[location(1)]] a_cmd_range: vec2<u32>,
-    [[builtin(vertex_index)]] vertex_index: u32,
+    location(0) a_rect: vec4<f32>,
+    location(1) a_cmd_range: vec2<u32>,
+    builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
 
     var vertices = array<vec2<f32>, 4>(

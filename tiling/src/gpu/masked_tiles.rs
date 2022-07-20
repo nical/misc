@@ -62,11 +62,11 @@ impl MaskedTiles {
 }
 
 fn create_tile_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskedTiles {
-    let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let vs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Masked tiles vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/masked_tile.vs.wgsl").into()),
     });
-    let fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Masked tiles fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/masked_tile.fs.wgsl").into()),
     });
@@ -125,11 +125,11 @@ fn create_tile_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGro
             module: &fs_module,
             entry_point: "main",
             targets: &[
-                wgpu::ColorTargetState {
+                Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
-                },
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState {
@@ -171,15 +171,15 @@ impl Masks {
 }
 
 fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
-    let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let vs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mask vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill.vs.wgsl").into()),
     });
-    let lin_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let lin_fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mask fill linear fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_lin.fs.wgsl").into()),
     });
-    let quad_fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let quad_fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mask fill quad fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_fill_quad.fs.wgsl").into()),
     });
@@ -250,11 +250,11 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
             module: &lin_fs_module,
             entry_point: "main",
             targets: &[
-                wgpu::ColorTargetState {
+                Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
-                },
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState {
@@ -307,11 +307,11 @@ fn create_mask_pipeline(device: &wgpu::Device) -> Masks {
             module: &quad_fs_module,
             entry_point: "main",
             targets: &[
-                wgpu::ColorTargetState {
+                Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
-                },
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState {
@@ -365,11 +365,11 @@ impl MaskUploadCopies {
 }
 
 fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskUploadCopies {
-    let vs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let vs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mask upload copy vs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.vs.wgsl").into()),
     });
-    let fs_module = &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mask upload copy fs"),
         source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.fs.wgsl").into()),
     });
@@ -381,7 +381,7 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(65536),
                 },
@@ -423,11 +423,11 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
             module: &fs_module,
             entry_point: "main",
             targets: &[
-                wgpu::ColorTargetState {
+                Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
-                },
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState {

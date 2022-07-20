@@ -1,25 +1,25 @@
 struct MaskParams {
-    tile_size: f32;
-    inv_atlas_width: f32;
-    masks_per_row: u32;
+    tile_size: f32,
+    inv_atlas_width: f32,
+    masks_per_row: u32,
 };
 
-[[group(0), binding(0)]] var<uniform> globals: MaskParams;
+@group(0) @binding(0) var<uniform> globals: MaskParams;
 
 struct VertexOutput {
-    [[location(0), interpolate(linear)]] uv: vec2<f32>;
-    [[location(1), interpolate(flat)]] edges: vec2<u32>;
-    [[location(2), interpolate(flat)]] fill_rule: u32;
-    [[location(3), interpolate(flat)]] backdrop: f32;
-    [[builtin(position)]] position: vec4<f32>;
+    @location(0) @interpolate(linear) uv: vec2<f32>,
+    @location(1) @interpolate(flat) edges: vec2<u32>,
+    @location(2) @interpolate(flat) fill_rule: u32,
+    @location(3) @interpolate(flat) backdrop: f32,
+    @builtin(position) position: vec4<f32>,
 };
 
-[[stage(vertex)]]
+@vertex
 fn main(
-    [[location(0)]] in_edges: vec2<u32>,
-    [[location(1)]] in_mask_id: u32,
-    [[location(2)]] in_fill_rule: u32,
-    [[builtin(vertex_index)]] vertex_index: u32,
+    @location(0) in_edges: vec2<u32>,
+    @location(1) in_mask_id: u32,
+    @location(2) in_fill_rule: u32,
+    @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
 
     var fill_rule = in_fill_rule & 0xFFFFu;

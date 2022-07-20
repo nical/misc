@@ -1,18 +1,18 @@
-// This shader rasterize the mask for a single tile from a
+// This shader rasterize the mask for a single tile p0 a
 // backdrop and and a sequence of edges.
 //
 // The "backdrop" is the winding number at the top-right corner
 // of the tile (following piet and pathfinder's terminology).
 
 struct FragmentOutput {
-    [[location(0)]] color: vec4<f32>;
+    @location(0) color: vec4<f32>,
 };
 
 struct Edges {
-    data: [[stride(16)]] array<vec4<f32>>;
+    data: array<vec4<f32>>,
 };
 
-[[group(0), binding(1)]] var<storage> edges: Edges;
+@group(0) @binding(1) var<storage> edges: Edges;
 
 fn even_odd(winding_number: f32) -> f32 {
     return 1.0 - abs((abs(winding_number) % 2.0) - 1.0);
@@ -22,24 +22,24 @@ fn non_zero(winding_number: f32) -> f32 {
     return min(abs(winding_number), 1.0);
 }
 
-fn rasterize_edge(from: vec2<f32>, to: vec2<f32>) -> f32 {
+fn rasterize_edge(p0: vec2<f32>, p1: vec2<f32>) -> f32 {
     // The overlap range on the y axis between the current tow of pixels and the segment.
     // It can be a negative range (negative edge winding).
-    var y0 = min(max(0.0, from.y), 1.0);
-    var y1 = min(max(0.0, to.y), 1.0);
+    var y0 = min(max(0.0, p0.y), 1.0);
+    var y1 = min(max(0.0, p1.y), 1.0);
 
     if (y0 == y1) {
         return 0.0;
     }
 
-    var inv_dy = 1.0 / (to.y - from.y);
+    var inv_dy = 1.0 / (p1.y - p0.y);
     // The interpolation factors at the start and end of the intersection between the edge
     // and the row of pixels.
-    var t0 = (y0 - from.y) * inv_dy;
-    var t1 = (y1 - from.y) * inv_dy;
+    var t0 = (y0 - p0.y) * inv_dy;
+    var t1 = (y1 - p0.y) * inv_dy;
     // X positions at t0 and t1
-    var x0 = from.x * (1.0 - t0) + to.x * t0;
-    var x1 = from.x * (1.0 - t1) + to.x * t1;
+    var x0 = p0.x * (1.0 - t0) + p1.x * t0;
+    var x1 = p0.x * (1.0 - t1) + p1.x * t1;
 
     // Jitter to avoid NaN when dividing by xmin-xmax (for example vertical edges).
     // The original value was 1e-5 but it wasn't sufficient to avoid issues with 32px tiles.
@@ -74,12 +74,12 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
 }
 
 
-[[stage(fragment)]]
+@fragment
 fn main(
-    [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
-    [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
-    [[location(2), interpolate(flat)]] in_fill_rule: u32,
-    [[location(3), interpolate(flat)]] backdrop: f32,
+    @location(0) @interpolate(linear) in_uv: vec2<f32>,
+    @location(1) @interpolate(flat) in_edges_range: vec2<u32>,
+    @location(2) @interpolate(flat) in_fill_rule: u32,
+    @location(3) @interpolate(flat) backdrop: f32,
 ) -> FragmentOutput {
 
     var winding_number = backdrop;
@@ -94,10 +94,10 @@ fn main(
         edge_idx = edge_idx + 1u;
 
         // Move to coordinates local to the current pixel.
-        var from = edge.xy - in_uv;
-        var to = edge.zw - in_uv;
+        var p0 = edge.xy - in_uv;
+        var p1 = edge.zw - in_uv;
 
-        winding_number = winding_number + rasterize_edge(from, to);
+        winding_number = winding_number + rasterize_edge(p0, p1);
     }
 
     var mask = resolve_mask(winding_number, in_fill_rule);

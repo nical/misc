@@ -2,20 +2,20 @@
 struct MaskBuffer {
     // Ideally we would want a buffer of 64k u8 but bytes aren't supported by wgpu (yet?)
     // so we interpret the buffer as u32 and do some bit fiddling instead.
-    data: [[stride(4)]] array<u32, 16384>;
+    data: array<u32, 16384>,
 };
 
-[[group(1), binding(0)]] var<uniform> mask_buffer: MaskBuffer;
+@group(1) @binding(0) var<storage> mask_buffer: MaskBuffer;
 
 struct FragmentOutput {
-    [[location(0)]] color: vec4<f32>;
+    @location(0) color: vec4<f32>,
 };
 
 
-[[stage(fragment)]]
+@fragment
 fn main(
-    [[location(0), interpolate(linear)]] local_uv: vec2<f32>,
-    [[location(1), interpolate(flat)]] src_offset: u32,
+    @location(0) @interpolate(linear) local_uv: vec2<f32>,
+    @location(1) @interpolate(flat) src_offset: u32,
 ) -> FragmentOutput {
 
     var offset = src_offset + u32(floor(local_uv.y)) * 16u + u32(floor(local_uv.x));

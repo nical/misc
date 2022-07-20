@@ -261,7 +261,7 @@ fn main() {
         format: wgpu::TextureFormat::Bgra8Unorm,
         width: window_size.width,
         height: window_size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::AutoVsync,
     };
 
     surface.configure(&device, &surface_desc);

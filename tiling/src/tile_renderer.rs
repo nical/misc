@@ -316,14 +316,14 @@ impl TileRenderer {
             // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Mask atlas"),
-                color_attachments: &[wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.mask_texture_view,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                         store: true,
                     },
                     resolve_target: None,
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
 
@@ -367,14 +367,14 @@ impl TileRenderer {
             let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Color target"),
-                color_attachments: &[wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(bg_color),
                         store: true,
                     },
                     resolve_target: None,
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
 
@@ -398,14 +398,14 @@ impl TileRenderer {
                 {
                     let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Mask atlas"),
-                        color_attachments: &[wgpu::RenderPassColorAttachment {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &self.mask_texture_view,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                                 store: true,
                             },
                             resolve_target: None,
-                        }],
+                        })],
                         depth_stencil_attachment: None,
                     });
 
@@ -430,14 +430,14 @@ impl TileRenderer {
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Color target"),
-                        color_attachments: &[wgpu::RenderPassColorAttachment {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: target,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
                                 store: true,
                             },
                             resolve_target: None,
-                        }],
+                        })],
                         depth_stencil_attachment: None,
                     });
 

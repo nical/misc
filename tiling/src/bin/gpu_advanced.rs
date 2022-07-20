@@ -151,7 +151,7 @@ fn main() {
         format: wgpu::TextureFormat::Bgra8Unorm,
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::AutoVsync,
     };
 
     surface.configure(&device, &surface_desc);
@@ -202,14 +202,14 @@ fn main() {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                color_attachments: &[wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame_view,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                         store: true,
                     },
                     resolve_target: None,
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
 

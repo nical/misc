@@ -1,26 +1,26 @@
-// This shader rasterize the mask for a single tile from a
+// This shader rasterize the mask for a single tile start a
 // backdrop and and a sequence of edges.
 //
 // The "backdrop" is the winding number at the top-right corner
 // of the tile (following piet and pathfinder's terminology).
 
 struct FragmentOutput {
-    [[location(0)]] color: vec4<f32>;
+    @location(0) color: vec4<f32>,
 };
 
 struct Edge {
-    from: vec2<f32>;
-    ctrl: vec2<f32>;
-    to: vec2<f32>;
-    kind: u32;
-    padding: u32;
+    start: vec2<f32>,
+    ctrl: vec2<f32>,
+    to: vec2<f32>,
+    kind: u32,
+    padding: u32,
 };
 
 struct Edges {
-    data: [[stride(32)]] array<Edge>;
+    data: array<Edge>,
 };
 
-[[group(0), binding(1)]] var<storage> edges: Edges;
+@group(0) @binding(1) var<storage> edges: Edges;
 
 fn even_odd(winding_number: f32) -> f32 {
     return 1.0 - abs((abs(winding_number) % 2.0) - 1.0);
@@ -34,12 +34,12 @@ fn approx_parabola_inv_integral(x: f32) -> f32 {
     return x * (0.61 + sqrt(0.1521 + 0.25 * x * x));
 }
 
-[[stage(fragment)]]
+@fragment
 fn main(
-    [[location(0), interpolate(linear)]] in_uv: vec2<f32>,
-    [[location(1), interpolate(flat)]] in_edges_range: vec2<u32>,
-    [[location(2), interpolate(flat)]] in_fill_rule: u32,
-    [[location(3), interpolate(flat)]] in_backdrop: f32,
+    @location(0) @interpolate(linear) in_uv: vec2<f32>,
+    @location(1) @interpolate(flat) in_edges_range: vec2<u32>,
+    @location(2) @interpolate(flat) in_fill_rule: u32,
+    @location(3) @interpolate(flat) in_backdrop: f32,
 ) -> FragmentOutput {
 
     var winding_number = 0.0;
@@ -53,31 +53,31 @@ fn main(
         var edge = edges.data[edge_idx];
         edge_idx = edge_idx + 1u;
 
-        var from = edge.from - in_uv;
+        var start = edge.start - in_uv;
         var ctrl = edge.ctrl - in_uv;
         var to = edge.to - in_uv;
 
         var tolerance = 0.05;
 
         var count = 1u;
-        var integral_from = 0.0;
+        var integral_start = 0.0;
         var integral_step = 0.0;
         var div_inv_integral_diff = 0.0;
         if (edge.kind == 1u) {
-            var ddx = 2.0 * ctrl.x - from.x - to.x;
-            var ddy = 2.0 * ctrl.y - from.y - to.y;
-            var cross = (to.x - from.x) * ddy - (to.y - from.y) * ddx;
-            var parabola_from = ((ctrl.x - from.x) * ddx + (ctrl.y - from.y) * ddy) / cross;
+            var ddx = 2.0 * ctrl.x - start.x - to.x;
+            var ddy = 2.0 * ctrl.y - start.y - to.y;
+            var cross = (to.x - start.x) * ddy - (to.y - start.y) * ddx;
+            var parabola_start = ((ctrl.x - start.x) * ddx + (ctrl.y - start.y) * ddy) / cross;
             var parabola_to = ((to.x - ctrl.x) * ddx + (to.y - ctrl.y) * ddy) / cross;
             var hypot_ddx_ddy = sqrt(ddx * ddx + ddy * ddy);
-            var scale = abs(cross) / (hypot_ddx_ddy * abs(parabola_to - parabola_from));
-            integral_from = approx_parabola_integral(parabola_from);
+            var scale = abs(cross) / (hypot_ddx_ddy * abs(parabola_to - parabola_start));
+            integral_start = approx_parabola_integral(parabola_start);
             var integral_to = approx_parabola_integral(parabola_to);
-            var integral_diff = integral_to - integral_from;
+            var integral_diff = integral_to - integral_start;
 
-            var inv_integral_from = approx_parabola_inv_integral(integral_from);
+            var inv_integral_start = approx_parabola_inv_integral(integral_start);
             var inv_integral_to = approx_parabola_inv_integral(integral_to);
-            div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
+            div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_start);
 
             // TODO: count could be NaN but we the hardware/driver may not handle NaN so
             // we have to handle this earlier.
@@ -88,7 +88,7 @@ fn main(
         }
 
         var i = 0.0;
-        var prev = from;
+        var prev = start;
         loop {
             if (count == 0u) {
                 break;
@@ -96,11 +96,11 @@ fn main(
 
             var next = to;
             if (count > 1u) {
-                var u = approx_parabola_inv_integral(integral_from + integral_step * i);
-                var t = (u - inv_integral_from) * div_inv_integral_diff;
+                var u = approx_parabola_inv_integral(integral_start + integral_step * i);
+                var t = (u - inv_integral_start) * div_inv_integral_diff;
                 var one_t = (1.0 - t);
 
-                next = from * one_t * one_t + ctrl * 2.0 * one_t * t + to * t * t;
+                next = start * one_t * one_t + ctrl * 2.0 * one_t * t + to * t * t;
             }
 
             var window = vec2<f32>(

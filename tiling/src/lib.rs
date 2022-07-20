@@ -1,4 +1,4 @@
-pub mod api;
+//pub mod api;
 pub mod tiler;
 pub mod tile_encoder;
 pub mod advanced_raster_encoder;
@@ -7,7 +7,7 @@ pub mod occlusion;
 pub mod load_svg;
 pub mod gpu;
 pub mod buffer;
-pub mod flatten_simd;
+//pub mod flatten_simd;
 pub mod tile_renderer;
 
 pub use tiler::*;
