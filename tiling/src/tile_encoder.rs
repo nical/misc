@@ -1,4 +1,4 @@
-use lyon::geom::QuadraticBezierSegment;
+use lyon::geom::{LineSegment, QuadraticBezierSegment};
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
 use std::sync::{
@@ -316,10 +316,8 @@ impl TileEncoder {
                 self.line_edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
             } else {
                 let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
-                let mut from = curve.from;
-                flatten_quad(&curve, draw.tolerance, &mut |to| {
-                    self.line_edges.push(LineEdge(from, to));
-                    from = to;
+                flatten_quad(&curve, draw.tolerance, &mut |segment| {
+                    self.line_edges.push(LineEdge(segment.from, segment.to));
                 });
             }
         }
@@ -489,17 +487,17 @@ impl<'l> ParallelRasterEncoder<'l> {
     }
 }
 
-pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(Point)) {
+pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
     let sq_error = square_distance_to_point(&curve.baseline().to_line(), curve.ctrl) * 0.25;
 
     let sq_tolerance = tolerance * tolerance;
     if sq_error <= sq_tolerance {
-        cb(curve.to);
+        cb(&curve.baseline());
     } else if sq_error <= sq_tolerance * 4.0 {
         let ft = curve.from.lerp(curve.to, 0.5);
         let mid = ft.lerp(curve.ctrl, 0.5);
-        cb(mid);
-        cb(curve.to);
+        cb(&LineSegment { from: curve.from, to: mid });
+        cb(&LineSegment { from: mid, to: curve.to });
     } else {
 
         // The baseline cost of this is fairly high and then amortized if the number of segments is high.

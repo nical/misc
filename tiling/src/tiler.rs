@@ -584,7 +584,7 @@ impl Tiler {
                 PathEvent::Quadratic { from, ctrl, to } => {
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
                     segment.for_each_monotonic(&mut|monotonic| {
-                        let edge = MonotonicEdge::quadratic(*monotonic.segment());
+                        let edge = MonotonicEdge::quadratic(*monotonic);
                         self.add_monotonic_edge(&edge);
                     });
                 }
@@ -592,7 +592,7 @@ impl Tiler {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
                     segment.for_each_quadratic_bezier(self.draw.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
-                            let edge = MonotonicEdge::quadratic(*monotonic.segment());
+                            let edge = MonotonicEdge::quadratic(*monotonic);
                             self.add_monotonic_edge(&edge);
                         });
                     });
@@ -622,19 +622,15 @@ impl Tiler {
                 }
                 PathEvent::Quadratic { from, ctrl, to } => {
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.draw.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
+                    segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
+                        let edge = MonotonicEdge::linear(*segment);
                         self.add_monotonic_edge(&edge);
                     });
                 }
                 PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
-                    let mut from = segment.from;
-                    segment.for_each_flattened(self.draw.tolerance, &mut|to| {
-                        let edge = MonotonicEdge::linear(LineSegment { from, to });
-                        from = to;
+                    segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
+                        let edge = MonotonicEdge::linear(*segment);
                         self.add_monotonic_edge(&edge);
                     });
                 }

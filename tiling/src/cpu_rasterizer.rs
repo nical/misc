@@ -174,10 +174,8 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
 }
 
 pub fn draw_curve(from: Point2D<f32>, ctrl: Point2D<f32>, to: Point2D<f32>, tolerance: f32, dst: &mut[f32]) {
-    let mut prev = from;
-    QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |to| {
-        draw_line(prev, to, dst);
-        prev = to;
+    QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |segment| {
+        draw_line(segment.from, segment.to, dst);
     });
 }
 
