@@ -795,13 +795,17 @@ fn test_few_items() {
 
     let pool = ThreadPool::builder().with_worker_threads(3).build();
     let mut ctx = pool.pop_context().unwrap();
+    let ctx_data = ctx.create_context_data(vec![(); 10]);
     for _ in 0..100 {
         for n in 0..8 {
             let mut input = vec![0i32; n];
 
-            ctx.for_each(&mut input).run(|_, mut item| { *item += 1; });
+            ctx.for_each(&mut input)
+                .with_context_data(&mut [0u32, 0, 0, 0])
+                .run(|_, mut item| { *item += 1; });
 
             let handle = ctx.task()
+                .with_context_data(ctx_data.clone())
                 .with_data(input)
                 .for_each()
                 .run(|_, mut item| { *item += 1; });

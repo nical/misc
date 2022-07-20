@@ -186,6 +186,7 @@ pub struct ContextDataRef<ContextData> {
 }
 
 impl<ContextData> ContextDataRef<ContextData> {
+    #[inline]
     pub unsafe fn get<'l>(&self, ctx: &Context) -> &'l mut ContextData {
         let context_data_index = ctx.data_index() as isize;
         // SAFETY: Here we rely two very important things:
@@ -195,6 +196,8 @@ impl<ContextData> ContextDataRef<ContextData> {
         //
         // As a result it is impossible to craft a pointer that will read or write out of bounds
         // here.
+        //
+        // TODO: unfortunately miri errors when producing &mut () from a null pointer.
         &mut *self.ptr.wrapping_offset(context_data_index)
     }
 
