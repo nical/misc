@@ -17,5 +17,4 @@ pub mod rectangle_store;
 pub mod units;
 pub mod allocator;
 pub mod bump_allocator;
-pub mod data_store;
 //pub mod transform_tree;

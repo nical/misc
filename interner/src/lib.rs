@@ -5,10 +5,9 @@ use std::collections::HashMap;
 
 pub trait Interned : Clone {
     type Key: Hash + Eq;
-    type RenderData;
 
     fn key(&self) -> Self::Key;
-    fn on_remove(_item: &Option<Self>, _render_data: &Option<Self::RenderData>) {}
+    fn on_remove(_item: &Option<Self>) {}
 }
 
 pub struct Handle<T> {
@@ -83,32 +82,27 @@ impl<T: Interned> RetainedHandle<T> {
 
 pub struct DataStore<T: Interned> {
     items: Vec<Option<T>>,
-    render_data: Vec<Option<T::RenderData>>
 }
 
 impl <T: Interned> DataStore<T> {
     pub fn new() -> Self {
         DataStore {
             items: Vec::new(),
-            render_data: Vec::new(),
         }
     }
 
     pub fn set(&mut self, handle: Handle<T>, val: T) {
         self.ensure_size(handle);
         self.items[handle.index()] = Some(val);
-        self.render_data[handle.index()] = None;
     }
 
     pub fn update(&mut self, handle: Handle<T>, val: T) {
         self.items[handle.index()] = Some(val);
-        self.render_data[handle.index()] = None;
     }
 
     pub fn remove(&mut self, handle: Handle<T>) {
-        T::on_remove(&self.items[handle.index()], &self.render_data[handle.index()]);
+        T::on_remove(&self.items[handle.index()]);
         self.items[handle.index()] = None;
-        self.render_data[handle.index()] = None;
     }
 
     fn ensure_size(&mut self, handle: Handle<T>) {
@@ -117,10 +111,8 @@ impl <T: Interned> DataStore<T> {
         }
         let diff = handle.index as usize + 1 - self.items.len();
         self.items.reserve(diff);
-        self.render_data.reserve(diff);
         for _ in 0..diff {
             self.items.push(None);
-            self.render_data.push(None);
         }
     }
 
@@ -263,7 +255,6 @@ fn interner() {
 
     impl Interned for ColorPattern {
         type Key = ColorPattern;
-        type RenderData = ();
         fn key(&self) -> ColorPattern { self.clone() }
     }
 
