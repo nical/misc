@@ -1,4 +1,4 @@
-//pub mod api;
+pub mod canvas;
 pub mod tiler;
 pub mod tile_encoder;
 pub mod advanced_raster_encoder;

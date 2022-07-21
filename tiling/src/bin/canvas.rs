@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tiling::*;
-use tiling::api::*;
+use tiling::canvas::*;
 use tiling::load_svg::*;
 use tiling::gpu::masked_tiles::MaskUploader;
 use lyon::path::geom::euclid::{size2, Transform2D};
@@ -107,7 +107,7 @@ fn main() {
 
     tiler_config.view_box = view_box;
 
-    let mut canvas = api::Canvas::new(tiler_config.view_box);
+    let mut canvas = Canvas::new(tiler_config.view_box);
 
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
@@ -164,7 +164,7 @@ fn main() {
         format: wgpu::TextureFormat::Bgra8Unorm,
         width: window_size.width,
         height: window_size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::AutoVsync,
     };
 
     surface.configure(&device, &surface_desc);
