@@ -1,4 +1,4 @@
-use crate::{Batch, BatchingConfig, Rect, Stats};
+use crate::{BatchingConfig, Rect, Stats, BatchId, Batcher, BatchIndex, SystemId};
 
 struct BatchRects {
     batch: Rect,
@@ -40,22 +40,16 @@ impl BatchRects {
     }
 }
 
-/// A list of batches that preserve the ordering of overlapping primitives. 
-pub struct OrderedBatchList<B> {
-    batches: Vec<OrderedBatch<B>>,
+pub struct OrderedBatcher {
+    batches: Vec<BatchId>,
     rects: Vec<BatchRects>,
     max_lookback: usize,
     hit_lookback_limit: u32,
 }
 
-struct OrderedBatch<B> {
-    batch: B,
-    cost: f32,
-}
-
-impl<B: Batch> OrderedBatchList<B> {
+impl OrderedBatcher {
     pub fn new(config: &BatchingConfig) -> Self {
-        OrderedBatchList {
+        OrderedBatcher {
             batches: Vec::new(),
             rects: Vec::new(),
             max_lookback: config.max_lookback,
@@ -63,17 +57,29 @@ impl<B: Batch> OrderedBatchList<B> {
         }
     }
 
-    pub fn add_instance(&mut self, key: &B::Key, instance: B::Instance, rect: &Rect) {
-        self.add_instances(key, &[instance], rect);
+    pub fn clear(&mut self) {
+        self.batches.clear();
+        self.rects.clear();
+        self.hit_lookback_limit = 0;
     }
 
-    pub fn add_instances(&mut self, key: &B::Key, instances: &[B::Instance], rect: &Rect) {
+    pub fn upudate_stats(&self, stats: &mut Stats) {
+        stats.hit_lookback_limit += self.hit_lookback_limit;
+    }
+}
+
+impl Batcher for OrderedBatcher {
+    fn add_to_existing_batch(
+        &mut self,
+        system_id: SystemId,
+        rect: &Rect,
+        callback: &mut impl FnMut(BatchIndex) -> bool,
+    ) -> bool {
         let mut intersected = false;
         for (batch_index, batch) in self.batches.iter_mut().enumerate().rev().take(self.max_lookback) {
-            if batch.batch.add_instances(key, instances, rect) {
+            if batch.system == system_id && callback(batch.index) {
                 self.rects[batch_index].add_rect(rect);
-                batch.cost += rect.area();
-                return;
+                return true;
             }
 
             if self.rects[batch_index].intersects(rect) {
@@ -86,21 +92,76 @@ impl<B: Batch> OrderedBatchList<B> {
             self.hit_lookback_limit += 1;
         }
 
-        self.batches.push(OrderedBatch {
-            batch: Batch::new(key, instances, rect),
-            cost: rect.area(),
-        });
-        self.rects.push(BatchRects::new(rect));
+        return false;
     }
 
-    pub fn add_batch(&mut self, key: &B::Key, instances: &[B::Instance], rect: &Rect) {
-        self.batches.push(OrderedBatch {
-            batch: Batch::new(key, instances, rect),
-            cost: rect.area(),
-        });
+    fn add_batch(
+        &mut self,
+        batch_id: BatchId,
+        rect: &Rect,
+    ) {
+        self.batches.push(batch_id);
         self.rects.push(BatchRects::new(rect));
     }
+}
 
+
+pub struct BasicOrderedBatcher {
+    batches: Vec<BatchId>,
+    prev_system: Option<SystemId>,
+    hit_lookback_limit: u32,
+}
+
+impl BasicOrderedBatcher {
+    pub fn new() -> Self {
+        BasicOrderedBatcher {
+            batches: Vec::new(),
+            prev_system: None,
+            hit_lookback_limit: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.batches.clear();
+        self.prev_system = None;
+        self.hit_lookback_limit = 0;
+    }
+
+    pub fn upudate_stats(&self, stats: &mut Stats) {
+        stats.hit_lookback_limit += self.hit_lookback_limit;
+    }
+}
+
+impl Batcher for BasicOrderedBatcher {
+    fn add_to_existing_batch(
+        &mut self,
+        system_id: SystemId,
+        _rect: &Rect,
+        callback: &mut impl FnMut(BatchIndex) -> bool,
+    ) -> bool {
+        if self.prev_system != Some(system_id) {
+            self.hit_lookback_limit += 1;
+            return false;
+        }
+
+        if callback(self.batches.last().unwrap().index) {
+            return true;
+        }
+
+        false
+    }
+
+    fn add_batch(
+        &mut self,
+        batch_id: BatchId,
+        _rect: &Rect,
+    ) {
+        self.batches.push(batch_id);
+    }
+}
+
+
+    /*
     pub fn optimize(&mut self, config: &BatchingConfig) {
         if self.batches.len() < config.ideal_batch_count {
             return;
@@ -140,19 +201,6 @@ impl<B: Batch> OrderedBatchList<B> {
             }
         }
     }
-
-    pub fn stats(&self) -> Stats {
-        Stats {
-            hit_lookback_limit: self.hit_lookback_limit,
-            num_batches: self.batches.len() as u32,
-            num_instances: self.batches.iter().fold(
-                0,
-                |count, batch| count + batch.batch.num_instances() as u32,
-            ),
-        }
-    }
-}
-
 pub fn get_both_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
     assert!(a != b);
     assert!(a < v.len());
@@ -165,3 +213,7 @@ pub fn get_both_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
         )
     }
 }
+    */
+
+
+

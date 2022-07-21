@@ -1,11 +1,49 @@
 mod ordered;
 mod order_independent;
+mod store;
 
 pub type Rect = euclid::default::Rect<f32>;
 pub type Point = euclid::default::Point2D<f32>;
 
 pub use ordered::*;
 pub use order_independent::*;
+pub use store::*;
+
+// TODO: it would be nice if Batcher had the entire logic of adding instances, so that it
+// could internally dispatch to an alpha or opaque batcher.
+pub trait Batcher {
+    fn add_to_existing_batch(
+        &mut self,
+        system_id: SystemId,
+        rect: &Rect,
+        callback: &mut impl FnMut(BatchIndex) -> bool,
+    ) -> bool;
+
+    fn add_batch(
+        &mut self,
+        batch: BatchId,
+        rect: &Rect,
+    );
+}
+
+pub trait BatchType {
+    type Key: Clone;
+    type Instance: Copy;
+
+    fn is_compatible(&self, a: &Self::Key, b: &Self::Key) -> bool;
+    fn combine_keys(&self, key: &Self::Key, other: &Self::Key) -> Self::Key;
+    /// A rough approximation of the per-area-unit cost of a batch.
+    fn cost(&self, _key: &Self::Key) -> f32 { 1.0 }
+}
+
+pub type SystemId = u32;
+pub type BatchIndex = u32;
+
+#[derive(Copy, Clone, Debug)]
+pub struct BatchId {
+    pub system: SystemId,
+    pub index: BatchIndex,
+}
 
 /// Some options to tune the behavior of the batching phase.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -26,21 +64,6 @@ pub struct BatchingConfig {
     pub max_lookback: usize,
 }
 
-pub trait Batch {
-    type Key;
-    type Instance;
-
-    fn new(key: &Self::Key, instances: &[Self::Instance], rect: &Rect) -> Self;
-
-    fn add_instances(&mut self, key: &Self::Key, instances: &[Self::Instance], rect: &Rect) -> bool;
-
-    fn can_merge(&self, _other: &Self) -> bool { false }
-
-    fn merge(&mut self, _other: &mut Self) -> bool { false }
-
-    fn num_instances(&self) -> usize;
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct Stats {
     pub num_batches: u32,
@@ -48,19 +71,43 @@ pub struct Stats {
     pub hit_lookback_limit: u32,
 }
 
-impl Stats {
-    pub fn combine(&self, other: &Self) -> Self {
-        Stats {
-            num_batches: self.num_batches + other.num_batches,
-            num_instances: self.num_instances + other.num_instances,
-            hit_lookback_limit: self.hit_lookback_limit + other.hit_lookback_limit,
+#[test]
+fn simple_batch_store() {
+    use euclid::rect;
+
+    struct SolidColor;
+    struct Image;
+    struct Text;
+
+    impl SolidColor {
+        fn key() -> Key<()> {
+            Key {
+                shader: ShaderFeatures { primary: 1, secondary: 0 },
+                blend_mode: BlendMode::Alpha,
+                handles: (),
+            }
         }
     }
-}
 
-#[test]
-fn simple() {
-    use euclid::rect;
+    impl Image {
+        fn key(src_texture: u32, mask_texture: u32) -> Key<[u32; 2]> {
+            Key {
+                shader: ShaderFeatures { primary: 1, secondary: 0 },
+                blend_mode: BlendMode::Alpha,
+                handles: [src_texture, mask_texture],
+            }
+        }
+    }
+
+    impl Text {
+        fn key(atlas_texture: u32) -> Key<u32> {
+            Key {
+                shader: ShaderFeatures { primary: 1, secondary: 0 },
+                blend_mode: BlendMode::Alpha,
+                handles: atlas_texture,
+            }
+        }
+    }
 
     /// Per-instance data to send to the GPU.
     #[derive(Copy, Clone)]
@@ -97,77 +144,65 @@ fn simple() {
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
     pub enum BlendMode {
-        None,
         Alpha,
         // etc.
     }
 
     #[derive(Copy, Clone, Debug, PartialEq, Hash)]
-    pub struct Key {
+    pub struct Key<Handles> {
         shader: ShaderFeatures,
         blend_mode: BlendMode,
-        textures: [u32; 4],
+        handles: Handles,
     }
 
-    impl Key {
-        fn combine(&mut self, other: &Self) {
-            debug_assert_eq!(self.blend_mode, other.blend_mode);
-            debug_assert_eq!(self.textures, other.textures);
-            self.shader = self.shader.combined_with(other.shader);
-        }
-
-        fn should_add_to_batch(&self, batch: &Self) -> bool {
-            self.textures == batch.textures
-                && self.blend_mode == batch.blend_mode
-                && self.shader.primary == batch.shader.primary
+    impl<Handles: Copy> Key<Handles> {
+        fn combine(&self, other: &Self) -> Self {
+            Key { shader: self.shader.combined_with(other.shader), blend_mode: self.blend_mode, handles: self.handles }
         }
     }
 
-    struct AlphaBatch {
-        key: Key,
-        instances: Vec<Instance>,
-    }
-
-
-    impl Batch for AlphaBatch {
-        type Key = Key;
+    impl BatchType for SolidColor {
+        type Key = Key<()>;
         type Instance = Instance;
 
-        fn new(key: &Key, instances: &[Instance], _rect: &Rect) -> Self {
-            AlphaBatch {
-                key: *key,
-                instances: instances.to_vec(),
-            }
+        fn is_compatible(&self, a: &Self::Key, b: &Self::Key) -> bool {
+            a.handles == b.handles
+                && a.blend_mode == b.blend_mode
+                && shader_configuration_exists(a.shader.combined_with(b.shader))
         }
 
-        fn add_instances(&mut self, key: &Key, instances: &[Instance], _rect: &Rect) -> bool {
-            if !key.should_add_to_batch(&self.key) {
-                return false;
-            }
+        fn combine_keys(&self, key: &Self::Key, other: &Self::Key) -> Self::Key {
+            key.combine(other)
+        }
+    }
 
-            self.instances.extend_from_slice(instances);
-            self.key.combine(&key);
+    impl BatchType for Image {
+        type Key = Key<[u32; 2]>;
+        type Instance = Instance;
 
-            true
+        fn is_compatible(&self, a: &Self::Key, b: &Self::Key) -> bool {
+            a.handles == b.handles
+                && a.blend_mode == b.blend_mode
+                && shader_configuration_exists(a.shader.combined_with(b.shader))
         }
 
-        fn can_merge(&self, other: &Self) -> bool {
-            self.key.textures == other.key.textures
-                && self.key.blend_mode == other.key.blend_mode
-                && shader_configuration_exists(self.key.shader.combined_with(other.key.shader))
+        fn combine_keys(&self, key: &Self::Key, other: &Self::Key) -> Self::Key {
+            key.combine(other)
+        }
+    }
+
+    impl BatchType for Text {
+        type Key = Key<u32>;
+        type Instance = Instance;
+
+        fn is_compatible(&self, a: &Self::Key, b: &Self::Key) -> bool {
+            a.handles == b.handles
+                && a.blend_mode == b.blend_mode
+                && shader_configuration_exists(a.shader.combined_with(b.shader))
         }
 
-        fn num_instances(&self) -> usize { self.instances.len() }
-
-        fn merge(&mut self, other: &mut Self) -> bool {
-            if self.can_merge(other) {
-                self.instances.extend(other.instances.drain(..));
-                self.key.combine(&other.key);
-
-                return true
-            }
-
-            false
+        fn combine_keys(&self, key: &Self::Key, other: &Self::Key) -> Self::Key {
+            key.combine(other)
         }
     }
 
@@ -176,33 +211,23 @@ fn simple() {
         true
     }
 
-    impl Key {
-        fn default() -> Self {
-            Key {
-                shader: ShaderFeatures { primary: 0, secondary: 0 },
-                textures: [0; 4],
-                blend_mode: BlendMode::None
-            }            
-        }
-        fn solid() -> Self { Key { shader: ShaderFeatures { primary: 1, secondary: 0 }, ..Self::default() } }
-        fn image() -> Self { Key { shader: ShaderFeatures { primary: 2, secondary: 0 }, ..Self::default() } }
-        fn text() -> Self { Key { shader: ShaderFeatures { primary: 4, secondary: 0 }, ..Self::default() } }
-    }
-
     let cfg = BatchingConfig {
         ideal_batch_count: 10,
         max_lookback: 10,
         max_merge_cost: 1000.0,
     };
 
-    let mut batches = OrderedBatchList::<AlphaBatch>::new(&cfg);
+    let mut batcher = OrderedBatcher::new(&cfg);
 
-    batches.add_instance(&Key::solid(), Instance, &rect(0.0, 0.0, 100.0, 100.0));
-    batches.add_instance(&Key::image(), Instance, &rect(100.0, 0.0, 100.0, 100.0));
-    batches.add_instance(&Key::text(), Instance, &rect(200.0, 0.0, 100.0, 100.0));
-    batches.add_instance(&Key::solid(), Instance, &rect(10.0, 10.0, 10.0, 10.0));
-    batches.add_instance(&Key::solid(), Instance, &rect(300.0, 0.0, 10.0, 10.0));
-    batches.add_instance(&Key::text(), Instance, &rect(320.0, 0.0, 10.0, 10.0));
+    let mut solid_color_batches = BatchStore::new(SolidColor, &cfg, 0);
+    let mut image_batches = BatchStore::new(Image, &cfg, 1);
+    let mut text_batches = BatchStore::new(Text, &cfg, 2);
 
-    batches.optimize(&cfg);
+    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(0.0, 0.0, 100.0, 100.0));
+    image_batches.add_instance(&mut batcher, &Image::key(0, 0), Instance, &rect(100.0, 0.0, 100.0, 100.0));
+    text_batches.add_instance(&mut batcher, &Text::key(0), Instance, &rect(200.0, 0.0, 100.0, 100.0));
+    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(10.0, 10.0, 10.0, 10.0));
+    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(300.0, 0.0, 10.0, 10.0));
+    text_batches.add_instance(&mut batcher, &Text::key(0), Instance, &rect(320.0, 0.0, 10.0, 10.0));
 }
+

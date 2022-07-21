@@ -1,35 +1,43 @@
-use crate::{Batch, BatchingConfig, Rect};
+use crate::{BatchingConfig, Rect, BatchId, Batcher, SystemId, BatchIndex};
 
 /// A list of batches that don't preserve ordering.
 ///
 /// Typically usedful for fully opaque primitives when the depth-buffer is used for
 /// occlusion culling.
-pub struct OrderIndependentBatchList<Batch> {
-    batches: Vec<Batch>,
+pub struct OrderIndependentBatcher {
+    batches: Vec<BatchId>,
+    // TODO: record batches with large occluders and reorder them to render them first.
 }
 
-impl<B: Batch> OrderIndependentBatchList<B> {
+impl OrderIndependentBatcher {
     pub fn new(_config: &BatchingConfig) -> Self {
-        OrderIndependentBatchList {
+        OrderIndependentBatcher {
             batches: Vec::new(),
         }
     }
+}
 
-    pub fn add_instance(&mut self, key: &B::Key, instance: B::Instance, rect: &Rect) {
-        self.add_instances(key, &[instance], rect);
-    }
-
-    pub fn add_instances(&mut self, key: &B::Key, instances: &[B::Instance], rect: &Rect) {
-        for batch in self.batches.iter_mut().rev() {
-            if batch.add_instances(key, instances, rect) {
-                return;
+impl Batcher for OrderIndependentBatcher {
+    fn add_to_existing_batch(
+        &mut self,
+        system_id: SystemId,
+        _rect: &Rect,
+        callback: &mut impl FnMut(BatchIndex) -> bool,
+    ) -> bool {
+        for batch in &mut self.batches {
+            if batch.system == system_id && callback(batch.index) {
+                return true;
             }
         }
 
-        self.batches.push(Batch::new(key, instances, rect));
+        return false;
     }
 
-    pub fn optimize(&mut self, _config: &BatchingConfig) {
-
+    fn add_batch(
+        &mut self,
+        batch: BatchId,
+        _rect: &Rect,
+    ) {
+        self.batches.push(batch);
     }
 }
