@@ -1,4 +1,4 @@
-use crate::{Rect, BatchingConfig, BatchType, Batcher, SystemId, BatchIndex, BatchId, Stats};
+use super::{Rect, BatchingConfig, BatchType, Batcher, SystemId, BatchIndex, BatchId, Stats};
 
 pub struct BatchStore<B: BatchType> {
     batch_type: B,

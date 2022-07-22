@@ -1,5 +1,5 @@
-use crate::{
-    ShaderName, PrimaryFeatures, SecondaryFeatures, InitFlags, ShaderDescriptor,
+use super::{
+    InitFlags, ShaderDescriptor,
 };
 
 macro_rules! decl_features {
@@ -16,13 +16,13 @@ macro_rules! decl_features {
 }
 
 pub mod shader_names {
-    use crate::ShaderName;
+    use crate::shaders::ShaderName;
     pub const IMAGE: ShaderName = ShaderName(1);
     pub const SOLID: ShaderName = ShaderName(2);
 }
 
 pub mod primary_features {
-    use crate::PrimaryFeatures;
+    use crate::shaders::PrimaryFeatures;
     pub const NO_PRIMARY_FEATURES: PrimaryFeatures = PrimaryFeatures(0);
 
     decl_features!(PrimaryFeatures {
@@ -35,7 +35,7 @@ pub mod primary_features {
 }
 
 pub mod secondary_features {
-    use crate::SecondaryFeatures;
+    use crate::shaders::SecondaryFeatures;
     pub const NO_SECONDARY_FEATURES: SecondaryFeatures = SecondaryFeatures(0);
 
     decl_features!(SecondaryFeatures {

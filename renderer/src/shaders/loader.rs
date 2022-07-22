@@ -1,5 +1,5 @@
-use crate::ShaderDescriptor;
-use crate::shader_list::{primary_features, secondary_features};
+use super::ShaderDescriptor;
+use super::shader_list::{primary_features, secondary_features};
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -159,13 +159,13 @@ end of B".to_string()
     );
 
 
-    use crate::shader_list::{primary_features::*, secondary_features::*};
+    use super::shader_list::{primary_features::*, secondary_features::*};
 
     let output = loader.load_shader_source(
         &ShaderDescriptor {
-            name: crate::ShaderName(0),
+            name: super::ShaderName(0),
             file_name: "A",
-            permutations: vec![(TEXTURE_2D, REPETITIONS, crate::InitFlags::CACHED)],
+            permutations: vec![(TEXTURE_2D, REPETITIONS, super::InitFlags::CACHED)],
         },
         0,
     ).unwrap();

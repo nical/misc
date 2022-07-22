@@ -2,8 +2,8 @@ mod ordered;
 mod order_independent;
 mod store;
 
-pub type Rect = euclid::default::Rect<f32>;
-pub type Point = euclid::default::Point2D<f32>;
+use crate::types::units::Rect;
+pub use crate::types::{SystemId, BatchIndex, BatchId};
 
 pub use ordered::*;
 pub use order_independent::*;
@@ -16,7 +16,7 @@ pub trait Batcher {
         &mut self,
         system_id: SystemId,
         rect: &Rect,
-        callback: &mut impl FnMut(BatchIndex) -> bool,
+        callback: &mut dyn FnMut(BatchIndex) -> bool,
     ) -> bool;
 
     fn add_batch(
@@ -34,15 +34,6 @@ pub trait BatchType {
     fn combine_keys(&self, key: &Self::Key, other: &Self::Key) -> Self::Key;
     /// A rough approximation of the per-area-unit cost of a batch.
     fn cost(&self, _key: &Self::Key) -> f32 { 1.0 }
-}
-
-pub type SystemId = u32;
-pub type BatchIndex = u32;
-
-#[derive(Copy, Clone, Debug)]
-pub struct BatchId {
-    pub system: SystemId,
-    pub index: BatchIndex,
 }
 
 /// Some options to tune the behavior of the batching phase.
@@ -73,8 +64,6 @@ pub struct Stats {
 
 #[test]
 fn simple_batch_store() {
-    use euclid::rect;
-
     struct SolidColor;
     struct Image;
     struct Text;
@@ -222,6 +211,11 @@ fn simple_batch_store() {
     let mut solid_color_batches = BatchStore::new(SolidColor, &cfg, 0);
     let mut image_batches = BatchStore::new(Image, &cfg, 1);
     let mut text_batches = BatchStore::new(Text, &cfg, 2);
+
+    use crate::types::units::Point;
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { min: Point::new(x, y), max: Point::new(x+ w, y + h) }
+    }
 
     solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(0.0, 0.0, 100.0, 100.0));
     image_batches.add_instance(&mut batcher, &Image::key(0, 0), Instance, &rect(100.0, 0.0, 100.0, 100.0));

@@ -1,6 +1,6 @@
-use crate::units::*;
+use crate::types::units::*;
 use crate::texture_update::*;
-use crate::texture_atlas::{TextureId, AtlasAllocatorSet, AllocId, CacheTextures, ShelfAllocator};
+use crate::atlas::{TextureId, AtlasAllocatorSet, AllocId, CacheTextures, ShelfAllocator};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

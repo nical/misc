@@ -1,4 +1,4 @@
-use crate::{BatchingConfig, Rect, BatchId, Batcher, SystemId, BatchIndex};
+use super::{BatchingConfig, Rect, BatchId, Batcher, SystemId, BatchIndex};
 
 /// A list of batches that don't preserve ordering.
 ///
@@ -22,7 +22,7 @@ impl Batcher for OrderIndependentBatcher {
         &mut self,
         system_id: SystemId,
         _rect: &Rect,
-        callback: &mut impl FnMut(BatchIndex) -> bool,
+        callback: &mut dyn FnMut(BatchIndex) -> bool,
     ) -> bool {
         for batch in &mut self.batches {
             if batch.system == system_id && callback(batch.index) {

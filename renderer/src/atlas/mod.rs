@@ -1,4 +1,4 @@
-use crate::units::*;
+use crate::types::units::*;
 
 use euclid::{point2, default::Box2D};
 
@@ -345,7 +345,7 @@ impl AtlasAllocator for GuillotineAllocator {
     }
 
     fn dump_into_svg(&self, rect: &Box2D<f32>, output: &mut dyn std::io::Write) -> std::io::Result<()> {
-        self.dump_into_svg(&rect.cast_unit(), output)
+        guillotiere::dump_into_svg(self, Some(&rect.cast_unit().to_i32()), output)
     }
 
     const PREFERS_SORTED_ALLOCATIONS: bool = true;

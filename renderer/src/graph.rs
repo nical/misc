@@ -13,9 +13,9 @@ pub use euclid::{size2, vec2, point2};
 use guillotiere::AllocId;
 
 use crate::image_store::ImageFormat;
-use crate::texture_atlas::{GuillotineAllocator, TextureId};
+use crate::atlas::{GuillotineAllocator, TextureId};
 use crate::texture_update::*;
-use crate::units::*;
+use crate::types::units::*;
 
 #[cfg_attr(feature = "serialization", derive(Serialize, Deserialize))]
 #[repr(transparent)]

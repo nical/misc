@@ -1,5 +1,5 @@
-use crate::units::*;
-use crate::texture_atlas::TextureId;
+use crate::types::units::*;
+use crate::atlas::TextureId;
 use crate::image_store::ImageFormat;
 
 use std::collections::HashMap;

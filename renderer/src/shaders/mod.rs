@@ -137,7 +137,7 @@ impl Shaders {
 }
 
 pub struct ShaderDescriptor {
-    name: ShaderName,
-    file_name: &'static str,
-    permutations: Vec<(PrimaryFeatures, SecondaryFeatures, InitFlags)>,
+    pub name: ShaderName,
+    pub file_name: &'static str,
+    pub permutations: Vec<(PrimaryFeatures, SecondaryFeatures, InitFlags)>,
 }

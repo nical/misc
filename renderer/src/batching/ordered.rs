@@ -1,4 +1,4 @@
-use crate::{BatchingConfig, Rect, Stats, BatchId, Batcher, BatchIndex, SystemId};
+use super::{BatchingConfig, Rect, Stats, BatchId, Batcher, BatchIndex, SystemId};
 
 struct BatchRects {
     batch: Rect,
@@ -73,7 +73,7 @@ impl Batcher for OrderedBatcher {
         &mut self,
         system_id: SystemId,
         rect: &Rect,
-        callback: &mut impl FnMut(BatchIndex) -> bool,
+        callback: &mut dyn FnMut(BatchIndex) -> bool,
     ) -> bool {
         let mut intersected = false;
         for (batch_index, batch) in self.batches.iter_mut().enumerate().rev().take(self.max_lookback) {
@@ -137,7 +137,7 @@ impl Batcher for BasicOrderedBatcher {
         &mut self,
         system_id: SystemId,
         _rect: &Rect,
-        callback: &mut impl FnMut(BatchIndex) -> bool,
+        callback: &mut dyn FnMut(BatchIndex) -> bool,
     ) -> bool {
         if self.prev_system != Some(system_id) {
             self.hit_lookback_limit += 1;
