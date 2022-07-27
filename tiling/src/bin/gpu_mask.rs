@@ -23,13 +23,19 @@ fn main() {
     //  - in parallel mode or with quadratic curves, make sure the tile atlas size is large enough to
 
     let mut select_path = None;
+    let mut select_path_range = None;
     let mut select_row = None;
     let mut profile = false;
     let mut use_quads = false;
     let mut sp = false;
+    let mut spr = false;
     let mut sr = false;
     let mut parallel = false;
     for arg in &args {
+        if spr {
+            select_path_range = Some(arg.parse::<u16>().unwrap());
+            sp = false;
+        }
         if sp {
             select_path = Some(arg.parse::<u16>().unwrap());
             sp = false;
@@ -38,6 +44,7 @@ fn main() {
             select_row = Some(arg.parse::<usize>().unwrap());
             sr = false;
         }
+        if arg == "--path-range" { spr = true; }
         if arg == "--path" { sp = true; }
         if arg == "--row" { sr = true; }
         if arg == "--parallel" { parallel = true; }
@@ -174,6 +181,12 @@ fn main() {
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
+            if let Some(idx) = select_path_range {
+                if idx < tiler.draw.z_index {
+                    tiler.draw.z_index -= 1;
+                    continue;
+                }
+            }
             if let Some(idx) = select_path {
                 if idx != tiler.draw.z_index {
                     tiler.draw.z_index -= 1;
