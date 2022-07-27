@@ -298,9 +298,9 @@ impl Tiler {
 
                 // Most of the tiling algorithm isn't affected by float precision hazards except where
                 // we split the edges. Ideally we want the split points for edges that cross tile boundaries
-                // to be exactly at the tile boundaries, so that the side edge tracker can properly sum up to
-                // an empty list of edges by the end of the row (and easily detect full/empty tiles). So we do
-                // a bit of snapping here to paper over the imprecision of splitting the edge.
+                // to be exactly at the tile boundaries, so that we can easily detect edges that cross the
+                // tile's upper side to count backdrop winding numbers. So we do a bit of snapping here to
+                // paper over the imprecision of splitting the edge.
                 const SNAP: f32 = 0.05;
                 if segment.from.y - offset_min < SNAP { segment.from.y = offset_min };
                 if segment.to.y - offset_min < SNAP { segment.to.y = offset_min };
@@ -330,14 +330,8 @@ impl Tiler {
                 segment.from.y -= y_offset;
                 segment.ctrl.y -= y_offset;
                 segment.to.y -= y_offset;
-                let range = clip_quadratic_bezier_1d(segment.from.y, segment.ctrl.y, segment.to.y, offset_min, offset_max);
-                let mut segment = segment.split_range(range.clone());
 
-                const SNAP: f32 = 0.05;
-                if segment.from.y - offset_min < SNAP { segment.from.y = offset_min };
-                if segment.to.y - offset_min < SNAP { segment.to.y = offset_min };
-                if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
-                if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
+                clip_quadratic_bezier_to_row(&mut segment, offset_min, offset_max);
 
                 if edge.winding < 0 {
                     std::mem::swap(&mut segment.from, &mut segment.to);
@@ -993,24 +987,30 @@ pub struct TileInfo {
     pub backdrop: i16,
 }
 
-fn clip_quadratic_bezier_1d(
-    from: f32,
-    ctrl: f32,
-    to: f32,
+fn clip_quadratic_bezier_to_row(
+    segment: &mut QuadraticBezierSegment<f32>,
     min: f32,
     max: f32,
-) -> std::ops::Range<f32> {
+) {
+    let from = segment.from.y;
+    let ctrl = segment.ctrl.y;
+    let to = segment.to.y;
+
     debug_assert!(max >= min);
     debug_assert!(to >= from);
 
+    const SNAP: f32 = 0.05;
+
     if from >= min && to <= max {
-        return 0.0 .. 1.0;
+        if segment.from.y - min < SNAP { segment.from.y = min };
+        if segment.to.y - min < SNAP { segment.to.y = min };
+        return;
     }
 
-    // TODO: this is sensible to float errors, should probably
+    // TODO: this is sensitive to float errors, should probably
     // be using f64 arithmetic
 
-    // Solve a class quadratic formula "a*x² + b*x + c = 0"
+    // Solve a classic quadratic formula "a*x² + b*x + c = 0"
     // using the quadratic bézier's formulation
     // y = (1 - t)² * from + t*(1 - t) * ctrl + t² * to
     // replacing y with min and max we get:
@@ -1049,7 +1049,22 @@ fn clip_quadratic_bezier_1d(
         }
     }
 
-    t1 .. t2
+    // Because of precision issues when comuting the split range and when
+    // splitting, the split point won't be exactly at the tile's upper side.
+    // It's not an issue if the split point ends up above, but it breaks counting
+    // backdrop winding numbers when the split point is below, so we do two things:
+    // If one of the original segment's endpoint is above the tile's upper side the
+    // one of the split segment's endpoint *must* be on the upper side (see snap_from
+    // and snap_to). We also snap endpoints to the tile sides if they are within
+    // a threshold.
+
+    let snap_from = segment.from.y < min;
+    let snap_to = segment.to.y < min;
+
+    *segment = segment.split_range(t1..t2);
+
+    if snap_from || segment.from.y - min < SNAP { segment.from.y = min };
+    if snap_to || segment.to.y - min < SNAP { segment.to.y = min };
 }
 
 pub fn clip_line_segment_1d(

@@ -39,13 +39,26 @@ This speeds up rasterization a lot on many test cases, it also reduces the amoun
 
 Rendering on GPU still happens in traditional back-to-front order.
 
+### Float precision
+
+In general the tiling algorithm isn't sensitive to arithmetic precision. There are two exceptions:
+ - Edges are assigned to tile rows and split to remove the parts below and above the tile. To compute tile backdrop winding numbers, we look at whether edges cross the tile's upper side. The combination of these two things introduces the need to be very careful about splitting the edges. Since it isn't a perfectly precise operation, we can end up splitting just below the tile's upper side where in theory the split point shoulf have been exactly on the upper side, and as a result fail to count the edge when computing the winding number later during the row processing pass. This is addressed by the code that splits the edge, by doing a bit of snapping and ensuring that an edge
+ that crossed the tile's upper side is always split into something with an endpoint on it.
+ - The line rasterizaton routine running on the GPU can divide by zero if the edge has a very specific slope. It's extremely unlikely but it could be fixed with an extra branch or by devising another efficient line rasterization function. Large tile sizes make it more likely to run into this.
+
+### Tile sizes
+
+Smaller tile sizes means more work on the CPU, but also more efficient occlusion culling and less mask pixels (less of the expensive shader and less memory used).
+
+There seem to be a sweet spot around 16x16 tiles.
+
 ### clipping
 
 TODO: clipping isn't implemented yet.
 
 The plan is to tile clip paths before the clipped content so that fully clipped out tiles can be marked and used for occlusion culling the same way opaque tile are.
 
-### Paterns
+### Patterns
 
 TODO: only solid colors are implemented.
 
@@ -69,5 +82,4 @@ The general idea is for patterns to be pre-rasterized just like the masks and to
     - To prevent that the prototypr supports setting a maximum mask atlas allocation and alternating between rasterizing into the mask texture and rendering the main target.
 - Other pathologic cases could lead to having a very large amount of paths in a single tile, at which point the edges represent a lot more data than the pixels of the tile.
     - To prevent this family of issues the tiler can fall back to rasterizing the mask on the CPU and upload it.
-
 
