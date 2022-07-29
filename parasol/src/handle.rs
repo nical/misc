@@ -104,6 +104,13 @@ impl<Output> OwnedHandle<Output> {
         }
     }
 
+    pub fn resolve_assuming_ready(self) -> Output {
+        assert!(self.poll(), "Handle is not ready.");
+        unsafe {
+            (*self.output).take()
+        }
+    }
+
     pub fn poll(&self) -> bool {
         unsafe {
             (*self.event).is_signaled()
