@@ -13,7 +13,7 @@ The post provides some context and motivation around tiled rendering for vector 
 In a nutshell:
  - The expensive parts of doing rasterizing paths are:
    - (A) the large amount of pixel memory that need to be written to (problem often referred to as "overdraw").
-   - (B) the math related to dealing with edges, and anti-aliasing.
+   - (B) the math related to dealing with edges and anti-aliasing.
    - (C) transfering large amounts of data to the GPU
  - Large paths (which are typically expensive to rasterize on the CPU) tend to have a lot of fully covered tiles that contain no edges when broken up into small tiles. Taking advantage of this is key to reducing the cost of (B).
  - More generally breaking large paths into many tiles with fewer edges per tiles takes a very complex problem and breaks it into much simpler ones. It is also key to making good use of the GPU's parrallel programming model.
@@ -39,19 +39,6 @@ This speeds up rasterization a lot on many test cases, it also reduces the amoun
 
 Rendering on GPU still happens in traditional back-to-front order.
 
-### Float precision
-
-In general the tiling algorithm isn't sensitive to arithmetic precision. There are two exceptions:
- - Edges are assigned to tile rows and split to remove the parts below and above the tile. To compute tile backdrop winding numbers, we look at whether edges cross the tile's upper side. The combination of these two things introduces the need to be very careful about splitting the edges. Since it isn't a perfectly precise operation, we can end up splitting just below the tile's upper side where in theory the split point shoulf have been exactly on the upper side, and as a result fail to count the edge when computing the winding number later during the row processing pass. This is addressed by the code that splits the edge, by doing a bit of snapping and ensuring that an edge
- that crossed the tile's upper side is always split into something with an endpoint on it.
- - The line rasterizaton routine running on the GPU can divide by zero if the edge has a very specific slope. It's extremely unlikely but it could be fixed with an extra branch or by devising another efficient line rasterization function. Large tile sizes make it more likely to run into this.
-
-### Tile sizes
-
-Smaller tile sizes means more work on the CPU, but also more efficient occlusion culling and less mask pixels (less of the expensive shader and less memory used).
-
-There seem to be a sweet spot around 16x16 tiles.
-
 ### clipping
 
 TODO: clipping isn't implemented yet.
@@ -65,6 +52,47 @@ TODO: only solid colors are implemented.
 The general idea is for patterns to be pre-rasterized just like the masks and to use the occlusion culling information to reduce the amount work here as well.
 
 ## Miscellaneous findings
+
+### Tile sizes
+
+Smaller tile sizes means more work on the CPU, but also more efficient occlusion culling and less mask pixels (less of the expensive shader and less memory used).
+
+There seem to be a sweet spot around 16x16 tiles.
+
+### Float precision
+
+In general the tiling algorithm isn't sensitive to arithmetic precision. There are two exceptions:
+ - Edges are assigned to tile rows and split to remove the parts below and above the tile. To compute tile backdrop winding numbers, we look at whether edges cross the tile's upper side. The combination of these two things introduces the need to be very careful about splitting the edges. Since it isn't a perfectly precise operation, we can end up splitting just below the tile's upper side where in theory the split point shoulf have been exactly on the upper side, and as a result fail to count the edge when computing the winding number later during the row processing pass. This is addressed by the code that splits the edge, by doing a bit of snapping and ensuring that an edge
+ that crossed the tile's upper side is always split into something with an endpoint on it.
+ - The line rasterizaton routine running on the GPU can divide by zero if the edge has a very specific slope. It's extremely unlikely but it could be fixed with an extra branch or by devising another efficient line rasterization function. Large tile sizes make it more likely to run into this.
+
+
+### Parallelism
+
+The tiling code runs in two phases:
+ - the row assignment phase where edges are assigned to tile rows
+ - the row processing phase where each row is processed, comuping winding numbers and building per-tile edge lists.
+
+For a give path, the row assignment phase is very sequential by nature however
+all rows can be processed concurrently during the row processing phase.
+
+There is a dependency between the row processing phase of consecutive paths because each path benefits from the occlusion culling information built by previous paths.
+
+I tried to use tow implementations of parallel for-each in the row processing phase only. For each path, only that phase is done in parallel and the main thread does not continue until the processing phase is complete
+ - with rayon: The performance was catastrophic (5 times slower)
+ - with parasol: The performance was close to the single-threaded performance
+
+Why is that? In general it is because there is a non-trivial warmup cost for worker threads. These two job schedulers are much more efficient when the workers are already running code and can pick up the new work without going to sleep. Unfortunately this simple experiment had to fork and join once per path, effectively letting the workers go to sleep between each burst of parallel work.
+Rayon's case was made worse by the fact that the main thread cannot help with the parallel workload, so no work is processed until a worker picks a task up, and at the end the main thread has to be woken up again which adds more latency. On the other hand, parasol is designed to avoid exactly that so it fared much better even though the results were still underwhelming.
+
+Conclusion: in order to make the tiling efficiently run on multiple threads, we have to ensure that we can keep the workers fed with work throughout the entire workload (or at least large portions of it).
+
+- One way to help with that could be to do more pipelining: The row assignment for N consecutive paths can happen in parallel. It could help with keeping at least one extra thread alive, although the row processing phase would still be alternating between wide and narrow due to dependency to previous paths.
+- To improve upon the wide/narrow situation with the row processing pass, we relax the dependency to previous paths by splitting it into rows. rows only need to depend on the work produced on the same row by previous paths.
+
+The two ideas above are not very easy to express with rayon/parasol today, however figuring out a safe way to express that with parasol would be useful for SWGL which has a similar per-band-of-pixels type of dependency on its own parallel scheduling.
+
+### Other
 
 - We observe that Firefox rendering performance is more often CPU than GPU-bound. So speeding up the tiling routine is important to take as little of the limited frame budget.
 - Currently the tiling algorithm takes about 3 to 4 milliseconds to preprocess the filled paths of the ghostscript tiger at a resolution of 1800x1800 on a decent but not high end computer. This testcase is heavier than what is typically seen on the web (226 paths covering a large amount of pixels) although it also benefits more from the occlusion culling optimization than typical web content.
