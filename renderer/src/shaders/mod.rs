@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub mod shader_list;
 pub mod loader;
@@ -59,79 +60,191 @@ pub struct ShaderKey {
     pub secondary_features: SecondaryFeatures,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ShaderState {
-    Disabled = 0,
-    NotBuilt = 1,
-    Building = 2,
-    Built = 3,
+    Disabled,
+    NotBuilt,
+    Building,
+    Built(wgpu::RenderPipeline),
+    Error(String),
 }
 
+impl ShaderState {
+    pub fn built(&self) -> Option<&wgpu::RenderPipeline> {
+        match self {
+            ShaderState::Built(pipeline) => Some(pipeline),
+            _ => None,
+        }
+    }
 
-pub struct Shader {
-    secondary_features: SecondaryFeatures,
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            ShaderState::Error(string) => Some(&string[..]),
+            _ => None,
+        }
+    }
+}
+
+impl ShaderState {
+    pub fn is_built(&self) -> bool {
+        match self {
+            ShaderState::Built(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn can_build(&self) -> bool {
+        match self {
+            ShaderState::NotBuilt => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        match self {
+            ShaderState::Error(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        match self {
+            ShaderState::Disabled => true,
+            _ => false,
+        }
+    }
+
+}
+
+pub type CreatePipelineFn = dyn Fn(&wgpu::Device, ShaderKey) -> Result<wgpu::RenderPipeline, String> + Send + Sync;
+
+struct Shader {
     state: ShaderState,
+    key: ShaderKey,
 }
 
-pub struct ShaderGroup {
-    range: Range<usize>
+struct ShaderGroup {
+    range: Range<usize>,
+    create_fn: Arc<CreatePipelineFn>,
 }
 
 pub struct Shaders {
     shaders: Vec<Shader>,
     groups: HashMap<(ShaderName, PrimaryFeatures), ShaderGroup>,
-    low_priority_build_tasks: Vec<ShaderId>,
-    high_priority_build_tasks: Vec<ShaderId>,
+    build_tasks: Vec<(ShaderId, parasol::handle::OwnedHandle<Result<wgpu::RenderPipeline, String>>)>,
 }
 
 impl Shaders {
-    pub fn get(&self, id: ShaderId) -> &Shader {
-        &self.shaders[id.0 as usize]
+    pub fn new() -> Shaders {
+        Shaders { shaders: Vec::new(), groups: HashMap::default(), build_tasks: Vec::new() }
     }
 
-    pub fn get_id_for_rendering(&mut self, key: &ShaderKey) -> Option<ShaderId> {
+    pub fn get(&self, id: ShaderId) -> &ShaderState {
+        &self.shaders[id.0 as usize].state
+    }
+
+    pub fn get_best_id(&self, key: ShaderKey) -> Option<ShaderId> {
         let range = self.groups.get(&(key.shader, key.primary_features))?.range.clone();
 
-        let mut first_compatible = None;
-        let mut first_built = None;
         for idx in range {
             let shader = &self.shaders[idx];
 
-            if shader.secondary_features.0 & key.secondary_features.0 != key.secondary_features.0 {
+            if shader.key.secondary_features.0 & key.secondary_features.0 != key.secondary_features.0 {
                 continue;
-            }
-
-            if shader.state != ShaderState::Built {
-                if shader.state != ShaderState::Disabled && first_compatible.is_none() {
-                    first_compatible = Some(idx);
-                }
-                continue;
-            }
-
-            first_built = Some(ShaderId(idx as u32));
-            break;
-        }
-
-        if let Some(idx) = first_compatible {
-            let shader = &mut self.shaders[idx];
-            if shader.state == ShaderState::NotBuilt {
-                shader.state = ShaderState::Building;
-                let tasks = if first_built.is_none() {
-                    &mut self.high_priority_build_tasks
-                } else {
-                    &mut self.low_priority_build_tasks
-                };
-
-                tasks.push(ShaderId(idx as u32));
             }
 
             return Some(ShaderId(idx as u32));
         }
 
-        if first_built.is_some() {
-            first_built
-        } else {
-            first_compatible.map(|idx| ShaderId(idx as u32))
+        None
+    }
+
+    pub fn get_built_id(&self, key: ShaderKey) -> Option<ShaderId> {
+        let range = self.groups.get(&(key.shader, key.primary_features))?.range.clone();
+
+        for idx in range {
+            let shader = &self.shaders[idx];
+
+            if shader.key.secondary_features.0 & key.secondary_features.0 != key.secondary_features.0 {
+                continue;
+            }
+
+            if shader.state.is_built() {
+                return Some(ShaderId(idx as u32));
+            }
+        }
+
+        None
+    }
+
+    pub fn register_group(
+        &mut self,
+        name: ShaderName,
+        features: PrimaryFeatures,
+        variants: &[SecondaryFeatures],
+        create_fn: Arc<CreatePipelineFn>,
+    ) {
+        let start = self.shaders.len();
+        for variant in variants {
+            self.shaders.push(Shader {
+                key: ShaderKey { primary_features: features, secondary_features: *variant, shader: name },
+                state: ShaderState::NotBuilt,
+            });
+        }
+        let end = self.shaders.len();
+        self.groups.insert((name, features), ShaderGroup {
+            range: start..end,
+            create_fn,
+        });
+    }
+
+    pub fn build_shader(&mut self, id: ShaderId, device: &wgpu::Device) -> &ShaderState {
+        let mut shader = &mut self.shaders[id.0 as usize];
+        let create_fn = &(*self.groups.get(&(shader.key.shader, shader.key.primary_features))
+            .unwrap()
+            .create_fn);
+
+        shader.state = match (create_fn)(device, shader.key) {
+            Ok(pipeline) => ShaderState::Built(pipeline),
+            Err(string) => ShaderState::Error(string)
+        };
+
+        &shader.state
+    }
+
+    pub unsafe fn build_shader_async(
+        &mut self,
+        id: ShaderId,
+        device: &wgpu::Device,
+        par: &mut parasol::Context,
+    ) {
+        let device: &'static wgpu::Device = std::mem::transmute(device);
+
+        let key = self.shaders[id.0 as usize].key;
+        let create_fn = self.groups.get(&(key.shader, key.primary_features))
+            .unwrap()
+            .create_fn.clone();
+
+        let handle = par.task().run(move|_, _| {
+            create_fn(device, key)
+        });
+
+        self.build_tasks.push((id, handle));
+    }
+
+    pub fn poll_build_tasks(&mut self) {
+        for idx in (0..self.build_tasks.len()).rev() {
+            if self.build_tasks[idx].1.poll() {
+                let (id, handle) = self.build_tasks.swap_remove(idx);
+                self.shaders[id.0 as usize].state = match handle.resolve_assuming_ready() {
+                    Ok(pipeline) => {
+                        ShaderState::Built(pipeline)
+                    }
+                    Err(string) => {
+                        println!("{:?}", string);
+                        ShaderState::Error(string)
+                    }
+                }
+            }
         }
     }
 }

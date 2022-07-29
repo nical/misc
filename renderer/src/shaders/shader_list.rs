@@ -1,6 +1,10 @@
+use self::secondary_features::{NO_SECONDARY_FEATURES, ANTIALIASING};
+
 use super::{
-    InitFlags, ShaderDescriptor,
+    InitFlags, ShaderDescriptor, PrimaryFeatures, SecondaryFeatures,
 };
+use super::ShaderName;
+
 
 macro_rules! decl_features {
     (
@@ -45,10 +49,49 @@ pub mod secondary_features {
     });
 }
 
+pub struct ShaderGroupDesc {
+    pub name: ShaderName,
+    pub file_name: String,
+    pub variants: Vec<Features>,
+}
 
-use primary_features::*;
-use secondary_features::*;
+pub struct Features {
+    pub primary: PrimaryFeatures,
+    pub secondary: Vec<SecondaryFeatures>,
+}
+
+pub fn build_shader_list2() -> Vec<ShaderGroupDesc> {
+    use primary_features::*;
+    use secondary_features::*;
+
+    vec![
+        ShaderGroupDesc {
+            name: shader_names::IMAGE,
+            file_name: "image.wgsl".to_string(),
+            variants: vec![
+                Features {
+                    primary: TEXTURE_2D, 
+                    secondary: vec![
+                        NO_SECONDARY_FEATURES,
+                        REPETITIONS,
+                    ]
+                },
+                Features {
+                    primary: TEXTURE_2D | ALPHA_PASS,
+                    secondary: vec![
+                        NO_SECONDARY_FEATURES,
+                        ANTIALIASING | REPETITIONS,
+                    ]
+                },
+            ]
+        },
+    ]
+}
+
 pub fn build_shader_list() -> Vec<ShaderDescriptor> {
+    use primary_features::*;
+    use secondary_features::*;
+    
     vec![
         ShaderDescriptor {
             name: shader_names::IMAGE,
