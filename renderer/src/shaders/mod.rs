@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod shader_list;
-pub mod loader;
+pub mod preprocessor;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ShaderId(u32);
