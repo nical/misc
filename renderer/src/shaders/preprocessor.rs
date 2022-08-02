@@ -5,11 +5,14 @@ use std::io;
 
 pub type Source = Arc<str>;
 
-/// A trait to obtain source code from custom providers during preprocessing
-/// when missing from the source library.
+/// A trait to obtain source code from custom providers during preprocessing..
 ///
-/// This trait is implemented by the unit type `()` (which will always fail to
-/// load the requested source), and by `LoadFromDisk`. 
+/// The module provides a few implementations of this trait:
+/// - the unit type `()` (which will always fail to load the requested source),
+/// - `LoadFromDisk`,
+/// - `HasMap<String, Source>`,
+/// - `(&impl SourceLoader, &impl SourceLoader)` which tries the first element in the
+///   tuple and defaults to the second one.
 pub trait SourceLoader {
     fn load_source(&self, name: &str) -> Result<Source, io::Error>;
 }
@@ -31,7 +34,10 @@ impl LoadFromDisk {
         LoadFromDisk::with_prefix(String::new())
     }
 
-    pub fn with_prefix(prefix: String) -> Self {
+    pub fn with_prefix(mut prefix: String) -> Self {
+        if !prefix.is_empty() && !prefix.ends_with("/") {
+            prefix.push('/');
+        }
         LoadFromDisk { prefix }
     }
 }
@@ -39,11 +45,45 @@ impl LoadFromDisk {
 impl SourceLoader for LoadFromDisk {
     fn load_source(&self, name: &str) -> Result<Source, io::Error> {
         let mut src = String::new();
-        let file_name = format!("{}{}", self.prefix, name);
+        let file_name = format!("{}{}.wgsl", self.prefix, name.replace("::","/"));
         let mut file = std::fs::File::open(&file_name)?;
         file.read_to_string(&mut src)?;
 
         Ok(src.into())    
+    }
+}
+
+impl SourceLoader for SourceLibrary {
+    fn load_source(&self, name: &str) -> Result<Source, io::Error> {
+        if let Some(src) = self.get(name) {
+            return Ok(src);
+        }
+
+        Err(io::Error::new(io::ErrorKind::NotFound, name))
+    }
+}
+
+impl SourceLoader for HashMap<String, Source> {
+    fn load_source(&self, name: &str) -> Result<Source, io::Error> {
+        if let Some(src) = self.get(name) {
+            return Ok(src.clone());
+        }
+
+        Err(io::Error::new(io::ErrorKind::NotFound, name))
+    }
+}
+
+impl<'l, T1, T2> SourceLoader for (&'l mut T1, &'l mut T2)
+where
+    T1: SourceLoader,
+    T2: SourceLoader,
+{
+    fn load_source(&self, name: &str) -> Result<Source, io::Error> {
+        if let Ok(src) = self.0.load_source(name) {
+            return Ok(src)
+        }
+
+        self.1.load_source(name)
     }
 }
 
@@ -61,19 +101,13 @@ impl From<std::io::Error> for SourceError {
 
 pub struct SourceLibrary {
     sources: HashMap<String, Source>,
-    file_prefix: String,
 }
 
 impl SourceLibrary {
     pub fn new() -> Self {
         SourceLibrary {
             sources: HashMap::default(),
-            file_prefix: String::new(),
         }
-    }
-
-    pub fn set_prefix(&mut self, prefix: impl Into<String>) {
-        self.file_prefix = prefix.into();
     }
 
     pub fn get(&self, key: &str) -> Option<Source> {
@@ -100,7 +134,6 @@ impl SourceLibrary {
 ///   These currently only support checking whether a symbol is defined.
 pub struct Preprocessor {
     imported: HashSet<String>,
-    new_sources: Vec<(String, Source)>,
     defines: HashSet<String>,
     discarding: i32,
 }
@@ -109,7 +142,6 @@ impl Preprocessor {
     pub fn new() -> Self {
         Preprocessor {
             imported: HashSet::default(),
-            new_sources: Vec::new(),
             defines: HashSet::new(),
             discarding: 0,
         }
@@ -118,18 +150,22 @@ impl Preprocessor {
     pub fn preprocess(
         &mut self,
         name: &str,
-        library: &SourceLibrary,
         loader: &dyn SourceLoader,
     ) -> Result<String, SourceError> {
         self.imported.clear();
         self.discarding = 0;
         
-        let src = self.take_source(&name, library, loader)?.unwrap();
+        let src = self.import_source(&name, loader)?.unwrap();
 
-        let mut output = String::new();
+        let mut output = String::with_capacity(4096);
+
+        output.push_str(&format!("// {}\n", name));
+        for define in &self.defines {
+            output.push_str(&format!("// * {}\n", define));
+        }
 
         let mut tokenizer = Tokenizer::new(name, &src);
-        self.parse(&mut tokenizer, &mut output, &library, loader)?;
+        self.parse(&mut tokenizer, &mut output, loader)?;
 
         Ok(output)
     }
@@ -146,10 +182,9 @@ impl Preprocessor {
         self.defines.remove(name)
     }
 
-    fn take_source<'lib>(
+    fn import_source<'lib>(
         &mut self,
         name: &str,
-        library: &SourceLibrary,
         loader: &dyn SourceLoader,
     ) -> Result<Option<Arc<str>>, std::io::Error> {
         if self.imported.contains(name) {
@@ -158,29 +193,26 @@ impl Preprocessor {
 
         self.imported.insert(name.to_string());
 
-        if let Some(src) = library.get(name) {
-            return Ok(Some(src));
-        }
-
-        let file_name = format!("{}{}", library.file_prefix, name);
-        let src = loader.load_source(&file_name)?;
-
-        self.new_sources.push((name.to_string(), src.clone()));
+        let src = loader.load_source(name)?;
         
         Ok(Some(src))
     }
 
-    fn parse(&mut self, src: &mut Tokenizer, output: &mut String, library: &SourceLibrary, loader: &dyn SourceLoader) -> Result<(), SourceError> {
+    fn parse(&mut self, src: &mut Tokenizer, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
         while let Some(token) = src.current() {
             src.advance();
             match token {
                 Token::Import => {
                     let name = self.parse_import(src)?;
-                    if let Some(src) = self.take_source(&name, library, loader)? {
+                    if let Some(src) = self.import_source(&name, loader)? {
                         output.push_str(&format!("// {}\n", name));
-
-                        self.parse(&mut Tokenizer::new(&name, &src), output, library, loader)?;
+                        self.parse(&mut Tokenizer::new(&name, &src), output, loader)?;
                     }
+                }
+                Token::Mixin => {
+                    let name = self.parse_import(src)?;
+                    let src = loader.load_source(&name)?;
+                    self.parse(&mut Tokenizer::new(&name, &src), output, loader)?;
                 }
                 Token::StaticIf => {
                     self.parse_static_if(src, output)?;
@@ -360,10 +392,6 @@ impl Preprocessor {
 
         Ok(())
     }
-    
-    pub fn remove_source(&mut self, name: &str) {
-        self.imported.remove(name);
-    }
 }
 
 pub fn print_source(source: &str) {
@@ -387,10 +415,10 @@ enum Token<'l> {
     Basic(&'l str),
     WhiteSpace(&'l str),
     Comment(&'l str),
-    Static(&'l str),
     StaticIf,
     StaticElse,
     Import,
+    Mixin,
     NewLine,
     OpenBracket,
     CloseBracket,
@@ -401,12 +429,12 @@ impl<'l> Token<'l> {
         match self {
             Token::Comment(text)
             | Token::Basic(text)
-            | Token::Static(text)
             | Token::WhiteSpace(text) => text,
             Token::NewLine => &"\n",
             Token::OpenBracket => &"{",
             Token::CloseBracket => &"}",
             Token::Import => &"#import",
+            Token::Mixin => &"#mixin",
             Token::StaticIf => &"#if",
             Token::StaticElse => &"#else",
         }
@@ -494,9 +522,10 @@ impl<'l> Tokenizer<'l> {
                 self.src = &self.src[split..];
                 return Some(match keyword {
                     "#import" => Token::Import,
+                    "#mixin" => Token::Mixin,
                     "#if" => Token::StaticIf,
                     "#else" => Token::StaticElse,
-                    _ => Token::Static(keyword),
+                    _ => Token::Basic(keyword),
                 });
             }
             (Some('{'), _) => {
@@ -557,9 +586,9 @@ fn tokenizer() {
 
 #[test]
 fn static_if() {
-    let mut lib = SourceLibrary::new();
+    let mut lib = HashMap::new();
     let mut preprocessor = Preprocessor::new();
-    lib.set("src", "
+    lib.insert("src".into(), "
 fn bar() {
     #if FOO {
         var i: i32 = 0
@@ -581,10 +610,10 @@ fn bar() {
     }
     regular code
     a = #if BAZ { baz is defined } #else { baz is not defined };
-}
-    ");
+}".into()
+    );
 
-    let output = preprocessor.preprocess("src", &lib, &()).unwrap();
+    let output = preprocessor.preprocess("src", &lib).unwrap();
     println!("{}", output);
     assert_eq!(output.matches("foo is defined").count(), 0);
     assert_eq!(output.matches("baz is defined").count(), 0);
@@ -594,7 +623,7 @@ fn bar() {
 
     preprocessor.define("FOO");
     preprocessor.define("BAZ");
-    let output = preprocessor.preprocess("src", &lib, &()).unwrap();
+    let output = preprocessor.preprocess("src", &lib).unwrap();
     println!("----\n{}", output);
     assert_eq!(output.matches("foo is defined").count(), 1);
     assert_eq!(output.matches("baz is defined").count(), 1);
@@ -605,26 +634,26 @@ fn bar() {
 
 #[test]
 fn import() {
-    let mut lib = SourceLibrary::new();
+    let mut lib: HashMap<String, Source> = HashMap::new();
     let mut loader = Preprocessor::new();
 
-    lib.set(
-        "A",
+    lib.insert(
+        "A".into(),
 "Hello(A),
 #import B
 #import B
 #import A
-end of A"
+end of A".into()
     );
-    lib.set(
-        "B",
+    lib.insert(
+        "B".into(),
 "Hello(B),
 #import A
 #import B
-end of B"
+end of B".into()
     );
 
-    let output = loader.preprocess("A", &lib, &()).unwrap();
+    let output = loader.preprocess("A", &lib).unwrap();
 
     print_source(&output);
 

@@ -51,6 +51,10 @@ pub struct InitFlags(pub u32);
 impl InitFlags {
     pub const CACHED: Self = InitFlags(1 << 0);
     pub const LAZY: Self = InitFlags(1 << 1);
+
+    fn lazy(&self) -> bool {
+        self.0 & Self::LAZY.0 != 0
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -251,6 +255,6 @@ impl Shaders {
 
 pub struct ShaderDescriptor {
     pub name: ShaderName,
-    pub file_name: &'static str,
+    pub string_name: &'static str,
     pub permutations: Vec<(PrimaryFeatures, SecondaryFeatures, InitFlags)>,
 }
