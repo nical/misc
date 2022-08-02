@@ -26,7 +26,7 @@ fn main() {
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 4096;
+    let max_edges_per_gpu_tile = 128;
     let tile_atlas_size: u32 = 2048;
 
     let mut tiler_config = TilerConfig {
@@ -109,7 +109,7 @@ fn main() {
 
     let mut canvas = Canvas::new(tiler_config.view_box);
 
-    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
+    let mut mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
 
@@ -137,6 +137,13 @@ fn main() {
 
     let commands = canvas.finish();
 
+    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+        &device,
+        tile_size as u32,
+        tile_atlas_size as u32,
+        &globals_bind_group_layout,
+    );
+
     frame_builder.build(&commands);
 
     println!("view box: {:?}", view_box);
@@ -149,13 +156,6 @@ fn main() {
     println!("#edge distributions: {:?}", frame_builder.tile_encoders[0].edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
-
-    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
-        &device,
-        tile_size as u32,
-        tile_atlas_size as u32,
-        &globals_bind_group_layout,
-    );
 
     tile_renderer.update(&mut frame_builder.tile_encoders[0]);
 
@@ -210,6 +210,9 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        frame_builder.build(&commands);
+        tile_renderer.update(&mut frame_builder.tile_encoders[0]);
+
         tile_renderer.begin_frame(
             &device,
             &queue,
@@ -235,7 +238,15 @@ fn main() {
             label: Some("Tile"),
         });
 
-        tile_renderer.render(&device, &frame_view, &mut encoder, &globals_bind_group, &mut[]);
+        tile_renderer.render(
+            &device,
+            &frame_view,
+            &mut encoder,
+            &globals_bind_group,
+            &mut[
+                &mut frame_builder.tile_encoders[0].mask_uploader,
+            ]
+        );
 
         queue.submit(Some(encoder.finish()));
         frame.present();

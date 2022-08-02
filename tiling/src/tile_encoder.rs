@@ -463,6 +463,11 @@ impl TileEncoder {
             &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
         );
 
+        //crate::cpu_rasterizer::dump_mask_png(
+        //    draw.tile_size.width as u32, draw.tile_size.height as u32,
+        //    &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()]
+        //);
+
         self.masked_tiles.push(MaskedTile {
             rect: tile.output_rect,
             color: match draw.pattern {

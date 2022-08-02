@@ -13,7 +13,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
     // This is heavily inspired by https://github.com/raphlinus/font-rs with the added requirement
     // to handle edges crossing the left boundary of the tile.
     //
-    // The values in the accumulation buffer represents the difference between the signed area of
+    // The values in the accumulation buffer represent the difference between the signed area of
     // the corresponding pixel and its left neighbors affected by the same edge, so that a simple
     // routine can generate the actual coverage mask via a prefix sum per row.
     //
@@ -182,6 +182,9 @@ pub fn draw_curve(from: Point2D<f32>, ctrl: Point2D<f32>, to: Point2D<f32>, tole
 // Write the winding numbers for auxiliary (backdrop) edges on the left side of the tile that contribute to the tile. 
 pub fn add_backdrop(y: f32, winding: f32, dst: &mut[f32]) {
     let start = y as usize;
+    if start >= dst.len() {
+        return;
+    }
     let cov = 1.0 - y.fract();
     dst[start] += cov * winding;
     for e in &mut dst[(start + 1)..] {
@@ -258,6 +261,13 @@ pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
     }
 }
 
+use std::sync::atomic::{Ordering, AtomicU32};
+static DUMP_IDX: AtomicU32 = AtomicU32::new(0);
+pub fn dump_mask_png(w: u32, h: u32, mask: &[u8]) {
+    let idx = DUMP_IDX.fetch_add(1, Ordering::Relaxed);
+    let file_name = format!("tmp/mask-{}.png", idx);
+    save_mask_png(w, h, mask, &file_name)
+}
 
 pub fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
     let mut bytes = Vec::with_capacity(mask.len()*4 * PIXEL_SIZE * PIXEL_SIZE);

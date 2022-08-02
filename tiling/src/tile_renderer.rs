@@ -312,7 +312,12 @@ impl TileRenderer {
         globals_bind_group: &wgpu::BindGroup,
         mask_uploaders: &mut[&mut MaskUploader],
     ) {
-        let masked_tiles_in_first_pass = {
+        // TODO: the logic here is soooo hacky and fragile.
+
+        let need_mask_pass = !self.mask_passes.is_empty()
+            || mask_uploaders.iter().any(|up| up.needs_upload());
+
+        let masked_tiles_in_first_pass = if need_mask_pass {
             // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Mask atlas"),
@@ -327,7 +332,7 @@ impl TileRenderer {
                 depth_stencil_attachment: None,
             });
 
-            let masked_tiles_in_first_pass = {
+            let masked_tiles_in_first_pass = if !self.mask_passes.is_empty() {
 
                 let mask_range = self.mask_passes.last().unwrap();
 
@@ -338,6 +343,8 @@ impl TileRenderer {
                 pass.draw_indexed(0..6, 0, mask_range.gpu_masks.clone());
 
                 (self.num_masked_tiles - mask_range.masked_tiles.end) .. (self.num_masked_tiles - mask_range.masked_tiles.start)
+            } else {
+                0..self.num_masked_tiles
             };
 
 /*
@@ -362,7 +369,10 @@ impl TileRenderer {
             }
 
             masked_tiles_in_first_pass
+        } else {
+            0..self.num_masked_tiles
         };
+
         {
             let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -386,10 +396,14 @@ impl TileRenderer {
             pass.set_vertex_buffer(0, self.solid_tiles_vbo.slice(..));
             pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
 
-            pass.set_pipeline(&self.masked_tiles.pipeline);
-            pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
-            pass.draw_indexed(0..6, 0, masked_tiles_in_first_pass);
+            if !masked_tiles_in_first_pass.is_empty() {
+                pass.set_pipeline(&self.masked_tiles.pipeline);
+                pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
+                pass.draw_indexed(0..6, 0, masked_tiles_in_first_pass);
+            } else {
+                println!("No masked tiles");
+            }
         }
 
         if self.mask_passes.len() > 1 {

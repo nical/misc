@@ -276,7 +276,7 @@ impl<T> UniformBufferPool<T> {
                 let handle = (*self.device).create_buffer(&wgpu::BufferDescriptor {
                     label: Some("Staging buffer"),
                     size: self.cap as u64,
-                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::UNIFORM,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::STORAGE,
                     mapped_at_creation: true,
                 });
 

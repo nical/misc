@@ -562,6 +562,10 @@ impl MaskUploader {
         start..end
     }
 
+    pub fn needs_upload(&self) -> bool {
+        !self.copy_instances.is_empty()
+    }
+
     pub fn upload<'a, 'c, 'b: 'a>(
         &'b mut self,
         device: &'b wgpu::Device,
