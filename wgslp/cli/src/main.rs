@@ -77,7 +77,8 @@ fn main() {
     for feature in &features {
         preprocessor.define(feature);
     }
-    let shader_source = preprocessor.preprocess(&args.shader, &library).unwrap();
+    let source = library.get(&args.shader).cloned().unwrap();
+    let shader_source = preprocessor.preprocess(&args.shader, &source, &library).unwrap();
 
     if args.validate {
         let mut validator = wgslp::validator::Validator::new();

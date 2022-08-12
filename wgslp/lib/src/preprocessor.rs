@@ -115,13 +115,12 @@ impl Preprocessor {
     pub fn preprocess(
         &mut self,
         name: &str,
+        src: &str,
         loader: &dyn SourceLoader,
     ) -> Result<String, SourceError> {
         self.imported.clear();
         self.discarding = 0;
         self.in_mixin = false;
-        
-        let src = self.import_source(&name, loader)?.unwrap();
 
         let mut output = String::with_capacity(4096);
 
@@ -557,9 +556,8 @@ fn tokenizer() {
 
 #[test]
 fn static_if() {
-    let mut lib = HashMap::new();
     let mut preprocessor = Preprocessor::new();
-    lib.insert("src".into(), "
+    let src = &"
 fn bar() {
     #if FOO {
         var i: i32 = 0
@@ -581,10 +579,9 @@ fn bar() {
     }
     regular code
     a = #if BAZ { baz is defined } #else { baz is not defined };
-}".into()
-    );
+}";
 
-    let output = preprocessor.preprocess("src", &lib).unwrap();
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
     println!("{}", output);
     assert_eq!(output.matches("foo is defined").count(), 0);
     assert_eq!(output.matches("baz is defined").count(), 0);
@@ -594,7 +591,7 @@ fn bar() {
 
     preprocessor.define("FOO");
     preprocessor.define("BAZ");
-    let output = preprocessor.preprocess("src", &lib).unwrap();
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
     println!("----\n{}", output);
     assert_eq!(output.matches("foo is defined").count(), 1);
     assert_eq!(output.matches("baz is defined").count(), 1);
@@ -609,22 +606,26 @@ fn import() {
     let mut loader = Preprocessor::new();
 
     lib.insert(
-        "A".into(),
-"Hello(A),
-#import B
-#import B
-#import A
-end of A".into()
-    );
-    lib.insert(
         "B".into(),
 "Hello(B),
 #import A
 #import B
 end of B".into()
     );
+    lib.insert(
+        "A".into(),
+"Hello(A),
+#import B
+#import B
+#import A
+end of A".into(),
+    );
 
-    let output = loader.preprocess("A", &lib).unwrap();
+    let output = loader.preprocess(
+        "A",
+        "#import A",
+        &lib
+    ).unwrap();
 
     print_source(&output);
 
