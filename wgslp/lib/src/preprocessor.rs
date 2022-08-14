@@ -124,10 +124,10 @@ impl Preprocessor {
 
         let mut output = String::with_capacity(4096);
 
-        output.push_str(&format!("// {}\n", name));
-        for define in &self.defines {
-            output.push_str(&format!("// * {}\n", define));
-        }
+        //output.push_str(&format!("// {}\n", name));
+        //for define in &self.defines {
+        //    output.push_str(&format!("// * {}\n", define));
+        //}
 
         let mut tokenizer = Tokenizer::new(name, &src);
         self.parse(&mut tokenizer, &mut output, loader)?;
@@ -163,7 +163,37 @@ impl Preprocessor {
         Ok(Some(src))
     }
 
-    fn parse(&mut self, src: &mut Tokenizer, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
+    fn parse(
+        &mut self,
+        src: &mut Tokenizer,
+        output: &mut String,
+        loader: &dyn SourceLoader,
+    ) -> Result<(), SourceError> {
+        self.parse_until_stack_depth(src, output, loader, std::i32::MIN)
+    }
+
+    fn parse_block(
+        &mut self,
+        src: &mut Tokenizer,
+        output: &mut String,
+        loader: &dyn SourceLoader,
+    ) -> Result<(), SourceError> {
+        if src.current() != Some(Token::OpenBracket) {
+            src.parse_error("Expected {} block, got {:?}")?;
+        }
+        let stack_depth = src.bracket_stack - 1;
+        src.advance();
+
+        self.parse_until_stack_depth(src, output, loader, stack_depth)
+    }
+
+    fn parse_until_stack_depth(
+        &mut self,
+        src: &mut Tokenizer,
+        output: &mut String,
+        loader: &dyn SourceLoader,
+        stack_depth: i32,
+    ) -> Result<(), SourceError> {
         while let Some(token) = src.current() {
             src.advance();
             match token {
@@ -185,15 +215,19 @@ impl Preprocessor {
                     self.in_mixin = false;
                 }
                 Token::StaticIf => {
-                    self.parse_static_if(src, output)?;
+                    self.parse_static_if(src, output, loader)?;
                 }
                 Token::StaticElse => {
+                    src.parse_error("#else must be preceded by #if block")?;
                     // Note: Here we assume that we are after the end of a static if block
                     // which was not discarded (and therefore the #else gets discarded).
                     // But we don't check. So a static else block that doesn't come after
                     // a static if block is always discarded while it would make more sense
                     // to treat it as an error.
                     self.parse_discarded_static_else(src)?;
+                }
+                Token::CloseBracket if src.bracket_stack == stack_depth => {
+                    return Ok(());
                 }
                 other => {
                     output.push_str(other.as_str())
@@ -204,23 +238,30 @@ impl Preprocessor {
         Ok(())
     }
 
-    fn parse_static_if(&mut self, src: &mut Tokenizer, output: &mut String) -> Result<(), SourceError> {
+    fn parse_static_if(&mut self, src: &mut Tokenizer, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
         let cond = self.parse_static_if_condition(src)?;
-        if !cond {
-            self.parse_discarded_blocks(src)?;
+        if cond {
+            self.parse_block(src, output, loader)?;
+        } else {
+            self.parse_discarded_block(src)?;
         }
-        self.parse_static_else(src, cond, output)?;
+
+        self.parse_static_else(src, cond, output, loader)?;
 
         Ok(())
     }
 
     fn parse_discarded_static_else(&mut self, src: &mut Tokenizer) -> Result<(), SourceError> {
         while let Some(token) = src.current() {
+            src.advance();
             match token {
                 Token::WhiteSpace(_)
                 | Token::NewLine
                 | Token::Comment(_)
                 => {}
+                Token::StaticElse => {
+
+                }
                 Token::OpenBracket => {
                     break;
                 }
@@ -231,14 +272,13 @@ impl Preprocessor {
                     src.parse_error(format!("Expected '{{', got {:?}", other.as_str()))?;
                 }
             }
-            src.advance();
         }
 
         if src.current().is_none() {
             src.parse_error("Expected '{'")?;
         }
 
-        self.parse_discarded_blocks(src)?;
+        self.parse_discarded_block(src)?;
 
         Ok(())
     }
@@ -314,8 +354,12 @@ impl Preprocessor {
         Ok(cond)
     }
 
-    fn parse_discarded_blocks(&mut self, src: &mut Tokenizer) -> Result<(), SourceError> {
+    fn parse_discarded_block(&mut self, src: &mut Tokenizer) -> Result<(), SourceError> {
         let mut blocks: i32 = 0;
+        if src.current() != Some(Token::OpenBracket) {
+            src.parse_error("Expected {} block")?;
+        }
+
         while let Some(token) = src.current() {
             src.advance();
             match token {
@@ -336,30 +380,42 @@ impl Preprocessor {
         Ok(())
     }
 
-    fn parse_static_else(&mut self, src: &mut Tokenizer, discard: bool, output: &mut String) -> Result<(), SourceError> {
-        while let Some(token) = src.current() {
-            match token {
-                Token::StaticElse => {
-                    src.advance();
-                    if discard {
-                        self.parse_discarded_blocks(src)?;
-                    }
+    fn parse_static_else(&mut self, src: &mut Tokenizer, discard: bool, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
+        let src2 = src.clone();
+        while src.consume_whitespace()
+        || src.consume_comment()
+        || src.consume_new_line() {}
 
-                    return Ok(());
-                }
-                Token::WhiteSpace(_)
-                | Token::NewLine
-                | Token::Comment(_)
-                => {
-                    src.advance();
-                    output.push_str(token.as_str());
-                }
-                _ => {
-                    break;
-                }
+        if src.current() != Some(Token::StaticElse) {
+            *src = src2;
+            return Ok(());
+        }
+
+        src.advance();
+
+        while src.consume_whitespace()
+        || src.consume_comment()
+        || src.consume_new_line() {}
+
+        match src.current() {
+            Some(Token::OpenBracket) => {}
+            Some(Token::Basic("if")) => {
+                src.parse_error("Static #else if not supported yet")?;
+            }
+            Some(other) => {
+                src.parse_error(format!("Unexpected {:?} after #else", other.as_str()))?;
+            }
+            None => {
+                src.parse_error("Unexpected End of stream after #else")?;
             }
         }
 
+        if discard {
+            self.parse_discarded_block(src)?;
+        } else {
+            self.parse_block(src, output, loader)?;
+        }
+        
         Ok(())
     }
 }
@@ -377,10 +433,11 @@ struct Tokenizer<'l> {
     src: &'l str,
     line: u32,
     src_name: &'l str,
-    current: Option<Token<'l>>
+    current: Option<Token<'l>>,
+    bracket_stack: i32,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Token<'l> {
     Basic(&'l str),
     WhiteSpace(&'l str),
@@ -417,7 +474,8 @@ impl<'l> Tokenizer<'l> {
             src_name,
             src,
             line: 1,
-            current: None
+            current: None,
+            bracket_stack: 0
         };
         tokenizer.advance();
         
@@ -500,10 +558,12 @@ impl<'l> Tokenizer<'l> {
             }
             (Some('{'), _) => {
                 self.src = &self.src[1..];
+                self.bracket_stack += 1;
                 return Some(Token::OpenBracket);
             }
             (Some('}'), _) => {
                 self.src = &self.src[1..];
+                self.bracket_stack -= 1;
                 return Some(Token::CloseBracket);
             }
             (Some('\n'), _) => {
@@ -521,7 +581,7 @@ impl<'l> Tokenizer<'l> {
             }
             (Some(_), _) => {
                 let split = self.src[1..]
-                    .find(|c: char| !c.is_alphanumeric())
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
                     .map(|offset| offset + 1)
                     .unwrap_or(self.src.len());
                 let text = &self.src[..split];
@@ -552,6 +612,39 @@ fn tokenizer() {
         println!(" - {:?}", tok);
         tokenizer.advance();
     }
+}
+
+#[test]
+fn simple_static_if() {
+    let mut preprocessor = Preprocessor::new();
+    let src = &"[#if FOO { A } #else { B }]";
+
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[ B ]");
+
+    preprocessor.define("FOO");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[ A ]");
+}
+#[test]
+fn nested_static_if() {
+    let mut preprocessor = Preprocessor::new();
+    let src = &"[#if FOO { #if BAR {foo_bar} } #else { #if BAZ {not_foo_baz} #else {not_foo_not_baz} }]";
+
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[ not_foo_not_baz ]");
+
+    preprocessor.define("BAZ");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[ not_foo_baz ]");
+
+    preprocessor.define("FOO");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[  ]");
+
+    preprocessor.define("BAR");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output, "[ foo_bar ]");
 }
 
 #[test]
@@ -599,6 +692,7 @@ fn bar() {
     assert_eq!(output.matches("baz is not defined").count(), 0);
     assert_eq!(output.matches("regular code").count(), 1);
 }
+
 
 #[test]
 fn import() {
