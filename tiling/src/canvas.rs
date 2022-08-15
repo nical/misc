@@ -160,7 +160,7 @@ impl Canvas {
 
 use crate::tile_encoder::TileEncoder;
 use crate::tiler::{Tiler, TilerConfig, TiledPattern};
-use crate::gpu::masked_tiles::MaskUploader;
+use crate::gpu::mask_uploader::MaskUploader;
 
 pub struct FrameBuilder {
     pub tile_encoders: Vec<TileEncoder>,

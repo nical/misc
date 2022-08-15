@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tiling::*;
 use tiling::canvas::*;
 use tiling::load_svg::*;
-use tiling::gpu::masked_tiles::MaskUploader;
+use tiling::gpu::mask_uploader::MaskUploader;
 use lyon::path::geom::euclid::{size2, Transform2D};
 use lyon::path::math::vector;
 
@@ -77,17 +77,6 @@ fn main() {
         ]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let tile_desc_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Tile descriptor"),
-        contents: bytemuck::cast_slice(&[
-            tiling::gpu::GpuTileAtlasDescriptor {
-                tile_size,
-                inv_atlas_size: 1.0 / tile_atlas_size as f32,
-                masks_per_row: tile_atlas_size / tile_size as u32,
-            }
-        ]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
 
     let globals_bind_group_layout = tiling::gpu::GpuGlobals::create_bind_group_layout(&device);
     let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -100,19 +89,8 @@ fn main() {
             },
         ],
     });
-    let mask_atlas_bind_group_layout = tiling::gpu::GpuTileAtlasDescriptor::create_bind_group_layout(&device);
-    let mask_atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Mask atlas descriptor"),
-        layout: &mask_atlas_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(tile_desc_ubo.as_entire_buffer_binding())
-            },
-        ],
-    });
 
-    let mask_upload_copies = tiling::gpu::masked_tiles::MaskUploadCopies::new(&device, &globals_bind_group_layout);
+    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &globals_bind_group_layout);
 
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
@@ -131,7 +109,7 @@ fn main() {
 
     let mut canvas = Canvas::new(tiler_config.view_box);
 
-    let mut mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
+    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
 
@@ -169,10 +147,10 @@ fn main() {
     frame_builder.build(&commands);
 
     println!("view box: {:?}", view_box);
-    println!("{} solid_tiles", frame_builder.tile_encoders[0].solid_tiles.len());
-    println!("{} alpha_tiles", frame_builder.tile_encoders[0].masked_tiles.len());
-    println!("{} gpu_masks", frame_builder.tile_encoders[0].gpu_masks.len());
-    println!("{} cpu_masks", frame_builder.tile_encoders[0].num_cpu_masks());
+    println!("{} solid tiles", frame_builder.tile_encoders[0].solid_tiles.len());
+    println!("{} alpha tiles", frame_builder.tile_encoders[0].alpha_tiles.len());
+    println!("{} gpu masks", frame_builder.tile_encoders[0].gpu_masks.len());
+    println!("{} cpu masks", frame_builder.tile_encoders[0].num_cpu_masks());
     println!("{} line edges", frame_builder.tile_encoders[0].line_edges.len());
     println!("{} quad edges", frame_builder.tile_encoders[0].quad_edges.len());
     println!("{} batches", frame_builder.tile_encoders[0].batches.len());

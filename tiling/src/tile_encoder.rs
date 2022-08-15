@@ -9,9 +9,8 @@ use std::ops::Range;
 
 use crate::tiler::*;
 use crate::cpu_rasterizer::*;
-use crate::gpu::masked_tiles::{TileInstance as MaskedTile, self};
-use crate::gpu::masked_tiles::Mask as GpuMask;
-use crate::gpu::masked_tiles::MaskUploader;
+use crate::tile_renderer::{TileInstance, Mask as GpuMask};
+use crate::gpu::mask_uploader::MaskUploader;
 
 use copyless::VecHelper;
 
@@ -39,8 +38,6 @@ struct Shared {
 pub struct MaskPass {
     pub batches: Range<usize>,
     pub gpu_masks: Range<u32>,
-    //pub cpu_masks: Range<u32>,
-    //pub masked_tiles: Range<u32>,
     pub atlas_index: u32,
 }
 
@@ -54,8 +51,8 @@ pub struct TileEncoder {
 
     pub quad_edges: Vec<QuadEdge>,
     pub line_edges: Vec<LineEdge>,
-    pub solid_tiles: Vec<MaskedTile>,
-    pub masked_tiles: Vec<MaskedTile>,
+    pub solid_tiles: Vec<TileInstance>,
+    pub alpha_tiles: Vec<TileInstance>,
     pub gpu_masks: Vec<GpuMask>,
     pub mask_passes: Vec<MaskPass>,
     pub batches: Vec<AlphaBatch>,
@@ -66,7 +63,7 @@ pub struct TileEncoder {
     batches_start: usize,
     //cpu_masks_start: u32,
     // First masked color tile of the current mask pass.
-    masked_tiles_start: u32,
+    alpha_tiles_start: u32,
     // Index of the current mask texture (increments every time we run out of space in the
     // mask atlas, which is the primary reason for starting a new mask pass).
     masks_texture_index: u32,
@@ -96,7 +93,7 @@ impl TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
-            masked_tiles: Vec::with_capacity(6000),
+            alpha_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
@@ -104,7 +101,7 @@ impl TileEncoder {
             gpu_masks_start: 0,
             batches_start: 0,
             //cpu_masks_start: 0,
-            masked_tiles_start: 0,
+            alpha_tiles_start: 0,
             masks_texture_index: 0,
 
             mask_uploader,
@@ -125,7 +122,7 @@ impl TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
             solid_tiles: Vec::with_capacity(2000),
-            masked_tiles: Vec::with_capacity(6000),
+            alpha_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
@@ -133,7 +130,7 @@ impl TileEncoder {
             gpu_masks_start: 0,
             batches_start: 0,
             //cpu_masks_start: 0,
-            masked_tiles_start: 0,
+            alpha_tiles_start: 0,
             masks_texture_index: 0,
 
             mask_uploader: self.mask_uploader.create_similar(),
@@ -165,7 +162,7 @@ impl TileEncoder {
         self.quad_edges.clear();
         self.line_edges.clear();
         self.solid_tiles.clear();
-        self.masked_tiles.clear();
+        self.alpha_tiles.clear();
         self.gpu_masks.clear();
         self.mask_passes.clear();
         self.batches.clear();
@@ -176,7 +173,7 @@ impl TileEncoder {
         self.gpu_masks_start = 0;
         self.batches_start = 0;
         //self.cpu_masks_start = 0;
-        self.masked_tiles_start = 0;
+        self.alpha_tiles_start = 0;
         self.masks_texture_index = 0;
         self.reversed = false;
     }
@@ -184,23 +181,21 @@ impl TileEncoder {
     pub fn end_paths(&mut self) {
         let gpu_masks_end = self.gpu_masks.len() as u32;
         //let cpu_end = self.cpu_masks.len() as u32;
-        let masked_tiles_end = self.masked_tiles.len() as u32;
+        let alpha_tiles_end = self.alpha_tiles.len() as u32;
         self.batches.push(AlphaBatch {
-            tiles: self.masked_tiles_start..masked_tiles_end,
+            tiles: self.alpha_tiles_start..alpha_tiles_end,
             batch_kind: 0,
         });
         let batches_end = self.batches.len();
         self.mask_passes.push(MaskPass {
             gpu_masks: self.gpu_masks_start..gpu_masks_end,
             batches: self.batches_start..batches_end,
-            //cpu_masks: self.cpu_masks_start..cpu_end,
-            //masked_tiles: self.masked_tiles_start..masked_tiles_end,
             atlas_index: self.masks_texture_index,
         });
         self.batches_start = batches_end;
         self.gpu_masks_start = gpu_masks_end;
         //self.cpu_masks_start = cpu_end;
-        self.masked_tiles_start = masked_tiles_end;
+        self.alpha_tiles_start = alpha_tiles_end;
     }
 
     pub fn num_cpu_masks(&self) -> usize {
@@ -226,7 +221,7 @@ impl TileEncoder {
                     solid.rect.max.x = tile.output_rect.max.x;
                 }
             } else {
-                self.solid_tiles.push(MaskedTile {
+                self.solid_tiles.push(TileInstance {
                     rect: tile.output_rect,
                     color: match draw.pattern {
                         TiledPattern::Color(color) => color.to_u32(),
@@ -242,7 +237,7 @@ impl TileEncoder {
 
         // Use masked tiles pipeline for blended full tiles to avoid breaking batches.
         if tile.solid && !draw.is_opaque {
-            self.masked_tiles.push(MaskedTile {
+            self.alpha_tiles.push(TileInstance {
                 rect: tile.output_rect,
                 color: match draw.pattern {
                     TiledPattern::Color(color) => color.to_u32(),
@@ -283,24 +278,21 @@ impl TileEncoder {
             // Add 1 to account for the special tile 0 which isn't in gpu_mask.
             let gpu_masks_end = self.gpu_masks.len() as u32;
             //let cpu_end = self.cpu_masks.len() as u32;
-            let masked_tiles_end = self.masked_tiles.len() as u32;
+            let alpha_tiles_end = self.alpha_tiles.len() as u32;
             if gpu_masks_end != self.gpu_masks_start { // TODO: cpu tiles
                 self.batches.push(AlphaBatch {
-                    tiles: self.masked_tiles_start..masked_tiles_end,
+                    tiles: self.alpha_tiles_start..alpha_tiles_end,
                     batch_kind: 0,
                 });
                 let batches_end = self.batches.len();
                 self.mask_passes.push(MaskPass {
                     gpu_masks: self.gpu_masks_start..gpu_masks_end,
                     batches: self.batches_start..batches_end,
-                    //cpu_masks: self.cpu_masks_start..cpu_end,
-                    //masked_tiles: self.masked_tiles_start..masked_tiles_end,
                     atlas_index: self.masks_texture_index,
                 });
                 self.gpu_masks_start = gpu_masks_end;
                 self.batches_start = batches_end;
-                //self.cpu_masks_start = cpu_end;
-                self.masked_tiles_start = masked_tiles_end;
+                self.alpha_tiles_start = alpha_tiles_end;
             }
             self.masks_texture_index = texture_index;
         }
@@ -309,15 +301,15 @@ impl TileEncoder {
     }
 
     pub fn end_batch(&mut self, batch_kind: u32) {
-        let masked_tiles_end = self.masked_tiles.len() as u32;
-        if self.masked_tiles_start == masked_tiles_end {
+        let alpha_tiles_end = self.alpha_tiles.len() as u32;
+        if self.alpha_tiles_start == alpha_tiles_end {
             return;
         }
         self.batches.push(AlphaBatch {
-            tiles: self.masked_tiles_start..masked_tiles_end,
+            tiles: self.alpha_tiles_start..alpha_tiles_end,
             batch_kind,
         });
-        self.masked_tiles_start = masked_tiles_end;
+        self.alpha_tiles_start = alpha_tiles_end;
     }
 
     fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> bool {
@@ -377,7 +369,7 @@ impl TileEncoder {
             fill_rule: draw.encoded_fill_rule,
         });
 
-        self.masked_tiles.push(MaskedTile {
+        self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
             color: match draw.pattern {
                 TiledPattern::Color(color) => color.to_u32(),
@@ -441,7 +433,7 @@ impl TileEncoder {
             fill_rule: draw.encoded_fill_rule,
         });
 
-        self.masked_tiles.push(MaskedTile {
+        self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
             color: match draw.pattern {
                 TiledPattern::Color(color) => color.to_u32(),
@@ -508,7 +500,7 @@ impl TileEncoder {
         //    &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()]
         //);
 
-        self.masked_tiles.push(MaskedTile {
+        self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
             color: match draw.pattern {
                 TiledPattern::Color(color) => color.to_u32(),
@@ -520,17 +512,16 @@ impl TileEncoder {
 
     pub fn reverse_alpha_tiles(&mut self) {
         assert!(!self.reversed);
-        self.masked_tiles.reverse();
+        self.alpha_tiles.reverse();
 
         self.batches.reverse();
-        let num_masked_tiles = self.masked_tiles.len() as u32;
+        let num_alpha_tiles = self.alpha_tiles.len() as u32;
         for batch in &mut self.batches {
-            batch.tiles = (num_masked_tiles - batch.tiles.end) .. (num_masked_tiles - batch.tiles.start);
+            batch.tiles = (num_alpha_tiles - batch.tiles.end) .. (num_alpha_tiles - batch.tiles.start);
         }
         let num_batches = self.batches.len();
         self.mask_passes.reverse();
         for mask_pass in &mut self.mask_passes {
-            //mask_pass.masked_tiles = (num_masked_tiles - mask_pass.masked_tiles.end) .. (num_masked_tiles - mask_pass.masked_tiles.start);
             mask_pass.batches = (num_batches - mask_pass.batches.end) .. (num_batches - mask_pass.batches.start);
         }
     }

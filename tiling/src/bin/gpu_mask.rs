@@ -203,13 +203,13 @@ fn main() {
 
                 // The order of the mask tiles doesn't matter within a path but it does between paths,
                 // so extend the main builder's mask tiles buffer between each path.
-                builder.masked_tiles.reserve(b0.masked_tiles.len() + b1.masked_tiles.len() + b2.masked_tiles.len());
-                builder.masked_tiles.extend_from_slice(&b0.masked_tiles);
-                builder.masked_tiles.extend_from_slice(&b1.masked_tiles);
-                builder.masked_tiles.extend_from_slice(&b2.masked_tiles);
-                b0.masked_tiles.clear();
-                b1.masked_tiles.clear();
-                b2.masked_tiles.clear();
+                builder.alpha_tiles.reserve(b0.alpha_tiles.len() + b1.alpha_tiles.len() + b2.alpha_tiles.len());
+                builder.alpha_tiles.extend_from_slice(&b0.alpha_tiles);
+                builder.alpha_tiles.extend_from_slice(&b1.alpha_tiles);
+                builder.alpha_tiles.extend_from_slice(&b2.alpha_tiles);
+                b0.alpha_tiles.clear();
+                b1.alpha_tiles.clear();
+                b2.alpha_tiles.clear();
             } else {
                 tiler.tile_path(path.iter(), Some(&transform), &mut *builder);
             }
@@ -236,10 +236,10 @@ fn main() {
     let t = (t1 - t0) / n;
 
     println!("view box: {:?}", view_box);
-    println!("{} solid_tiles", builder.solid_tiles.len());
-    println!("{} alpha_tiles", builder.masked_tiles.len());
-    println!("{} gpu_masks", builder.gpu_masks.len());
-    println!("{} cpu_masks", builder.num_cpu_masks());
+    println!("{} solid tiles", builder.solid_tiles.len());
+    println!("{} alpha tiles", builder.alpha_tiles.len());
+    println!("{} gpu masks", builder.gpu_masks.len());
+    println!("{} cpu masks", builder.num_cpu_masks());
     println!("{} line edges", builder.line_edges.len());
     println!("{} quad edges", builder.quad_edges.len());
     println!("#edge distributions: {:?}", builder.edge_distributions);

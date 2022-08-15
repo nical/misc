@@ -1,6 +1,6 @@
 use lyon::geom::Vector;
 pub mod advanced_tiles;
-pub mod masked_tiles;
+pub mod mask_uploader;
 pub mod render_target;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};

@@ -2,40 +2,83 @@
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
-use crate::gpu::masked_tiles::MaskUploadCopies;
-use crate::gpu::masked_tiles::Masks;
-use crate::gpu::masked_tiles::MaskedTiles;
-use crate::gpu::masked_tiles::MaskUploader;
-use crate::gpu::masked_tiles::Mask;
 use crate::gpu::ShaderSources;
-
+use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
 use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
 
+use lyon::geom::Box2D;
+
 use wgpu::util::DeviceExt;
+
+/*
+
+When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Graphics 620 (KBL GT2):
+ - rasterizing the masks takes ~2ms
+ - rendering into the color target takes ~0.8ms
+  - ~0.28ms opaque tiles
+  - ~0.48ms alpha tiles
+
+*/
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct TileInstance {
+    pub rect: Box2D<f32>,
+    pub mask: u32,
+    pub color: u32,
+}
+
+unsafe impl bytemuck::Pod for TileInstance {}
+unsafe impl bytemuck::Zeroable for TileInstance {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct Mask {
+    pub edges: (u32, u32),
+    pub mask_id: u32,
+    pub fill_rule: u16,
+    pub backdrop: i16,
+}
+
+unsafe impl bytemuck::Pod for Mask {}
+unsafe impl bytemuck::Zeroable for Mask {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MaskParams {
+    pub tile_size: f32,
+    pub inv_atlas_width: f32,
+    pub masks_per_row: u32,
+}
+
+unsafe impl bytemuck::Pod for MaskParams {}
+unsafe impl bytemuck::Zeroable for MaskParams {}
 
 pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
-    masked_tiles: MaskedTiles,
+
+    pub masked_solid_pipeline: wgpu::RenderPipeline,
+    pub masked_image_pipeline: wgpu::RenderPipeline,
+    pub opaque_solid_pipeline: wgpu::RenderPipeline,
+    pub opaque_image_pipeline: wgpu::RenderPipeline,
+    pub bind_group_layout: wgpu::BindGroupLayout,
 
     // TODO: move this state out into per-target data, or use TileEncoder directly.
     mask_passes: Vec<MaskPass>,
     batches: Vec<AlphaBatch>,
-    num_masked_tiles: u32,
     num_solid_tiles: u32,
-    tile_size: u32,
-    tile_atlas_size: u32,
 
-    mask_texture: wgpu::Texture,
+    //mask_texture: wgpu::Texture,
     mask_texture_view: wgpu::TextureView,
 
-    masked_tiles_bind_group: wgpu::BindGroup,
+    alpha_tiles_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
     edges_ssbo: wgpu::Buffer,
 
     quad_ibo: wgpu::Buffer,
     solid_tiles_vbo: wgpu::Buffer,
-    masked_tiles_vbo: wgpu::Buffer,
+    alpha_tiles_vbo: wgpu::Buffer,
     masks_vbo: wgpu::Buffer,
     mask_params_ubo: wgpu::Buffer,
 }
@@ -48,8 +91,207 @@ impl TileRenderer {
 
         let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
         let masks = Masks::new(&device, &mut shaders);
-        let masked_tiles = MaskedTiles::new(&device, &globals_bind_group_layout, &mut shaders);
 
+        let src = include_str!("./../shaders/tile.wgsl");
+        let masked_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["TILED_MASK", "SOLID_PATTERN"]);
+        let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
+        let opaque_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["SOLID_PATTERN"]);
+        let opaque_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_IMAGE_PATTERN",]);
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Tile mask atlas"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+    
+        let src_color_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Tile src color atlas"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+    
+        let attributes_with_opacity = &[
+            wgpu::VertexAttribute {
+                offset: 0,
+                format: wgpu::VertexFormat::Float32x4,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                offset: 16,
+                format: wgpu::VertexFormat::Uint32,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                offset: 20,
+                format: wgpu::VertexFormat::Uint32,
+                shader_location: 2,
+            },
+            // opacity
+            wgpu::VertexAttribute {
+                offset: 24,
+                format: wgpu::VertexFormat::Float32,
+                shader_location: 3,
+            },
+        ];
+    
+        let attributes_no_opacity = &attributes_with_opacity[..3];
+        let vertex_buffer_layouts = &[wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TileInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: attributes_no_opacity,
+        }];
+        let alpha_color_target_states = &[
+            Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            }),
+        ];
+        let opaque_color_target_states = &[
+            Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            }),
+        ];
+    
+        let primitive = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        };
+    
+        let multisample = wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
+    
+        let opaque_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Opaque solid tiles"),
+            bind_group_layouts: &[&globals_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let masked_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Masked solid tiles"),
+            bind_group_layouts: &[&globals_bind_group_layout, &bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Masked image tiles"),
+            bind_group_layouts: &[
+                &globals_bind_group_layout,
+                &bind_group_layout,
+                &src_color_bind_group_layout,
+            ],
+            push_constant_ranges: &[],
+        });
+    
+        let masked_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some("Masked solid tiles"),
+            layout: Some(&masked_solid_tile_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &masked_solid_module,
+                entry_point: "vs_main",
+                buffers: vertex_buffer_layouts,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &masked_solid_module,
+                entry_point: "fs_main",
+                targets: alpha_color_target_states
+            }),
+            primitive,
+            depth_stencil: None,
+            multiview: None,
+            multisample,
+        };
+    
+        let masked_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some("Masked image tiles"),
+            layout: Some(&masked_img_tile_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &masked_img_module,
+                entry_point: "vs_main",
+                buffers: vertex_buffer_layouts,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &masked_img_module,
+                entry_point: "fs_main",
+                targets: alpha_color_target_states
+            }),
+            primitive,
+            depth_stencil: None,
+            multiview: None,
+            multisample,
+        };
+    
+        let opaque_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some("Opaque solid tiles"),
+            layout: Some(&opaque_solid_tile_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &opaque_solid_module,
+                entry_point: "vs_main",
+                buffers: vertex_buffer_layouts,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &opaque_solid_module,
+                entry_point: "fs_main",
+                targets: opaque_color_target_states
+            }),
+            primitive,
+            depth_stencil: None,
+            multiview: None,
+            multisample,
+        };
+    
+        let opaque_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some("Opaque image tiles"),
+            layout: Some(&masked_img_tile_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &opaque_img_module,
+                entry_point: "vs_main",
+                buffers: vertex_buffer_layouts,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &opaque_img_module,
+                entry_point: "fs_main",
+                targets: opaque_color_target_states
+            }),
+            primitive,
+            depth_stencil: None,
+            multiview: None,
+            multisample,
+        };
+    
+        let masked_solid_pipeline = device.create_render_pipeline(&masked_solid_tile_pipeline_descriptor);
+        let masked_image_pipeline = device.create_render_pipeline(&masked_image_tile_pipeline_descriptor);
+        let opaque_solid_pipeline = device.create_render_pipeline(&opaque_solid_tile_pipeline_descriptor);
+        let opaque_image_pipeline = device.create_render_pipeline(&opaque_image_tile_pipeline_descriptor);
+    
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
         let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Quad indices"),
@@ -73,9 +315,9 @@ impl TileRenderer {
 
         let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let masked_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("masked tiles"),
-            layout: &masked_tiles.bind_group_layout,
+        let alpha_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("alpha tiles"),
+            layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -92,8 +334,8 @@ impl TileRenderer {
         });
 
 
-        let masked_tiles_vbo = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("masked tiles"),
+        let alpha_tiles_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("alpha tiles"),
             size: 4096 * 64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -116,7 +358,7 @@ impl TileRenderer {
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
             contents: bytemuck::cast_slice(&[
-                crate::gpu::masked_tiles::MaskParams {
+                MaskParams {
                     tile_size: tile_size as f32,
                     inv_atlas_width: 1.0 / (tile_atlas_size as f32),
                     masks_per_row: tile_atlas_size / (tile_size as u32),
@@ -143,23 +385,25 @@ impl TileRenderer {
         TileRenderer {
             mask_upload_copies,
             masks,
-            masked_tiles,
 
+            opaque_solid_pipeline,
+            opaque_image_pipeline,
+            masked_solid_pipeline,
+            masked_image_pipeline,
+            bind_group_layout,
+            
             mask_passes: Vec::new(),
             batches: Vec::new(),
-            num_masked_tiles: 0,
             num_solid_tiles: 0,
-            tile_size,
-            tile_atlas_size,
 
             quad_ibo,
-            mask_texture,
+            //mask_texture,
             mask_texture_view,
-            masked_tiles_bind_group,
+            alpha_tiles_bind_group,
             masks_bind_group,
             edges_ssbo,
             solid_tiles_vbo,
-            masked_tiles_vbo,
+            alpha_tiles_vbo,
             masks_vbo,
             mask_params_ubo,
         }
@@ -171,7 +415,6 @@ impl TileRenderer {
     ) {
         std::mem::swap(&mut self.batches, &mut builder.batches);
         std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
-        self.num_masked_tiles = builder.masked_tiles.len() as u32;
     }
 
     // TODO: this should be part of update
@@ -192,9 +435,9 @@ impl TileRenderer {
         );
 
         queue.write_buffer(
-            &self.masked_tiles_vbo,
+            &self.alpha_tiles_vbo,
             0,
-            bytemuck::cast_slice(&builder.masked_tiles),
+            bytemuck::cast_slice(&builder.alpha_tiles),
         );
 
         queue.write_buffer(
@@ -281,16 +524,16 @@ impl TileRenderer {
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_bind_group(0, globals_bind_group, &[]);
             if self.num_solid_tiles > 0 {    
-                pass.set_pipeline(&self.masked_tiles.opaque_solid_pipeline);
+                pass.set_pipeline(&self.opaque_solid_pipeline);
                 pass.set_vertex_buffer(0, self.solid_tiles_vbo.slice(..));
                 pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
             }
 
             if !first_mask_pass.batches.is_empty() {
-                pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
+                pass.set_vertex_buffer(0, self.alpha_tiles_vbo.slice(..));
                 for batch in &self.batches[first_mask_pass.batches.clone()] {
-                    pass.set_pipeline(&self.masked_tiles.masked_solid_pipeline);
-                    pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+                    pass.set_pipeline(&self.masked_solid_pipeline);
+                    pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
                     pass.draw_indexed(0..6, 0, batch.tiles.clone());
                 }
             }
@@ -346,15 +589,193 @@ impl TileRenderer {
                     });
 
                     pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                    pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
+                    pass.set_vertex_buffer(0, self.alpha_tiles_vbo.slice(..));
                     for batch in &self.batches[mask_ranges.batches.clone()] {
-                        pass.set_pipeline(&self.masked_tiles.masked_solid_pipeline);
+                        pass.set_pipeline(&self.masked_solid_pipeline);
                         pass.set_bind_group(0, globals_bind_group, &[]);
-                        pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+                        pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
                         pass.draw_indexed(0..6, 0, batch.tiles.clone());
                     }
                 }
             }
         }
+    }
+}
+
+pub struct Masks {
+    pub line_pipeline: wgpu::RenderPipeline,
+    pub quad_pipeline: wgpu::RenderPipeline,
+    pub bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl Masks {
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources) -> Self {
+        create_mask_pipeline(device, shaders)
+    }
+}
+
+fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> Masks {
+    let vs = include_str!("./../shaders/mask_fill.vs.wgsl");
+    let lin_fs = include_str!("./../shaders/mask_fill_lin.fs.wgsl");
+    let quad_fs = include_str!("./../shaders/mask_fill_quad.fs.wgsl");
+    let vs_module = &shaders.create_shader_module(device, "Mask vs", vs, &[]);
+    let lin_fs_module = &shaders.create_shader_module(device, "Mask fill linear fs", lin_fs, &[]);
+    let quad_fs_module = &shaders.create_shader_module(device, "Mask fill quad fs", quad_fs, &[]);
+
+    let mask_globals_buffer_size = std::mem::size_of::<MaskParams>() as u64;
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Mask"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(mask_globals_buffer_size),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(32),
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Masked tiles"),
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    let line_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("Tile mask linear"),
+        layout: Some(&tile_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &vs_module,
+            entry_point: "main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Mask>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        format: wgpu::VertexFormat::Uint32x2,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 8,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 2,
+                    },
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &lin_fs_module,
+            entry_point: "main",
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multiview: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+    };
+
+    let quad_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("Tile mask quad"),
+        layout: Some(&tile_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &vs_module,
+            entry_point: "main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Mask>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        format: wgpu::VertexFormat::Uint32x2,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 8,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        format: wgpu::VertexFormat::Uint32,
+                        shader_location: 2,
+                    },
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &quad_fs_module,
+            entry_point: "main",
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multiview: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+    };
+
+    let line_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
+    let quad_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
+
+    Masks {
+        line_pipeline,
+        quad_pipeline,
+        bind_group_layout,
     }
 }
