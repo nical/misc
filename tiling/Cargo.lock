@@ -1697,6 +1697,7 @@ dependencies = [
 name = "tiling"
 version = "0.1.0"
 dependencies = [
+ "aliasable",
  "bytemuck",
  "copyless",
  "crossbeam-channel",
@@ -1711,6 +1712,7 @@ dependencies = [
  "time",
  "usvg",
  "wgpu",
+ "wgslp",
  "winit",
 ]
 
@@ -2126,6 +2128,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f762cbc08e1a51389859cf9c199c7aef544789cf3510889aab12c607f701604"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "wgslp"
+version = "0.1.0"
+dependencies = [
+ "naga",
 ]
 
 [[package]]

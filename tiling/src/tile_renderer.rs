@@ -7,9 +7,9 @@ use crate::gpu::masked_tiles::Masks;
 use crate::gpu::masked_tiles::MaskedTiles;
 use crate::gpu::masked_tiles::MaskUploader;
 use crate::gpu::masked_tiles::Mask;
-use crate::gpu::solid_tiles::SolidTiles;
+use crate::gpu::ShaderSources;
 
-use crate::tile_encoder::{TileEncoder, MaskPass};
+use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
 
 use wgpu::util::DeviceExt;
 
@@ -17,9 +17,9 @@ pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
     masked_tiles: MaskedTiles,
-    solid_tiles: SolidTiles,
 
     mask_passes: Vec<MaskPass>,
+    batches: Vec<AlphaBatch>,
     num_masked_tiles: u32,
     num_solid_tiles: u32,
     tile_size: u32,
@@ -43,10 +43,11 @@ pub struct TileRenderer {
 impl TileRenderer {
     pub fn new(device: &wgpu::Device, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
 
+        let mut shaders = ShaderSources::new();
+
         let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
-        let masks = Masks::new(&device);
-        let masked_tiles = MaskedTiles::new(&device, &globals_bind_group_layout);
-        let solid_tiles = SolidTiles::new(&device, &globals_bind_group_layout);
+        let masks = Masks::new(&device, &mut shaders);
+        let masked_tiles = MaskedTiles::new(&device, &globals_bind_group_layout, &mut shaders);
 
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
         let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -142,9 +143,9 @@ impl TileRenderer {
             mask_upload_copies,
             masks,
             masked_tiles,
-            solid_tiles,
 
             mask_passes: Vec::new(),
+            batches: Vec::new(),
             num_masked_tiles: 0,
             num_solid_tiles: 0,
             tile_size,
@@ -167,6 +168,7 @@ impl TileRenderer {
         &mut self,
         builder: &mut TileEncoder,
     ) {
+        std::mem::swap(&mut self.batches, &mut builder.batches);
         std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
         self.num_masked_tiles = builder.masked_tiles.len() as u32;
     }
@@ -217,6 +219,7 @@ impl TileRenderer {
                 let gpu_mask_range_end = gpu_masks.len() as u32;
                 self.mask_passes.push(MaskPass {
                     gpu_masks: gpu_mask_range_start .. gpu_mask_range_end,
+                    batches: 0..1, // TODO
                     masked_tiles: mask_tiles_range,
                     atlas_index: atlas_index as u32,
                 });
@@ -268,11 +271,11 @@ impl TileRenderer {
     // TODO: this should be part of update
     pub fn begin_frame(
         &mut self,
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         queue: &wgpu::Queue,
         builder: &TileEncoder,
-        target_width: f32,
-        target_height: f32,
+        _target_width: f32,
+        _target_height: f32,
     ) {
         self.num_solid_tiles = builder.solid_tiles.len() as u32;
 
@@ -314,10 +317,12 @@ impl TileRenderer {
     ) {
         // TODO: the logic here is soooo hacky and fragile.
 
-        let need_mask_pass = !self.mask_passes.is_empty()
+        let first_mask_pass = &self.mask_passes[0];
+
+        let need_mask_pass = !first_mask_pass.gpu_masks.is_empty()
             || mask_uploaders.iter().any(|up| up.needs_upload());
 
-        let masked_tiles_in_first_pass = if need_mask_pass {
+        if need_mask_pass {
             // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Mask atlas"),
@@ -332,30 +337,13 @@ impl TileRenderer {
                 depth_stencil_attachment: None,
             });
 
-            let masked_tiles_in_first_pass = if !self.mask_passes.is_empty() {
-
-                let mask_range = self.mask_passes.last().unwrap();
-
+            if !first_mask_pass.gpu_masks.is_empty() {
                 pass.set_pipeline(&self.masks.line_pipeline);
                 pass.set_bind_group(0, &self.masks_bind_group, &[]);
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, self.masks_vbo.slice(..));
-                pass.draw_indexed(0..6, 0, mask_range.gpu_masks.clone());
-
-                (self.num_masked_tiles - mask_range.masked_tiles.end) .. (self.num_masked_tiles - mask_range.masked_tiles.start)
-            } else {
-                0..self.num_masked_tiles
-            };
-
-/*
-            if let Some(quad_masks_bind_group) = &quad_masks_bind_group {
-                pass.set_pipeline(&masks.quad_pipeline);
-                pass.set_bind_group(0, &quad_masks_bind_group, &[]);
-                pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                pass.set_vertex_buffer(0, masks_vbo.slice(..));
-                pass.draw_indexed(0..6, 0, 0..num_gpu_masks);
+                pass.draw_indexed(0..6, 0, first_mask_pass.gpu_masks.clone());
             }
-*/
 
             for uploader in mask_uploaders.iter_mut() {
                 uploader.upload(
@@ -367,11 +355,7 @@ impl TileRenderer {
                     (self.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
                 );
             }
-
-            masked_tiles_in_first_pass
-        } else {
-            0..self.num_masked_tiles
-        };
+        }
 
         {
             let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
@@ -389,25 +373,26 @@ impl TileRenderer {
             });
 
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-
             pass.set_bind_group(0, globals_bind_group, &[]);
+            if self.num_solid_tiles > 0 {    
+                pass.set_pipeline(&self.masked_tiles.opaque_solid_pipeline);
+                pass.set_vertex_buffer(0, self.solid_tiles_vbo.slice(..));
+                pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
+            }
 
-            pass.set_pipeline(&self.solid_tiles.pipeline);
-            pass.set_vertex_buffer(0, self.solid_tiles_vbo.slice(..));
-            pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
-
-            if !masked_tiles_in_first_pass.is_empty() {
-                pass.set_pipeline(&self.masked_tiles.pipeline);
-                pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+            let alpha_tiles = first_mask_pass.masked_tiles.clone();
+            if !alpha_tiles.is_empty() {
                 pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
-                pass.draw_indexed(0..6, 0, masked_tiles_in_first_pass);
-            } else {
-                println!("No masked tiles");
+                for batch in &self.batches[first_mask_pass.batches.clone()] {
+                    pass.set_pipeline(&self.masked_tiles.masked_solid_pipeline);
+                    pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+                    pass.draw_indexed(0..6, 0, batch.tiles.clone());
+                }
             }
         }
 
         if self.mask_passes.len() > 1 {
-            for pass_idx in (0..self.mask_passes.len()).rev().skip(1) {
+            for pass_idx in 1..self.mask_passes.len() {
                 let mask_ranges = &self.mask_passes[pass_idx];
                 {
                     let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -455,15 +440,14 @@ impl TileRenderer {
                         depth_stencil_attachment: None,
                     });
 
-                    // The masked tile's buffer content was reversed for proper z-order earlier.
-                    let mask_tiles_range = (self.num_masked_tiles - mask_ranges.masked_tiles.end) .. (self.num_masked_tiles - mask_ranges.masked_tiles.start);
-
-                    pass.set_pipeline(&self.masked_tiles.pipeline);
-                    pass.set_bind_group(0, globals_bind_group, &[]);
-                    pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
                     pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                     pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
-                    pass.draw_indexed(0..6, 0, mask_tiles_range);
+                    for batch in &self.batches[mask_ranges.batches.clone()] {
+                        pass.set_pipeline(&self.masked_tiles.masked_solid_pipeline);
+                        pass.set_bind_group(0, globals_bind_group, &[]);
+                        pass.set_bind_group(1, &self.masked_tiles_bind_group, &[]);
+                        pass.draw_indexed(0..6, 0, batch.tiles.clone());
+                    }
                 }
             }
         }

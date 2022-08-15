@@ -197,7 +197,7 @@ impl FrameBuilder {
 
         for encoder in &mut self.tile_encoders[0..group_stack_depth] {
             encoder.end_paths();
-            encoder.masked_tiles.reverse();
+            encoder.reverse_alpha_tiles();
         }
 
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);

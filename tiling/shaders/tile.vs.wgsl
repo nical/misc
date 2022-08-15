@@ -1,3 +1,5 @@
+#import quad
+
 struct Globals {
     resolution: vec2<f32>,
 };
@@ -17,14 +19,7 @@ fn main(
     builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
 
-    var vertices = array<vec2<f32>, 4>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 1.0)
-    );
-
-    var uv = vertices[vertex_index];
+    let uv = quad_get_uv(vertex_index);
 
     var world_position = mix(a_rect.xy, a_rect.zw, uv);
 

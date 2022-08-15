@@ -18,7 +18,9 @@ rayon = "1.5"
 crossbeam-channel = "0.5"
 profiling = "1.0.4"
 copyless = "0.1.5"
+aliasable = "0.1.3"
 parasol = { path = "../../parasol" }
+wgslp = { path = "../wgslp/lib" }
 
 [dependencies.image]
 version = "0.23"

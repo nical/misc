@@ -1,8 +1,181 @@
 use std::f32;
-use lyon::geom::QuadraticBezierSegment;
+use std::ops::Range;
+
+use lyon::geom::{QuadraticBezierSegment, point};
 use lyon::geom::euclid::default::*;
 #[cfg(test)]
 use lyon::geom::euclid::point2;
+
+/*
+use lyon::path::FillRule;
+use aliasable::boxed::AliasableBox;
+use parasol::{Context, Event};
+
+pub struct TileRasterizer {
+    tiles: AliasableBox<[TileRasterJobTile]>,
+    edges: AliasableBox<[QuadraticBezierSegment<f32>]>,
+    tile_range: Range<usize>,
+    edge_range: Range<usize>,
+    next_staging_buffer_offset: u32,
+    rasterized_tiles: Vec<(u32, u32)>, // staging buffer offset, tile offset
+
+    // TODO: make this a mapped wgpu buffer
+    staging_buffer: AliasableBox<[u8]>,
+
+    event: AliasableBox<Event>,
+}
+
+impl TileRasterizer {
+    pub fn new(tile_buffer_size: usize, edge_buffer_size: usize, staging_buffer_size: usize, ctx: &Context) -> Self {
+        let edge = QuadraticBezierSegment {
+            from: point(0.0, 0.0),
+            ctrl: point(0.0, 0.0),
+            to: point(0.0, 0.0),
+        };
+        let tile = TileRasterJobTile {
+            edges: 0..0,
+            output: 0,
+            backdrop: 0,
+            fill_rule: FillRule::EvenOdd,
+        };
+        let edges = AliasableBox::from_unique(vec![edge; edge_buffer_size].into_boxed_slice());
+        let tiles = AliasableBox::from_unique(vec![tile; tile_buffer_size].into_boxed_slice());
+        let staging_buffer = AliasableBox::from_unique(vec![0; staging_buffer_size].into_boxed_slice());
+
+        TileRasterizer {
+            tiles,
+            edges,
+            tile_range: 0..0,
+            edge_range: 0..0,
+            next_staging_buffer_offset: 0,
+            rasterized_tiles: Vec::with_capacity(512),
+            staging_buffer,
+            event: Event::new_boxed(Event::MAX_DEPENDECIES, ctx.thread_pool_id()),
+        }
+    }
+
+    pub fn push_edge(&mut self, edge: &QuadraticBezierSegment<f32>) -> bool {
+        if self.edge_range.end == self.edges.len() {
+            return false;
+        }
+
+        self.edges[self.edge_range.end] = *edge;
+        self.edge_range.end += 1;
+
+        true
+    }
+
+    pub fn push_tile(&mut self, backdrop: i16, fill_rule: FillRule, tile_id: u32) -> bool {
+        if self.tile_range.end == self.tiles.len() {
+            return false;
+        }
+
+        let staging_buffer_offset = self.next_staging_buffer_offset;
+        self.next_staging_buffer_offset += 1;
+
+        self.tiles[self.tile_range.end] = TileRasterJobTile {
+            edges: self.edge_range.start as u32 .. self.edge_range.end as u32,
+            backdrop,
+            fill_rule,
+            output: staging_buffer_offset,
+        };
+
+        self.tile_range.end += 1;
+        self.edge_range.start = self.edge_range.end;
+
+        self.rasterized_tiles.push((staging_buffer_offset, tile_id));
+
+        true
+    }
+
+    pub fn schedule_work(&mut self, ctx: &mut Context) {
+        unimplemented!()
+    }
+}
+
+pub fn rasterize_tile(
+    edges: &[QuadraticBezierSegment<f32>],
+    backdrop: i16,
+    fill_rule: FillRule,
+    tile_size: usize,
+    tolerance: f32,
+    output: &mut[u8]
+) {
+    debug_assert!(tile_size <= 32);
+    let mut accum = [0.0; 32 * 32];
+    let mut backdrops = [backdrop as f32; 32];
+
+    for edge in edges {
+        if edge.from.x < -0.5 && edge.from.y != -0.5 {
+            add_backdrop(edge.from.y, 1.0, &mut backdrops[0..tile_size]);
+        }
+
+        if edge.to.x < -0.5 && edge.to.y != -0.5 {
+            add_backdrop(edge.to.y, -1.0, &mut backdrops[0..tile_size]);
+        }
+
+        let is_line = edge.ctrl.x.is_nan();
+        if is_line {
+            draw_line(edge.from, edge.to, &mut accum);
+        } else {
+            draw_curve(edge.from, edge.ctrl, edge.to, tolerance, &mut accum);
+        }
+    }
+
+    let accumulate = match fill_rule {
+        FillRule::EvenOdd => accumulate_even_odd,
+        FillRule::NonZero => accumulate_non_zero,
+    };
+
+    accumulate(
+        &accum,
+        &backdrops,
+        output,
+    );
+}
+
+pub struct TileRasterJob {
+    pub edges: *const QuadraticBezierSegment<f32>,
+    pub num_edges: u32,
+    pub tiles: *const TileRasterJobTile,
+    pub num_tiles: u32,
+    pub tile_size: u16,
+    pub tolerance: f32,
+    pub output: *mut u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct TileRasterJobTile {
+    pub edges: Range<u32>,
+    pub output: u32,
+    pub backdrop: i16,
+    pub fill_rule: FillRule,
+}
+
+pub unsafe fn exec_tile_job(this: *const TileRasterJob) {
+    let tiles = std::slice::from_raw_parts((*this).tiles, (*this).num_tiles as usize);
+    let edges = std::slice::from_raw_parts((*this).edges, (*this).num_edges as usize);
+    let tile_size = (*this).tile_size as usize;
+    let pixels_per_tile = tile_size * tile_size;
+    for tile in tiles {
+        let edge_range = tile.edges.start as usize .. tile.edges.end as usize;
+        let offset = tile.output as usize * pixels_per_tile;
+        let output = std::slice::from_raw_parts_mut(
+            (*this).output.offset(offset as isize),
+            pixels_per_tile,
+        );
+
+        rasterize_tile(
+            &edges[edge_range],
+            tile.backdrop,
+            tile.fill_rule,
+            tile_size,
+            (*this).tolerance,
+            output
+        );
+    }
+}
+*/
 
 pub const TILE_SIZE: usize = 16;
 

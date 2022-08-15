@@ -35,7 +35,7 @@ fn main() {
         tile_padding: 0.5,
         tolerance,
         flatten: false,
-        mask_atlas_size: size2(2048, 2048),
+        mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
     };
 
     let event_loop = EventLoop::new();
@@ -77,6 +77,17 @@ fn main() {
         ]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
+    let tile_desc_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Tile descriptor"),
+        contents: bytemuck::cast_slice(&[
+            tiling::gpu::GpuTileAtlasDescriptor {
+                tile_size,
+                inv_atlas_size: 1.0 / tile_atlas_size as f32,
+                masks_per_row: tile_atlas_size / tile_size as u32,
+            }
+        ]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
 
     let globals_bind_group_layout = tiling::gpu::GpuGlobals::create_bind_group_layout(&device);
     let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -86,6 +97,17 @@ fn main() {
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
+            },
+        ],
+    });
+    let mask_atlas_bind_group_layout = tiling::gpu::GpuTileAtlasDescriptor::create_bind_group_layout(&device);
+    let mask_atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Mask atlas descriptor"),
+        layout: &mask_atlas_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(tile_desc_ubo.as_entire_buffer_binding())
             },
         ],
     });
