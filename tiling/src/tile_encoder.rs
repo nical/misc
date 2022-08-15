@@ -40,7 +40,7 @@ pub struct MaskPass {
     pub batches: Range<usize>,
     pub gpu_masks: Range<u32>,
     //pub cpu_masks: Range<u32>,
-    pub masked_tiles: Range<u32>,
+    //pub masked_tiles: Range<u32>,
     pub atlas_index: u32,
 }
 
@@ -194,7 +194,7 @@ impl TileEncoder {
             gpu_masks: self.gpu_masks_start..gpu_masks_end,
             batches: self.batches_start..batches_end,
             //cpu_masks: self.cpu_masks_start..cpu_end,
-            masked_tiles: self.masked_tiles_start..masked_tiles_end,
+            //masked_tiles: self.masked_tiles_start..masked_tiles_end,
             atlas_index: self.masks_texture_index,
         });
         self.batches_start = batches_end;
@@ -294,7 +294,7 @@ impl TileEncoder {
                     gpu_masks: self.gpu_masks_start..gpu_masks_end,
                     batches: self.batches_start..batches_end,
                     //cpu_masks: self.cpu_masks_start..cpu_end,
-                    masked_tiles: self.masked_tiles_start..masked_tiles_end,
+                    //masked_tiles: self.masked_tiles_start..masked_tiles_end,
                     atlas_index: self.masks_texture_index,
                 });
                 self.gpu_masks_start = gpu_masks_end;
@@ -530,7 +530,7 @@ impl TileEncoder {
         let num_batches = self.batches.len();
         self.mask_passes.reverse();
         for mask_pass in &mut self.mask_passes {
-            mask_pass.masked_tiles = (num_masked_tiles - mask_pass.masked_tiles.end) .. (num_masked_tiles - mask_pass.masked_tiles.start);
+            //mask_pass.masked_tiles = (num_masked_tiles - mask_pass.masked_tiles.end) .. (num_masked_tiles - mask_pass.masked_tiles.start);
             mask_pass.batches = (num_batches - mask_pass.batches.end) .. (num_batches - mask_pass.batches.start);
         }
     }

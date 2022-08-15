@@ -55,9 +55,9 @@ fn main() {
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 0;
+    let max_edges_per_gpu_tile = 128;
     let n = if profile { 1000 } else { 1 };
-    let tile_atlas_size: u32 = 2024;
+    let tile_atlas_size: u32 = 2048;
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::zero(),
@@ -228,7 +228,7 @@ fn main() {
         // Since the paths were processed front-to-back we have to reverse
         // the alpha tiles to render then back-to-front.
         // This doesn't show up in profiles.
-        builder.masked_tiles.reverse();
+        builder.reverse_alpha_tiles();
     }
 
     let t1 = time::precise_time_ns();
@@ -249,6 +249,9 @@ fn main() {
     println!("-> row decomposition: {:.3}ms", (row_time / n) as f64 / 1000000.0);
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
     println!("{:?}", ctx.stats());
+    if parallel {
+        return;
+    }
 
     if profile {
         // Ensures the MaskUploader's buffers are properly cleaned up since we won't
@@ -267,7 +270,7 @@ fn main() {
         &globals_bind_group_layout,
     );
 
-    tile_renderer.update2(&mut builder, &mut b0, &mut b1, &mut b2, parallel);
+    tile_renderer.update(&mut builder);
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

@@ -18,6 +18,7 @@ pub struct TileRenderer {
     masks: Masks,
     masked_tiles: MaskedTiles,
 
+    // TODO: move this state out into per-target data, or use TileEncoder directly.
     mask_passes: Vec<MaskPass>,
     batches: Vec<AlphaBatch>,
     num_masked_tiles: u32,
@@ -173,101 +174,6 @@ impl TileRenderer {
         self.num_masked_tiles = builder.masked_tiles.len() as u32;
     }
 
-    pub fn update2(
-        &mut self,
-        builder: &mut TileEncoder,
-        b0: &mut TileEncoder,
-        b1: &mut TileEncoder,
-        b2: &mut TileEncoder,
-        parallel: bool,
-    ) {
-
-        if parallel {
-            let mut gpu_masks = Vec::with_capacity(builder.gpu_masks.len() + b0.gpu_masks.len() + b1.gpu_masks.len() + b2.gpu_masks.len());
-            // Merge worker data into the main builder. TODO: It's not necessary, we should upload directly
-            // off of each worker's data.
-            builder.solid_tiles.reserve(b0.solid_tiles.len() + b1.solid_tiles.len() + b2.solid_tiles.len());
-            builder.solid_tiles.extend_from_slice(&b0.solid_tiles);
-            builder.solid_tiles.extend_from_slice(&b1.solid_tiles);
-            builder.solid_tiles.extend_from_slice(&b2.solid_tiles);
-
-            let mut gpu_mask_range_start = 0;
-            for atlas_index in 0..(builder.num_mask_atlases() as usize) {
-                let mut edge_offset = 0;
-
-                let mut mask_tiles_range = std::u32::MAX .. 0;
-
-                for builder in &[&builder, &b0, &b1, &b2] {
-                    for pass in &builder.mask_passes {
-                        if pass.atlas_index != atlas_index as u32 {
-                            continue;
-                        }
-
-                        mask_tiles_range.start = mask_tiles_range.start.min(pass.masked_tiles.start);
-                        mask_tiles_range.end = mask_tiles_range.end.max(pass.masked_tiles.end);
-
-                        for mask in &builder.gpu_masks[pass.gpu_masks.start as usize .. (pass.gpu_masks.end as usize)] {
-                            gpu_masks.push(Mask {
-                                edges: (mask.edges.0 + edge_offset, mask.edges.1 + edge_offset),
-                                ..*mask
-                            });
-                        }
-
-                        edge_offset += builder.line_edges.len() as u32;
-                    }
-                }
-                let gpu_mask_range_end = gpu_masks.len() as u32;
-                self.mask_passes.push(MaskPass {
-                    gpu_masks: gpu_mask_range_start .. gpu_mask_range_end,
-                    batches: 0..1, // TODO
-                    masked_tiles: mask_tiles_range,
-                    atlas_index: atlas_index as u32,
-                });
-                gpu_mask_range_start = gpu_mask_range_end;
-            }
-
-            let mut offset = builder.line_edges.len() as u32;
-            for mask in &b0.gpu_masks {
-                builder.gpu_masks.push(Mask {
-                    edges: (mask.edges.0 + offset, mask.edges.1 + offset),
-                    ..*mask
-                });
-            }
-            offset += b0.line_edges.len() as u32;
-            for mask in &b1.gpu_masks {
-                builder.gpu_masks.push(Mask {
-                    edges: (mask.edges.0 + offset, mask.edges.1 + offset),
-                    ..*mask
-                });
-            }
-            offset += b1.line_edges.len() as u32;
-            for mask in &b2.gpu_masks {
-                builder.gpu_masks.push(Mask {
-                    edges: (mask.edges.0 + offset, mask.edges.1 + offset),
-                    ..*mask
-                });
-            }
-
-            // TODO: the parallel code path is missing the equivalent code for quad_edges here.
-            builder.line_edges.reserve(b0.line_edges.len() + b1.line_edges.len() + b2.line_edges.len());
-            builder.line_edges.extend_from_slice(&b0.line_edges);
-            builder.line_edges.extend_from_slice(&b1.line_edges);
-            builder.line_edges.extend_from_slice(&b2.line_edges);
-
-            for i in 0..16 {
-                builder.edge_distributions[i] += b0.edge_distributions[i]
-                    + b1.edge_distributions[i]
-                    + b2.edge_distributions[i];
-            }
-
-            builder.gpu_masks = gpu_masks;
-        } else {
-            std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
-        }
-
-        self.num_masked_tiles = builder.masked_tiles.len() as u32;
-    }
-
     // TODO: this should be part of update
     pub fn begin_frame(
         &mut self,
@@ -380,8 +286,7 @@ impl TileRenderer {
                 pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
             }
 
-            let alpha_tiles = first_mask_pass.masked_tiles.clone();
-            if !alpha_tiles.is_empty() {
+            if !first_mask_pass.batches.is_empty() {
                 pass.set_vertex_buffer(0, self.masked_tiles_vbo.slice(..));
                 for batch in &self.batches[first_mask_pass.batches.clone()] {
                     pass.set_pipeline(&self.masked_tiles.masked_solid_pipeline);

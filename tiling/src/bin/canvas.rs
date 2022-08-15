@@ -175,6 +175,7 @@ fn main() {
     println!("{} cpu_masks", frame_builder.tile_encoders[0].num_cpu_masks());
     println!("{} line edges", frame_builder.tile_encoders[0].line_edges.len());
     println!("{} quad edges", frame_builder.tile_encoders[0].quad_edges.len());
+    println!("{} batches", frame_builder.tile_encoders[0].batches.len());
     println!("#edge distributions: {:?}", frame_builder.tile_encoders[0].edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
