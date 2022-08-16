@@ -615,12 +615,10 @@ impl Masks {
 }
 
 fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> Masks {
-    let vs = include_str!("./../shaders/mask_fill.vs.wgsl");
-    let lin_fs = include_str!("./../shaders/mask_fill_lin.fs.wgsl");
-    let quad_fs = include_str!("./../shaders/mask_fill_quad.fs.wgsl");
-    let vs_module = &shaders.create_shader_module(device, "Mask vs", vs, &[]);
-    let lin_fs_module = &shaders.create_shader_module(device, "Mask fill linear fs", lin_fs, &[]);
-    let quad_fs_module = &shaders.create_shader_module(device, "Mask fill quad fs", quad_fs, &[]);
+    let quad_src = include_str!("./../shaders/mask_fill_quads.wgsl");
+    let lin_src = include_str!("./../shaders/mask_fill.wgsl");
+    let lin_module = &shaders.create_shader_module(device, "Mask fill linear", lin_src, &[]);
+    let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
 
     let mask_globals_buffer_size = std::mem::size_of::<MaskParams>() as u64;
 
@@ -660,8 +658,8 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         label: Some("Tile mask linear"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &vs_module,
-            entry_point: "main",
+            module: &lin_module,
+            entry_point: "vs_main",
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Mask>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -685,8 +683,8 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &lin_fs_module,
-            entry_point: "main",
+            module: &lin_module,
+            entry_point: "fs_main",
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
@@ -717,8 +715,8 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         label: Some("Tile mask quad"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &vs_module,
-            entry_point: "main",
+            module: &quad_module,
+            entry_point: "vs_main",
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Mask>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -742,8 +740,8 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &quad_fs_module,
-            entry_point: "main",
+            module: &quad_module,
+            entry_point: "fs_main",
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
