@@ -120,7 +120,7 @@ fn main() {
         ],
     });
 
-    let mask_upload_copies = tiling::gpu::masked_tiles::MaskUploadCopies::new(&device, &globals_bind_group_layout);
+    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &globals_bind_group_layout);
 
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
@@ -147,7 +147,7 @@ fn main() {
     let mut tiler = Tiler::new(&tiler_config);
     tiler.selected_row = select_row;
 
-    use tiling::gpu::masked_tiles::MaskUploader;
+    use tiling::gpu::mask_uploader::MaskUploader;
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
     let mask_uploader_0 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
     let mask_uploader_1 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
@@ -194,12 +194,12 @@ fn main() {
                 }
             }
 
-            tiler.set_pattern(TiledPattern::Color(*color));
-
             if parallel {
-                tiler.tile_path_parallel(&mut ctx, path.iter(), Some(&transform), &mut [
-                    &mut *b0, &mut *b1, &mut *b2, &mut *builder
-                ]);
+                tiler.tile_path_parallel(
+                    &mut ctx, path.iter(), Some(&transform),
+                    &mut SolidColorPattern::new(*color),
+                    &mut [&mut *b0, &mut *b1, &mut *b2, &mut *builder]
+                );
 
                 // The order of the mask tiles doesn't matter within a path but it does between paths,
                 // so extend the main builder's mask tiles buffer between each path.
@@ -211,7 +211,13 @@ fn main() {
                 b1.alpha_tiles.clear();
                 b2.alpha_tiles.clear();
             } else {
-                tiler.tile_path(path.iter(), Some(&transform), &mut *builder);
+                tiler.tile_path(
+                    path.iter(),
+                    Some(&transform),
+                    None,
+                    &mut SolidColorPattern::new(*color),
+                    &mut *builder,
+                );
             }
 
             tiler.draw.z_index -= 1;

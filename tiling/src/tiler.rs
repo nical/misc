@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use ordered_float::OrderedFloat;
 pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
@@ -16,18 +16,12 @@ use parasol::{Context, CachePadded};
 use copyless::VecHelper;
 
 const INVALID_TILE_ID: u32 = std::u32::MAX;
-
-pub enum TiledPattern {
-    Color(Color),
-    ImageRect { image_id: u32, rect_id: u32, opaque: bool, },
-    ScreenTile { image_id: u32, opaque: bool, },
-}
+const TILE_OPACITY_BIT: u32 = 1 << 31;
 
 struct Row {
     edges: Vec<RowEdge>,
     tile_y: u32,
     coarse_mask: TileMask,
-    output_indirection_buffer: Vec<u32>,
 }
 
 impl Row {
@@ -36,13 +30,11 @@ impl Row {
             edges: Vec::new(),
             tile_y: 0,
             coarse_mask: TileMask::new(),
-            output_indirection_buffer: Vec::new(),
         }
     }
 }
 
 pub struct DrawParams {
-    pub pattern: TiledPattern,
     pub tolerance: f32,
     pub tile_size: Size2D<f32>,
     pub fill_rule: FillRule,
@@ -96,13 +88,14 @@ pub struct Tiler {
     first_row: usize,
     last_row: usize,
 
+    output_is_tiled: bool,
+
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
-    pub output_is_tiled: bool,
     // For debugging.
     pub selected_row: Option<usize>,
 
-    next_color_tile_id: AtomicU32,
+    color_tile_ids: TileIdAllcator,
     solid_color_tile_id: u32,
     pub color_tiles_per_row: u32,
 }
@@ -140,7 +133,6 @@ impl Tiler {
         let num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         Tiler {
             draw: DrawParams {
-                pattern: TiledPattern::Color(Color { r: 0, g: 0, b: 0, a: 0 }),
                 z_index: 0,
                 is_opaque: true,
                 tolerance: config.tolerance,
@@ -174,7 +166,7 @@ impl Tiler {
 
             selected_row: None,
 
-            next_color_tile_id: AtomicU32::new(0),
+            color_tile_ids: TileIdAllcator::new(),
             solid_color_tile_id: 0,
             color_tiles_per_row: 0,
         }
@@ -192,6 +184,7 @@ impl Tiler {
         self.num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         self.draw.tolerance = config.tolerance;
         self.flatten = config.flatten;
+        self.color_tile_ids.reset();
     }
 
     pub fn set_fill_rule(&mut self, fill_rule: FillRule) {
@@ -206,15 +199,6 @@ impl Tiler {
         self.scissor = scissor.intersection_unchecked(&Box2D::from_size(self.size));
     }
 
-    pub fn set_pattern(&mut self, pattern: TiledPattern) {
-        self.draw.is_opaque = match pattern {
-            TiledPattern::Color(color) => color.a == 255,
-            TiledPattern::ImageRect { opaque, .. } => opaque,
-            TiledPattern::ScreenTile { opaque, .. } => opaque,
-        };
-        self.draw.pattern = pattern;
-    }
-
     /// Tile an entire path.
     ///
     /// This internally does all of the steps:
@@ -225,6 +209,8 @@ impl Tiler {
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
+        output_indirection: Option<&mut IndirectionBuffer>,
+        pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
         profiling::scope!("tile_path");
@@ -243,7 +229,7 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-        self.end_path(encoder);
+        self.end_path(encoder, output_indirection, pattern);
 
         let t2 = time::precise_time_ns();
 
@@ -363,7 +349,6 @@ impl Tiler {
                 edges: Vec::new(),
                 tile_y: i as u32,
                 coarse_mask: TileMask::new(),
-                output_indirection_buffer: Vec::new(),
             });
         }
 
@@ -374,12 +359,12 @@ impl Tiler {
         if self.output_is_tiled && self.draw.is_opaque {
             // TODO: if the previous path has the same pattern we don't need to allocate
             // a new solid tile.
-            self.solid_color_tile_id = self.next_color_tile_id.fetch_add(1, Ordering::Relaxed);
+            self.solid_color_tile_id = self.color_tile_ids.allocate();
         }
     }
 
     /// Process manually edges and encode them into the output encoder.
-    pub fn end_path(&mut self, encoder: &mut TileEncoder) {
+    pub fn end_path(&mut self, encoder: &mut TileEncoder, mut tiled_output: Option<&mut IndirectionBuffer>, pattern: &mut dyn TilerPattern) {
         let mut active_edges = std::mem::take(&mut self.active_edges);
         active_edges.clear();
 
@@ -387,6 +372,10 @@ impl Tiler {
             self.first_row = row;
             self.last_row = row + 1;
         }
+
+        self.output_is_tiled = tiled_output.is_some();
+
+        encoder.begin_path(pattern);
 
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
@@ -400,19 +389,25 @@ impl Tiler {
                 row.coarse_mask.init(self.num_tiles_x as usize);
             }
 
-            if self.output_is_tiled && row.output_indirection_buffer.is_empty() {
-                row.output_indirection_buffer.reserve(self.num_tiles_x as usize);
-                for _ in 0..self.num_tiles_x {
-                    row.output_indirection_buffer.push(INVALID_TILE_ID);
-                }
-            }
+            //if self.output_is_tiled && row.output_indirection_buffer.is_empty() {
+            //    row.output_indirection_buffer.reserve(self.num_tiles_x as usize);
+            //    for _ in 0..self.num_tiles_x {
+            //        row.output_indirection_buffer.push(INVALID_TILE_ID);
+            //    }
+            //}
+            let output_indirection = if let Some(ref mut output) = &mut tiled_output {
+                output.row_mut(row.tile_y)
+            } else {
+                &mut []
+            };
 
             self.process_row(
                 row.tile_y,
                 &mut row.edges[..],
                 &mut active_edges,
                 &mut row.coarse_mask,
-                &mut row.output_indirection_buffer,
+                output_indirection,
+                pattern,
                 encoder,
             );
         }
@@ -425,9 +420,10 @@ impl Tiler {
         }
     }
 
-    pub fn render_indirect_tiles(&mut self) {
-        for row in &self.rows {
-            for (i, &src_tile_id) in row.output_indirection_buffer.iter().enumerate() {
+    pub fn render_indirect_tiles(&mut self, indirection: &IndirectionBuffer) {
+        for row_idx in 0..(self.num_tiles_y) as u32 {
+            let row = indirection.row(row_idx);
+            for (i, &src_tile_id) in row.iter().enumerate() {
                 if src_tile_id == INVALID_TILE_ID {
                     continue;
                 }
@@ -436,7 +432,7 @@ impl Tiler {
                 let src_y = (src_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size.height;
 
                 let dst_x = i as f32 + self.draw.tile_size.width;
-                let dst_y = row.tile_y as f32 * self.draw.tile_size.height;
+                let dst_y = row_idx as f32 * self.draw.tile_size.height;
 
                 let src_rect = Box2D::from_origin_and_size(point(src_x, src_y), self.draw.tile_size);
                 let dst_rect = Box2D::from_origin_and_size(point(dst_x, dst_y), self.draw.tile_size);
@@ -451,6 +447,7 @@ impl Tiler {
         ctx: &mut Context,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
+        pattern: &mut dyn TilerPattern,
         encoders: &mut [&mut TileEncoder],
     ) where {
         profiling::scope!("tile_path_parallel");
@@ -473,7 +470,7 @@ impl Tiler {
             if self.last_row - self.first_row > 16 {
                 self.end_path_parallel(ctx, encoders);
             } else {
-                self.end_path(encoders[0]);
+                self.end_path(encoders[0], None, pattern);
             }
         }
 
@@ -522,6 +519,9 @@ impl Tiler {
                 // false cache sharing.
                 let mut row = std::mem::replace(args.item, Row::new());
 
+                // TODO placeholder
+                let mut pattern = SolidColorPattern::new(Color {r: 255, g: 0, b: 255, a: 255});
+
                 unsafe {
                     worker_data.active_edges.clear();
 
@@ -535,7 +535,8 @@ impl Tiler {
                         &mut row.edges[..],
                         &mut worker_data.active_edges,
                         &mut row.coarse_mask,
-                        &mut row.output_indirection_buffer,
+                        &mut [],
+                        &mut pattern,
                         (*shared_ptr.get()).encoders[idx],
                     );
                 }
@@ -552,7 +553,6 @@ impl Tiler {
     pub fn clear_depth(&mut self) {
         for row in &mut self.rows {
             row.coarse_mask.clear();
-            row.output_indirection_buffer.clear();
         }
     }
 
@@ -638,7 +638,8 @@ impl Tiler {
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         coarse_mask: &mut TileMask,
-        output_indirection_buffer: &mut Vec<u32>,
+        output_indirection_buffer: &mut [u32],
+        pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
         //println!("--------- row {}", tile_y);
@@ -684,6 +685,7 @@ impl Tiler {
             output_rect,
             solid: false,
             backdrop: 0,
+            pattern_data: 0,
         };
 
         let mut current_edge = 0;
@@ -716,7 +718,7 @@ impl Tiler {
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x && tile.x < tiles_end {
-                self.finish_tile(&mut tile, active_edges, coarse_mask, output_indirection_buffer, encoder);
+                self.finish_tile(&mut tile, active_edges, coarse_mask, pattern, output_indirection_buffer, encoder);
             }
 
             if tile.x >= tiles_end {
@@ -740,7 +742,7 @@ impl Tiler {
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
         while tile.x < tiles_end || !active_edges.is_empty() {
-            self.finish_tile(&mut tile, active_edges, coarse_mask, output_indirection_buffer, encoder);
+            self.finish_tile(&mut tile, active_edges, coarse_mask, pattern, output_indirection_buffer, encoder);
         }
 
         encoder.end_row();
@@ -751,6 +753,7 @@ impl Tiler {
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
         coarse_mask: &mut TileMask,
+        pattern: &mut dyn TilerPattern,
         output_indirection_buffer: &mut[u32],
         encoder: &mut TileEncoder,
     ) {
@@ -766,6 +769,16 @@ impl Tiler {
             }
         }
 
+        let (pattern_data, pattern_is_opaque) = match pattern.request_tile(tile.x, tile.y) {
+            Some((d, o)) => (d, o),
+            None => {
+                empty = true;
+                (0, false)
+            }
+        };
+
+        tile.pattern_data = pattern_data;
+
         // Decide where to draw the tile.
         // Two configurations: Either we render in a plain target in which case the position
         // corresponds to the actual coordinates of the tile's content, or we are rendering
@@ -775,17 +788,22 @@ impl Tiler {
         if self.output_is_tiled && !empty {
             let mut color_tile_id = output_indirection_buffer[tile.x as usize];
             if color_tile_id == INVALID_TILE_ID {
-                if tile.solid && self.draw.is_opaque {
+                if tile.solid && pattern_is_opaque {
                     // Since we are processing content front-to-back, all solid opaque tiles for
                     // a given path are the same, we easily can de-duplicate it.
                     // TODO: we are still drawing multiple times over the same opaque tile.
                     color_tile_id = self.solid_color_tile_id;
                 } else {
                     // allocate a spot in.
-                    color_tile_id = self.next_color_tile_id.fetch_add(1, Ordering::Relaxed);
+                    color_tile_id = self.color_tile_ids.allocate();
                 }
                 output_indirection_buffer[tile.x as usize] = color_tile_id;
             }
+
+            if tile.solid && self.draw.is_opaque {
+                output_indirection_buffer[tile.x as usize] |= TILE_OPACITY_BIT
+            }
+
             let tx = (color_tile_id % self.color_tiles_per_row) as f32 * self.draw.tile_size.width;
             let ty = (color_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size.height;
             tile.output_rect.min.x = tx;
@@ -981,6 +999,8 @@ pub struct TileInfo {
     /// Where to render the tile in pixels.
     pub output_rect: Box2D<f32>,
 
+    pub pattern_data: u32,
+
     /// True if the tile is entirely covered by the current path. 
     pub solid: bool,
 
@@ -1095,14 +1115,142 @@ impl<T> UnsafeSendPtr<T> {
     fn get(self) -> *mut T { self.0 }
 }
 
-fn split_quad(curve: &QuadraticBezierSegment<f32>, t_range: std::ops::Range<f32>) -> QuadraticBezierSegment<f32> {
-    let t0 = t_range.start;
-    let t1 = t_range.end;
-
-    let from = if t0 == 0.0 { curve.from } else { curve.sample(t0) };
-    let to = if t1 == 1.0 { curve.to } else { curve.sample(t1) };
-    let ctrl = from + (curve.ctrl - curve.from).lerp(curve.to - curve.ctrl, t0) * (t1 - t0);
-
-    QuadraticBezierSegment { from, ctrl, to }
+pub struct IndirectionBuffer {
+    data: Vec<u32>,
+    size: Size2D<u32>,
 }
 
+impl IndirectionBuffer {
+    pub fn new(size: Size2D<u32>) -> Self {
+        IndirectionBuffer {
+            data: vec![INVALID_TILE_ID; size.area() as usize],
+            size
+        }
+    }
+
+    pub fn row(&self, row: u32) -> &[u32] {
+        debug_assert!(row < self.size.height);
+        let start = (row * self.size.width) as usize;
+        let end = start + self.size.width as usize;
+
+        &self.data[start..end]
+    }
+
+    pub fn row_mut(&mut self, row: u32) -> &mut[u32] {
+        debug_assert!(row < self.size.height);
+        let start = (row * self.size.width) as usize;
+        let end = start + self.size.width as usize;
+
+        &mut self.data[start..end]
+    }
+
+    pub fn reset(&mut self) {
+        self.data.fill(INVALID_TILE_ID);
+    }
+
+    pub fn get(&self, x: u32, y: u32) -> Option<(u32, bool)> {
+        let idx = (y * self.size.width + x) as usize;
+        let data = self.data[idx];
+        if data == INVALID_TILE_ID {
+            return None;
+        }
+
+        Some((data & !TILE_OPACITY_BIT, (data & TILE_OPACITY_BIT) != 0))
+    }
+}
+
+pub trait TilerPattern {
+    fn pattern_kind(&self) -> u32;
+    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)>;
+}
+
+pub struct SolidColorPattern {
+    color: u32,
+    is_opaque: bool,
+}
+
+impl SolidColorPattern {
+    pub fn new(color: Color) -> Self {
+        SolidColorPattern { color: color.to_u32(), is_opaque: color.a == 255 }
+    }
+}
+
+impl TilerPattern for SolidColorPattern {
+    fn pattern_kind(&self) -> u32 { 0 }
+    fn request_tile(&mut self, _: u32, _: u32) -> Option<(u32, bool)> {
+        Some((self.color, self.is_opaque))
+    }
+}
+
+pub struct CheckerboardPattern {
+    colors: [Color; 2],
+    tiles: Vec<(u32, u32)>,
+    ids: TileIdAllcator,
+    is_opaque: bool,
+}
+
+impl CheckerboardPattern {
+    pub fn new(color1: Color, color2: Color, ids: TileIdAllcator) -> Self {
+        CheckerboardPattern {
+            colors: [color1, color2],
+            tiles: Vec::new(),
+            ids,
+            is_opaque: color1.is_opaque() && color2.is_opaque(),
+        }
+    }
+}
+
+impl TilerPattern for CheckerboardPattern {
+    fn pattern_kind(&self) -> u32 { 1 }
+    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
+        let id = self.ids.allocate();
+        self.tiles.push((x, y));
+
+        Some((id, self.is_opaque))
+    }
+}
+
+pub struct TiledSourcePattern {
+    indirection_buffer: IndirectionBuffer
+}
+
+impl TilerPattern for TiledSourcePattern {
+    fn pattern_kind(&self) -> u32 { 1 }
+    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
+        self.indirection_buffer.get(x, y)
+    }
+}
+
+impl TilerPattern for () {
+    fn pattern_kind(&self) -> u32 { std::u32::MAX }
+    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
+        None
+    }
+}
+
+#[derive(Clone)]
+pub struct TileIdAllcator {
+    next_id: Arc<AtomicU32>,
+}
+
+impl TileIdAllcator {
+    pub fn new() -> Self {
+        TileIdAllcator { next_id: Arc::new(AtomicU32::new(0)) }
+    }
+
+    pub fn allocate(&self) -> u32 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn allocate_n(&self, n: u32) -> u32 {
+        self.next_id.fetch_add(n, Ordering::Relaxed)
+    }
+
+    pub fn reset(&self) {
+        self.next_id.store(0, Ordering::Relaxed);
+    }
+
+    pub fn current(&self) -> u32 {
+        self.next_id.load(Ordering::Acquire)
+    }
+}

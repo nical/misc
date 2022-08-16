@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
-use crate::Color;
+use crate::{Color, SolidColorPattern};
 
 pub enum Pattern {
     Color(Color),
@@ -159,7 +159,7 @@ impl Canvas {
 }
 
 use crate::tile_encoder::TileEncoder;
-use crate::tiler::{Tiler, TilerConfig, TiledPattern};
+use crate::tiler::{Tiler, TilerConfig, TilerPattern};
 use crate::gpu::mask_uploader::MaskUploader;
 
 pub struct FrameBuilder {
@@ -220,7 +220,9 @@ impl FrameBuilder {
             self.tiler.draw.is_opaque = false;
             self.tiler.draw.is_clip_in = true;
 
-            self.tiler.tile_path(clip.iter(), transform, encoder);
+            let mut pattern = (); // TODO
+
+            self.tiler.tile_path(clip.iter(), transform, None, &mut pattern, encoder);
 
             self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
             self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);
@@ -237,20 +239,18 @@ impl FrameBuilder {
                     self.tiler.draw.z_index = fill.z_index;
                     self.tiler.draw.is_clip_in = false;
 
-                    let pattern = match fill.pattern {
-                        Pattern::Color(color) => TiledPattern::Color(color),
-                        _ => { unimplemented!() }
-                    };
-
-                    self.tiler.set_pattern(pattern);
-
                     let transform = if fill.transform != 0 {
                         Some(&commands.transforms[fill.transform].transform)
                     } else {
                         None
                     };
 
-                    self.tiler.tile_path(fill.path.iter(), transform, encoder);
+                    let mut pattern = match fill.pattern {
+                        Pattern::Color(color) => SolidColorPattern::new(color),
+                        _ => { unimplemented!() }
+                    };
+
+                    self.tiler.tile_path(fill.path.iter(), transform, None, &mut pattern, encoder);
 
                     self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
                     self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);

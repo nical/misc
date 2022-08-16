@@ -58,6 +58,7 @@ pub struct TileEncoder {
     pub batches: Vec<AlphaBatch>,
     pub mask_uploader: MaskUploader,
 
+    current_pattern_kind: Option<u32>,
     // First mask index of the current mask pass.
     gpu_masks_start: u32,
     batches_start: usize,
@@ -72,7 +73,7 @@ pub struct TileEncoder {
     // TODO: move to drawing parameters.
     pub masks_per_atlas: u32,
     pub reversed: bool,
-    shared: Arc<Shared>,
+    mask_ids: TileIdAllcator,
 
     // Transient state (only useful within a path):
 
@@ -97,6 +98,7 @@ impl TileEncoder {
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
+            current_pattern_kind: None,
             current_solid_tile: std::f32::NAN,
             gpu_masks_start: 0,
             batches_start: 0,
@@ -106,9 +108,7 @@ impl TileEncoder {
 
             mask_uploader,
 
-            shared: Arc::new(Shared {
-                next_mask_tile_id: AtomicU32::new(0),
-            }),
+            mask_ids: TileIdAllcator::new(),
             mask_id_range: 0..0,
             masks_per_atlas: config.mask_atlas_size.area() / config.tile_size.area() as u32,
             reversed: false,
@@ -126,6 +126,7 @@ impl TileEncoder {
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
+            current_pattern_kind: None,
             current_solid_tile: std::f32::NAN,
             gpu_masks_start: 0,
             batches_start: 0,
@@ -135,9 +136,7 @@ impl TileEncoder {
 
             mask_uploader: self.mask_uploader.create_similar(),
 
-            shared: Arc::new(Shared {
-                next_mask_tile_id: AtomicU32::new(0),
-            }),
+            mask_ids: TileIdAllcator::new(),
             mask_id_range: 0..0,
             masks_per_atlas: self.masks_per_atlas,
             reversed: false,
@@ -148,7 +147,7 @@ impl TileEncoder {
 
     pub fn new_parallel(other: &TileEncoder, config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
         let mut encoder = TileEncoder::new(config, mask_uploader);
-        encoder.shared = other.shared.clone();
+        encoder.mask_ids = other.mask_ids.clone();
         encoder.masks_per_atlas = other.masks_per_atlas;
 
         encoder
@@ -167,7 +166,8 @@ impl TileEncoder {
         self.mask_passes.clear();
         self.batches.clear();
         self.mask_uploader.reset();
-        self.shared.next_mask_tile_id.store(0, Ordering::Release);
+        self.mask_ids.reset();
+        self.current_pattern_kind = None;
         self.edge_distributions = [0; 16];
         self.mask_id_range = 0..0;
         self.gpu_masks_start = 0;
@@ -203,12 +203,21 @@ impl TileEncoder {
     }
 
     pub fn num_mask_atlases(&self) -> u32 {
-        let id = self.shared.next_mask_tile_id.load(Ordering::Acquire);
+        let id = self.mask_ids.current();
         id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
     }
 
     pub fn begin_row(&mut self) {
         self.current_solid_tile = std::f32::NAN;
+    }
+
+    pub fn begin_path(&mut self, pattern: &mut dyn TilerPattern) {
+        let pattern_kind = pattern.pattern_kind();
+
+        if self.current_pattern_kind != Some(pattern_kind) {
+            self.end_batch();
+            self.current_pattern_kind = Some(pattern_kind);
+        }
     }
 
     pub fn end_row(&mut self) {}
@@ -223,10 +232,7 @@ impl TileEncoder {
             } else {
                 self.solid_tiles.push(TileInstance {
                     rect: tile.output_rect,
-                    color: match draw.pattern {
-                        TiledPattern::Color(color) => color.to_u32(),
-                        _ => { unimplemented!() },
-                    },
+                    color: tile.pattern_data,
                     mask: 0,
                 });
             }
@@ -239,10 +245,7 @@ impl TileEncoder {
         if tile.solid && !draw.is_opaque {
             self.alpha_tiles.push(TileInstance {
                 rect: tile.output_rect,
-                color: match draw.pattern {
-                    TiledPattern::Color(color) => color.to_u32(),
-                    _ => { unimplemented!() },
-                },
+                color: tile.pattern_data,
                 mask: 0, // First mask is always fully opaque.
             });
 
@@ -262,7 +265,7 @@ impl TileEncoder {
             self.mask_id_range.start += 1;
             return id;
         }
-        let mut id = self.shared.next_mask_tile_id.fetch_add(16, Ordering::Relaxed);
+        let mut id = self.mask_ids.allocate_n(16);
         self.mask_id_range.start = id + 1;
         self.mask_id_range.end = id + 16;
 
@@ -300,7 +303,13 @@ impl TileEncoder {
         id
     }
 
-    pub fn end_batch(&mut self, batch_kind: u32) {
+    pub fn end_batch(&mut self) {
+        let batch_kind = if let Some(kind) = self.current_pattern_kind {
+            kind
+        } else {
+            return;
+        };
+
         let alpha_tiles_end = self.alpha_tiles.len() as u32;
         if self.alpha_tiles_start == alpha_tiles_end {
             return;
@@ -371,10 +380,7 @@ impl TileEncoder {
 
         self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
-            color: match draw.pattern {
-                TiledPattern::Color(color) => color.to_u32(),
-                _ => { unimplemented!() },
-            },
+            color: tile.pattern_data,
             mask: mask_id,
         });
 
@@ -435,10 +441,7 @@ impl TileEncoder {
 
         self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
-            color: match draw.pattern {
-                TiledPattern::Color(color) => color.to_u32(),
-                _ => { unimplemented!() }
-            },
+            color: tile.pattern_data,
             mask: mask_id,
         });
 
@@ -502,10 +505,7 @@ impl TileEncoder {
 
         self.alpha_tiles.push(TileInstance {
             rect: tile.output_rect,
-            color: match draw.pattern {
-                TiledPattern::Color(color) => color.to_u32(),
-                _ => { unimplemented!() }
-            },
+            color: tile.pattern_data,
             mask: mask_id,
         });
     }
