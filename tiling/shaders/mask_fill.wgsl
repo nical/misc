@@ -4,7 +4,7 @@
 // The "backdrop" is the winding number at the top-right corner
 // of the tile (following piet and pathfinder's terminology).
 
-#import quad
+#import rect
 #import render_target
 #import tiling
 #import raster::fill
@@ -28,7 +28,7 @@ struct VertexOutput {
     var fill_rule = in_fill_rule & 0xFFFFu;
     var backdrop = f32(in_fill_rule >> 16u) - 8192.0;
 
-    var uv = quad_get_uv(vertex_index);
+    var uv = rect_get_uv(vertex_index);
     let atlas_uv = tiling_atlas_get_uv(atlas, in_mask_id, uv);
     let target_pos = normalized_to_target(atlas_uv);
 

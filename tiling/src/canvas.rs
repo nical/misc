@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
-use crate::{Color, SolidColorPattern};
+use crate::checkerboard_pattern::CheckerboardPatternBuilder;
+use crate::{Color, SolidColorPattern, TileIdAllcator};
 
 pub enum Pattern {
     Color(Color),
     Image(u32),
+    Checkerboard { colors: [Color; 2], scale: f32 },
 }
 
 pub struct Fill {
@@ -162,17 +164,36 @@ use crate::tile_encoder::TileEncoder;
 use crate::tiler::{Tiler, TilerConfig, TilerPattern};
 use crate::gpu::mask_uploader::MaskUploader;
 
+pub struct TargetData {
+    pub src_color_tile_ids: TileIdAllcator,
+    pub tile_encoder: TileEncoder,
+    pub solid_color_pattern: SolidColorPattern,
+    pub checkerboard_pattern: CheckerboardPatternBuilder,
+}
+
 pub struct FrameBuilder {
-    pub tile_encoders: Vec<TileEncoder>,
+    pub targets: Vec<TargetData>,
     pub tiler: Tiler,
     stats: FrameBuilderStats,
 }
 
 impl FrameBuilder {
     pub fn new(config: &TilerConfig, uploader: MaskUploader) -> Self {
+        let color_tile_ids = TileIdAllcator::new();
+        let mask_ids = TileIdAllcator::new();
         FrameBuilder {
-            tile_encoders: vec![TileEncoder::new(config, uploader)],
-            tiler: Tiler::new(config),
+            targets: vec![TargetData {
+                src_color_tile_ids: color_tile_ids.clone(),
+                tile_encoder: TileEncoder::new(config, uploader, mask_ids),
+                solid_color_pattern: SolidColorPattern::new(Color::BLACK),
+                checkerboard_pattern: CheckerboardPatternBuilder::new(
+                    Color::WHITE, Color::BLACK,
+                    1.0,
+                    color_tile_ids.clone(),
+                    config.tile_size.width as f32
+                ),
+            }],
+            tiler: Tiler::new(config, color_tile_ids),
             stats: FrameBuilderStats::new(),
         }
     }
@@ -183,21 +204,34 @@ impl FrameBuilder {
         self.stats = FrameBuilderStats::new();
 
         let group_stack_depth = commands.max_group_stack_depth as usize;
-        while self.tile_encoders.len() < group_stack_depth {
-            let encoder = self.tile_encoders[0].create_similar();
-            self.tile_encoders.push(encoder);
+        while self.targets.len() < group_stack_depth {
+            let tile_encoder = self.targets[0].tile_encoder.create_similar();
+            let color_tile_allocator = TileIdAllcator::new();
+            self.targets.push(TargetData {
+                src_color_tile_ids: color_tile_allocator.clone(),
+                tile_encoder,
+                solid_color_pattern: SolidColorPattern::new(Color::BLACK),
+                checkerboard_pattern: CheckerboardPatternBuilder::new(
+                    Color::WHITE, Color::BLACK,
+                    1.0,
+                    color_tile_allocator,
+                    16.0,
+                ),
+            });
         }
 
-        for encoder in &mut self.tile_encoders[0..group_stack_depth] {
-            encoder.reset();
+        for target in &mut self.targets[0..group_stack_depth] {
+            target.tile_encoder.reset();
+            target.checkerboard_pattern.reset();
+            target.src_color_tile_ids.reset();
         }
         self.tiler.clear_depth();
 
         self.process_group(&commands.root, &commands);
 
-        for encoder in &mut self.tile_encoders[0..group_stack_depth] {
-            encoder.end_paths();
-            encoder.reverse_alpha_tiles();
+        for target in &mut self.targets[0..group_stack_depth] {
+            target.tile_encoder.end_paths();
+            target.tile_encoder.reverse_alpha_tiles();
         }
 
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);
@@ -209,7 +243,8 @@ impl FrameBuilder {
 
             // TODO: support clipping the root.
             let parent_group_depth = group.group_stack_depth as usize - 1;
-            let encoder = &mut self.tile_encoders[parent_group_depth];
+            let target = &mut self.targets[parent_group_depth];
+            let encoder = &mut target.tile_encoder;
 
             let transform = if group.transform != 0 {
                 Some(&commands.transforms[group.transform].transform)
@@ -235,7 +270,9 @@ impl FrameBuilder {
         for cmd in group.commands.iter().rev() {
             match cmd {
                 Command::Fill(fill) => {
-                    let encoder = &mut self.tile_encoders[group.group_stack_depth as usize];
+                    let target = &mut self.targets[group.group_stack_depth as usize];
+                    let encoder = &mut target.tile_encoder;
+
                     self.tiler.draw.z_index = fill.z_index;
                     self.tiler.draw.is_clip_in = false;
 
@@ -245,12 +282,19 @@ impl FrameBuilder {
                         None
                     };
 
-                    let mut pattern = match fill.pattern {
-                        Pattern::Color(color) => SolidColorPattern::new(color),
+                    let pattern: &mut dyn TilerPattern = match fill.pattern {
+                        Pattern::Color(color) => {
+                            target.solid_color_pattern.set_color(color);
+                            &mut target.solid_color_pattern
+                        },
+                        Pattern::Checkerboard { colors, scale } => {
+                            target.checkerboard_pattern.set(colors[0], colors[1], scale);
+                            &mut target.checkerboard_pattern
+                        }
                         _ => { unimplemented!() }
                     };
 
-                    self.tiler.tile_path(fill.path.iter(), transform, None, &mut pattern, encoder);
+                    self.tiler.tile_path(fill.path.iter(), transform, None, pattern, encoder);
 
                     self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
                     self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);

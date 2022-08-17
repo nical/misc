@@ -1,5 +1,5 @@
 #import render_target
-#import quad
+#import rect
 #import pattern::color
 
 struct Globals {
@@ -33,7 +33,7 @@ fn tile_uv(tile_idx: u32, tiles_per_row: u32, uv: vec2<f32>) -> vec2<f32> {
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
 
-    var uv = quad_get_uv(vertex_index);
+    var uv = rect_get_uv(vertex_index);
     var pos = mix(a_rect.xy, a_rect.zw, uv);
     var target_pos = render_target_normalized_position(pos, globals.resolution);
 
@@ -91,7 +91,7 @@ fn tile_uv(tile_idx: u32, tiles_per_row: u32, uv: vec2<f32>) -> vec2<f32> {
 
     #if TILED_IMAGE_PATTERN {{
         var uv = vec2<i32>(i32(tiled_image_uv.x), i32(tiled_image_uv.y));
-        color.a *= textureLoad(src_texture, uv, 0).r;
+        color *= textureLoad(src_texture, uv, 0);
     }}
 
     #if TILED_MASK {{

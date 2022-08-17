@@ -1,3 +1,4 @@
+use crate::canvas::TargetData;
 /// A lot of the boilerplate for the interaction between the tiling code a wgpu moved into one place.
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
@@ -5,6 +6,7 @@
 use crate::gpu::ShaderSources;
 use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
 use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
+use crate::checkerboard_pattern::CheckerboardRenderer;
 
 use lyon::geom::Box2D;
 
@@ -57,6 +59,7 @@ unsafe impl bytemuck::Zeroable for MaskParams {}
 pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
+    checkerboard_pattern: CheckerboardRenderer,
 
     pub masked_solid_pipeline: wgpu::RenderPipeline,
     pub masked_image_pipeline: wgpu::RenderPipeline,
@@ -67,17 +70,23 @@ pub struct TileRenderer {
     // TODO: move this state out into per-target data, or use TileEncoder directly.
     mask_passes: Vec<MaskPass>,
     batches: Vec<AlphaBatch>,
-    num_solid_tiles: u32,
+    num_opaque_solid_tiles: u32,
+    num_opaque_image_tiles: u32,
+    num_checkerboard_tiles: u32,
 
     //mask_texture: wgpu::Texture,
     mask_texture_view: wgpu::TextureView,
+    //src_color_texture: wgpu::Texture,
+    src_color_texture_view: wgpu::TextureView,
 
     alpha_tiles_bind_group: wgpu::BindGroup,
+    src_color_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
+    tiling_param_bind_group: wgpu::BindGroup,
     edges_ssbo: wgpu::Buffer,
 
     quad_ibo: wgpu::Buffer,
-    solid_tiles_vbo: wgpu::Buffer,
+    opaque_tiles_vbo: wgpu::Buffer,
     alpha_tiles_vbo: wgpu::Buffer,
     masks_vbo: wgpu::Buffer,
     mask_params_ubo: wgpu::Buffer,
@@ -89,8 +98,49 @@ impl TileRenderer {
 
         let mut shaders = ShaderSources::new();
 
+        let atlas_desc_buffer_size = std::mem::size_of::<MaskParams>() as u64;
+        let tiling_param_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Tile mask atlas"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mask params"),
+            contents: bytemuck::cast_slice(&[
+                MaskParams {
+                    tile_size: tile_size as f32,
+                    inv_atlas_width: 1.0 / (tile_atlas_size as f32),
+                    masks_per_row: tile_atlas_size / (tile_size as u32),
+                }
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let tiling_param_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("alpha tiles"),
+            layout: &tiling_param_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
+                },
+            ],
+        });
+
         let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
         let masks = Masks::new(&device, &mut shaders);
+        let checkerboard_pattern = CheckerboardRenderer::new(device, &mut shaders, &tiling_param_bind_group_layout);
 
         let src = include_str!("./../shaders/tile.wgsl");
         let masked_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["TILED_MASK", "SOLID_PATTERN"]);
@@ -113,7 +163,7 @@ impl TileRenderer {
                 },
             ],
         });
-    
+
         let src_color_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile src color atlas"),
             entries: &[
@@ -129,7 +179,7 @@ impl TileRenderer {
                 },
             ],
         });
-    
+
         let attributes_with_opacity = &[
             wgpu::VertexAttribute {
                 offset: 0,
@@ -153,7 +203,7 @@ impl TileRenderer {
                 shader_location: 3,
             },
         ];
-    
+
         let attributes_no_opacity = &attributes_with_opacity[..3];
         let vertex_buffer_layouts = &[wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<TileInstance>() as u64,
@@ -174,7 +224,7 @@ impl TileRenderer {
                 write_mask: wgpu::ColorWrites::ALL,
             }),
         ];
-    
+
         let primitive = wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             polygon_mode: wgpu::PolygonMode::Fill,
@@ -184,13 +234,13 @@ impl TileRenderer {
             unclipped_depth: false,
             conservative: false,
         };
-    
+
         let multisample = wgpu::MultisampleState {
             count: 1,
             mask: !0,
             alpha_to_coverage_enabled: false,
         };
-    
+
         let opaque_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Opaque solid tiles"),
             bind_group_layouts: &[&globals_bind_group_layout],
@@ -210,7 +260,7 @@ impl TileRenderer {
             ],
             push_constant_ranges: &[],
         });
-    
+
         let masked_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Masked solid tiles"),
             layout: Some(&masked_solid_tile_pipeline_layout),
@@ -227,9 +277,9 @@ impl TileRenderer {
             primitive,
             depth_stencil: None,
             multiview: None,
-            multisample,
+            multisample: wgpu::MultisampleState::default(),
         };
-    
+
         let masked_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Masked image tiles"),
             layout: Some(&masked_img_tile_pipeline_layout),
@@ -248,7 +298,7 @@ impl TileRenderer {
             multiview: None,
             multisample,
         };
-    
+
         let opaque_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Opaque solid tiles"),
             layout: Some(&opaque_solid_tile_pipeline_layout),
@@ -267,7 +317,7 @@ impl TileRenderer {
             multiview: None,
             multisample,
         };
-    
+
         let opaque_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Opaque image tiles"),
             layout: Some(&masked_img_tile_pipeline_layout),
@@ -286,12 +336,12 @@ impl TileRenderer {
             multiview: None,
             multisample,
         };
-    
+
         let masked_solid_pipeline = device.create_render_pipeline(&masked_solid_tile_pipeline_descriptor);
         let masked_image_pipeline = device.create_render_pipeline(&masked_image_tile_pipeline_descriptor);
         let opaque_solid_pipeline = device.create_render_pipeline(&opaque_solid_tile_pipeline_descriptor);
         let opaque_image_pipeline = device.create_render_pipeline(&opaque_image_tile_pipeline_descriptor);
-    
+
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
         let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Quad indices"),
@@ -315,6 +365,22 @@ impl TileRenderer {
 
         let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let src_color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Color tile atlas"),
+            dimension: wgpu::TextureDimension::D2,
+            size: wgpu::Extent3d {
+                width: tile_atlas_size,
+                height: tile_atlas_size,
+                depth_or_array_layers: 1,
+            },
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            sample_count: 1,
+        });
+
+        let src_color_texture_view = src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let alpha_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("alpha tiles"),
             layout: &bind_group_layout,
@@ -326,13 +392,23 @@ impl TileRenderer {
             ],
         });
 
-        let solid_tiles_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+        let src_color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Color tiles"),
+            layout: &&src_color_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&src_color_texture_view),
+                },
+            ],
+        });
+
+        let opaque_tiles_vbo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("solid tiles"),
             size: 4096 * 64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
 
         let alpha_tiles_vbo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("alpha tiles"),
@@ -355,18 +431,6 @@ impl TileRenderer {
             mapped_at_creation: false,
         });
 
-        let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mask params"),
-            contents: bytemuck::cast_slice(&[
-                MaskParams {
-                    tile_size: tile_size as f32,
-                    inv_atlas_width: 1.0 / (tile_atlas_size as f32),
-                    masks_per_row: tile_atlas_size / (tile_size as u32),
-                }
-            ]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
         let masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Masks"),
             layout: &masks.bind_group_layout,
@@ -385,24 +449,30 @@ impl TileRenderer {
         TileRenderer {
             mask_upload_copies,
             masks,
+            checkerboard_pattern,
 
             opaque_solid_pipeline,
             opaque_image_pipeline,
             masked_solid_pipeline,
             masked_image_pipeline,
             bind_group_layout,
-            
+
             mask_passes: Vec::new(),
             batches: Vec::new(),
-            num_solid_tiles: 0,
+            num_opaque_solid_tiles: 0,
+            num_opaque_image_tiles: 0,
+            num_checkerboard_tiles: 0,
 
             quad_ibo,
             //mask_texture,
             mask_texture_view,
+            src_color_texture_view,
             alpha_tiles_bind_group,
+            src_color_bind_group,
             masks_bind_group,
+            tiling_param_bind_group,
             edges_ssbo,
-            solid_tiles_vbo,
+            opaque_tiles_vbo,
             alpha_tiles_vbo,
             masks_vbo,
             mask_params_ubo,
@@ -411,10 +481,10 @@ impl TileRenderer {
 
     pub fn update(
         &mut self,
-        builder: &mut TileEncoder,
+        encoder: &mut TileEncoder,
     ) {
-        std::mem::swap(&mut self.batches, &mut builder.batches);
-        std::mem::swap(&mut self.mask_passes, &mut builder.mask_passes);
+        std::mem::swap(&mut self.batches, &mut encoder.batches);
+        std::mem::swap(&mut self.mask_passes, &mut encoder.mask_passes);
     }
 
     // TODO: this should be part of update
@@ -422,16 +492,25 @@ impl TileRenderer {
         &mut self,
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
-        builder: &TileEncoder,
+        target: &TargetData,
         _target_width: f32,
         _target_height: f32,
     ) {
-        self.num_solid_tiles = builder.solid_tiles.len() as u32;
+        let builder = &target.tile_encoder;
+
+        self.num_opaque_solid_tiles = builder.opaque_solid_tiles.len() as u32;
+        self.num_opaque_image_tiles = builder.opaque_image_tiles.len() as u32;
+        self.num_checkerboard_tiles = target.checkerboard_pattern.tiles().len() as u32;
 
         queue.write_buffer(
-            &self.solid_tiles_vbo,
+            &self.opaque_tiles_vbo,
             0,
-            bytemuck::cast_slice(&builder.solid_tiles),
+            bytemuck::cast_slice(&builder.opaque_solid_tiles),
+        );
+        queue.write_buffer(
+            &self.opaque_tiles_vbo,
+            builder.opaque_solid_tiles.len() as u64 * std::mem::size_of::<TileInstance>() as u64,
+            bytemuck::cast_slice(&builder.opaque_image_tiles),
         );
 
         queue.write_buffer(
@@ -446,14 +525,20 @@ impl TileRenderer {
             bytemuck::cast_slice(&builder.gpu_masks),
         );
 
+        if !target.checkerboard_pattern.tiles().is_empty() {
+            queue.write_buffer(
+                &self.checkerboard_pattern.vbo,
+                0,
+                bytemuck::cast_slice(target.checkerboard_pattern.tiles()),
+            );
+        }
+
         let edges = if !builder.line_edges.is_empty() {
             bytemuck::cast_slice(&builder.line_edges)
         } else {
             bytemuck::cast_slice(&builder.quad_edges)
         };
         queue.write_buffer(&self.edges_ssbo, 0, edges);
-
-
     }
 
     pub fn render(
@@ -465,6 +550,31 @@ impl TileRenderer {
         mask_uploaders: &mut[&mut MaskUploader],
     ) {
         // TODO: the logic here is soooo hacky and fragile.
+
+        let need_color_pattern_pass = self.num_checkerboard_tiles > 0;
+
+        if need_color_pattern_pass {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Color tile atlas"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.src_color_texture_view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: true,
+                    },
+                    resolve_target: None,
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            if self.num_checkerboard_tiles > 0 {
+                pass.set_pipeline(&self.checkerboard_pattern.pipeline);
+                pass.set_bind_group(0, &self.tiling_param_bind_group, &[]);
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_vertex_buffer(0, self.checkerboard_pattern.vbo.slice(..));
+                pass.draw_indexed(0..6, 0, 0..self.num_checkerboard_tiles);
+            }
+        }
 
         let first_mask_pass = &self.mask_passes[0];
 
@@ -523,17 +633,37 @@ impl TileRenderer {
 
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_bind_group(0, globals_bind_group, &[]);
-            if self.num_solid_tiles > 0 {    
+            if self.num_opaque_solid_tiles > 0 {
                 pass.set_pipeline(&self.opaque_solid_pipeline);
-                pass.set_vertex_buffer(0, self.solid_tiles_vbo.slice(..));
-                pass.draw_indexed(0..6, 0, 0..self.num_solid_tiles);
+                pass.set_vertex_buffer(0, self.opaque_tiles_vbo.slice(..));
+                pass.draw_indexed(0..6, 0, 0..self.num_opaque_solid_tiles);
+            }
+            if self.num_opaque_image_tiles > 0 {
+                let first = self.num_opaque_solid_tiles;
+                pass.set_pipeline(&self.opaque_image_pipeline);
+                pass.set_vertex_buffer(0, self.opaque_tiles_vbo.slice(..));
+                pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                pass.set_bind_group(2, &self.src_color_bind_group, &[]);
+                pass.draw_indexed(0..6, 0, first..(first + self.num_opaque_solid_tiles));
             }
 
             if !first_mask_pass.batches.is_empty() {
                 pass.set_vertex_buffer(0, self.alpha_tiles_vbo.slice(..));
                 for batch in &self.batches[first_mask_pass.batches.clone()] {
-                    pass.set_pipeline(&self.masked_solid_pipeline);
-                    pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                    match batch.batch_kind {
+                        0 => {
+                            pass.set_pipeline(&self.masked_solid_pipeline);
+                            pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                        }
+                        1 => {
+                            pass.set_pipeline(&self.masked_image_pipeline);
+                            pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                            pass.set_bind_group(2, &self.src_color_bind_group, &[]);
+                        }
+                        _ => {
+                            unimplemented!()
+                        }
+                    }
                     pass.draw_indexed(0..6, 0, batch.tiles.clone());
                 }
             }

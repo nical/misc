@@ -51,8 +51,9 @@ pub struct TileEncoder {
 
     pub quad_edges: Vec<QuadEdge>,
     pub line_edges: Vec<LineEdge>,
-    pub solid_tiles: Vec<TileInstance>,
     pub alpha_tiles: Vec<TileInstance>,
+    pub opaque_solid_tiles: Vec<TileInstance>,
+    pub opaque_image_tiles: Vec<TileInstance>,
     pub gpu_masks: Vec<GpuMask>,
     pub mask_passes: Vec<MaskPass>,
     pub batches: Vec<AlphaBatch>,
@@ -89,11 +90,12 @@ pub struct TileEncoder {
 }
 
 impl TileEncoder {
-    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
+    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader, mask_ids: TileIdAllcator) -> Self {
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
-            solid_tiles: Vec::with_capacity(2000),
+            opaque_solid_tiles: Vec::with_capacity(2000),
+            opaque_image_tiles: Vec::with_capacity(2000),
             alpha_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
@@ -108,7 +110,7 @@ impl TileEncoder {
 
             mask_uploader,
 
-            mask_ids: TileIdAllcator::new(),
+            mask_ids,
             mask_id_range: 0..0,
             masks_per_atlas: config.mask_atlas_size.area() / config.tile_size.area() as u32,
             reversed: false,
@@ -121,7 +123,8 @@ impl TileEncoder {
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
-            solid_tiles: Vec::with_capacity(2000),
+            opaque_solid_tiles: Vec::with_capacity(2000),
+            opaque_image_tiles: Vec::with_capacity(2000),
             alpha_tiles: Vec::with_capacity(6000),
             gpu_masks: Vec::with_capacity(6000),
             mask_passes: Vec::with_capacity(16),
@@ -146,7 +149,7 @@ impl TileEncoder {
     }
 
     pub fn new_parallel(other: &TileEncoder, config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
-        let mut encoder = TileEncoder::new(config, mask_uploader);
+        let mut encoder = TileEncoder::new(config, mask_uploader, TileIdAllcator::new());
         encoder.mask_ids = other.mask_ids.clone();
         encoder.masks_per_atlas = other.masks_per_atlas;
 
@@ -160,7 +163,8 @@ impl TileEncoder {
     pub fn reset(&mut self) {
         self.quad_edges.clear();
         self.line_edges.clear();
-        self.solid_tiles.clear();
+        self.opaque_solid_tiles.clear();
+        self.opaque_image_tiles.clear();
         self.alpha_tiles.clear();
         self.gpu_masks.clear();
         self.mask_passes.clear();
@@ -225,12 +229,17 @@ impl TileEncoder {
     pub fn encode_tile(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) {
 
         if tile.solid && draw.is_opaque {
-            if draw.merge_solid_tiles && (self.current_solid_tile - tile.output_rect.min.x).abs() < 0.01 {
-                if let Some(solid) = self.solid_tiles.last_mut() {
+            if draw.merge_solid_tiles && (self.current_solid_tile - tile.output_rect.min.x).abs() < 0.01 && self.current_pattern_kind == Some(0) {
+                if let Some(solid) = self.opaque_solid_tiles.last_mut() {
                     solid.rect.max.x = tile.output_rect.max.x;
                 }
             } else {
-                self.solid_tiles.push(TileInstance {
+                let tiles = match self.current_pattern_kind {
+                    Some(0) => { &mut self.opaque_solid_tiles }
+                    Some(1) => { &mut self.opaque_image_tiles }
+                    _ => { panic!() }
+                };
+                tiles.push(TileInstance {
                     rect: tile.output_rect,
                     color: tile.pattern_data,
                     mask: 0,
@@ -365,7 +374,7 @@ impl TileEncoder {
 
         let edges_start = edges_start as u32;
         let edges_end = self.line_edges.len() as u32;
-        debug_assert!(edges_end > edges_start, "{:?}", active_edges);
+        debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         debug_assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
         let mask_id = self.allocate_mask_id();

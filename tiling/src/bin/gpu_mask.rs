@@ -144,7 +144,7 @@ fn main() {
 
     let mut ctx = thread_pool.pop_context().unwrap();
 
-    let mut tiler = Tiler::new(&tiler_config);
+    let mut tiler = Tiler::new(&tiler_config, TileIdAllcator::new());
     tiler.selected_row = select_row;
 
     use tiling::gpu::mask_uploader::MaskUploader;
@@ -154,7 +154,7 @@ fn main() {
     let mask_uploader_2 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = CachePadded::new(TileEncoder::new(&tiler_config, mask_uploader));
+    let mut builder = CachePadded::new(TileEncoder::new(&tiler_config, mask_uploader, TileIdAllcator::new()));
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
     // Extra builders for worker threads.
     let mut b0 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_0));

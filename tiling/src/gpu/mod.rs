@@ -3,6 +3,7 @@ pub mod advanced_tiles;
 pub mod mask_uploader;
 pub mod render_target;
 
+use wgpu::VertexAttribute;
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 use std::{collections::HashMap};
 
@@ -111,5 +112,66 @@ impl ShaderSources {
         });
 
         module
+    }
+}
+
+pub struct VertexBuilder {
+    location: u32,
+    offset: u64,
+    attributes: Vec<wgpu::VertexAttribute>,
+}
+
+impl VertexBuilder {
+    pub fn new() -> Self {
+        VertexBuilder { location: 0, offset: 0, attributes: Vec::with_capacity(16) }
+    }
+
+    pub fn from_slice(formats: &[wgpu::VertexFormat]) -> Self {
+        let mut attributes = VertexBuilder::new();
+        for format in formats {
+            attributes.push(*format);
+        }
+
+        attributes
+    }
+
+    pub fn push(&mut self, format: wgpu::VertexFormat) {
+        self.attributes.push(wgpu::VertexAttribute {
+            format,
+            offset: self.offset,
+            shader_location: self.location
+        });
+        self.offset += format.size();
+        self.location += 1;
+    }
+
+    pub fn get(&self) -> &[wgpu::VertexAttribute] {
+        &self.attributes
+    }
+
+    pub fn clear(&mut self) {
+        self.location = 0;
+        self.offset = 0;
+        self.attributes.clear();
+    }
+}
+
+pub struct PipelineHelpers {
+}
+
+impl PipelineHelpers {
+    pub fn new() -> Self {
+        PipelineHelpers {  }
+    }
+    pub fn default_primitive_state(&self) -> wgpu::PrimitiveState {
+        wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        }
     }
 }

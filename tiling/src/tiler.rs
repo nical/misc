@@ -95,7 +95,7 @@ pub struct Tiler {
     // For debugging.
     pub selected_row: Option<usize>,
 
-    color_tile_ids: TileIdAllcator,
+    pub color_tile_ids: TileIdAllcator,
     solid_color_tile_id: u32,
     pub color_tiles_per_row: u32,
 }
@@ -128,7 +128,7 @@ unsafe impl Sync for Tiler {}
 
 impl Tiler {
     /// Constructor.
-    pub fn new(config: &TilerConfig) -> Self {
+    pub fn new(config: &TilerConfig, color_tile_ids: TileIdAllcator) -> Self {
         let size = config.view_box.size();
         let num_tiles_y = f32::ceil(size.height / config.tile_size.height);
         Tiler {
@@ -166,7 +166,7 @@ impl Tiler {
 
             selected_row: None,
 
-            color_tile_ids: TileIdAllcator::new(),
+            color_tile_ids,
             solid_color_tile_id: 0,
             color_tiles_per_row: 0,
         }
@@ -1171,7 +1171,12 @@ pub struct SolidColorPattern {
 
 impl SolidColorPattern {
     pub fn new(color: Color) -> Self {
-        SolidColorPattern { color: color.to_u32(), is_opaque: color.a == 255 }
+        SolidColorPattern { color: color.to_u32(), is_opaque: color.is_opaque() }
+    }
+
+    pub fn set_color(&mut self, color: Color) {
+        self.color = color.to_u32();
+        self.is_opaque = color.is_opaque();
     }
 }
 
@@ -1179,34 +1184,6 @@ impl TilerPattern for SolidColorPattern {
     fn pattern_kind(&self) -> u32 { 0 }
     fn request_tile(&mut self, _: u32, _: u32) -> Option<(u32, bool)> {
         Some((self.color, self.is_opaque))
-    }
-}
-
-pub struct CheckerboardPattern {
-    colors: [Color; 2],
-    tiles: Vec<(u32, u32)>,
-    ids: TileIdAllcator,
-    is_opaque: bool,
-}
-
-impl CheckerboardPattern {
-    pub fn new(color1: Color, color2: Color, ids: TileIdAllcator) -> Self {
-        CheckerboardPattern {
-            colors: [color1, color2],
-            tiles: Vec::new(),
-            ids,
-            is_opaque: color1.is_opaque() && color2.is_opaque(),
-        }
-    }
-}
-
-impl TilerPattern for CheckerboardPattern {
-    fn pattern_kind(&self) -> u32 { 1 }
-    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
-        let id = self.ids.allocate();
-        self.tiles.push((x, y));
-
-        Some((id, self.is_opaque))
     }
 }
 

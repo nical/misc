@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod buffer;
 //pub mod flatten_simd;
 pub mod tile_renderer;
+pub mod checkerboard_pattern;
 
 pub use tiler::*;
 pub use occlusion::*;
@@ -24,6 +25,12 @@ pub struct Color {
 }
 
 impl Color {
+    pub const RED: Self = Color { r: 255, g: 0, b: 0, a: 255 };
+    pub const GREEN: Self = Color { r: 0, g: 255, b: 0, a: 255 };
+    pub const BLUE: Self = Color { r: 0, g: 0, b: 255, a: 255 };
+    pub const BLACK: Self = Color { r: 0, g: 0, b: 0, a: 255 };
+    pub const WHITE: Self = Color { r: 255, g: 255, b: 255, a: 255 };
+
     pub fn is_opaque(&self) -> bool {
         self.a == 255
     }

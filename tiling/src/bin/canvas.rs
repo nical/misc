@@ -132,7 +132,7 @@ fn main() {
     builder.line_to(point(450.0, 450.0));
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
-    //canvas.fill(Arc::new(builder.build()), Pattern::Color(Color { r: 100, g: 200, b: 100, a: 150 }));
+    canvas.fill(Arc::new(builder.build()), Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 30.0 });
 
 
     let commands = canvas.finish();
@@ -147,18 +147,18 @@ fn main() {
     frame_builder.build(&commands);
 
     println!("view box: {:?}", view_box);
-    println!("{} solid tiles", frame_builder.tile_encoders[0].solid_tiles.len());
-    println!("{} alpha tiles", frame_builder.tile_encoders[0].alpha_tiles.len());
-    println!("{} gpu masks", frame_builder.tile_encoders[0].gpu_masks.len());
-    println!("{} cpu masks", frame_builder.tile_encoders[0].num_cpu_masks());
-    println!("{} line edges", frame_builder.tile_encoders[0].line_edges.len());
-    println!("{} quad edges", frame_builder.tile_encoders[0].quad_edges.len());
-    println!("{} batches", frame_builder.tile_encoders[0].batches.len());
-    println!("#edge distributions: {:?}", frame_builder.tile_encoders[0].edge_distributions);
+    println!("{} solid tiles", frame_builder.targets[0].tile_encoder.opaque_solid_tiles.len() + frame_builder.targets[0].tile_encoder.opaque_image_tiles.len());
+    println!("{} alpha tiles", frame_builder.targets[0].tile_encoder.alpha_tiles.len());
+    println!("{} gpu masks", frame_builder.targets[0].tile_encoder.gpu_masks.len());
+    println!("{} cpu masks", frame_builder.targets[0].tile_encoder.num_cpu_masks());
+    println!("{} line edges", frame_builder.targets[0].tile_encoder.line_edges.len());
+    println!("{} quad edges", frame_builder.targets[0].tile_encoder.quad_edges.len());
+    println!("{} batches", frame_builder.targets[0].tile_encoder.batches.len());
+    println!("#edge distributions: {:?}", frame_builder.targets[0].tile_encoder.edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
 
-    tile_renderer.update(&mut frame_builder.tile_encoders[0]);
+    tile_renderer.update(&mut frame_builder.targets[0].tile_encoder);
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -212,12 +212,12 @@ fn main() {
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         frame_builder.build(&commands);
-        tile_renderer.update(&mut frame_builder.tile_encoders[0]);
+        tile_renderer.update(&mut frame_builder.targets[0].tile_encoder);
 
         tile_renderer.begin_frame(
             &device,
             &queue,
-            &frame_builder.tile_encoders[0],
+            &frame_builder.targets[0],
             scene.window_size.width as f32,
             scene.window_size.height as f32
         );
@@ -245,7 +245,7 @@ fn main() {
             &mut encoder,
             &globals_bind_group,
             &mut[
-                &mut frame_builder.tile_encoders[0].mask_uploader,
+                &mut frame_builder.targets[0].tile_encoder.mask_uploader,
             ]
         );
 
