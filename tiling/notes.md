@@ -33,7 +33,7 @@ While this work is inspried from pathfinder it has a few key differences:
 ### Occlusion culling
 
 As mentioned earlier and on the pathfinder article, overdraw is a big limiting factor for raserization performance. In addition we observe that a lot of content is built by stacking many shapes on top of one anoter, which means that the total cost in number of pixels written to is usually much larger than the output area.
-breaking paths into a regular grid gives us a very poserfull tool: fully covered tiles (tiles inside a shape that don't contain any edge) can be used to occlude content under it in the same tile if it is opaque.
+breaking paths into a regular grid gives us a very poserfull tool: fully covered opaque tiles (tiles inside a shape that don't contain any edge) can easily be used to occlude content under them.
 The easiest and most efficient way to take advantage of this is for paths to be tiled in front-to-back order. for each cell in the grid, a flag is set once an opaque full tile is encountered. After that, any content on that tile is skipped since it is occluded.
 This speeds up rasterization a lot on many test cases, it also reduces the amount of data to send to the GPU and speeds up the tiling process itself.
 
