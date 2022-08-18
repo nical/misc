@@ -11,6 +11,7 @@ use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
 use tiling::tile_encoder::TileEncoder;
+use tiling::checkerboard_pattern::CheckerboardPatternBuilder;
 
 fn main() {
     profiling::register_thread!("Main");
