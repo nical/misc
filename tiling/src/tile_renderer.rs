@@ -1,4 +1,3 @@
-use crate::canvas::TargetData;
 /// A lot of the boilerplate for the interaction between the tiling code a wgpu moved into one place.
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
@@ -6,7 +5,7 @@ use crate::canvas::TargetData;
 use crate::gpu::ShaderSources;
 use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
 use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
-use crate::checkerboard_pattern::CheckerboardRenderer;
+use crate::checkerboard_pattern::{CheckerboardRenderer, CheckerboardPatternBuilder};
 
 use lyon::geom::Box2D;
 
@@ -492,51 +491,51 @@ impl TileRenderer {
         &mut self,
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
-        target: &TargetData,
+        tile_encoder: &TileEncoder,
+        checkerboard: &CheckerboardPatternBuilder,
         _target_width: f32,
         _target_height: f32,
     ) {
-        let builder = &target.tile_encoder;
 
-        self.num_opaque_solid_tiles = builder.opaque_solid_tiles.len() as u32;
-        self.num_opaque_image_tiles = builder.opaque_image_tiles.len() as u32;
-        self.num_checkerboard_tiles = target.checkerboard_pattern.tiles().len() as u32;
+        self.num_opaque_solid_tiles = tile_encoder.opaque_solid_tiles.len() as u32;
+        self.num_opaque_image_tiles = tile_encoder.opaque_image_tiles.len() as u32;
+        self.num_checkerboard_tiles = checkerboard.tiles().len() as u32;
 
         queue.write_buffer(
             &self.opaque_tiles_vbo,
             0,
-            bytemuck::cast_slice(&builder.opaque_solid_tiles),
+            bytemuck::cast_slice(&tile_encoder.opaque_solid_tiles),
         );
         queue.write_buffer(
             &self.opaque_tiles_vbo,
-            builder.opaque_solid_tiles.len() as u64 * std::mem::size_of::<TileInstance>() as u64,
-            bytemuck::cast_slice(&builder.opaque_image_tiles),
+            tile_encoder.opaque_solid_tiles.len() as u64 * std::mem::size_of::<TileInstance>() as u64,
+            bytemuck::cast_slice(&tile_encoder.opaque_image_tiles),
         );
 
         queue.write_buffer(
             &self.alpha_tiles_vbo,
             0,
-            bytemuck::cast_slice(&builder.alpha_tiles),
+            bytemuck::cast_slice(&tile_encoder.alpha_tiles),
         );
 
         queue.write_buffer(
             &self.masks_vbo,
             0,
-            bytemuck::cast_slice(&builder.gpu_masks),
+            bytemuck::cast_slice(&tile_encoder.gpu_masks),
         );
 
-        if !target.checkerboard_pattern.tiles().is_empty() {
+        if !checkerboard.tiles().is_empty() {
             queue.write_buffer(
                 &self.checkerboard_pattern.vbo,
                 0,
-                bytemuck::cast_slice(target.checkerboard_pattern.tiles()),
+                bytemuck::cast_slice(checkerboard.tiles()),
             );
         }
 
-        let edges = if !builder.line_edges.is_empty() {
-            bytemuck::cast_slice(&builder.line_edges)
+        let edges = if !tile_encoder.line_edges.is_empty() {
+            bytemuck::cast_slice(&tile_encoder.line_edges)
         } else {
-            bytemuck::cast_slice(&builder.quad_edges)
+            bytemuck::cast_slice(&tile_encoder.quad_edges)
         };
         queue.write_buffer(&self.edges_ssbo, 0, edges);
     }

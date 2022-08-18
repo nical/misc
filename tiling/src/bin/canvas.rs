@@ -217,7 +217,8 @@ fn main() {
         tile_renderer.begin_frame(
             &device,
             &queue,
-            &frame_builder.targets[0],
+            &frame_builder.targets[0].tile_encoder,
+            &frame_builder.targets[0].checkerboard_pattern,
             scene.window_size.width as f32,
             scene.window_size.height as f32
         );

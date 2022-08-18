@@ -1,10 +1,6 @@
 use lyon::geom::{LineSegment, QuadraticBezierSegment};
 use lyon::path::math::{Point, point, vector};
 use lyon::path::FillRule;
-use std::sync::{
-    Arc,
-    atomic::{Ordering, AtomicU32},
-};
 use std::ops::Range;
 
 use crate::tiler::*;
@@ -27,10 +23,6 @@ pub struct LineEdge(pub Point, pub Point);
 
 unsafe impl bytemuck::Pod for LineEdge {}
 unsafe impl bytemuck::Zeroable for LineEdge {}
-
-struct Shared {
-    next_mask_tile_id: AtomicU32,
-}
 
 // If we can't fit all masks into the atlas, we have to break the work into
 // multiple passes. Each pass builds the atlas and renders it into the color target.
@@ -533,19 +525,6 @@ impl TileEncoder {
         for mask_pass in &mut self.mask_passes {
             mask_pass.batches = (num_batches - mask_pass.batches.end) .. (num_batches - mask_pass.batches.start);
         }
-    }
-}
-
-use std::sync::{Mutex, MutexGuard};
-
-pub struct ParallelRasterEncoder<'l> {
-    pub workers: Vec<Mutex<&'l mut TileEncoder>>,
-}
-
-impl<'l> ParallelRasterEncoder<'l> {
-    pub fn lock_encoder(&self) -> MutexGuard<&'l mut TileEncoder> {
-        let idx = rayon::current_thread_index().unwrap_or(self.workers.len() - 1);
-        self.workers[idx].lock().unwrap()
     }
 }
 

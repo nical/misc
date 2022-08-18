@@ -7,11 +7,9 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
-pub use crate::occlusion::TileMask;
+pub use crate::occlusion::{TileMask, TileMaskRow};
 use crate::tile_encoder::TileEncoder;
 use crate::Color;
-
-use parasol::{Context, CachePadded};
 
 use copyless::VecHelper;
 
@@ -21,17 +19,6 @@ const TILE_OPACITY_BIT: u32 = 1 << 31;
 struct Row {
     edges: Vec<RowEdge>,
     tile_y: u32,
-    coarse_mask: TileMask,
-}
-
-impl Row {
-    fn new() -> Self {
-        Row {
-            edges: Vec::new(),
-            tile_y: 0,
-            coarse_mask: TileMask::new(),
-        }
-    }
 }
 
 pub struct DrawParams {
@@ -83,8 +70,6 @@ pub struct Tiler {
     rows: Vec<Row>,
     active_edges: Vec<ActiveEdge>,
 
-    worker_data: Vec<CachePadded<TilerWorkerData>>,
-
     first_row: usize,
     last_row: usize,
 
@@ -98,19 +83,6 @@ pub struct Tiler {
     pub color_tile_ids: TileIdAllcator,
     solid_color_tile_id: u32,
     pub color_tiles_per_row: u32,
-}
-
-#[derive(Clone)]
-struct TilerWorkerData {
-    active_edges: Vec<ActiveEdge>,
-}
-
-impl TilerWorkerData {
-    fn new() -> Self {
-        TilerWorkerData {
-            active_edges: Vec::with_capacity(64),
-        }
-    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -161,8 +133,6 @@ impl Tiler {
 
             output_is_tiled: false,
 
-            worker_data: Vec::new(),
-
             selected_row: None,
 
             color_tile_ids,
@@ -208,11 +178,16 @@ impl Tiler {
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: Option<&Transform2D<f32>>,
+        tile_mask: &mut TileMask,
         output_indirection: Option<&mut IndirectionBuffer>,
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
         profiling::scope!("tile_path");
+
+        assert!(tile_mask.width() >= self.num_tiles_x);
+        assert!(tile_mask.height() >= self.num_tiles_y as u32);
+
         let t0 = time::precise_time_ns();
 
         let identity = Transform2D::identity();
@@ -228,7 +203,7 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-        self.end_path(encoder, output_indirection, pattern);
+        self.end_path(encoder, tile_mask, output_indirection, pattern);
 
         let t2 = time::precise_time_ns();
 
@@ -347,7 +322,6 @@ impl Tiler {
             self.rows.alloc().init(Row {
                 edges: Vec::new(),
                 tile_y: i as u32,
-                coarse_mask: TileMask::new(),
             });
         }
 
@@ -363,7 +337,7 @@ impl Tiler {
     }
 
     /// Process manually edges and encode them into the output encoder.
-    pub fn end_path(&mut self, encoder: &mut TileEncoder, mut tiled_output: Option<&mut IndirectionBuffer>, pattern: &mut dyn TilerPattern) {
+    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, mut tiled_output: Option<&mut IndirectionBuffer>, pattern: &mut dyn TilerPattern) {
         let mut active_edges = std::mem::take(&mut self.active_edges);
         active_edges.clear();
 
@@ -384,10 +358,6 @@ impl Tiler {
                 continue;
             }
 
-            if row.coarse_mask.is_empty() {
-                row.coarse_mask.init(self.num_tiles_x as usize);
-            }
-
             //if self.output_is_tiled && row.output_indirection_buffer.is_empty() {
             //    row.output_indirection_buffer.reserve(self.num_tiles_x as usize);
             //    for _ in 0..self.num_tiles_x {
@@ -404,7 +374,7 @@ impl Tiler {
                 row.tile_y,
                 &mut row.edges[..],
                 &mut active_edges,
-                &mut row.coarse_mask,
+                &mut tile_mask.row(row.tile_y),
                 output_indirection,
                 pattern,
                 encoder,
@@ -438,12 +408,6 @@ impl Tiler {
 
                 unimplemented!();
             }
-        }
-    }
-
-    pub fn clear_depth(&mut self) {
-        for row in &mut self.rows {
-            row.coarse_mask.clear();
         }
     }
 
@@ -528,7 +492,7 @@ impl Tiler {
         tile_y: u32,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
-        coarse_mask: &mut TileMask,
+        coarse_mask: &mut TileMaskRow,
         output_indirection_buffer: &mut [u32],
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
@@ -643,7 +607,7 @@ impl Tiler {
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
-        coarse_mask: &mut TileMask,
+        coarse_mask: &mut TileMaskRow,
         pattern: &mut dyn TilerPattern,
         output_indirection_buffer: &mut[u32],
         encoder: &mut TileEncoder,
@@ -997,15 +961,6 @@ pub fn clip_line_segment_1d(
     t0 .. t1
 }
 
-struct UnsafeSendPtr<T>(pub *mut T);
-unsafe impl<T> Send for UnsafeSendPtr<T> {}
-unsafe impl<T> Sync for UnsafeSendPtr<T> {}
-impl<T> Copy for UnsafeSendPtr<T> {}
-impl<T> Clone for UnsafeSendPtr<T> { fn clone(&self) -> Self { *self } }
-impl<T> UnsafeSendPtr<T> {
-    fn get(self) -> *mut T { self.0 }
-}
-
 pub struct IndirectionBuffer {
     data: Vec<u32>,
     size: Size2D<u32>,
@@ -1091,7 +1046,7 @@ impl TilerPattern for TiledSourcePattern {
 
 impl TilerPattern for () {
     fn pattern_kind(&self) -> u32 { std::u32::MAX }
-    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
+    fn request_tile(&mut self, _: u32, _: u32) -> Option<(u32, bool)> {
         None
     }
 }

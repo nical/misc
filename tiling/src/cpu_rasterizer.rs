@@ -1,7 +1,6 @@
 use std::f32;
-use std::ops::Range;
 
-use lyon::geom::{QuadraticBezierSegment, point};
+use lyon::geom::QuadraticBezierSegment;
 use lyon::geom::euclid::default::*;
 #[cfg(test)]
 use lyon::geom::euclid::point2;

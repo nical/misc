@@ -3,6 +3,7 @@ use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
 use crate::checkerboard_pattern::CheckerboardPatternBuilder;
 use crate::{Color, SolidColorPattern, TileIdAllcator};
+use crate::occlusion::TileMask;
 
 pub enum Pattern {
     Color(Color),
@@ -174,11 +175,16 @@ pub struct TargetData {
 pub struct FrameBuilder {
     pub targets: Vec<TargetData>,
     pub tiler: Tiler,
+    pub tile_mask: TileMask,
     stats: FrameBuilderStats,
 }
 
 impl FrameBuilder {
     pub fn new(config: &TilerConfig, uploader: MaskUploader) -> Self {
+        let size = config.view_box.size().to_u32();
+        let tile_size = config.tile_size.to_u32();
+        let tiles_x = (size.width + tile_size.width - 1) / tile_size.width;
+        let tiles_y = (size.height + tile_size.height - 1) / tile_size.height;
         let color_tile_ids = TileIdAllcator::new();
         let mask_ids = TileIdAllcator::new();
         FrameBuilder {
@@ -194,6 +200,7 @@ impl FrameBuilder {
                 ),
             }],
             tiler: Tiler::new(config, color_tile_ids),
+            tile_mask: TileMask::new(tiles_x, tiles_y),
             stats: FrameBuilderStats::new(),
         }
     }
@@ -225,7 +232,7 @@ impl FrameBuilder {
             target.checkerboard_pattern.reset();
             target.src_color_tile_ids.reset();
         }
-        self.tiler.clear_depth();
+        self.tile_mask.clear();
 
         self.process_group(&commands.root, &commands);
 
@@ -257,7 +264,7 @@ impl FrameBuilder {
 
             let mut pattern = (); // TODO
 
-            self.tiler.tile_path(clip.iter(), transform, None, &mut pattern, encoder);
+            self.tiler.tile_path(clip.iter(), transform, &mut self.tile_mask, None, &mut pattern, encoder);
 
             self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
             self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);
@@ -294,7 +301,7 @@ impl FrameBuilder {
                         _ => { unimplemented!() }
                     };
 
-                    self.tiler.tile_path(fill.path.iter(), transform, None, pattern, encoder);
+                    self.tiler.tile_path(fill.path.iter(), transform, &mut self.tile_mask, None, pattern, encoder);
 
                     self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
                     self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);

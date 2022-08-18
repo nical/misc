@@ -133,18 +133,28 @@ fn main() {
     let mut tiler = Tiler::new(&tiler_config, TileIdAllcator::new());
     tiler.selected_row = select_row;
 
+    let size = tiler_config.view_box.size().to_u32();
+    let ts = tiler_config.tile_size.to_u32();
+    let tiles_x = (size.width + ts.width - 1) / ts.width;
+    let tiles_y = (size.height + ts.height - 1) / ts.height;
+    let mut tile_mask = TileMask::new(tiles_x, tiles_y);
+
     use tiling::gpu::mask_uploader::MaskUploader;
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
-    let mask_uploader_0 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
-    let mask_uploader_1 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
-    let mask_uploader_2 = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = CachePadded::new(TileEncoder::new(&tiler_config, mask_uploader, TileIdAllcator::new()));
+    let mut builder = TileEncoder::new(&tiler_config, mask_uploader, TileIdAllcator::new());
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
+
+    let checkerboard_pattern = CheckerboardPatternBuilder::new(
+        Color::WHITE, Color::BLACK,
+        1.0,
+        TileIdAllcator::new(),
+        tiler_config.tile_size.width as f32
+    );
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -154,7 +164,7 @@ fn main() {
         let transform = Transform2D::translation(1.0, 1.0);
 
         builder.reset();
-        tiler.clear_depth();
+        tile_mask.clear();
         tiler.draw.z_index = paths.len() as u16;
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
@@ -175,9 +185,10 @@ fn main() {
             tiler.tile_path(
                 path.iter(),
                 Some(&transform),
+                &mut tile_mask,
                 None,
                 &mut SolidColorPattern::new(*color),
-                &mut *builder,
+                &mut builder,
             );
 
             tiler.draw.z_index -= 1;
@@ -199,7 +210,7 @@ fn main() {
     let t = (t1 - t0) / n;
 
     println!("view box: {:?}", view_box);
-    println!("{} solid tiles", builder.solid_tiles.len());
+    println!("{} solid tiles", builder.opaque_solid_tiles.len());
     println!("{} alpha tiles", builder.alpha_tiles.len());
     println!("{} gpu masks", builder.gpu_masks.len());
     println!("{} cpu masks", builder.num_cpu_masks());
@@ -211,9 +222,6 @@ fn main() {
     println!("-> {:.3}ms", t as f64 / 1000000.0);
     println!("-> row decomposition: {:.3}ms", (row_time / n) as f64 / 1000000.0);
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
-    if parallel {
-        return;
-    }
 
     if profile {
         // Ensures the MaskUploader's buffers are properly cleaned up since we won't
@@ -285,7 +293,8 @@ fn main() {
         tile_renderer.begin_frame(
             &device,
             &queue,
-            &*builder,
+            &builder,
+            &checkerboard_pattern,
             scene.window_size.width as f32,
             scene.window_size.height as f32
         );

@@ -75,6 +75,7 @@ unsafe impl bytemuck::Zeroable for CheckerboardPatternTile {}
 
 pub struct CheckerboardRenderer {
     pub pipeline: wgpu::RenderPipeline,
+    // TODO: should be in a different struct.
     pub vbo: wgpu::Buffer,
 }
 
