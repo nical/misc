@@ -103,7 +103,6 @@ pub struct Tiler {
 #[derive(Clone)]
 struct TilerWorkerData {
     active_edges: Vec<ActiveEdge>,
-    // TODO: put the (parallel) tile encoder here.
 }
 
 impl TilerWorkerData {
@@ -440,114 +439,6 @@ impl Tiler {
                 unimplemented!();
             }
         }
-    }
-
-    pub fn tile_path_parallel(
-        &mut self,
-        ctx: &mut Context,
-        path: impl Iterator<Item = PathEvent>,
-        transform: Option<&Transform2D<f32>>,
-        pattern: &mut dyn TilerPattern,
-        encoders: &mut [&mut TileEncoder],
-    ) where {
-        profiling::scope!("tile_path_parallel");
-        let t0 = time::precise_time_ns();
-
-        let identity = Transform2D::identity();
-        let transform = transform.unwrap_or(&identity);
-
-        self.begin_path();
-
-        if self.flatten {
-            self.assign_rows_linear(transform, path);
-        } else {
-            self.assign_rows_quadratic(transform, path);
-        }
-
-        let t1 = time::precise_time_ns();
-
-        if self.first_row < self.last_row {
-            if self.last_row - self.first_row > 16 {
-                self.end_path_parallel(ctx, encoders);
-            } else {
-                self.end_path(encoders[0], None, pattern);
-            }
-        }
-
-        let t2 = time::precise_time_ns();
-
-        self.row_decomposition_time_ns = t1 - t0;
-        self.tile_decomposition_time_ns = t2 - t1;
-    }
-
-    pub fn end_path_parallel(&mut self, ctx: &mut Context, encoders: &mut [&mut TileEncoder]) {
-        if self.worker_data.is_empty() {
-            self.worker_data = vec![CachePadded::new(TilerWorkerData::new()); ctx.num_contexts() as usize];
-        }
-        // Basically what we are doing here is passing the encoders rows to the
-        // worker threads in the most unsafe of ways, and being careful to never have multiple
-        // worker threads accessing the same encoder (there's one per parallel context)
-        // we should be using the context_data thing instead.
-        struct Shared<'a, 'b> {
-            encoders: &'b mut [&'a mut TileEncoder],
-        }
-        unsafe impl<'a, 'b> Send for Shared<'a, 'b> {}
-        unsafe impl<'a, 'b> Sync for Shared<'a, 'b> {}
-
-        let mut shared = Shared { encoders, };
-        let shared_ptr: UnsafeSendPtr<Shared> = UnsafeSendPtr(&mut shared);
-
-        // borrow-ck dance.
-        let mut rows = std::mem::take(&mut self.rows);
-        let mut worker_data = std::mem::take(&mut self.worker_data);
-
-        ctx.for_each(&mut rows[self.first_row..self.last_row])
-            .with_context_data(&mut worker_data)
-            .with_group_size(4)
-            .with_priority(parasol::Priority::Low)
-            .run(|ctx, args| {
-                //println!("ctx {:?} row {:?}", ctx.id(), row.tile_y);
-
-                let worker_data: &mut TilerWorkerData = &mut *args.context_data;
-
-                if args.item.edges.is_empty() {
-                    return;
-                }
-
-                // Temporarily move the row out of the row array.
-                // For once this is not a borrowck dance, we just want to avoid
-                // false cache sharing.
-                let mut row = std::mem::replace(args.item, Row::new());
-
-                // TODO placeholder
-                let mut pattern = SolidColorPattern::new(Color {r: 255, g: 0, b: 255, a: 255});
-
-                unsafe {
-                    worker_data.active_edges.clear();
-
-                    if row.coarse_mask.is_empty() {
-                        row.coarse_mask.init(self.num_tiles_x as usize);
-                    }
-
-                    let idx = if ctx.is_worker_thread()  { ctx.id().index() } else { ctx.num_worker_threads() as usize };
-                    self.process_row(
-                        row.tile_y,
-                        &mut row.edges[..],
-                        &mut worker_data.active_edges,
-                        &mut row.coarse_mask,
-                        &mut [],
-                        &mut pattern,
-                        (*shared_ptr.get()).encoders[idx],
-                    );
-                }
-
-                row.edges.clear();
-
-                *args.item = row;
-            });
-
-        self.worker_data = worker_data;
-        self.rows = rows;
     }
 
     pub fn clear_depth(&mut self) {

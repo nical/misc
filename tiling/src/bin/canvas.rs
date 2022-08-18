@@ -244,9 +244,7 @@ fn main() {
             &frame_view,
             &mut encoder,
             &globals_bind_group,
-            &mut[
-                &mut frame_builder.targets[0].tile_encoder.mask_uploader,
-            ]
+            &mut frame_builder.targets[0].tile_encoder.mask_uploader,
         );
 
         queue.submit(Some(encoder.finish()));

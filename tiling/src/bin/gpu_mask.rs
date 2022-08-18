@@ -10,17 +10,12 @@ use winit::window::Window;
 use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
-use parasol::CachePadded;
-
 use tiling::tile_encoder::TileEncoder;
 
 fn main() {
     profiling::register_thread!("Main");
 
     let args: Vec<String> = std::env::args().collect();
-
-    // This is an incomplete prototype so there are some configurations that don't work:
-    //  - in parallel mode or with quadratic curves, make sure the tile atlas size is large enough to
 
     let mut select_path = None;
     let mut select_path_range = None;
@@ -30,7 +25,6 @@ fn main() {
     let mut sp = false;
     let mut spr = false;
     let mut sr = false;
-    let mut parallel = false;
     for arg in &args {
         if spr {
             select_path_range = Some(arg.parse::<u16>().unwrap());
@@ -47,7 +41,6 @@ fn main() {
         if arg == "--path-range" { spr = true; }
         if arg == "--path" { sp = true; }
         if arg == "--row" { sr = true; }
-        if arg == "--parallel" { parallel = true; }
         if arg == "--profile" { profile = true; }
         if arg == "--quads" { use_quads = true; }
     }
@@ -137,13 +130,6 @@ fn main() {
 
     tiler_config.view_box = view_box;
 
-    let thread_pool = parasol::ThreadPool::builder()
-        .with_worker_threads(3)
-        .with_contexts(10)
-        .build();
-
-    let mut ctx = thread_pool.pop_context().unwrap();
-
     let mut tiler = Tiler::new(&tiler_config, TileIdAllcator::new());
     tiler.selected_row = select_row;
 
@@ -156,10 +142,6 @@ fn main() {
     // Main builder.
     let mut builder = CachePadded::new(TileEncoder::new(&tiler_config, mask_uploader, TileIdAllcator::new()));
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
-    // Extra builders for worker threads.
-    let mut b0 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_0));
-    let mut b1 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_1));
-    let mut b2 = CachePadded::new(TileEncoder::new_parallel(&builder, &tiler_config, mask_uploader_2));
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
@@ -170,10 +152,6 @@ fn main() {
     let t0 = time::precise_time_ns();
     for _run in 0..n {
         let transform = Transform2D::translation(1.0, 1.0);
-
-        b0.reset();
-        b1.reset();
-        b2.reset();
 
         builder.reset();
         tiler.clear_depth();
@@ -194,31 +172,13 @@ fn main() {
                 }
             }
 
-            if parallel {
-                tiler.tile_path_parallel(
-                    &mut ctx, path.iter(), Some(&transform),
-                    &mut SolidColorPattern::new(*color),
-                    &mut [&mut *b0, &mut *b1, &mut *b2, &mut *builder]
-                );
-
-                // The order of the mask tiles doesn't matter within a path but it does between paths,
-                // so extend the main builder's mask tiles buffer between each path.
-                builder.alpha_tiles.reserve(b0.alpha_tiles.len() + b1.alpha_tiles.len() + b2.alpha_tiles.len());
-                builder.alpha_tiles.extend_from_slice(&b0.alpha_tiles);
-                builder.alpha_tiles.extend_from_slice(&b1.alpha_tiles);
-                builder.alpha_tiles.extend_from_slice(&b2.alpha_tiles);
-                b0.alpha_tiles.clear();
-                b1.alpha_tiles.clear();
-                b2.alpha_tiles.clear();
-            } else {
-                tiler.tile_path(
-                    path.iter(),
-                    Some(&transform),
-                    None,
-                    &mut SolidColorPattern::new(*color),
-                    &mut *builder,
-                );
-            }
+            tiler.tile_path(
+                path.iter(),
+                Some(&transform),
+                None,
+                &mut SolidColorPattern::new(*color),
+                &mut *builder,
+            );
 
             tiler.draw.z_index -= 1;
 
@@ -227,9 +187,6 @@ fn main() {
         }
 
         builder.end_paths();
-        b0.end_paths();
-        b1.end_paths();
-        b2.end_paths();
 
         // Since the paths were processed front-to-back we have to reverse
         // the alpha tiles to render then back-to-front.
@@ -254,7 +211,6 @@ fn main() {
     println!("-> {:.3}ms", t as f64 / 1000000.0);
     println!("-> row decomposition: {:.3}ms", (row_time / n) as f64 / 1000000.0);
     println!("-> tile decomposition: {:.3}ms", (tile_time / n) as f64 / 1000000.0);
-    println!("{:?}", ctx.stats());
     if parallel {
         return;
     }
@@ -263,9 +219,6 @@ fn main() {
         // Ensures the MaskUploader's buffers are properly cleaned up since we won't
         // consume them.
         builder.reset();
-        b0.reset();
-        b1.reset();
-        b2.reset();
         return;
     }
 
@@ -354,8 +307,7 @@ fn main() {
             label: Some("Tile"),
         });
 
-        let mask_uploaders = &mut[&mut builder.mask_uploader, &mut b0.mask_uploader, &mut b1.mask_uploader, &mut b2.mask_uploader];
-        tile_renderer.render(&device, &frame_view, &mut encoder, &globals_bind_group, mask_uploaders);
+        tile_renderer.render(&device, &frame_view, &mut encoder, &globals_bind_group, &mut builder.mask_uploader);
 
         queue.submit(Some(encoder.finish()));
         frame.present();

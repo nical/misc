@@ -547,7 +547,7 @@ impl TileRenderer {
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         globals_bind_group: &wgpu::BindGroup,
-        mask_uploaders: &mut[&mut MaskUploader],
+        mask_uploader: &mut MaskUploader,
     ) {
         // TODO: the logic here is soooo hacky and fragile.
 
@@ -579,7 +579,7 @@ impl TileRenderer {
         let first_mask_pass = &self.mask_passes[0];
 
         let need_mask_pass = !first_mask_pass.gpu_masks.is_empty()
-            || mask_uploaders.iter().any(|up| up.needs_upload());
+            || mask_uploader.needs_upload();
 
         if need_mask_pass {
             // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
@@ -604,16 +604,14 @@ impl TileRenderer {
                 pass.draw_indexed(0..6, 0, first_mask_pass.gpu_masks.clone());
             }
 
-            for uploader in mask_uploaders.iter_mut() {
-                uploader.upload(
-                    &device,
-                    &mut pass,
-                    globals_bind_group,
-                    &self.mask_upload_copies.pipeline,
-                    &self.quad_ibo,
-                    (self.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
-                );
-            }
+            mask_uploader.upload(
+                &device,
+                &mut pass,
+                globals_bind_group,
+                &self.mask_upload_copies.pipeline,
+                &self.quad_ibo,
+                (self.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
+            );
         }
 
         {
@@ -692,16 +690,14 @@ impl TileRenderer {
                     mask_pass.set_vertex_buffer(0, self.masks_vbo.slice(..));
                     mask_pass.draw_indexed(0..6, 0, mask_ranges.gpu_masks.clone());
 
-                    for uploader in mask_uploaders.iter_mut() {
-                        uploader.upload(
-                            &device,
-                            &mut mask_pass,
-                            &globals_bind_group,
-                            &self.mask_upload_copies.pipeline,
-                            &self.quad_ibo,
-                            pass_idx as u32,
-                        );
-                    }
+                    mask_uploader.upload(
+                        &device,
+                        &mut mask_pass,
+                        &globals_bind_group,
+                        &self.mask_upload_copies.pipeline,
+                        &self.quad_ibo,
+                        pass_idx as u32,
+                    );
                 }
 
                 {
