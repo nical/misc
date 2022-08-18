@@ -1,9 +1,7 @@
 use lyon::geom::Vector;
-pub mod advanced_tiles;
 pub mod mask_uploader;
 pub mod render_target;
 
-use wgpu::VertexAttribute;
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 use std::{collections::HashMap};
 
@@ -77,7 +75,7 @@ impl ShaderSources {
     pub fn new() -> Self {
         let mut library = HashMap::default();
 
-        library.insert("quad".into(), include_str!("../../shaders/quad.wgsl").into());
+        library.insert("rect".into(), include_str!("../../shaders/rect.wgsl").into());
         library.insert("tiling".into(), include_str!("../../shaders/tiling.wgsl").into());
         library.insert("render_target".into(), include_str!("../../shaders/render_target.wgsl").into());
         library.insert("raster::fill".into(), include_str!("../../shaders/raster/fill.wgsl").into());
