@@ -39,4 +39,26 @@ impl Color {
         | (self.b as u32) << 8
         | self.a as u32
     }
+
+    pub fn linear_to_srgb(r: u8, g: u8, b: u8, a:u8) -> Self {
+        fn f(linear: f32) -> f32 {
+            if linear <= 0.0031308 { linear * 12.92}  else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
+        }
+        let r = (f(r as f32 / 255.0) * 255.0) as u8;
+        let g = (f(g as f32 / 255.0) * 255.0) as u8;
+        let b = (f(b as f32 / 255.0) * 255.0) as u8;
+
+        Color { r, g, b, a }
+    }
+
+    pub fn srgb_to_linear(r: u8, g: u8, b: u8, a:u8) -> Self {
+        fn f(srgb: f32) -> f32 {
+            if srgb <= 0.04045 { srgb * 12.92}  else { ((srgb + 0.055) / 1.055).powf(2.4) }
+        }
+        let r = (f(r as f32 / 255.0) * 255.0) as u8;
+        let g = (f(g as f32 / 255.0) * 255.0) as u8;
+        let b = (f(b as f32 / 255.0) * 255.0) as u8;
+
+        Color { r, g, b, a }
+    }
 }

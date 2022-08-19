@@ -31,12 +31,7 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, Co
             let color = match usvg_path.fill {
                 Some(ref fill) => {
                     match fill.paint {
-                        usvg::Paint::Color(c) => Color {
-                            r: c.red,
-                            g: c.green,
-                            b: c.blue,
-                            a: 255,
-                        },
+                        usvg::Paint::Color(c) => Color::srgb_to_linear(c.red, c.green, c.blue, 255),
                         _ => FALLBACK_COLOR,
                     }
                 }
