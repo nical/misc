@@ -1,69 +1,57 @@
+#import tiling
 #import render_target
 #import rect
 #import pattern::color
 
 struct Globals {
-    resolution: vec2<f32>,
-    tile_size: u32,
-    tile_atlas_size: u32,
+    target_tiles: TileAtlasDescriptor,
+    src_masks: TileAtlasDescriptor,
+    src_color: TileAtlasDescriptor,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 
 struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
     #if TILED_MASK { @location(0) @interpolate(linear) mask_uv: vec2<f32>, }
     #if SOLID_PATTERN { @location(1) @interpolate(flat) color: vec4<f32>, }
     #if TILED_IMAGE_PATTERN { @location(1) @interpolate(linear) src_uv: vec2<f32>, }
-    @builtin(position) position: vec4<f32>,
 };
 
-fn tile_uv(tile_idx: u32, tiles_per_row: u32, uv: vec2<f32>) -> vec2<f32> {
-    var tile_size = f32(globals.tile_size);
-    var tile_idx = tile_idx % (tiles_per_row * tiles_per_row);
-    var tile_x = f32(tile_idx % tiles_per_row) * tile_size;
-    var tile_y = f32(tile_idx / tiles_per_row) * tile_size;
-    return vec2<f32>(tile_x, tile_y) + uv * tile_size;
-}
-
 @vertex fn vs_main(
-    @location(0) a_rect: vec4<f32>,
+    @builtin(vertex_index) vertex_index: u32,
+    @location(0) tile_index: u32,
     @location(1) a_mask: u32,
     @location(2) a_pattern: u32,
-    #if OPACITY { @location(3) a_opacity: f32, }
-    @builtin(vertex_index) vertex_index: u32,
+    @location(3) a_width: u32, // TODO: encode in the tile index.
+    #if OPACITY { @location(4) a_opacity: f32, }
 ) -> VertexOutput {
 
     var uv = rect_get_uv(vertex_index);
-    var pos = mix(a_rect.xy, a_rect.zw, uv);
-    var target_pos = render_target_normalized_position(pos, globals.resolution);
-
-    var tiles_per_row: u32 = globals.tile_atlas_size / globals.tile_size;
+    // TODO: stretch
+    var pos = tiling_atlas_get_position(globals.target_tiles, tile_index, uv);
+    pos.x += uv.x * f32(a_width) * TILE_SIZE_F32;
+    var normalized_pos = pos * globals.target_tiles.inv_resolution;
+    var target_pos = normalized_to_target(normalized_pos);
 
     #if TILED_MASK {
-        var mask_uv = tile_uv(a_mask, tiles_per_row, uv);
+        var mask_uv = tiling_atlas_get_position(globals.src_masks, a_mask, uv);
+    }
+
+    #if TILED_IMAGE_PATTERN {
+        var tiled_image_uv = tiling_atlas_get_position(globals.src_color, a_pattern, uv);
     }
 
     #if SOLID_PATTERN {
         var color = decode_color(a_pattern);
     }
 
-    #if TILED_IMAGE_PATTERN {
-        var tiled_image_uv = tile_uv(a_pattern, tiles_per_row, uv);
-    }
-
-    // Uncomment to get a checkerboard-ish pattern on the tiles (to help with visualizing
-    // tile boundaries).
-    //if (mask_index % 2u == 0u) {
-    //    color.b = color.b + 0.25;
-    //    color.r = color.r - 0.25;
-    //}
-
     return VertexOutput(
+        target_pos,
         #if TILED_MASK { mask_uv, }
         #if SOLID_PATTERN { color, }
         #if TILED_IMAGE_PATTERN { tiled_image_uv, }
         #if OPACITY { a_opacity, }
-        target_pos
     );
 }
 

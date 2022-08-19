@@ -1,4 +1,3 @@
-use lyon::geom::Vector;
 pub mod mask_uploader;
 //pub mod render_target;
 
@@ -7,18 +6,29 @@ use std::{collections::HashMap};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct GpuGlobals {
-    pub resolution: Vector<f32>,
-    pub tile_size: u32,
-    pub tile_atlas_size: u32,
+pub struct GpuTileAtlasDescriptor {
+    pub inv_width: f32,
+    pub inv_height: f32,
+    pub tiles_per_row: u32,
+    pub tiles_per_atlas: u32,
+}
+
+impl GpuTileAtlasDescriptor {
+    pub fn new(w: u32, h: u32, tile_size: u32) -> Self {
+        let inv_width = 1.0 / (w as f32);
+        let inv_height = 1.0 / (h as f32);
+        let tiles_per_row = (w + tile_size - 1) / tile_size;
+        let tiles_per_atlas = tiles_per_row * ((h + tile_size - 1) / tile_size);
+        GpuTileAtlasDescriptor { inv_width, inv_height, tiles_per_row, tiles_per_atlas }
+    }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct GpuTileAtlasDescriptor {
-    pub tile_size: f32,
-    pub inv_atlas_size: f32,
-    pub masks_per_row: u32,
+pub struct GpuGlobals {
+    pub target_tiles: GpuTileAtlasDescriptor,
+    pub src_masks: GpuTileAtlasDescriptor,
+    pub src_color: GpuTileAtlasDescriptor,
 }
 
 unsafe impl bytemuck::Pod for GpuGlobals {}

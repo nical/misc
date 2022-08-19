@@ -2,7 +2,7 @@
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
-use crate::gpu::ShaderSources;
+use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, GpuGlobals, VertexBuilder};
 use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
 use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
 use crate::checkerboard_pattern::{CheckerboardRenderer, CheckerboardPatternBuilder};
@@ -24,9 +24,10 @@ When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Gr
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct TileInstance {
-    pub rect: Box2D<f32>,
+    pub tile_id: u32,
     pub mask: u32,
-    pub color: u32,
+    pub pattern_data: u32,
+    pub width: u32,
 }
 
 unsafe impl bytemuck::Pod for TileInstance {}
@@ -43,17 +44,6 @@ pub struct Mask {
 
 unsafe impl bytemuck::Pod for Mask {}
 unsafe impl bytemuck::Zeroable for Mask {}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct MaskParams {
-    pub tile_size: f32,
-    pub inv_atlas_width: f32,
-    pub masks_per_row: u32,
-}
-
-unsafe impl bytemuck::Pod for MaskParams {}
-unsafe impl bytemuck::Zeroable for MaskParams {}
 
 pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
@@ -81,7 +71,7 @@ pub struct TileRenderer {
     alpha_tiles_bind_group: wgpu::BindGroup,
     src_color_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
-    tiling_param_bind_group: wgpu::BindGroup,
+    mask_atlas_desc_bind_group: wgpu::BindGroup,
     edges_ssbo: wgpu::Buffer,
 
     quad_ibo: wgpu::Buffer,
@@ -97,8 +87,8 @@ impl TileRenderer {
 
         let mut shaders = ShaderSources::new();
 
-        let atlas_desc_buffer_size = std::mem::size_of::<MaskParams>() as u64;
-        let tiling_param_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let atlas_desc_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
+        let mask_atlas_desc_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile mask atlas"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -117,29 +107,14 @@ impl TileRenderer {
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
             contents: bytemuck::cast_slice(&[
-                MaskParams {
-                    tile_size: tile_size as f32,
-                    inv_atlas_width: 1.0 / (tile_atlas_size as f32),
-                    masks_per_row: tile_atlas_size / (tile_size as u32),
-                }
+                GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size)
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let tiling_param_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("alpha tiles"),
-            layout: &tiling_param_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
-                },
-            ],
-        });
-
         let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
         let masks = Masks::new(&device, &mut shaders);
-        let checkerboard_pattern = CheckerboardRenderer::new(device, &mut shaders, &tiling_param_bind_group_layout);
+        let checkerboard_pattern = CheckerboardRenderer::new(device, &mut shaders, &mask_atlas_desc_bind_group_layout);
 
         let src = include_str!("./../shaders/tile.wgsl");
         let masked_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["TILED_MASK", "SOLID_PATTERN"]);
@@ -179,31 +154,16 @@ impl TileRenderer {
             ],
         });
 
-        let attributes_with_opacity = &[
-            wgpu::VertexAttribute {
-                offset: 0,
-                format: wgpu::VertexFormat::Float32x4,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                offset: 16,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 1,
-            },
-            wgpu::VertexAttribute {
-                offset: 20,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 2,
-            },
-            // opacity
-            wgpu::VertexAttribute {
-                offset: 24,
-                format: wgpu::VertexFormat::Float32,
-                shader_location: 3,
-            },
-        ];
+        let mut attributes = VertexBuilder::new();
+        attributes.push(wgpu::VertexFormat::Uint32);
+        attributes.push(wgpu::VertexFormat::Uint32);
+        attributes.push(wgpu::VertexFormat::Uint32);
+        attributes.push(wgpu::VertexFormat::Uint32);
+        attributes.push(wgpu::VertexFormat::Float32);
 
-        let attributes_no_opacity = &attributes_with_opacity[..3];
+        let attributes_with_opacity = attributes.get();
+
+        let attributes_no_opacity = &attributes_with_opacity[..4];
         let vertex_buffer_layouts = &[wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<TileInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -430,6 +390,17 @@ impl TileRenderer {
             mapped_at_creation: false,
         });
 
+        let mask_atlas_desc_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Mask atlas descriptor"),
+            layout: &mask_atlas_desc_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
+                },
+            ],
+        });
+
         let masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Masks"),
             layout: &masks.bind_group_layout,
@@ -469,7 +440,7 @@ impl TileRenderer {
             alpha_tiles_bind_group,
             src_color_bind_group,
             masks_bind_group,
-            tiling_param_bind_group,
+            mask_atlas_desc_bind_group,
             edges_ssbo,
             opaque_tiles_vbo,
             alpha_tiles_vbo,
@@ -568,7 +539,7 @@ impl TileRenderer {
 
             if self.num_checkerboard_tiles > 0 {
                 pass.set_pipeline(&self.checkerboard_pattern.pipeline);
-                pass.set_bind_group(0, &self.tiling_param_bind_group, &[]);
+                pass.set_bind_group(0, &self.mask_atlas_desc_bind_group, &[]);
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, self.checkerboard_pattern.vbo.slice(..));
                 pass.draw_indexed(0..6, 0, 0..self.num_checkerboard_tiles);
@@ -745,7 +716,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
     let lin_module = &shaders.create_shader_module(device, "Mask fill linear", lin_src, &[]);
     let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
 
-    let mask_globals_buffer_size = std::mem::size_of::<MaskParams>() as u64;
+    let mask_globals_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask"),

@@ -26,10 +26,10 @@ impl TileMask {
     pub fn init(&mut self, w: u32, h: u32) {
         let w = w as usize;
         let h = h as usize;
-        if self.data.len() < w {
+        if self.data.len() < w * h {
             self.data = vec![0; w * h];
         } else {
-            self.data[..(w*h)].fill(0)
+            self.data[..(w*h)].fill(0);
         }
         self.width = w;
         self.height = h as u32;

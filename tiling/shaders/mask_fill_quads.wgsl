@@ -33,7 +33,7 @@ struct VertexOutput {
     let target_pos = normalized_to_target(atlas_uv);
 
     return VertexOutput(
-        uv * atlas.tile_size,
+        uv * TILE_SIZE_F32,
         in_edges,
         fill_rule,
         backdrop,

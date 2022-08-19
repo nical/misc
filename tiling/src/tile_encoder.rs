@@ -223,7 +223,7 @@ impl TileEncoder {
         if tile.solid && draw.is_opaque {
             if draw.merge_solid_tiles && (self.current_solid_tile - tile.output_rect.min.x).abs() < 0.01 && self.current_pattern_kind == Some(0) {
                 if let Some(solid) = self.opaque_solid_tiles.last_mut() {
-                    solid.rect.max.x = tile.output_rect.max.x;
+                    solid.width += 1;
                 }
             } else {
                 let tiles = match self.current_pattern_kind {
@@ -232,9 +232,10 @@ impl TileEncoder {
                     _ => { panic!() }
                 };
                 tiles.push(TileInstance {
-                    rect: tile.output_rect,
-                    color: tile.pattern_data,
+                    tile_id: tile.index,
+                    pattern_data: tile.pattern_data,
                     mask: 0,
+                    width: 0,
                 });
             }
             self.current_solid_tile = tile.output_rect.max.x;
@@ -245,9 +246,10 @@ impl TileEncoder {
         // Use masked tiles pipeline for blended full tiles to avoid breaking batches.
         if tile.solid && !draw.is_opaque {
             self.alpha_tiles.push(TileInstance {
-                rect: tile.output_rect,
-                color: tile.pattern_data,
+                tile_id: tile.index,
+                pattern_data: tile.pattern_data,
                 mask: 0, // First mask is always fully opaque.
+                width: 0,
             });
 
             return;
@@ -380,9 +382,10 @@ impl TileEncoder {
         });
 
         self.alpha_tiles.push(TileInstance {
-            rect: tile.output_rect,
-            color: tile.pattern_data,
+            tile_id: tile.index,
+            pattern_data: tile.pattern_data,
             mask: mask_id,
+            width: 0,
         });
 
         true
@@ -441,9 +444,10 @@ impl TileEncoder {
         });
 
         self.alpha_tiles.push(TileInstance {
-            rect: tile.output_rect,
-            color: tile.pattern_data,
+            tile_id: tile.index,
+            pattern_data: tile.pattern_data,
             mask: mask_id,
+            width: 0,
         });
 
         true
@@ -505,9 +509,10 @@ impl TileEncoder {
         //);
 
         self.alpha_tiles.push(TileInstance {
-            rect: tile.output_rect,
-            color: tile.pattern_data,
+            tile_id: tile.index,
+            pattern_data: tile.pattern_data,
             mask: mask_id,
+            width: 0,
         });
     }
 

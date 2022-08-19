@@ -23,7 +23,7 @@ struct VertexOutput {
     let atlas_uv = tiling_atlas_get_uv(atlas, mask_id, uv);
     let target_pos = normalized_to_target(atlas_uv);
 
-    var checker_uv = (uv * atlas.tile_size + offset) / scale;
+    var checker_uv = (uv * TILE_SIZE_F32 + offset) / scale;
 
     return VertexOutput(target_pos, checker_uv, colors);
 }

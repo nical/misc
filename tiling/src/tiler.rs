@@ -95,6 +95,19 @@ pub struct TilerConfig {
     pub mask_atlas_size: Size2D<u32>,
 }
 
+impl TilerConfig {
+    pub fn num_tiles(&self) -> Size2D<u32> {
+        let w = self.view_box.size().to_u32().width;
+        let h = self.view_box.size().to_u32().height;
+        let tw = self.tile_size.width as u32;
+        let th = self.tile_size.height as u32;
+        Size2D::new(
+            (w + tw - 1) / tw,
+            (h + th - 1) / th,
+        )
+    }
+}
+
 unsafe impl Sync for Tiler {}
 
 impl Tiler {
@@ -338,6 +351,10 @@ impl Tiler {
 
     /// Process manually edges and encode them into the output encoder.
     pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, mut tiled_output: Option<&mut IndirectionBuffer>, pattern: &mut dyn TilerPattern) {
+        if self.first_row >= self.last_row {
+            return;
+        }
+
         let mut active_edges = std::mem::take(&mut self.active_edges);
         active_edges.clear();
 
@@ -505,7 +522,7 @@ impl Tiler {
 
         let inv_tw = 1.0 / self.draw.tile_size.width;
         let tiles_start = (self.scissor.min.x * inv_tw).floor();
-        let tiles_end = (self.scissor.max.x * inv_tw).ceil() as u32;
+        let tiles_end = self.num_tiles_x.min((self.scissor.max.x * inv_tw).ceil() as u32);
 
         let tx = tiles_start * self.draw.tile_size.width;
         let ty = tile_y as f32 * self.draw.tile_size.height;
@@ -532,9 +549,11 @@ impl Tiler {
             ),
         };
 
+        let x = tiles_start as u32;
         let mut tile = TileInfo {
-            x: tiles_start as u32,
+            x,
             y: tile_y,
+            index: tile_y * self.num_tiles_x + x,
             inner_rect,
             outer_rect,
             output_rect,
@@ -596,7 +615,7 @@ impl Tiler {
         }
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
-        while tile.x < tiles_end || !active_edges.is_empty() {
+        while tile.x < tiles_end && !active_edges.is_empty() {
             self.finish_tile(&mut tile, active_edges, coarse_mask, pattern, output_indirection_buffer, encoder);
         }
 
@@ -684,6 +703,7 @@ impl Tiler {
         tile.outer_rect.min.x += self.draw.tile_size.width;
         tile.outer_rect.max.x += self.draw.tile_size.width;
         tile.x += 1;
+        tile.index += 1;
 
         Self::update_active_edges(
             active_edges,
@@ -847,6 +867,8 @@ pub struct TileInfo {
     pub x: u32,
     /// Y-offset in number of tiles.
     pub y: u32,
+    /// y * width + x
+    pub index: u32,
     /// Rectangle of the tile aligned with the tile grid.
     pub inner_rect: Box2D<f32>,
     /// Rectangle including the tile padding.

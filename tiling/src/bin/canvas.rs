@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use tiling::*;
 use tiling::canvas::*;
+use tiling::gpu::GpuTileAtlasDescriptor;
 use tiling::load_svg::*;
 use tiling::gpu::mask_uploader::MaskUploader;
 use lyon::path::geom::euclid::{size2, Transform2D};
-use lyon::path::math::vector;
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -28,9 +28,10 @@ fn main() {
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 128;
     let tile_atlas_size: u32 = 2048;
+    let inital_window_size = size2(1800u32, 1800);
 
     let mut tiler_config = TilerConfig {
-        view_box: Box2D::zero(),
+        view_box: Box2D::from_size(inital_window_size.to_f32()),
         tile_size: size2(tile_size, tile_size),
         tile_padding: 0.5,
         tolerance,
@@ -40,7 +41,7 @@ fn main() {
 
     let event_loop = EventLoop::new();
     let window = winit::window::WindowBuilder::new()
-        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(1200, 1000)))
+        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(inital_window_size.width, inital_window_size.height)))
         .build(&event_loop).unwrap();
     let window_size = window.inner_size();
 
@@ -70,9 +71,9 @@ fn main() {
         label: Some("Globals"),
         contents: bytemuck::cast_slice(&[
             tiling::gpu::GpuGlobals {
-                resolution: vector(window_size.width as f32, window_size.height as f32),
-                tile_size: tile_size as u32,
-                tile_atlas_size,
+                target_tiles: GpuTileAtlasDescriptor::new(window_size.width as u32, window_size.height, tile_size as u32),
+                src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
+                src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
             }
         ]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -194,6 +195,20 @@ fn main() {
             surface_desc.width = physical.width;
             surface_desc.height = physical.height;
             surface.configure(&device, &surface_desc);
+            tiler_config.view_box = Box2D::from_size(size2(physical.width, physical.height).to_f32());
+            frame_builder.tiler.init(&tiler_config);
+            let tiles = tiler_config.num_tiles();
+            frame_builder.tile_mask.init(tiles.width, tiles.height);
+
+            queue.write_buffer(
+                &globals_ubo,
+                0,
+                bytemuck::cast_slice(&[tiling::gpu::GpuGlobals {
+                    target_tiles: GpuTileAtlasDescriptor::new(scene.window_size.width as u32, scene.window_size.height, tile_size as u32),
+                    src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
+                    src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
+                }]),
+            );    
         }
 
         if !scene.render {
@@ -221,19 +236,6 @@ fn main() {
             &frame_builder.targets[0].checkerboard_pattern,
             scene.window_size.width as f32,
             scene.window_size.height as f32
-        );
-
-        queue.write_buffer(
-            &globals_ubo,
-            0,
-            bytemuck::cast_slice(&[tiling::gpu::GpuGlobals {
-                resolution: vector(
-                    scene.window_size.width as f32,
-                    scene.window_size.height as f32,
-                ),
-                tile_size: tile_size as u32,
-                tile_atlas_size,
-            }]),
         );
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
