@@ -14,7 +14,7 @@ struct FragmentOutput {
 
 @fragment
 fn main(
-    @location(0) @interpolate(linear) local_uv: vec2<f32>,
+    @location(0) local_uv: vec2<f32>,
     @location(1) @interpolate(flat) src_offset: u32,
 ) -> FragmentOutput {
 

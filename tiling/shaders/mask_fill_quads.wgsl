@@ -11,7 +11,7 @@
 @group(0) @binding(0) var<uniform> atlas: TileAtlasDescriptor;
 
 struct VertexOutput {
-    @location(0) @interpolate(linear) uv: vec2<f32>,
+    @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) edges: vec2<u32>,
     @location(2) @interpolate(flat) fill_rule: u32,
     @location(3) @interpolate(flat) backdrop: f32,
@@ -73,7 +73,7 @@ fn approx_parabola_inv_integral(x: f32) -> f32 {
 
 @fragment
 fn fs_main(
-    @location(0) @interpolate(linear) in_uv: vec2<f32>,
+    @location(0) in_uv: vec2<f32>,
     @location(1) @interpolate(flat) in_edges_range: vec2<u32>,
     @location(2) @interpolate(flat) in_fill_rule: u32,
     @location(3) @interpolate(flat) in_backdrop: f32,

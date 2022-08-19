@@ -8,7 +8,7 @@
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(linear) uv: vec2<f32>,
+    @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) colors: vec2<u32>,
 };
 
@@ -35,7 +35,7 @@ struct Edges {
 @group(0) @binding(1) var<storage> edges: Edges;
 
 @fragment fn fs_main(
-    @location(0) @interpolate(linear) uv: vec2<f32>,
+    @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) colors: vec2<u32>,
  ) -> @location(0) vec4<f32> {
 

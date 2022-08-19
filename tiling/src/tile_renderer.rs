@@ -171,14 +171,14 @@ impl TileRenderer {
         }];
         let alpha_color_target_states = &[
             Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8Unorm,
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             }),
         ];
         let opaque_color_target_states = &[
             Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8Unorm,
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             }),
@@ -332,7 +332,7 @@ impl TileRenderer {
                 height: tile_atlas_size,
                 depth_or_array_layers: 1,
             },
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
             sample_count: 1,

@@ -7,7 +7,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> globals: Globals;
 
 struct VertexOutput {
-    @location(0) @interpolate(linear) uv: vec2<f32>,
+    @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) src_offset: u32,
     @builtin(position) position: vec4<f32>,
 };

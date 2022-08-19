@@ -13,9 +13,9 @@ struct Globals {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    #if TILED_MASK { @location(0) @interpolate(linear) mask_uv: vec2<f32>, }
+    #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
     #if SOLID_PATTERN { @location(1) @interpolate(flat) color: vec4<f32>, }
-    #if TILED_IMAGE_PATTERN { @location(1) @interpolate(linear) src_uv: vec2<f32>, }
+    #if TILED_IMAGE_PATTERN { @location(1) src_uv: vec2<f32>, }
 };
 
 @vertex fn vs_main(
@@ -64,9 +64,9 @@ struct VertexOutput {
 }
 
 @fragment fn fs_main(
-    #if TILED_MASK { @location(0) @interpolate(linear) mask_uv: vec2<f32>, }
+    #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
     #if SOLID_PATTERN { @location(1) @interpolate(flat) in_color: vec4<f32>, }
-    #if TILED_IMAGE_PATTERN { @location(1) @interpolate(linear) tiled_image_uv: vec2<f32>, }
+    #if TILED_IMAGE_PATTERN { @location(1) tiled_image_uv: vec2<f32>, }
     #if OPACITY { @location(2) @interpolate(flat) opacity: f32, }
 ) -> @location(0) vec4<f32> {
 

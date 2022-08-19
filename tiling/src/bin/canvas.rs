@@ -163,7 +163,7 @@ fn main() {
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8Unorm,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
         width: window_size.width,
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,

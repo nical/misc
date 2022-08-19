@@ -102,7 +102,7 @@ impl CheckerboardRenderer {
         }];
         let color_target_states = &[
             Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8Unorm,
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             }),
