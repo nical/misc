@@ -14,8 +14,6 @@ pub mod checkerboard_pattern;
 pub use tiler::*;
 pub use occlusion::*;
 
-type TexelRect = euclid::default::Box2D<u16>;
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {
     pub r: u8,

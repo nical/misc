@@ -28,7 +28,7 @@ fn main() {
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 128;
     let tile_atlas_size: u32 = 2048;
-    let inital_window_size = size2(1800u32, 1800);
+    let inital_window_size = size2(1200u32, 1000);
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(inital_window_size.to_f32()),

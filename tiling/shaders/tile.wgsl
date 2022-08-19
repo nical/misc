@@ -28,7 +28,6 @@ struct VertexOutput {
 ) -> VertexOutput {
 
     var uv = rect_get_uv(vertex_index);
-    // TODO: stretch
     var pos = tiling_atlas_get_position(globals.target_tiles, tile_index, uv);
     pos.x += uv.x * f32(a_width) * TILE_SIZE_F32;
     var normalized_pos = pos * globals.target_tiles.inv_resolution;

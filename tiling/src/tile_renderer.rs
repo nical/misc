@@ -2,7 +2,7 @@
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
-use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, GpuGlobals, VertexBuilder};
+use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder};
 use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
 use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
 use crate::checkerboard_pattern::{CheckerboardRenderer, CheckerboardPatternBuilder};
@@ -54,7 +54,7 @@ pub struct TileRenderer {
     pub masked_image_pipeline: wgpu::RenderPipeline,
     pub opaque_solid_pipeline: wgpu::RenderPipeline,
     pub opaque_image_pipeline: wgpu::RenderPipeline,
-    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
 
     // TODO: move this state out into per-target data, or use TileEncoder directly.
     mask_passes: Vec<MaskPass>,
@@ -68,7 +68,7 @@ pub struct TileRenderer {
     //src_color_texture: wgpu::Texture,
     src_color_texture_view: wgpu::TextureView,
 
-    alpha_tiles_bind_group: wgpu::BindGroup,
+    mask_texture_bind_group: wgpu::BindGroup,
     src_color_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
     mask_atlas_desc_bind_group: wgpu::BindGroup,
@@ -122,7 +122,7 @@ impl TileRenderer {
         let opaque_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["SOLID_PATTERN"]);
         let opaque_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_IMAGE_PATTERN",]);
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let mask_texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile mask atlas"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -207,14 +207,14 @@ impl TileRenderer {
         });
         let masked_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Masked solid tiles"),
-            bind_group_layouts: &[&globals_bind_group_layout, &bind_group_layout],
+            bind_group_layouts: &[&globals_bind_group_layout, &mask_texture_bind_group_layout],
             push_constant_ranges: &[],
         });
         let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Masked image tiles"),
             bind_group_layouts: &[
                 &globals_bind_group_layout,
-                &bind_group_layout,
+                &mask_texture_bind_group_layout,
                 &src_color_bind_group_layout,
             ],
             push_constant_ranges: &[],
@@ -340,9 +340,9 @@ impl TileRenderer {
 
         let src_color_texture_view = src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let alpha_tiles_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mask_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("alpha tiles"),
-            layout: &bind_group_layout,
+            layout: &mask_texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -425,7 +425,7 @@ impl TileRenderer {
             opaque_image_pipeline,
             masked_solid_pipeline,
             masked_image_pipeline,
-            bind_group_layout,
+            mask_texture_bind_group_layout,
 
             mask_passes: Vec::new(),
             batches: Vec::new(),
@@ -437,7 +437,7 @@ impl TileRenderer {
             //mask_texture,
             mask_texture_view,
             src_color_texture_view,
-            alpha_tiles_bind_group,
+            mask_texture_bind_group,
             src_color_bind_group,
             masks_bind_group,
             mask_atlas_desc_bind_group,
@@ -610,9 +610,9 @@ impl TileRenderer {
                 let first = self.num_opaque_solid_tiles;
                 pass.set_pipeline(&self.opaque_image_pipeline);
                 pass.set_vertex_buffer(0, self.opaque_tiles_vbo.slice(..));
-                pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                 pass.set_bind_group(2, &self.src_color_bind_group, &[]);
-                pass.draw_indexed(0..6, 0, first..(first + self.num_opaque_solid_tiles));
+                pass.draw_indexed(0..6, 0, first..(first + self.num_opaque_image_tiles));
             }
 
             if !first_mask_pass.batches.is_empty() {
@@ -621,11 +621,11 @@ impl TileRenderer {
                     match batch.batch_kind {
                         0 => {
                             pass.set_pipeline(&self.masked_solid_pipeline);
-                            pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                            pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                         }
                         1 => {
                             pass.set_pipeline(&self.masked_image_pipeline);
-                            pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                            pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                             pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                         }
                         _ => {
@@ -689,7 +689,7 @@ impl TileRenderer {
                     for batch in &self.batches[mask_ranges.batches.clone()] {
                         pass.set_pipeline(&self.masked_solid_pipeline);
                         pass.set_bind_group(0, globals_bind_group, &[]);
-                        pass.set_bind_group(1, &self.alpha_tiles_bind_group, &[]);
+                        pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                         pass.draw_indexed(0..6, 0, batch.tiles.clone());
                     }
                 }
