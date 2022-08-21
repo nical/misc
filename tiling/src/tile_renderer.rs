@@ -3,11 +3,9 @@
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
 use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder};
-use crate::gpu::mask_uploader::{MaskUploadCopies, MaskUploader};
-use crate::tile_encoder::{TileEncoder, MaskPass, AlphaBatch};
+use crate::gpu::mask_uploader::{MaskUploadCopies};
+use crate::tile_encoder::{TileEncoder};
 use crate::checkerboard_pattern::{CheckerboardRenderer, CheckerboardPatternBuilder};
-
-use lyon::geom::Box2D;
 
 use wgpu::util::DeviceExt;
 
@@ -56,11 +54,7 @@ pub struct TileRenderer {
     pub opaque_image_pipeline: wgpu::RenderPipeline,
     pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
 
-    // TODO: move this state out into per-target data, or use TileEncoder directly.
-    mask_passes: Vec<MaskPass>,
-    batches: Vec<AlphaBatch>,
-    num_opaque_solid_tiles: u32,
-    num_opaque_image_tiles: u32,
+    // TODO: move this out into per-target data, or use TileEncoder directly.
     num_checkerboard_tiles: u32,
 
     //mask_texture: wgpu::Texture,
@@ -427,10 +421,6 @@ impl TileRenderer {
             masked_image_pipeline,
             mask_texture_bind_group_layout,
 
-            mask_passes: Vec::new(),
-            batches: Vec::new(),
-            num_opaque_solid_tiles: 0,
-            num_opaque_image_tiles: 0,
             num_checkerboard_tiles: 0,
 
             quad_ibo,
@@ -449,14 +439,6 @@ impl TileRenderer {
         }
     }
 
-    pub fn update(
-        &mut self,
-        encoder: &mut TileEncoder,
-    ) {
-        std::mem::swap(&mut self.batches, &mut encoder.batches);
-        std::mem::swap(&mut self.mask_passes, &mut encoder.mask_passes);
-    }
-
     // TODO: this should be part of update
     pub fn begin_frame(
         &mut self,
@@ -468,8 +450,6 @@ impl TileRenderer {
         _target_height: f32,
     ) {
 
-        self.num_opaque_solid_tiles = tile_encoder.opaque_solid_tiles.len() as u32;
-        self.num_opaque_image_tiles = tile_encoder.opaque_image_tiles.len() as u32;
         self.num_checkerboard_tiles = checkerboard.tiles().len() as u32;
 
         queue.write_buffer(
@@ -513,13 +493,17 @@ impl TileRenderer {
 
     pub fn render(
         &mut self,
+        tile_encoder: &mut TileEncoder,
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         globals_bind_group: &wgpu::BindGroup,
-        mask_uploader: &mut MaskUploader,
     ) {
         // TODO: the logic here is soooo hacky and fragile.
+
+        // TODO: these should be ranges from some per render task pass data.
+        let num_opaque_solid_tiles = tile_encoder.opaque_solid_tiles.len() as u32;
+        let num_opaque_image_tiles = tile_encoder.opaque_image_tiles.len() as u32;
 
         let need_color_pattern_pass = self.num_checkerboard_tiles > 0;
 
@@ -546,10 +530,10 @@ impl TileRenderer {
             }
         }
 
-        let first_mask_pass = &self.mask_passes[0];
+        let first_mask_pass = &tile_encoder.mask_passes[0];
 
         let need_mask_pass = !first_mask_pass.gpu_masks.is_empty()
-            || mask_uploader.needs_upload();
+            || tile_encoder.mask_uploader.needs_upload();
 
         if need_mask_pass {
             // Clear the the mask passes with white so that tile 0 is a fully opaque mask.
@@ -574,13 +558,13 @@ impl TileRenderer {
                 pass.draw_indexed(0..6, 0, first_mask_pass.gpu_masks.clone());
             }
 
-            mask_uploader.upload(
+            tile_encoder.mask_uploader.upload(
                 &device,
                 &mut pass,
                 globals_bind_group,
                 &self.mask_upload_copies.pipeline,
                 &self.quad_ibo,
-                (self.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
+                (tile_encoder.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
             );
         }
 
@@ -601,23 +585,23 @@ impl TileRenderer {
 
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_bind_group(0, globals_bind_group, &[]);
-            if self.num_opaque_solid_tiles > 0 {
+            if num_opaque_solid_tiles > 0 {
                 pass.set_pipeline(&self.opaque_solid_pipeline);
                 pass.set_vertex_buffer(0, self.opaque_tiles_vbo.slice(..));
-                pass.draw_indexed(0..6, 0, 0..self.num_opaque_solid_tiles);
+                pass.draw_indexed(0..6, 0, 0..num_opaque_solid_tiles);
             }
-            if self.num_opaque_image_tiles > 0 {
-                let first = self.num_opaque_solid_tiles;
+            if num_opaque_image_tiles > 0 {
+                let first = num_opaque_solid_tiles;
                 pass.set_pipeline(&self.opaque_image_pipeline);
                 pass.set_vertex_buffer(0, self.opaque_tiles_vbo.slice(..));
                 pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                 pass.set_bind_group(2, &self.src_color_bind_group, &[]);
-                pass.draw_indexed(0..6, 0, first..(first + self.num_opaque_image_tiles));
+                pass.draw_indexed(0..6, 0, first..(first + num_opaque_image_tiles));
             }
 
             if !first_mask_pass.batches.is_empty() {
                 pass.set_vertex_buffer(0, self.alpha_tiles_vbo.slice(..));
-                for batch in &self.batches[first_mask_pass.batches.clone()] {
+                for batch in &tile_encoder.batches[first_mask_pass.batches.clone()] {
                     match batch.batch_kind {
                         0 => {
                             pass.set_pipeline(&self.masked_solid_pipeline);
@@ -637,9 +621,9 @@ impl TileRenderer {
             }
         }
 
-        if self.mask_passes.len() > 1 {
-            for pass_idx in 1..self.mask_passes.len() {
-                let mask_ranges = &self.mask_passes[pass_idx];
+        if tile_encoder.mask_passes.len() > 1 {
+            for pass_idx in 1..tile_encoder.mask_passes.len() {
+                let mask_ranges = &tile_encoder.mask_passes[pass_idx];
                 {
                     let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Mask atlas"),
@@ -660,7 +644,7 @@ impl TileRenderer {
                     mask_pass.set_vertex_buffer(0, self.masks_vbo.slice(..));
                     mask_pass.draw_indexed(0..6, 0, mask_ranges.gpu_masks.clone());
 
-                    mask_uploader.upload(
+                    tile_encoder.mask_uploader.upload(
                         &device,
                         &mut mask_pass,
                         &globals_bind_group,
@@ -686,7 +670,7 @@ impl TileRenderer {
 
                     pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                     pass.set_vertex_buffer(0, self.alpha_tiles_vbo.slice(..));
-                    for batch in &self.batches[mask_ranges.batches.clone()] {
+                    for batch in &tile_encoder.batches[mask_ranges.batches.clone()] {
                         pass.set_pipeline(&self.masked_solid_pipeline);
                         pass.set_bind_group(0, globals_bind_group, &[]);
                         pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);

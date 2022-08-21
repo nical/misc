@@ -159,8 +159,6 @@ fn main() {
     println!("");
     println!("{:?}", frame_builder.stats());
 
-    tile_renderer.update(&mut frame_builder.targets[0].tile_encoder);
-
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -227,7 +225,6 @@ fn main() {
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         frame_builder.build(&commands);
-        tile_renderer.update(&mut frame_builder.targets[0].tile_encoder);
 
         tile_renderer.begin_frame(
             &device,
@@ -243,11 +240,11 @@ fn main() {
         });
 
         tile_renderer.render(
+            &mut frame_builder.targets[0].tile_encoder,
             &device,
             &frame_view,
             &mut encoder,
             &globals_bind_group,
-            &mut frame_builder.targets[0].tile_encoder.mask_uploader,
         );
 
         queue.submit(Some(encoder.finish()));
