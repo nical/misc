@@ -38,6 +38,39 @@ pub struct AlphaBatch {
     pub batch_kind: u32,
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+pub struct BufferRange(pub u32, pub u32);
+impl BufferRange {
+    pub fn is_empty(&self) -> bool { self.0 >= self.1 }
+    pub fn to_u32(&self) -> Range<u32> { self.0 .. self.1 }
+    pub fn byte_range<Ty>(&self) -> Range<u64> {
+        let s = std::mem::size_of::<Ty>() as u64;
+        self.0 as u64 * s .. self.1 as u64 * s
+    }
+    pub fn byte_offset<Ty>(&self) -> u64 {
+        self.0 as u64 * std::mem::size_of::<Ty>() as u64
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct BufferRanges {
+    pub opaque_solid_tiles: BufferRange,
+    pub opaque_image_tiles: BufferRange,
+    pub alpha_tiles: BufferRange,
+    pub masks: BufferRange,
+    pub edges: BufferRange,
+}
+
+impl BufferRanges {
+    pub fn reset(&mut self) {
+        self.opaque_image_tiles = BufferRange(0, 0);
+        self.opaque_image_tiles = BufferRange(0, 0);
+        self.alpha_tiles = BufferRange(0, 0);
+        self.masks = BufferRange(0, 0);
+        self.edges = BufferRange(0, 0);
+    }
+}
+
 pub struct TileEncoder {
     // State and output associated with the current group/layer:
 
@@ -79,6 +112,8 @@ pub struct TileEncoder {
     // Debugging
 
     pub edge_distributions: [u32; 16],
+
+    pub ranges: BufferRanges,
 }
 
 impl TileEncoder {
@@ -106,6 +141,8 @@ impl TileEncoder {
             mask_id_range: 0..0,
             masks_per_atlas: config.mask_atlas_size.area() / config.tile_size.area() as u32,
             reversed: false,
+
+            ranges: BufferRanges::default(),
 
             edge_distributions: [0; 16],
         }
@@ -135,6 +172,8 @@ impl TileEncoder {
             mask_id_range: 0..0,
             masks_per_atlas: self.masks_per_atlas,
             reversed: false,
+
+            ranges: BufferRanges::default(),
 
             edge_distributions: [0; 16],
         }
@@ -172,6 +211,7 @@ impl TileEncoder {
         self.alpha_tiles_start = 0;
         self.masks_texture_index = 0;
         self.reversed = false;
+        self.ranges.reset();
     }
 
     pub fn end_paths(&mut self) {
@@ -530,6 +570,51 @@ impl TileEncoder {
         for mask_pass in &mut self.mask_passes {
             mask_pass.batches = (num_batches - mask_pass.batches.end) .. (num_batches - mask_pass.batches.start);
         }
+    }
+
+    pub fn allocate_buffer_ranges(&mut self, tile_renderer: &mut crate::tile_renderer::TileRenderer) {
+        self.ranges.opaque_solid_tiles = tile_renderer.tiles_vbo.allocator.push(self.opaque_solid_tiles.len());
+        self.ranges.opaque_image_tiles = tile_renderer.tiles_vbo.allocator.push(self.opaque_image_tiles.len());
+        self.ranges.alpha_tiles = tile_renderer.tiles_vbo.allocator.push(self.alpha_tiles.len());
+        self.ranges.masks = tile_renderer.masks_vbo.allocator.push(self.gpu_masks.len());
+        self.ranges.edges = tile_renderer.edges_ssbo.allocator.push(self.line_edges.len());
+    }
+
+    pub fn upload(&self, tile_renderer: &mut crate::tile_renderer::TileRenderer, queue: &wgpu::Queue) {
+        queue.write_buffer(
+            &tile_renderer.tiles_vbo.buffer,
+            self.ranges.opaque_solid_tiles.byte_offset::<TileInstance>(),
+            bytemuck::cast_slice(&self.opaque_solid_tiles),
+        );
+
+        queue.write_buffer(
+            &tile_renderer.tiles_vbo.buffer,
+            self.ranges.opaque_image_tiles.byte_offset::<TileInstance>(),
+            bytemuck::cast_slice(&self.opaque_image_tiles),
+        );
+
+        queue.write_buffer(
+            &tile_renderer.tiles_vbo.buffer,
+            self.ranges.alpha_tiles.byte_offset::<TileInstance>(),
+            bytemuck::cast_slice(&self.alpha_tiles),
+        );
+
+        queue.write_buffer(
+            &tile_renderer.masks_vbo.buffer,
+            self.ranges.masks.byte_offset::<GpuMask>(),
+            bytemuck::cast_slice(&self.gpu_masks),
+        );
+
+        let (edges, offset) = if !self.line_edges.is_empty() {
+            (bytemuck::cast_slice(&self.line_edges), self.ranges.edges.byte_offset::<LineEdge>())
+        } else {
+            (bytemuck::cast_slice(&self.quad_edges), self.ranges.edges.byte_offset::<QuadEdge>())
+        };
+        queue.write_buffer(
+            &tile_renderer.edges_ssbo.buffer,
+            offset,
+            edges
+        );
     }
 }
 

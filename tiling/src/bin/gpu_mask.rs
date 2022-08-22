@@ -148,7 +148,7 @@ fn main() {
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
 
-    let checkerboard_pattern = CheckerboardPatternBuilder::new(
+    let mut checkerboard_pattern = CheckerboardPatternBuilder::new(
         Color::WHITE, Color::BLACK,
         1.0,
         TileIdAllcator::new(),
@@ -236,8 +236,6 @@ fn main() {
         &globals_bind_group_layout,
     );
 
-    tile_renderer.update(&mut builder);
-
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -293,14 +291,13 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        tile_renderer.begin_frame(
-            &device,
-            &queue,
-            &builder,
-            &checkerboard_pattern,
-            scene.window_size.width as f32,
-            scene.window_size.height as f32
-        );
+        tile_renderer.begin_frame();
+
+        builder.allocate_buffer_ranges(&mut tile_renderer);
+        checkerboard_pattern.allocate_buffer_ranges(&mut tile_renderer.checkerboard);
+        tile_renderer.allocate(&device);
+        builder.upload(&mut tile_renderer, &queue);
+        checkerboard_pattern.upload(&mut tile_renderer.checkerboard, &queue);
 
         queue.write_buffer(
             &globals_ubo,
@@ -309,14 +306,18 @@ fn main() {
                 target_tiles: GpuTileAtlasDescriptor::new(scene.window_size.width as u32, scene.window_size.height, tile_size as u32),
                 src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
                 src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-        }]),
+            }]),
         );
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),
         });
 
-        tile_renderer.render(&device, &frame_view, &mut encoder, &globals_bind_group, &mut builder.mask_uploader);
+        tile_renderer.render(
+            &mut builder,
+            &checkerboard_pattern,
+            &device, &frame_view, &mut encoder, &globals_bind_group
+        );
 
         queue.submit(Some(encoder.finish()));
         frame.present();

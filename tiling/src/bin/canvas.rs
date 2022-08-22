@@ -147,15 +147,16 @@ fn main() {
 
     frame_builder.build(&commands);
 
+    let te = &frame_builder.targets[0].tile_encoder;
     println!("view box: {:?}", view_box);
-    println!("{} solid tiles", frame_builder.targets[0].tile_encoder.opaque_solid_tiles.len() + frame_builder.targets[0].tile_encoder.opaque_image_tiles.len());
-    println!("{} alpha tiles", frame_builder.targets[0].tile_encoder.alpha_tiles.len());
-    println!("{} gpu masks", frame_builder.targets[0].tile_encoder.gpu_masks.len());
-    println!("{} cpu masks", frame_builder.targets[0].tile_encoder.num_cpu_masks());
-    println!("{} line edges", frame_builder.targets[0].tile_encoder.line_edges.len());
-    println!("{} quad edges", frame_builder.targets[0].tile_encoder.quad_edges.len());
-    println!("{} batches", frame_builder.targets[0].tile_encoder.batches.len());
-    println!("#edge distributions: {:?}", frame_builder.targets[0].tile_encoder.edge_distributions);
+    println!("{} solid tiles", te.opaque_solid_tiles.len() + frame_builder.targets[0].tile_encoder.opaque_image_tiles.len());
+    println!("{} alpha tiles", te.alpha_tiles.len());
+    println!("{} gpu masks", te.gpu_masks.len());
+    println!("{} cpu masks", te.num_cpu_masks());
+    println!("{} line edges", te.line_edges.len());
+    println!("{} quad edges", te.quad_edges.len());
+    println!("{} batches", te.batches.len());
+    println!("#edge distributions: {:?}", te.edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
 
@@ -226,21 +227,28 @@ fn main() {
 
         frame_builder.build(&commands);
 
-        tile_renderer.begin_frame(
-            &device,
-            &queue,
-            &frame_builder.targets[0].tile_encoder,
-            &frame_builder.targets[0].checkerboard_pattern,
-            scene.window_size.width as f32,
-            scene.window_size.height as f32
-        );
+        tile_renderer.begin_frame();
+
+        for target in &mut frame_builder.targets {
+            target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
+            target.checkerboard_pattern.allocate_buffer_ranges(&mut tile_renderer.checkerboard);
+        }
+
+        tile_renderer.allocate(&device);
+
+        for target in &mut frame_builder.targets {
+            target.tile_encoder.upload(&mut tile_renderer, &queue);
+            target.checkerboard_pattern.upload(&mut tile_renderer.checkerboard, &queue);
+        }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),
         });
 
+        let target = &mut frame_builder.targets[0];
         tile_renderer.render(
-            &mut frame_builder.targets[0].tile_encoder,
+            &mut target.tile_encoder,
+            &target.checkerboard_pattern,
             &device,
             &frame_view,
             &mut encoder,

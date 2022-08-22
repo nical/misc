@@ -1,5 +1,7 @@
 use crate::Color;
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineHelpers};
+use crate::tile_encoder::BufferRange;
+use crate::tile_renderer::BufferBumpAllocator;
 use crate::tiler::TileIdAllcator;
 
 pub struct CheckerboardPatternBuilder {
@@ -9,6 +11,7 @@ pub struct CheckerboardPatternBuilder {
     is_opaque: bool,
     tile_size: f32,
     scale: f32,
+    vbo_range: BufferRange,
 }
 
 impl CheckerboardPatternBuilder {
@@ -20,6 +23,7 @@ impl CheckerboardPatternBuilder {
             is_opaque: color1.is_opaque() && color2.is_opaque(),
             tile_size,
             scale,
+            vbo_range: BufferRange(0, 0),
         }
     }
 
@@ -35,6 +39,20 @@ impl CheckerboardPatternBuilder {
 
     pub fn reset(&mut self) {
         self.tiles.clear();
+    }
+
+    pub fn allocate_buffer_ranges(&mut self, renderer: &mut CheckerboardRenderer) {
+        self.vbo_range = renderer.vbo_alloc.push(self.tiles.len());
+    }
+
+    pub fn upload(&self, renderer: &mut CheckerboardRenderer, queue: &wgpu::Queue) {
+        if !self.tiles.is_empty() {
+            queue.write_buffer(
+                &renderer.vbo,
+                self.vbo_range.byte_offset::<CheckerboardPatternTile>(),
+                bytemuck::cast_slice(self.tiles()),
+            );
+        }
     }
 }
 
@@ -77,6 +95,7 @@ pub struct CheckerboardRenderer {
     pub pipeline: wgpu::RenderPipeline,
     // TODO: should be in a different struct.
     pub vbo: wgpu::Buffer,
+    pub vbo_alloc: BufferBumpAllocator,
 }
 
 impl CheckerboardRenderer {
@@ -141,6 +160,11 @@ impl CheckerboardRenderer {
         CheckerboardRenderer {
             pipeline: device.create_render_pipeline(&pipeline_descriptor),
             vbo,
+            vbo_alloc: BufferBumpAllocator::new(),
         }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.vbo_alloc.clear();
     }
 }
