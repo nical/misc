@@ -1,7 +1,6 @@
 #import rect
 #import render_target
 #import tiling
-#import raster::fill
 #import pattern::color
 
 @group(0) @binding(0) var<uniform> atlas: TileAtlasDescriptor;

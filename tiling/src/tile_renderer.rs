@@ -43,6 +43,17 @@ pub struct Mask {
 unsafe impl bytemuck::Pod for Mask {}
 unsafe impl bytemuck::Zeroable for Mask {}
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct CircleMask {
+    pub mask_id: u32,
+    pub radius: f32,
+    pub center: [f32; 2],
+}
+
+unsafe impl bytemuck::Pod for CircleMask {}
+unsafe impl bytemuck::Zeroable for CircleMask {}
+
 pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
@@ -67,6 +78,7 @@ pub struct TileRenderer {
     quad_ibo: wgpu::Buffer,
     pub tiles_vbo: BumpAllocatedBuffer,
     pub masks_vbo: BumpAllocatedBuffer,
+    pub circles_vbo: BumpAllocatedBuffer,
     // TODO: some way to account for a per-TileEncoder offset or range.
     pub edges_ssbo: BumpAllocatedBuffer,
     mask_params_ubo: wgpu::Buffer,
@@ -355,6 +367,13 @@ impl TileRenderer {
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         );
 
+        let circles_vbo = BumpAllocatedBuffer::new::<Mask>(
+            device,
+            "circles",
+            4096 * 16,
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        );
+
         let edges_ssbo = BumpAllocatedBuffer::new::<LineEdge>(
             device,
             "edges",
@@ -375,7 +394,7 @@ impl TileRenderer {
 
         let masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Masks"),
-            layout: &masks.bind_group_layout,
+            layout: &masks.mask_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -410,6 +429,7 @@ impl TileRenderer {
             edges_ssbo,
             tiles_vbo,
             masks_vbo,
+            circles_vbo,
             mask_params_ubo,
         }
     }
@@ -418,17 +438,19 @@ impl TileRenderer {
         self.checkerboard.begin_frame();
         self.tiles_vbo.begin_frame();
         self.masks_vbo.begin_frame();
+        self.circles_vbo.begin_frame();
         self.edges_ssbo.begin_frame();
     }
 
     pub fn allocate(&mut self, device: &wgpu::Device) {
         self.tiles_vbo.ensure_allocated(device);
         self.masks_vbo.ensure_allocated(device);
+        self.circles_vbo.ensure_allocated(device);
         if self.edges_ssbo.ensure_allocated(device) {
             // reallocated the buffer, need to re-create the bind group.
             self.masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Masks"),
-                layout: &self.masks.bind_group_layout,
+                layout: &self.masks.mask_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -483,6 +505,7 @@ impl TileRenderer {
         let first_mask_pass = &tile_encoder.mask_passes[0];
 
         let need_mask_pass = !first_mask_pass.gpu_masks.is_empty()
+            || !first_mask_pass.circle_masks.is_empty()
             || tile_encoder.mask_uploader.needs_upload();
 
         if need_mask_pass {
@@ -507,6 +530,14 @@ impl TileRenderer {
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(0, self.masks_vbo.buffer.slice(..));
                 pass.draw_indexed(0..6, 0, first_mask_pass.gpu_masks.clone());
+            }
+
+            if !first_mask_pass.circle_masks.is_empty() {
+                pass.set_pipeline(&self.masks.circle_pipeline);
+                pass.set_bind_group(0, &self.masks_bind_group, &[]);
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_vertex_buffer(0, self.circles_vbo.buffer.slice(..));
+                pass.draw_indexed(0..6, 0, first_mask_pass.circle_masks.clone());
             }
 
             tile_encoder.mask_uploader.upload(
@@ -588,11 +619,21 @@ impl TileRenderer {
                         depth_stencil_attachment: None,
                     });
 
-                    mask_pass.set_pipeline(&self.masks.line_pipeline);
-                    mask_pass.set_bind_group(0, &self.masks_bind_group, &[]);
-                    mask_pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                    mask_pass.set_vertex_buffer(0, self.masks_vbo.buffer.slice(..));
-                    mask_pass.draw_indexed(0..6, 0, mask_ranges.gpu_masks.clone());
+                    if !mask_ranges.gpu_masks.is_empty() {
+                        mask_pass.set_pipeline(&self.masks.line_pipeline);
+                        mask_pass.set_bind_group(0, &self.masks_bind_group, &[]);
+                        mask_pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                        mask_pass.set_vertex_buffer(0, self.masks_vbo.buffer.slice(..));
+                        mask_pass.draw_indexed(0..6, 0, mask_ranges.gpu_masks.clone());
+                    }
+
+                    if !mask_ranges.circle_masks.is_empty() {
+                        mask_pass.set_pipeline(&self.masks.circle_pipeline);
+                        mask_pass.set_bind_group(0, &self.masks_bind_group, &[]);
+                        mask_pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                        mask_pass.set_vertex_buffer(0, self.circles_vbo.buffer.slice(..));
+                        mask_pass.draw_indexed(0..6, 0, mask_ranges.circle_masks.clone());
+                    }
 
                     tile_encoder.mask_uploader.upload(
                         &device,
@@ -635,7 +676,8 @@ impl TileRenderer {
 pub struct Masks {
     pub line_pipeline: wgpu::RenderPipeline,
     pub quad_pipeline: wgpu::RenderPipeline,
-    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub circle_pipeline: wgpu::RenderPipeline,
+    pub mask_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl Masks {
@@ -645,14 +687,16 @@ impl Masks {
 }
 
 fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> Masks {
-    let quad_src = include_str!("./../shaders/mask_fill_quads.wgsl");
-    let lin_src = include_str!("./../shaders/mask_fill.wgsl");
+    let quad_src = include_str!("../shaders/mask_fill_quads.wgsl");
+    let lin_src = include_str!("../shaders/mask_fill.wgsl");
+    let circle_src = include_str!("../shaders/mask_circle.wgsl");
     let lin_module = &shaders.create_shader_module(device, "Mask fill linear", lin_src, &[]);
     let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
+    let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);
 
     let mask_globals_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let mask_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
@@ -680,9 +724,14 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
 
     let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Masked tiles"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[&mask_bind_group_layout],
         push_constant_ranges: &[],
     });
+
+    let mut attributes = VertexBuilder::new();
+    attributes.push(wgpu::VertexFormat::Uint32x2);
+    attributes.push(wgpu::VertexFormat::Uint32);
+    attributes.push(wgpu::VertexFormat::Uint32);
 
     let line_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Tile mask linear"),
@@ -693,23 +742,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Mask>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        offset: 0,
-                        format: wgpu::VertexFormat::Uint32x2,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 8,
-                        format: wgpu::VertexFormat::Uint32,
-                        shader_location: 1,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 12,
-                        format: wgpu::VertexFormat::Uint32,
-                        shader_location: 2,
-                    },
-                ],
+                attributes: attributes.get(),
             }],
         },
         fragment: Some(wgpu::FragmentState {
@@ -734,11 +767,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         },
         depth_stencil: None,
         multiview: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: wgpu::MultisampleState::default(),
     };
 
     let quad_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
@@ -750,23 +779,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Mask>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        offset: 0,
-                        format: wgpu::VertexFormat::Uint32x2,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 8,
-                        format: wgpu::VertexFormat::Uint32,
-                        shader_location: 1,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 12,
-                        format: wgpu::VertexFormat::Uint32,
-                        shader_location: 2,
-                    },
-                ],
+                attributes: attributes.get(),
             }],
         },
         fragment: Some(wgpu::FragmentState {
@@ -791,20 +804,61 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         },
         depth_stencil: None,
         multiview: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: wgpu::MultisampleState::default(),
     };
 
     let line_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
     let quad_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
 
+    let mut attributes = VertexBuilder::new();
+    attributes.push(wgpu::VertexFormat::Uint32);
+    attributes.push(wgpu::VertexFormat::Float32);
+    attributes.push(wgpu::VertexFormat::Float32x2);
+
+    let circle_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("Circle mask"),
+        layout: Some(&tile_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &circle_module,
+            entry_point: "vs_main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Mask>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: attributes.get(),
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &circle_module,
+            entry_point: "fs_main",
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            front_face: wgpu::FrontFace::Ccw,
+            strip_index_format: None,
+            cull_mode: None,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multiview: None,
+        multisample: wgpu::MultisampleState::default(),
+    };
+
+    let circle_pipeline = device.create_render_pipeline(&circle_pipeline_descriptor);
+
     Masks {
         line_pipeline,
         quad_pipeline,
-        bind_group_layout,
+        circle_pipeline,
+        mask_bind_group_layout,
     }
 }
 

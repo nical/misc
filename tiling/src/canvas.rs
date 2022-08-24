@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
+use lyon::geom::Point;
 use crate::checkerboard_pattern::CheckerboardPatternBuilder;
 use crate::{Color, SolidColorPattern, TileIdAllcator};
 use crate::occlusion::TileMask;
@@ -11,8 +12,13 @@ pub enum Pattern {
     Checkerboard { colors: [Color; 2], scale: f32 },
 }
 
+pub enum Shape {
+    Path(Arc<Path>),
+    Circle { center: Point<f32>, radius: f32 },
+}
+
 pub struct Fill {
-    path: Arc<Path>,
+    shape: Shape,
     pattern: Pattern,
     transform: usize,
     z_index: u16,
@@ -122,7 +128,17 @@ impl Canvas {
 
     pub fn fill(&mut self, path: Arc<Path>, pattern: Pattern) {
         self.current_group.commands.push(Command::Fill(Fill {
-            path,
+            shape: Shape::Path(path),
+            pattern,
+            transform: self.current_transform,
+            z_index: self.z_index,
+        }));
+        self.z_index += 1;
+    }
+
+    pub fn fill_circle(&mut self, center: Point<f32>, radius: f32, pattern: Pattern) {
+        self.current_group.commands.push(Command::Fill(Fill {
+            shape: Shape::Circle { center, radius },
             pattern,
             transform: self.current_transform,
             z_index: self.z_index,
@@ -259,7 +275,6 @@ impl FrameBuilder {
                 None
             };
 
-            self.tiler.draw.is_opaque = false;
             self.tiler.draw.is_clip_in = true;
 
             let mut pattern = (); // TODO
@@ -301,7 +316,14 @@ impl FrameBuilder {
                         _ => { unimplemented!() }
                     };
 
-                    self.tiler.tile_path(fill.path.iter(), transform, &mut self.tile_mask, None, pattern, encoder);
+                    match &fill.shape {
+                        Shape::Path(path) => {
+                            self.tiler.tile_path(path.iter(), transform, &mut self.tile_mask, None, pattern, encoder);
+                        }
+                        Shape::Circle { center, radius } => {
+                            self.tiler.tile_circle(*center, *radius, transform, &mut self.tile_mask, None, pattern, encoder)
+                        }
+                    }
 
                     self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
                     self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);

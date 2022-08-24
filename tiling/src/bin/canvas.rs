@@ -121,10 +121,12 @@ fn main() {
     //frame_builder.tiler.output_is_tiled = true;
     //frame_builder.tiler.color_tiles_per_row = 128;
 
-    canvas.push_transform(&Transform2D::translation(1.0, 1.0));
+    canvas.push_transform(&Transform2D::translation(10.0, 1.0));
     for (path, color) in paths {
         canvas.fill(Arc::new(path), Pattern::Color(color));
     }
+    canvas.fill_circle(point(500.0, 300.0,), 200.0, Pattern::Color(Color { r: 10, g: 200, b: 100, a: 255}));
+
     canvas.pop_transform();
 
     let mut builder = lyon::path::Path::builder();
@@ -134,7 +136,7 @@ fn main() {
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
     canvas.fill(Arc::new(builder.build()), Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 30.0 });
-
+    canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 100}));
 
     let commands = canvas.finish();
 

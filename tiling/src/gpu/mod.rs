@@ -85,11 +85,12 @@ impl ShaderSources {
     pub fn new() -> Self {
         let mut library = HashMap::default();
 
-        library.insert("rect".into(), include_str!("../../shaders/rect.wgsl").into());
-        library.insert("tiling".into(), include_str!("../../shaders/tiling.wgsl").into());
-        library.insert("render_target".into(), include_str!("../../shaders/render_target.wgsl").into());
-        library.insert("raster::fill".into(), include_str!("../../shaders/raster/fill.wgsl").into());
-        library.insert("pattern::color".into(), include_str!("../../shaders/pattern/color.wgsl").into());
+        library.insert("rect".into(), include_str!("../../shaders/lib/rect.wgsl").into());
+        library.insert("tiling".into(), include_str!("../../shaders/lib/tiling.wgsl").into());
+        library.insert("render_target".into(), include_str!("../../shaders/lib/render_target.wgsl").into());
+        library.insert("mask::fill".into(), include_str!("../../shaders/lib/mask/fill.wgsl").into());
+        library.insert("mask::circle".into(), include_str!("../../shaders/lib/mask/circle.wgsl").into());
+        library.insert("pattern::color".into(), include_str!("../../shaders/lib/pattern/color.wgsl").into());
 
         ShaderSources {
             source_library: library,

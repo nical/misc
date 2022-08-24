@@ -1,4 +1,4 @@
-use crate::Color;
+use crate::{Color, TILED_IMAGE_PATTERN};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineHelpers};
 use crate::tile_encoder::BufferRange;
 use crate::tile_renderer::BufferBumpAllocator;
@@ -12,6 +12,8 @@ pub struct CheckerboardPatternBuilder {
     tile_size: f32,
     scale: f32,
     vbo_range: BufferRange,
+    x: u32,
+    y: u32,
 }
 
 impl CheckerboardPatternBuilder {
@@ -24,6 +26,8 @@ impl CheckerboardPatternBuilder {
             tile_size,
             scale,
             vbo_range: BufferRange(0, 0),
+            x: 0,
+            y: 0,
         }
     }
 
@@ -57,15 +61,20 @@ impl CheckerboardPatternBuilder {
 }
 
 impl crate::tiler::TilerPattern for CheckerboardPatternBuilder {
-    fn pattern_kind(&self) -> u32 { 1 }
-    fn request_tile(&mut self, x: u32, y: u32) -> Option<(u32, bool)> {
+    fn pattern_kind(&self) -> u32 { TILED_IMAGE_PATTERN }
+    fn tile_is_opaque(&self) -> bool { self.is_opaque }
+    fn set_tile(&mut self, x: u32, y: u32) {
+        self.x = x;
+        self.y = y;
+    }
+    fn request_tile(&mut self) -> u32 {
         let tile_id = self.ids.allocate();
 
         self.tiles.push(CheckerboardPatternTile {
             tile_id,
             offset: [
-                x as f32 * self.tile_size,
-                y as f32 * self.tile_size,
+                self.x as f32 * self.tile_size,
+                self.y as f32 * self.tile_size,
             ],
             scale: self.scale,
             colors: [
@@ -74,7 +83,7 @@ impl crate::tiler::TilerPattern for CheckerboardPatternBuilder {
             ],
         });
 
-        Some((tile_id, self.is_opaque))
+        tile_id
     }
 }
 
