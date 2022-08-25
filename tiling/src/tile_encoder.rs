@@ -331,30 +331,34 @@ impl TileEncoder {
 
         let texture_index = id / self.masks_per_atlas;
         if texture_index != self.masks_texture_index {
-            let gpu_masks_end = self.gpu_masks.len() as u32;
-            let circle_masks_end = self.circle_masks.len() as u32;
-            //let cpu_end = self.cpu_masks.len() as u32;
-            let alpha_tiles_end = self.alpha_tiles.len() as u32;
-            if gpu_masks_end != self.gpu_masks_start { // TODO: cpu tiles
-                self.batches.push(AlphaBatch {
-                    tiles: self.alpha_tiles_start..alpha_tiles_end,
-                    batch_kind: 0,
-                });
-                let batches_end = self.batches.len();
-                self.mask_passes.push(MaskPass {
-                    gpu_masks: self.gpu_masks_start..gpu_masks_end,
-                    circle_masks: self.circle_masks_start..circle_masks_end,
-                    batches: self.batches_start..batches_end,
-                    atlas_index: self.masks_texture_index,
-                });
-                self.gpu_masks_start = gpu_masks_end;
-                self.batches_start = batches_end;
-                self.alpha_tiles_start = alpha_tiles_end;
-            }
+            self.flush_render_pass();
             self.masks_texture_index = texture_index;
         }
 
         id
+    }
+
+    fn flush_render_pass(&mut self) {
+        let gpu_masks_end = self.gpu_masks.len() as u32;
+        let circle_masks_end = self.circle_masks.len() as u32;
+        //let cpu_end = self.cpu_masks.len() as u32;
+        let alpha_tiles_end = self.alpha_tiles.len() as u32;
+        if gpu_masks_end != self.gpu_masks_start { // TODO: cpu tiles
+            self.batches.push(AlphaBatch {
+                tiles: self.alpha_tiles_start..alpha_tiles_end,
+                batch_kind: 0,
+            });
+            let batches_end = self.batches.len();
+            self.mask_passes.push(MaskPass {
+                gpu_masks: self.gpu_masks_start..gpu_masks_end,
+                circle_masks: self.circle_masks_start..circle_masks_end,
+                batches: self.batches_start..batches_end,
+                atlas_index: self.masks_texture_index,
+            });
+            self.gpu_masks_start = gpu_masks_end;
+            self.batches_start = batches_end;
+            self.alpha_tiles_start = alpha_tiles_end;
+        }
     }
 
     pub fn end_batch(&mut self) {

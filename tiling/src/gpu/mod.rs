@@ -163,16 +163,44 @@ impl VertexBuilder {
         self.offset = 0;
         self.attributes.clear();
     }
-}
 
-pub struct PipelineHelpers {
-}
-
-impl PipelineHelpers {
-    pub fn new() -> Self {
-        PipelineHelpers {  }
+    pub fn buffer_layout(&self) -> wgpu::VertexBufferLayout {
+        wgpu::VertexBufferLayout {
+            array_stride: self.offset,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &self.attributes,
+        }
     }
-    pub fn default_primitive_state(&self) -> wgpu::PrimitiveState {
+}
+
+pub struct PipelineDefaults {
+    target_states: [Option<wgpu::ColorTargetState>; 3]
+}
+
+impl PipelineDefaults {
+    pub fn new() -> Self {
+        PipelineDefaults {
+            target_states: [
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ]
+        }
+    }
+
+    pub fn primitive_state(&self) -> wgpu::PrimitiveState {
         wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             polygon_mode: wgpu::PolygonMode::Fill,
@@ -182,5 +210,20 @@ impl PipelineHelpers {
             unclipped_depth: false,
             conservative: false,
         }
+    }
+
+    pub fn color_target_state(&self) -> &[Option<wgpu::ColorTargetState>] {
+        let idx = 1;
+        &self.target_states[idx..idx+1]
+    }
+
+    pub fn color_target_state_no_blend(&self) -> &[Option<wgpu::ColorTargetState>] {
+        let idx = 0;
+        &self.target_states[idx..idx+1]
+    }
+
+    pub fn alpha_target_state(&self) -> &[Option<wgpu::ColorTargetState>] {
+        let idx = 2;
+        &self.target_states[idx..idx+1]
     }
 }

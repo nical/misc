@@ -2,7 +2,7 @@
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
-use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder, PipelineHelpers};
+use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder, PipelineDefaults};
 use crate::gpu::mask_uploader::{MaskUploadCopies};
 use crate::tile_encoder::{TileEncoder, BufferRange, LineEdge};
 use crate::checkerboard_pattern::{CheckerboardRenderer, CheckerboardPatternBuilder};
@@ -157,36 +157,12 @@ impl TileRenderer {
             ],
         });
 
-        let defaults = PipelineHelpers::new();
+        let defaults = PipelineDefaults::new();
         let mut attributes = VertexBuilder::new();
         attributes.push(wgpu::VertexFormat::Uint32);
         attributes.push(wgpu::VertexFormat::Uint32);
         attributes.push(wgpu::VertexFormat::Uint32);
         attributes.push(wgpu::VertexFormat::Uint32);
-        attributes.push(wgpu::VertexFormat::Float32);
-
-        let attributes_with_opacity = attributes.get();
-
-        let attributes_no_opacity = &attributes_with_opacity[..4];
-        let vertex_buffer_layouts = &[wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<TileInstance>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: attributes_no_opacity,
-        }];
-        let alpha_color_target_states = &[
-            Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            }),
-        ];
-        let opaque_color_target_states = &[
-            Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            }),
-        ];
 
         let opaque_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Opaque solid tiles"),
@@ -208,7 +184,7 @@ impl TileRenderer {
             push_constant_ranges: &[],
         });
 
-        let primitive = defaults.default_primitive_state();
+        let primitive = defaults.primitive_state();
         let multisample = wgpu::MultisampleState::default();
 
         let masked_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
@@ -217,12 +193,12 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &masked_solid_module,
                 entry_point: "vs_main",
-                buffers: vertex_buffer_layouts,
+                buffers: &[attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &masked_solid_module,
                 entry_point: "fs_main",
-                targets: alpha_color_target_states
+                targets: defaults.color_target_state(),
             }),
             primitive,
             depth_stencil: None,
@@ -236,12 +212,12 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &masked_img_module,
                 entry_point: "vs_main",
-                buffers: vertex_buffer_layouts,
+                buffers: &[attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &masked_img_module,
                 entry_point: "fs_main",
-                targets: alpha_color_target_states
+                targets: defaults.color_target_state()
             }),
             primitive,
             depth_stencil: None,
@@ -255,12 +231,12 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &opaque_solid_module,
                 entry_point: "vs_main",
-                buffers: vertex_buffer_layouts,
+                buffers: &[attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &opaque_solid_module,
                 entry_point: "fs_main",
-                targets: opaque_color_target_states
+                targets: defaults.color_target_state_no_blend(),
             }),
             primitive,
             depth_stencil: None,
@@ -274,12 +250,12 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &opaque_img_module,
                 entry_point: "vs_main",
-                buffers: vertex_buffer_layouts,
+                buffers: &[attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &opaque_img_module,
                 entry_point: "fs_main",
-                targets: opaque_color_target_states
+                targets: defaults.color_target_state_no_blend(),
             }),
             primitive,
             depth_stencil: None,
@@ -728,6 +704,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         push_constant_ranges: &[],
     });
 
+    let defaults = PipelineDefaults::new();
     let mut attributes = VertexBuilder::new();
     attributes.push(wgpu::VertexFormat::Uint32x2);
     attributes.push(wgpu::VertexFormat::Uint32);
@@ -739,32 +716,14 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         vertex: wgpu::VertexState {
             module: &lin_module,
             entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Mask>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: attributes.get(),
-            }],
+            buffers: &[attributes.buffer_layout()],
         },
         fragment: Some(wgpu::FragmentState {
             module: &lin_module,
             entry_point: "fs_main",
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            targets: defaults.alpha_target_state(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            front_face: wgpu::FrontFace::Ccw,
-            strip_index_format: None,
-            cull_mode: None,
-            unclipped_depth: false,
-            conservative: false,
-        },
+        primitive: defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -776,32 +735,14 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         vertex: wgpu::VertexState {
             module: &quad_module,
             entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Mask>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: attributes.get(),
-            }],
+            buffers: &[attributes.buffer_layout()],
         },
         fragment: Some(wgpu::FragmentState {
             module: &quad_module,
             entry_point: "fs_main",
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            targets: defaults.alpha_target_state(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            front_face: wgpu::FrontFace::Ccw,
-            strip_index_format: None,
-            cull_mode: None,
-            unclipped_depth: false,
-            conservative: false,
-        },
+        primitive: defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -821,32 +762,14 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         vertex: wgpu::VertexState {
             module: &circle_module,
             entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Mask>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: attributes.get(),
-            }],
+            buffers: &[attributes.buffer_layout()],
         },
         fragment: Some(wgpu::FragmentState {
             module: &circle_module,
             entry_point: "fs_main",
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            targets: defaults.alpha_target_state(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            front_face: wgpu::FrontFace::Ccw,
-            strip_index_format: None,
-            cull_mode: None,
-            unclipped_depth: false,
-            conservative: false,
-        },
+        primitive: defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
