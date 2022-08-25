@@ -10,8 +10,7 @@ use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
 use tiling::tile_encoder::TileEncoder;
-use tiling::checkerboard_pattern::CheckerboardPatternBuilder;
-use tiling::gpu::GpuTileAtlasDescriptor;
+use tiling::gpu::{GpuTileAtlasDescriptor, ShaderSources};
 
 fn main() {
     profiling::register_thread!("Main");
@@ -129,7 +128,7 @@ fn main() {
         (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
     };
 
-    let mut tiler = Tiler::new(&tiler_config, TileIdAllcator::new());
+    let mut tiler = Tiler::new(&tiler_config);
     tiler.selected_row = select_row;
 
     let size = tiler_config.view_box.size().to_u32();
@@ -142,18 +141,11 @@ fn main() {
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = TileEncoder::new(&tiler_config, mask_uploader, TileIdAllcator::new());
+    let mut builder = TileEncoder::new(&tiler_config, mask_uploader);
     builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
-
-    let mut checkerboard_pattern = CheckerboardPatternBuilder::new(
-        Color::WHITE, Color::BLACK,
-        1.0,
-        TileIdAllcator::new(),
-        tiler_config.tile_size.width as f32
-    );
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -229,12 +221,16 @@ fn main() {
         return;
     }
 
+    let mut shaders = ShaderSources::new();
+
     let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
         &device,
+        &mut shaders,
         tile_size as u32,
         tile_atlas_size as u32,
         &globals_bind_group_layout,
     );
+
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -294,10 +290,8 @@ fn main() {
         tile_renderer.begin_frame();
 
         builder.allocate_buffer_ranges(&mut tile_renderer);
-        checkerboard_pattern.allocate_buffer_ranges(&mut tile_renderer.checkerboard);
         tile_renderer.allocate(&device);
         builder.upload(&mut tile_renderer, &queue);
-        checkerboard_pattern.upload(&mut tile_renderer.checkerboard, &queue);
 
         queue.write_buffer(
             &globals_ubo,
@@ -315,7 +309,7 @@ fn main() {
 
         tile_renderer.render(
             &mut builder,
-            &checkerboard_pattern,
+            &[],
             &device, &frame_view, &mut encoder, &globals_bind_group
         );
 

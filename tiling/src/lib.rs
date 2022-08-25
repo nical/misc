@@ -10,9 +10,13 @@ pub mod buffer;
 //pub mod flatten_simd;
 pub mod tile_renderer;
 pub mod checkerboard_pattern;
+pub mod custom_pattern;
+pub mod simple_gradient;
 
 pub use tiler::*;
 pub use occlusion::*;
+
+pub use lyon::path::math::{Point, point, Vector, vector};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {

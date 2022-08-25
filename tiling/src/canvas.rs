@@ -2,12 +2,15 @@ use std::sync::Arc;
 use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
 use lyon::geom::Point;
-use crate::checkerboard_pattern::CheckerboardPatternBuilder;
-use crate::{Color, SolidColorPattern, TileIdAllcator};
+use crate::checkerboard_pattern::{CheckerboardPatternBuilder, CheckerboardPattern};
+use crate::simple_gradient::{SimpleGradientBuilder, SimpleGradient, Stop};
+use crate::{Color, SolidColorPattern};
 use crate::occlusion::TileMask;
+use crate::point;
 
 pub enum Pattern {
     Color(Color),
+    Gradient { stops: [Stop; 2] },
     Image(u32),
     Checkerboard { colors: [Color; 2], scale: f32 },
 }
@@ -32,8 +35,6 @@ pub struct Group {
     transform: usize,
     z_index: u16,
     group_stack_depth: u16,
-    can_tile_output: bool,
-    needs_surface: bool,
 }
 
 impl Default for Group {
@@ -45,8 +46,6 @@ impl Default for Group {
             z_index: 0,
             transform: 0,
             group_stack_depth: 0,
-            can_tile_output: true,
-            needs_surface: false,
         }
     }
 }
@@ -95,8 +94,6 @@ impl Canvas {
                 z_index: 0,
                 transform: 0,
                 group_stack_depth: 0,
-                can_tile_output: false,
-                needs_surface: true,
             },
             group_stack: Vec::new(),
             max_group_stack_depth: 1,
@@ -182,10 +179,10 @@ use crate::tiler::{Tiler, TilerConfig, TilerPattern};
 use crate::gpu::mask_uploader::MaskUploader;
 
 pub struct TargetData {
-    pub src_color_tile_ids: TileIdAllcator,
     pub tile_encoder: TileEncoder,
     pub solid_color_pattern: SolidColorPattern,
     pub checkerboard_pattern: CheckerboardPatternBuilder,
+    pub gradient_pattern: SimpleGradientBuilder,
 }
 
 pub struct FrameBuilder {
@@ -193,6 +190,7 @@ pub struct FrameBuilder {
     pub tiler: Tiler,
     pub tile_mask: TileMask,
     stats: FrameBuilderStats,
+    tile_size: f32,
 }
 
 impl FrameBuilder {
@@ -201,23 +199,25 @@ impl FrameBuilder {
         let tile_size = config.tile_size.to_u32();
         let tiles_x = (size.width + tile_size.width - 1) / tile_size.width;
         let tiles_y = (size.height + tile_size.height - 1) / tile_size.height;
-        let color_tile_ids = TileIdAllcator::new();
-        let mask_ids = TileIdAllcator::new();
+        let ts = config.tile_size.width as f32;
         FrameBuilder {
             targets: vec![TargetData {
-                src_color_tile_ids: color_tile_ids.clone(),
-                tile_encoder: TileEncoder::new(config, uploader, mask_ids),
+                tile_encoder: TileEncoder::new(config, uploader),
                 solid_color_pattern: SolidColorPattern::new(Color::BLACK),
-                checkerboard_pattern: CheckerboardPatternBuilder::new(
-                    Color::WHITE, Color::BLACK,
+                checkerboard_pattern: CheckerboardPatternBuilder::new(ts, CheckerboardPattern::new(
+                    Color::WHITE,
+                    Color::BLACK,
                     1.0,
-                    color_tile_ids.clone(),
-                    config.tile_size.width as f32
-                ),
+                )),
+                gradient_pattern: SimpleGradientBuilder::new(ts, SimpleGradient::new([
+                    Stop { position: point(0.0, 0.0), color: Color::WHITE },
+                    Stop { position: point(0.0, 0.0), color: Color::WHITE },    
+                ])),
             }],
-            tiler: Tiler::new(config, color_tile_ids),
+            tiler: Tiler::new(config),
             tile_mask: TileMask::new(tiles_x, tiles_y),
             stats: FrameBuilderStats::new(),
+            tile_size: config.tile_size.width
         }
     }
 
@@ -229,24 +229,24 @@ impl FrameBuilder {
         let group_stack_depth = commands.max_group_stack_depth as usize;
         while self.targets.len() < group_stack_depth {
             let tile_encoder = self.targets[0].tile_encoder.create_similar();
-            let color_tile_allocator = TileIdAllcator::new();
             self.targets.push(TargetData {
-                src_color_tile_ids: color_tile_allocator.clone(),
                 tile_encoder,
                 solid_color_pattern: SolidColorPattern::new(Color::BLACK),
-                checkerboard_pattern: CheckerboardPatternBuilder::new(
+                checkerboard_pattern: CheckerboardPatternBuilder::new(self.tile_size, CheckerboardPattern::new(
                     Color::WHITE, Color::BLACK,
                     1.0,
-                    color_tile_allocator,
-                    16.0,
-                ),
+                )),
+                gradient_pattern: SimpleGradientBuilder::new(self.tile_size, SimpleGradient::new([
+                    Stop { position: point(0.0, 0.0), color: Color::WHITE },
+                    Stop { position: point(0.0, 0.0), color: Color::WHITE },    
+                ])),
             });
         }
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.reset();
             target.checkerboard_pattern.reset();
-            target.src_color_tile_ids.reset();
+            target.gradient_pattern.reset();
         }
         self.tile_mask.clear();
 
@@ -255,6 +255,8 @@ impl FrameBuilder {
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.end_paths();
             target.tile_encoder.reverse_alpha_tiles();
+            target.checkerboard_pattern.end_render_pass();
+            target.gradient_pattern.end_render_pass();
         }
 
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);
@@ -310,8 +312,17 @@ impl FrameBuilder {
                             &mut target.solid_color_pattern
                         },
                         Pattern::Checkerboard { colors, scale } => {
-                            target.checkerboard_pattern.set(colors[0], colors[1], scale);
+                            target.checkerboard_pattern.set(CheckerboardPattern::new(colors[0], colors[1], scale));
                             &mut target.checkerboard_pattern
+                        }
+                        Pattern::Gradient { stops } => {
+                            let mut stops = stops.clone();
+                            if let Some(transform) = transform {
+                                stops[0].position = transform.transform_point(stops[0].position);
+                                stops[1].position = transform.transform_point(stops[1].position);
+                            }
+                            target.gradient_pattern.set(SimpleGradient::new(stops));
+                            &mut target.gradient_pattern
                         }
                         _ => { unimplemented!() }
                     };

@@ -1,7 +1,11 @@
 use std::sync::Arc;
 use tiling::*;
 use tiling::canvas::*;
-use tiling::gpu::GpuTileAtlasDescriptor;
+use tiling::custom_pattern::CustomPattern;
+use tiling::checkerboard_pattern::CheckerboardPattern;
+use tiling::simple_gradient::{SimpleGradient, Stop};
+use tiling::tile_renderer::PatternRenderer;
+use tiling::gpu::{GpuTileAtlasDescriptor, ShaderSources};
 use tiling::load_svg::*;
 use tiling::gpu::mask_uploader::MaskUploader;
 use lyon::path::geom::euclid::{size2, Transform2D};
@@ -27,7 +31,7 @@ fn main() {
     let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 128;
-    let tile_atlas_size: u32 = 2048;
+    let tile_atlas_size: u32 = 1024;
     let inital_window_size = size2(1200u32, 1000);
 
     let mut tiler_config = TilerConfig {
@@ -121,31 +125,42 @@ fn main() {
     //frame_builder.tiler.output_is_tiled = true;
     //frame_builder.tiler.color_tiles_per_row = 128;
 
-    canvas.push_transform(&Transform2D::translation(10.0, 1.0));
-    for (path, color) in paths {
-        canvas.fill(Arc::new(path), Pattern::Color(color));
-    }
-    canvas.fill_circle(point(500.0, 300.0,), 200.0, Pattern::Color(Color { r: 10, g: 200, b: 100, a: 255}));
-
-    canvas.pop_transform();
-
     let mut builder = lyon::path::Path::builder();
     builder.begin(point(0.0, 0.0));
     builder.line_to(point(50.0, 400.0));
     builder.line_to(point(450.0, 450.0));
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
+
+    canvas.push_transform(&Transform2D::translation(10.0, 1.0));
+    for (path, color) in paths {
+        canvas.fill(Arc::new(path), Pattern::Color(color));
+    }
+    canvas.fill_circle(point(500.0, 300.0,), 200.0, Pattern::Gradient { stops: [
+        Stop { position: point(500.0, 100.0), color: Color { r: 10, g: 200, b: 100, a: 255} },
+        Stop { position: point(600.0, 500.0), color: Color { r: 100, g: 100, b: 250, a: 255} },
+    ]});
+
     canvas.fill(Arc::new(builder.build()), Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 30.0 });
-    canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 100}));
+
+    canvas.pop_transform();
+
+    canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 180}));
 
     let commands = canvas.finish();
 
+    let mut shaders = ShaderSources::new();
+
     let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
         &device,
+        &mut shaders,
         tile_size as u32,
         tile_atlas_size as u32,
         &globals_bind_group_layout,
     );
+
+    let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
+    let mut gradients = SimpleGradient::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
 
     frame_builder.build(&commands);
 
@@ -230,17 +245,21 @@ fn main() {
         frame_builder.build(&commands);
 
         tile_renderer.begin_frame();
+        checkerboard.begin_frame();
+        gradients.begin_frame();
 
         for target in &mut frame_builder.targets {
             target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
-            target.checkerboard_pattern.allocate_buffer_ranges(&mut tile_renderer.checkerboard);
+            target.checkerboard_pattern.allocate_buffer_ranges(&mut checkerboard);
+            target.gradient_pattern.allocate_buffer_ranges(&mut gradients);
         }
 
         tile_renderer.allocate(&device);
 
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
-            target.checkerboard_pattern.upload(&mut tile_renderer.checkerboard, &queue);
+            target.checkerboard_pattern.upload(&mut checkerboard, &queue);
+            target.gradient_pattern.upload(&mut gradients, &queue);
         }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -250,7 +269,7 @@ fn main() {
         let target = &mut frame_builder.targets[0];
         tile_renderer.render(
             &mut target.tile_encoder,
-            &target.checkerboard_pattern,
+            &[&checkerboard, &gradients],
             &device,
             &frame_view,
             &mut encoder,

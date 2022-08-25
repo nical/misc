@@ -31,7 +31,8 @@ pub struct MaskPass {
     pub batches: Range<usize>,
     pub gpu_masks: Range<u32>,
     pub circle_masks: Range<u32>,
-    pub atlas_index: u32,
+    pub mask_atlas_index: u32,
+    pub color_atlas_index: u32,
 }
 
 pub struct AlphaBatch {
@@ -74,6 +75,58 @@ impl BufferRanges {
     }
 }
 
+pub type TileId = u32;
+pub type TextureIndex = u32;
+
+pub struct TileAllocator {
+    pub next_id: TileId,
+    pub current_texture: TextureIndex,
+    pub tiles_per_atlas: u32,
+}
+
+impl TileAllocator {
+    pub fn new(tiles_per_atlas: u32) -> Self {
+        TileAllocator {
+            next_id: 1,
+            current_texture: 0,
+            tiles_per_atlas,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.next_id = 1;
+        self.current_texture = 0;
+    }
+
+    pub fn allocate(&mut self) -> (TileId, TextureIndex) {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let mut id2 = id % self.tiles_per_atlas;
+
+        if id2 == id {
+            // Common path.
+            return (id, self.current_texture)
+        }
+
+        if id2 == 0 {
+            // Tile zero is reserved.
+            id2 += 1;
+        }
+
+        self.next_id = id2 + 1;
+
+        self.current_texture += 1;
+
+        (id2, self.current_texture)
+    }
+}
+
+pub struct SourceTiles {
+    pub mask_tiles: TileAllocator,
+    pub color_tiles: TileAllocator,
+}
+
 pub struct TileEncoder {
     // State and output associated with the current group/layer:
 
@@ -104,7 +157,6 @@ pub struct TileEncoder {
     // TODO: move to drawing parameters.
     pub masks_per_atlas: u32,
     pub reversed: bool,
-    mask_ids: TileIdAllcator,
 
     // Transient state (only useful within a path):
 
@@ -119,10 +171,14 @@ pub struct TileEncoder {
     pub edge_distributions: [u32; 16],
 
     pub ranges: BufferRanges,
+
+    // TODO, pass via parameter instead of owning it.
+    pub src: SourceTiles
 }
 
 impl TileEncoder {
-    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader, mask_ids: TileIdAllcator) -> Self {
+    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
+        let tiles_per_atlas = config.mask_atlas_size.area() / config.tile_size.area() as u32;
         TileEncoder {
             quad_edges: Vec::with_capacity(0),
             line_edges: Vec::with_capacity(8196),
@@ -144,14 +200,18 @@ impl TileEncoder {
 
             mask_uploader,
 
-            mask_ids,
             mask_id_range: 0..0,
-            masks_per_atlas: config.mask_atlas_size.area() / config.tile_size.area() as u32,
+            masks_per_atlas: tiles_per_atlas,
             reversed: false,
 
             ranges: BufferRanges::default(),
 
             edge_distributions: [0; 16],
+
+            src: SourceTiles {
+                mask_tiles: TileAllocator::new(tiles_per_atlas),
+                color_tiles: TileAllocator::new(tiles_per_atlas),
+            }
         }
     }
 
@@ -177,7 +237,6 @@ impl TileEncoder {
 
             mask_uploader: self.mask_uploader.create_similar(),
 
-            mask_ids: TileIdAllcator::new(),
             mask_id_range: 0..0,
             masks_per_atlas: self.masks_per_atlas,
             reversed: false,
@@ -185,15 +244,12 @@ impl TileEncoder {
             ranges: BufferRanges::default(),
 
             edge_distributions: [0; 16],
+
+            src: SourceTiles {
+                mask_tiles: TileAllocator::new(self.masks_per_atlas),
+                color_tiles: TileAllocator::new(self.masks_per_atlas),
+            }
         }
-    }
-
-    pub fn new_parallel(other: &TileEncoder, config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
-        let mut encoder = TileEncoder::new(config, mask_uploader, TileIdAllcator::new());
-        encoder.mask_ids = other.mask_ids.clone();
-        encoder.masks_per_atlas = other.masks_per_atlas;
-
-        encoder
     }
 
     pub fn set_tile_texture_size(&mut self, size: u32, tile_size: u32) {
@@ -211,7 +267,6 @@ impl TileEncoder {
         self.mask_passes.clear();
         self.batches.clear();
         self.mask_uploader.reset();
-        self.mask_ids.reset();
         self.current_pattern_kind = None;
         self.edge_distributions = [0; 16];
         self.mask_id_range = 0..0;
@@ -223,28 +278,12 @@ impl TileEncoder {
         self.masks_texture_index = 0;
         self.reversed = false;
         self.ranges.reset();
+        self.src.mask_tiles.reset();
+        self.src.color_tiles.reset();
     }
 
     pub fn end_paths(&mut self) {
-        let gpu_masks_end = self.gpu_masks.len() as u32;
-        let circle_masks_end = self.circle_masks.len() as u32;
-        //let cpu_end = self.cpu_masks.len() as u32;
-        let alpha_tiles_end = self.alpha_tiles.len() as u32;
-        self.batches.push(AlphaBatch {
-            tiles: self.alpha_tiles_start..alpha_tiles_end,
-            batch_kind: 0,
-        });
-        let batches_end = self.batches.len();
-        self.mask_passes.push(MaskPass {
-            gpu_masks: self.gpu_masks_start..gpu_masks_end,
-            circle_masks: self.circle_masks_start..circle_masks_end,
-            batches: self.batches_start..batches_end,
-            atlas_index: self.masks_texture_index,
-        });
-        self.batches_start = batches_end;
-        self.gpu_masks_start = gpu_masks_end;
-        //self.cpu_masks_start = cpu_end;
-        self.alpha_tiles_start = alpha_tiles_end;
+        self.flush_render_pass();
     }
 
     pub fn num_cpu_masks(&self) -> usize {
@@ -252,8 +291,9 @@ impl TileEncoder {
     }
 
     pub fn num_mask_atlases(&self) -> u32 {
-        let id = self.mask_ids.current();
-        id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
+        //let id = self.mask_ids.current();
+        //id / self.masks_per_atlas + if id % self.masks_per_atlas != 0 { 1 } else { 0 }
+        self.src.mask_tiles.current_texture + 1
     }
 
     pub fn begin_row(&mut self) {
@@ -314,25 +354,11 @@ impl TileEncoder {
     }
 
     fn allocate_mask_id(&mut self) -> u32 {
-        if self.mask_id_range.end > self.mask_id_range.start {
-            let id = self.mask_id_range.start;
-            self.mask_id_range.start += 1;
-            return id;
-        }
-        let mut id = self.mask_ids.allocate_n(16);
-        self.mask_id_range.start = id + 1;
-        self.mask_id_range.end = id + 16;
+        let (id, texture) = self.src.mask_tiles.allocate();
 
-        if id % self.masks_per_atlas == 0 {
-            // ID 0 is reserved for full mask.
-            self.mask_id_range.start += 1;
-            id += 1;
-        }
-
-        let texture_index = id / self.masks_per_atlas;
-        if texture_index != self.masks_texture_index {
+        if texture != self.masks_texture_index {
             self.flush_render_pass();
-            self.masks_texture_index = texture_index;
+            self.masks_texture_index = texture;
         }
 
         id
@@ -342,22 +368,19 @@ impl TileEncoder {
         let gpu_masks_end = self.gpu_masks.len() as u32;
         let circle_masks_end = self.circle_masks.len() as u32;
         //let cpu_end = self.cpu_masks.len() as u32;
-        let alpha_tiles_end = self.alpha_tiles.len() as u32;
-        if gpu_masks_end != self.gpu_masks_start { // TODO: cpu tiles
-            self.batches.push(AlphaBatch {
-                tiles: self.alpha_tiles_start..alpha_tiles_end,
-                batch_kind: 0,
-            });
-            let batches_end = self.batches.len();
+        self.end_batch();
+        let batches_end = self.batches.len();
+        if batches_end != self.batches_start { // TODO: cpu tiles
             self.mask_passes.push(MaskPass {
                 gpu_masks: self.gpu_masks_start..gpu_masks_end,
                 circle_masks: self.circle_masks_start..circle_masks_end,
                 batches: self.batches_start..batches_end,
-                atlas_index: self.masks_texture_index,
+                mask_atlas_index: self.masks_texture_index,
+                color_atlas_index: self.src.color_tiles.current_texture,
             });
             self.gpu_masks_start = gpu_masks_end;
             self.batches_start = batches_end;
-            self.alpha_tiles_start = alpha_tiles_end;
+            self.circle_masks_start = circle_masks_end;
         }
     }
 

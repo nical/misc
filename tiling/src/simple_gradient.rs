@@ -1,42 +1,61 @@
-use crate::Color;
+use crate::{Color, Point, vector};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
 
-pub type CheckerboardPatternBuilder = CustomPatternBuilder<CheckerboardPattern>;
-pub type CheckerboardPatternRenderer = CustomPatternRenderer<CheckerboardPattern>;
+pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;
+pub type SimpleGradientRenderer = CustomPatternRenderer<SimpleGradient>;
 
-pub struct CheckerboardPattern {
-    colors: [Color; 2],
-    is_opaque: bool,
-    scale: f32,
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct SimpleGradientTile {
+    pub tile_id: u32,
+    pub padding: u32,
+    pub from_color: u32,
+    pub to_color: u32,
+    pub from_pos: [f32; 2],
+    pub to_pos: [f32; 2],
 }
 
-impl CheckerboardPattern {
-    pub fn new(color1: Color, color2: Color, scale: f32) -> Self {
-        CheckerboardPattern {
-            colors: [color1, color2],
-            is_opaque: color1.is_opaque() && color2.is_opaque(),
-            scale,
+unsafe impl bytemuck::Pod for SimpleGradientTile {}
+unsafe impl bytemuck::Zeroable for SimpleGradientTile {}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Stop {
+    pub position: Point,
+    pub color: Color,
+}
+pub struct SimpleGradient {
+    stops: [Stop; 2],
+    is_opaque: bool,
+}
+
+impl SimpleGradient {
+    pub fn new(stops: [Stop; 2]) -> Self {
+        SimpleGradient {
+            is_opaque: stops[0].color.is_opaque() && stops[1].color.is_opaque(),
+            stops,
         }
     }
 }
 
-impl CustomPattern for CheckerboardPattern {
-    type Instance = CheckerboardPatternTile;
+impl CustomPattern for SimpleGradient {
+    type Instance = SimpleGradientTile;
     type RenderData = ();
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
     fn new_tile(&self, tile_id: u32, x: f32, y: f32) -> Self::Instance {
-        CheckerboardPatternTile {
+        let offset = vector(x, y);
+
+        SimpleGradientTile {
             tile_id,
-            offset: [x, y],
-            scale: self.scale,
-            colors: [
-                self.colors[0].to_u32(),
-                self.colors[1].to_u32(),
-            ],
+            padding: 0,
+            from_color: self.stops[0].color.to_u32(),
+            to_color: self.stops[1].color.to_u32(),
+            from_pos: (self.stops[0].position - offset).to_array(),
+            to_pos: (self.stops[1].position - offset).to_array(),
         }
     }
 
@@ -45,17 +64,15 @@ impl CustomPattern for CheckerboardPattern {
         shaders: &mut ShaderSources,
         tile_atlas_desc_layout: &wgpu::BindGroupLayout,
     ) -> CustomPatternRenderer<Self> {
-        let label = &"Checkerboard";
+        let label = &"simple_gradient";
 
-        let src = include_str!("../shaders/checkerboard_pattern.wgsl");
+        let src = include_str!("../shaders/simple_gradient_pattern.wgsl");
         let module = shaders.create_shader_module(device, label, src, &[]);
 
         let defaults = PipelineDefaults::new();
         let attributes = VertexBuilder::from_slice(&[
-            wgpu::VertexFormat::Uint32,
-            wgpu::VertexFormat::Float32,
-            wgpu::VertexFormat::Uint32x2,
-            wgpu::VertexFormat::Float32x2,
+            wgpu::VertexFormat::Uint32x4,
+            wgpu::VertexFormat::Float32x4,
         ]);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -89,16 +106,3 @@ impl CustomPattern for CheckerboardPattern {
 
     fn set_render_pass_state<'a, 'b: 'a>(_: &'a Self::RenderData, _: &mut wgpu::RenderPass<'b>) {}
 }
-
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct CheckerboardPatternTile {
-    pub tile_id: u32,
-    pub scale: f32,
-    pub colors: [u32; 2],
-    pub offset: [f32; 2],
-}
-
-unsafe impl bytemuck::Pod for CheckerboardPatternTile {}
-unsafe impl bytemuck::Zeroable for CheckerboardPatternTile {}
