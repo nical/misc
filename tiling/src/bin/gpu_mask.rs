@@ -1,4 +1,5 @@
 use tiling::*;
+use tiling::gpu_store::GpuStore;
 use tiling::load_svg::*;
 use lyon::path::geom::euclid::{size2, Transform2D};
 
@@ -223,12 +224,14 @@ fn main() {
 
     let mut shaders = ShaderSources::new();
 
+    let mut gpu_store = GpuStore::new(1024, 1024, &device);
     let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
         &device,
         &mut shaders,
         tile_size as u32,
         tile_atlas_size as u32,
         &globals_bind_group_layout,
+        &mut gpu_store,
     );
 
 

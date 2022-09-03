@@ -87,6 +87,7 @@ impl ShaderSources {
 
         library.insert("rect".into(), include_str!("../../shaders/lib/rect.wgsl").into());
         library.insert("tiling".into(), include_str!("../../shaders/lib/tiling.wgsl").into());
+        library.insert("gpu_store".into(), include_str!("../../shaders/lib/gpu_store.wgsl").into());
         library.insert("render_target".into(), include_str!("../../shaders/lib/render_target.wgsl").into());
         library.insert("mask::fill".into(), include_str!("../../shaders/lib/mask/fill.wgsl").into());
         library.insert("mask::circle".into(), include_str!("../../shaders/lib/mask/circle.wgsl").into());

@@ -29,8 +29,8 @@ struct VertexOutput {
     var backdrop = f32(in_fill_rule >> 16u) - 8192.0;
 
     var uv = rect_get_uv(vertex_index);
-    let atlas_uv = tiling_atlas_get_uv(atlas, in_mask_id, uv);
-    let target_pos = normalized_to_target(atlas_uv);
+    var pos = tiling_decode_position(in_mask_id, uv);
+    let target_pos = normalized_to_target(pos * atlas.inv_resolution);
 
     return VertexOutput(
         uv * TILE_SIZE_F32,

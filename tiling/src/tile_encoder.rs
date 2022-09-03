@@ -81,15 +81,17 @@ pub type TextureIndex = u32;
 pub struct TileAllocator {
     pub next_id: TileId,
     pub current_texture: TextureIndex,
+    pub tiles_per_row: u32,
     pub tiles_per_atlas: u32,
 }
 
 impl TileAllocator {
-    pub fn new(tiles_per_atlas: u32) -> Self {
+    pub fn new(w: u32, h: u32) -> Self {
         TileAllocator {
             next_id: 1,
             current_texture: 0,
-            tiles_per_atlas,
+            tiles_per_row: w,
+            tiles_per_atlas: w * h,
         }
     }
 
@@ -98,7 +100,7 @@ impl TileAllocator {
         self.current_texture = 0;
     }
 
-    pub fn allocate(&mut self) -> (TileId, TextureIndex) {
+    pub fn allocate(&mut self) -> (TilePosition, TextureIndex) {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -106,7 +108,11 @@ impl TileAllocator {
 
         if id2 == id {
             // Common path.
-            return (id, self.current_texture)
+            let pos = TilePosition::new(
+                id % self.tiles_per_row,
+                id / self.tiles_per_row,
+            );
+            return (pos, self.current_texture)
         }
 
         if id2 == 0 {
@@ -117,8 +123,12 @@ impl TileAllocator {
         self.next_id = id2 + 1;
 
         self.current_texture += 1;
+        let pos = TilePosition::new(
+            id2 % self.tiles_per_row,
+            id2 / self.tiles_per_row,
+        );
 
-        (id2, self.current_texture)
+        (pos, self.current_texture)
     }
 }
 
@@ -156,6 +166,7 @@ pub struct TileEncoder {
     mask_id_range: Range<u32>,
     // TODO: move to drawing parameters.
     pub masks_per_atlas: u32,
+    pub masks_per_row: u32,
     pub reversed: bool,
 
     // Transient state (only useful within a path):
@@ -178,7 +189,9 @@ pub struct TileEncoder {
 
 impl TileEncoder {
     pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
-        let tiles_per_atlas = config.mask_atlas_size.area() / config.tile_size.area() as u32;
+        let atlas_tiles_x = config.mask_atlas_size.width as u32 / config.tile_size.width as u32;
+        let atlas_tiles_y = config.mask_atlas_size.height as u32 / config.tile_size.height as u32;
+        let tiles_per_atlas = atlas_tiles_x * atlas_tiles_y;
         TileEncoder {
             quad_edges: Vec::with_capacity(0),
             line_edges: Vec::with_capacity(8196),
@@ -202,6 +215,7 @@ impl TileEncoder {
 
             mask_id_range: 0..0,
             masks_per_atlas: tiles_per_atlas,
+            masks_per_row: atlas_tiles_x,
             reversed: false,
 
             ranges: BufferRanges::default(),
@@ -209,13 +223,15 @@ impl TileEncoder {
             edge_distributions: [0; 16],
 
             src: SourceTiles {
-                mask_tiles: TileAllocator::new(tiles_per_atlas),
-                color_tiles: TileAllocator::new(tiles_per_atlas),
+                mask_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
+                color_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
             }
         }
     }
 
     pub fn create_similar(&self) -> Self {
+        let atlas_tiles_x = self.masks_per_row;
+        let atlas_tiles_y = self.masks_per_atlas / atlas_tiles_x;
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
@@ -239,6 +255,7 @@ impl TileEncoder {
 
             mask_id_range: 0..0,
             masks_per_atlas: self.masks_per_atlas,
+            masks_per_row: self.masks_per_row,
             reversed: false,
 
             ranges: BufferRanges::default(),
@@ -246,8 +263,8 @@ impl TileEncoder {
             edge_distributions: [0; 16],
 
             src: SourceTiles {
-                mask_tiles: TileAllocator::new(self.masks_per_atlas),
-                color_tiles: TileAllocator::new(self.masks_per_atlas),
+                mask_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
+                color_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
             }
         }
     }
@@ -315,17 +332,17 @@ impl TileEncoder {
         &mut self,
         draw: &DrawParams,
         opaque: bool,
-        tile_index: u32,
-        pattern_data: u32,
-        mask_index: u32,
+        tile_position: TilePosition,
+        pattern_data: PatternData,
+        mask: TilePosition,
     ) {
         if opaque {
-            debug_assert!(mask_index == 0);
+            debug_assert!(mask.to_u32() == 0);
             if draw.merge_solid_tiles
-            && self.current_solid_tile + 1 == tile_index
+            && self.current_solid_tile + 1 == tile_position.x()
             && self.current_pattern_kind == Some(SOLID_COLOR_PATTERN) {
                 if let Some(solid) = self.opaque_solid_tiles.last_mut() {
-                    solid.width += 1;
+                    solid.position.extend();
                 } else {
                     panic!();
                 }
@@ -336,24 +353,22 @@ impl TileEncoder {
                     _ => { panic!() }
                 };
                 tiles.push(TileInstance {
-                    tile_id: tile_index,
+                    position: tile_position,
+                    mask: TilePosition::ZERO,
                     pattern_data,
-                    mask: 0,
-                    width: 0,
                 });
             }
-            self.current_solid_tile = tile_index;
+            self.current_solid_tile = tile_position.x();
         } else {
             self.alpha_tiles.push(TileInstance {
-                tile_id: tile_index,
-                mask: mask_index,
-                pattern_data,
-                width: 0
+                position: tile_position,
+                mask,
+                pattern_data: pattern_data,
             });
         }
     }
 
-    fn allocate_mask_id(&mut self) -> u32 {
+    fn allocate_mask_tile(&mut self) -> TilePosition {
         let (id, texture) = self.src.mask_tiles.allocate();
 
         if texture != self.masks_texture_index {
@@ -402,7 +417,7 @@ impl TileEncoder {
         self.alpha_tiles_start = alpha_tiles_end;
     }
 
-    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> u32 {
+    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> TilePosition {
         let mask = if draw.use_quads {
             self.add_quad_gpu_mask(tile, draw, active_edges)
         } else {
@@ -412,14 +427,14 @@ impl TileEncoder {
         mask.unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges))
     }
 
-    pub fn add_cricle_mask(&mut self, center: Point, radius: f32) -> u32 {
-        let mask_id = self.allocate_mask_id();
-        self.circle_masks.push(CircleMask { mask_id, radius, center: center.to_array() });
+    pub fn add_cricle_mask(&mut self, center: Point, radius: f32) -> TilePosition {
+        let tile = self.allocate_mask_tile();
+        self.circle_masks.push(CircleMask { tile, radius, center: center.to_array() });
 
-        mask_id
+        tile
     }
 
-    pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> Option<u32> {
+    pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> Option<TilePosition> {
         //println!(" * tile ({:?}, {:?}), backdrop: {}, {:?}", tile.x, tile.y, tile.backdrop, active_edges);
 
         let edges_start = self.line_edges.len();
@@ -466,20 +481,20 @@ impl TileEncoder {
         debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         debug_assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
-        let mask_id = self.allocate_mask_id();
-        debug_assert!(mask_id != 0);
+        let tile_position = self.allocate_mask_tile();
+        debug_assert!(tile_position.to_u32() != 0);
 
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
-            mask_id,
+            tile: tile_position,
             backdrop: tile.backdrop + 8192,
             fill_rule: draw.encoded_fill_rule,
         });
 
-        Some(mask_id)
+        Some(tile_position)
     }
 
-    pub fn add_quad_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> Option<u32> {
+    pub fn add_quad_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> Option<TilePosition> {
         let edges_start = self.quad_edges.len();
 
         let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
@@ -522,19 +537,19 @@ impl TileEncoder {
         let edges_end = self.quad_edges.len() as u32;
         assert!(edges_end > edges_start, "{:?}", active_edges);
         assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
-        let mask_id = self.allocate_mask_id();
+        let tile_position = self.allocate_mask_tile();
 
         self.gpu_masks.push(GpuMask {
             edges: (edges_start, edges_end),
-            mask_id,
+            tile: tile_position,
             backdrop: tile.backdrop + 8192,
             fill_rule: draw.encoded_fill_rule,
         });
 
-        Some(mask_id)
+        Some(tile_position)
     }
 
-    pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> u32 {
+    pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> TilePosition {
         debug_assert!(draw.tile_size.width <= 32.0);
         debug_assert!(draw.tile_size.height <= 32.0);
 
@@ -566,7 +581,7 @@ impl TileEncoder {
             }
         }
 
-        let mask_id = self.allocate_mask_id();
+        let mask_id = self.allocate_mask_tile();
 
         let mask_buffer_range = self.mask_uploader.new_mask(mask_id);
         unsafe {

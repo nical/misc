@@ -25,8 +25,8 @@ struct VertexOutput {
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
     var uv = rect_get_uv(vertex_index);
-    let atlas_uv = tiling_atlas_get_uv(atlas, mask_id, uv);
-    let target_pos = normalized_to_target(atlas_uv);
+    var pos = tiling_decode_position(mask_id, uv);
+    let target_pos = normalized_to_target(pos * atlas.inv_resolution);
 
     return VertexOutput(
         target_pos,

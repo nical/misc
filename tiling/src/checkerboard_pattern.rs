@@ -1,4 +1,8 @@
-use crate::Color;
+use lyon::math::Point;
+
+use crate::gpu_store::{GpuStoreHandle, GpuStore};
+use crate::tile_renderer::TileInstance;
+use crate::{Color, TilePosition};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
@@ -6,37 +10,48 @@ use crate::custom_pattern::*;
 pub type CheckerboardPatternBuilder = CustomPatternBuilder<CheckerboardPattern>;
 pub type CheckerboardPatternRenderer = CustomPatternRenderer<CheckerboardPattern>;
 
+pub fn add_checkerboard(gpu_store: &mut GpuStore, color0: Color, color1: Color, offset: Point, scale: f32) -> CheckerboardPattern {
+    let is_opaque = color0.is_opaque() && color1.is_opaque();
+    let color0 = color0.to_f32();
+    let color1 = color1.to_f32();
+    let handle = gpu_store.push(&[
+        color0[0], color0[1], color0[2], color0[3],
+        color1[0], color1[1], color1[2], color1[3],
+        offset.x, offset.y,
+        scale,
+    ]);
+
+    CheckerboardPattern { handle, is_opaque }
+}
+
 pub struct CheckerboardPattern {
-    colors: [Color; 2],
+    handle: GpuStoreHandle,
     is_opaque: bool,
-    scale: f32,
 }
 
 impl CheckerboardPattern {
-    pub fn new(color1: Color, color2: Color, scale: f32) -> Self {
+    pub fn new() -> Self {
         CheckerboardPattern {
-            colors: [color1, color2],
-            is_opaque: color1.is_opaque() && color2.is_opaque(),
-            scale,
+            handle: GpuStoreHandle::INVALID,
+            is_opaque: false,
         }
     }
 }
 
 impl CustomPattern for CheckerboardPattern {
-    type Instance = CheckerboardPatternTile;
+    type Instance = TileInstance;
     type RenderData = ();
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&self, tile_id: u32, x: f32, y: f32) -> Self::Instance {
-        CheckerboardPatternTile {
-            tile_id,
-            offset: [x, y],
-            scale: self.scale,
-            colors: [
-                self.colors[0].to_u32(),
-                self.colors[1].to_u32(),
-            ],
+    fn new_tile(&mut self, position: TilePosition, x: u32, y: u32) -> Self::Instance {
+        TileInstance {
+            position,
+            mask: TilePosition::ZERO,
+            pattern_data: [
+                TilePosition::new(x, y).to_u32(),
+                self.handle.to_u32(),
+            ]
         }
     }
 
@@ -52,10 +67,7 @@ impl CustomPattern for CheckerboardPattern {
 
         let defaults = PipelineDefaults::new();
         let attributes = VertexBuilder::from_slice(&[
-            wgpu::VertexFormat::Uint32,
-            wgpu::VertexFormat::Float32,
-            wgpu::VertexFormat::Uint32x2,
-            wgpu::VertexFormat::Float32x2,
+            wgpu::VertexFormat::Uint32x4,
         ]);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -89,16 +101,3 @@ impl CustomPattern for CheckerboardPattern {
 
     fn set_render_pass_state<'a, 'b: 'a>(_: &'a Self::RenderData, _: &mut wgpu::RenderPass<'b>) {}
 }
-
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct CheckerboardPatternTile {
-    pub tile_id: u32,
-    pub scale: f32,
-    pub colors: [u32; 2],
-    pub offset: [f32; 2],
-}
-
-unsafe impl bytemuck::Pod for CheckerboardPatternTile {}
-unsafe impl bytemuck::Zeroable for CheckerboardPatternTile {}

@@ -20,29 +20,25 @@ struct VertexOutput {
 
 @vertex fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
-    @location(0) tile_index: u32,
-    @location(1) a_mask: u32,
-    @location(2) a_pattern: u32,
-    @location(3) a_width: u32, // TODO: encode in the tile index.
-    #if OPACITY { @location(4) a_opacity: f32, }
+    @location(0) instance_data: vec4<u32>,
 ) -> VertexOutput {
+    var tile = tiling_decode_instance(instance_data);
 
     var uv = rect_get_uv(vertex_index);
-    var pos = tiling_atlas_get_position(globals.target_tiles, tile_index, uv);
-    pos.x += uv.x * f32(a_width) * TILE_SIZE_F32;
+    var pos = tiling_decode_position(tile.tile_index, uv);
     var normalized_pos = pos * globals.target_tiles.inv_resolution;
     var target_pos = normalized_to_target(normalized_pos);
 
     #if TILED_MASK {
-        var mask_uv = tiling_atlas_get_position(globals.src_masks, a_mask, uv);
+        var mask_uv = tiling_decode_position(tile.mask_index, uv);
     }
 
     #if TILED_IMAGE_PATTERN {
-        var tiled_image_uv = tiling_atlas_get_position(globals.src_color, a_pattern, uv);
+        var tiled_image_uv = tiling_decode_position(tile.pattern_data.x, uv);
     }
 
     #if SOLID_PATTERN {
-        var color = decode_color(a_pattern);
+        var color = decode_color(tile.pattern_data.x);
     }
 
     return VertexOutput(
@@ -50,7 +46,6 @@ struct VertexOutput {
         #if TILED_MASK { mask_uv, }
         #if SOLID_PATTERN { color, }
         #if TILED_IMAGE_PATTERN { tiled_image_uv, }
-        #if OPACITY { a_opacity, }
     );
 }
 
@@ -67,7 +62,6 @@ struct VertexOutput {
     #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
     #if SOLID_PATTERN { @location(1) @interpolate(flat) in_color: vec4<f32>, }
     #if TILED_IMAGE_PATTERN { @location(1) tiled_image_uv: vec2<f32>, }
-    #if OPACITY { @location(2) @interpolate(flat) opacity: f32, }
 ) -> @location(0) vec4<f32> {
 
     var color = vec4(1.0);
@@ -84,10 +78,6 @@ struct VertexOutput {
     #if TILED_MASK {{
         var uv = vec2<i32>(i32(mask_uv.x), i32(mask_uv.y));
         color.a *= textureLoad(mask_texture, uv, 0).r;
-    }}
-
-    #if OPACITY {{
-        color.a *= opacity;
     }}
 
     // Premultiply.

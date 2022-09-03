@@ -1,12 +1,13 @@
 use std::sync::Arc;
+use lyon::math::{point, vector};
 use lyon::path::Path;
 use lyon::geom::euclid::default::{Transform2D, Box2D};
 use lyon::geom::Point;
-use crate::checkerboard_pattern::{CheckerboardPatternBuilder, CheckerboardPattern};
-use crate::simple_gradient::{SimpleGradientBuilder, SimpleGradient, Stop};
+use crate::checkerboard_pattern::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard};
+use crate::gpu_store::GpuStore;
+use crate::simple_gradient::{SimpleGradientBuilder, SimpleGradient, Stop, add_gradient};
 use crate::{Color, SolidColorPattern};
 use crate::occlusion::TileMask;
-use crate::point;
 
 pub enum Pattern {
     Color(Color),
@@ -64,6 +65,12 @@ pub struct Commands {
     root: Group,
     transforms: Vec<Transform>,
     max_group_stack_depth: u16,
+}
+
+impl Commands {
+    pub fn set_transform(&mut self, idx: usize, transform: &Transform2D<f32>) {
+        self.transforms[idx].transform = *transform;
+    }
 }
 
 pub struct Canvas {
@@ -190,7 +197,6 @@ pub struct FrameBuilder {
     pub tiler: Tiler,
     pub tile_mask: TileMask,
     stats: FrameBuilderStats,
-    tile_size: f32,
 }
 
 impl FrameBuilder {
@@ -199,29 +205,20 @@ impl FrameBuilder {
         let tile_size = config.tile_size.to_u32();
         let tiles_x = (size.width + tile_size.width - 1) / tile_size.width;
         let tiles_y = (size.height + tile_size.height - 1) / tile_size.height;
-        let ts = config.tile_size.width as f32;
         FrameBuilder {
             targets: vec![TargetData {
                 tile_encoder: TileEncoder::new(config, uploader),
                 solid_color_pattern: SolidColorPattern::new(Color::BLACK),
-                checkerboard_pattern: CheckerboardPatternBuilder::new(ts, CheckerboardPattern::new(
-                    Color::WHITE,
-                    Color::BLACK,
-                    1.0,
-                )),
-                gradient_pattern: SimpleGradientBuilder::new(ts, SimpleGradient::new([
-                    Stop { position: point(0.0, 0.0), color: Color::WHITE },
-                    Stop { position: point(0.0, 0.0), color: Color::WHITE },    
-                ])),
+                checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new()),
+                gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new()),
             }],
             tiler: Tiler::new(config),
             tile_mask: TileMask::new(tiles_x, tiles_y),
             stats: FrameBuilderStats::new(),
-            tile_size: config.tile_size.width
         }
     }
 
-    pub fn build(&mut self, commands: &Commands) {
+    pub fn build(&mut self, commands: &Commands, gpu_store: &mut GpuStore) {
         let t0 = time::precise_time_ns();
 
         self.stats = FrameBuilderStats::new();
@@ -232,14 +229,8 @@ impl FrameBuilder {
             self.targets.push(TargetData {
                 tile_encoder,
                 solid_color_pattern: SolidColorPattern::new(Color::BLACK),
-                checkerboard_pattern: CheckerboardPatternBuilder::new(self.tile_size, CheckerboardPattern::new(
-                    Color::WHITE, Color::BLACK,
-                    1.0,
-                )),
-                gradient_pattern: SimpleGradientBuilder::new(self.tile_size, SimpleGradient::new([
-                    Stop { position: point(0.0, 0.0), color: Color::WHITE },
-                    Stop { position: point(0.0, 0.0), color: Color::WHITE },    
-                ])),
+                checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new()),
+                gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new()),
             });
         }
 
@@ -250,7 +241,7 @@ impl FrameBuilder {
         }
         self.tile_mask.clear();
 
-        self.process_group(&commands.root, &commands);
+        self.process_group(&commands.root, &commands, gpu_store);
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.end_paths();
@@ -262,7 +253,7 @@ impl FrameBuilder {
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);
     }
 
-    pub fn process_group(&mut self, group: &Group, commands: &Commands) {
+    pub fn process_group(&mut self, group: &Group, commands: &Commands, gpu_store: &mut GpuStore) {
         if let Some(clip) = &group.clip {
             // TODO: save clip state.
 
@@ -312,7 +303,14 @@ impl FrameBuilder {
                             &mut target.solid_color_pattern
                         },
                         Pattern::Checkerboard { colors, scale } => {
-                            target.checkerboard_pattern.set(CheckerboardPattern::new(colors[0], colors[1], scale));
+                            let mut scale = scale;
+                            let mut pos = point(0.0, 0.0);
+                            if let Some(transform) = transform {
+                                pos = transform.transform_point(pos);
+                                scale =transform.transform_vector(vector(0.0, scale)).y
+                            }
+                            let checkerboard = add_checkerboard(gpu_store, colors[0], colors[1], pos, scale);
+                            target.checkerboard_pattern.set(checkerboard);
                             &mut target.checkerboard_pattern
                         }
                         Pattern::Gradient { stops } => {
@@ -321,7 +319,13 @@ impl FrameBuilder {
                                 stops[0].position = transform.transform_point(stops[0].position);
                                 stops[1].position = transform.transform_point(stops[1].position);
                             }
-                            target.gradient_pattern.set(SimpleGradient::new(stops));
+                            let gradient = add_gradient(
+                                gpu_store,
+                                stops[0].position, stops[0].color,
+                                stops[1].position, stops[1].color,
+                            );
+
+                            target.gradient_pattern.set(gradient);
                             &mut target.gradient_pattern
                         }
                         _ => { unimplemented!() }
@@ -341,7 +345,7 @@ impl FrameBuilder {
                     self.stats.tiled_paths += 1;
                 }
                 Command::Group(group) => {
-                    self.process_group(group, commands);
+                    self.process_group(group, commands, gpu_store);
                 }
             }
         }

@@ -1,6 +1,6 @@
 use bytemuck::Pod;
 
-use crate::TILED_IMAGE_PATTERN;
+use crate::{TILED_IMAGE_PATTERN, TilePosition, PatternData};
 use crate::gpu::ShaderSources;
 use crate::tile_encoder::{BufferRange, TileAllocator};
 use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator};
@@ -13,7 +13,7 @@ pub trait CustomPattern: Sized {
 
     fn is_opaque(&self) -> bool;
 
-    fn new_tile(&self, tile_id: u32, x: f32, y: f32) -> Self::Instance;
+    fn new_tile(&mut self, atlas_tile_id: TilePosition, x: u32, y: u32) -> Self::Instance;
 
     fn new_renderer(
         device: &wgpu::Device,
@@ -22,6 +22,9 @@ pub trait CustomPattern: Sized {
     ) -> CustomPatternRenderer<Self>;
 
     fn set_render_pass_state<'a, 'b: 'a>(data: &'a Self::RenderData, pass: &mut wgpu::RenderPass<'b>);
+
+    fn allocate_buffer_ranges(&mut self, _render_data: &mut Self::RenderData) {}
+    fn upload(&self, _render_data: &mut Self::RenderData, _queue: &wgpu::Queue) {}
 }
 
 pub struct CustomPatternBuilder<Parameters: CustomPattern> {
@@ -33,11 +36,10 @@ pub struct CustomPatternBuilder<Parameters: CustomPattern> {
     render_pass_start: u32,
     x: u32,
     y: u32,
-    tile_size: f32,
 }
 
 impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
-    pub fn new(tile_size: f32, parameters: Parameters) -> Self {
+    pub fn new(parameters: Parameters) -> Self {
         CustomPatternBuilder {
             parameters,
             tiles: Vec::new(),
@@ -47,7 +49,6 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
             render_pass_start: 0,
             x: 0,
             y: 0,
-            tile_size,
         }
     }
 
@@ -64,20 +65,22 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
 
     pub fn allocate_buffer_ranges(&mut self, renderer: &mut CustomPatternRenderer<Parameters>) {
         self.vbo_range = renderer.vbo_alloc.push(self.tiles.len());
+        self.parameters.allocate_buffer_ranges(&mut renderer.data);
     }
 
     pub fn upload(&self, renderer: &mut CustomPatternRenderer<Parameters>, queue: &wgpu::Queue) {
-        if self.tiles.is_empty() {
-            return;
+        if !self.tiles.is_empty() {
+            queue.write_buffer(
+                &renderer.vbo,
+                self.vbo_range.byte_offset::<Parameters::Instance>(),
+                bytemuck::cast_slice(&self.tiles),
+            );
+            renderer.render_passes.clear();
+            renderer.render_passes.extend_from_slice(&self.render_passes);
         }
-        queue.write_buffer(
-            &renderer.vbo,
-            self.vbo_range.byte_offset::<Parameters::Instance>(),
-            bytemuck::cast_slice(&self.tiles),
-        );
-        renderer.render_passes.clear();
-        renderer.render_passes.extend_from_slice(&self.render_passes);
-}
+
+        self.parameters.upload(&mut renderer.data, queue);
+    }
 
     pub fn end_render_pass(&mut self) {
         while self.render_passes.len() as u32 <= self.current_texture {
@@ -97,8 +100,8 @@ impl<Parameters: CustomPattern> crate::tiler::TilerPattern for CustomPatternBuil
         self.y = y;
     }
 
-    fn request_tile(&mut self, atlas: &mut TileAllocator) -> u32 {
-        let (tile_id, texture) = atlas.allocate();
+    fn request_tile(&mut self, atlas: &mut TileAllocator) -> PatternData {
+        let (atlas_tile_id, texture) = atlas.allocate();
 
         if texture != self.current_texture {
             self.end_render_pass();
@@ -106,14 +109,14 @@ impl<Parameters: CustomPattern> crate::tiler::TilerPattern for CustomPatternBuil
         }
 
         let instance = self.parameters.new_tile(
-            tile_id,
-            self.x as f32 * self.tile_size,
-            self.y as f32 * self.tile_size,
+            atlas_tile_id,
+            self.x,
+            self.y,
         );
 
         self.tiles.push(instance);
 
-        tile_id
+        [atlas_tile_id.to_u32(), 0]
     }
 
     fn set_render_pass(&mut self, pass_index: u32) {
@@ -133,7 +136,7 @@ pub struct CustomPatternRenderer<Pattern: CustomPattern> {
     vbo: wgpu::Buffer,
     vbo_alloc: BufferBumpAllocator,
     render_passes: Vec<Range<u32>>,
-    data: Pattern::RenderData,
+    pub data: Pattern::RenderData,
 }
 
 impl<Pattern: CustomPattern> CustomPatternRenderer<Pattern> {

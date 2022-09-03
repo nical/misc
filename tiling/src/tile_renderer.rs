@@ -1,11 +1,16 @@
+use std::num::NonZeroU32;
+
+use crate::{TilePosition, PatternData};
 /// A lot of the boilerplate for the interaction between the tiling code a wgpu moved into one place.
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
 use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder, PipelineDefaults};
 use crate::gpu::mask_uploader::{MaskUploadCopies};
+use crate::gpu_store::GpuStore;
 use crate::tile_encoder::{TileEncoder, BufferRange, LineEdge};
 
+use wgpu::TextureAspect;
 use wgpu::util::DeviceExt;
 
 /*
@@ -27,10 +32,9 @@ pub trait PatternRenderer {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct TileInstance {
-    pub tile_id: u32,
-    pub mask: u32,
-    pub pattern_data: u32,
-    pub width: u32,
+    pub position: TilePosition,
+    pub mask: TilePosition,
+    pub pattern_data: PatternData,
 }
 
 unsafe impl bytemuck::Pod for TileInstance {}
@@ -40,7 +44,7 @@ unsafe impl bytemuck::Zeroable for TileInstance {}
 #[derive(Copy, Clone, Debug)]
 pub struct Mask {
     pub edges: (u32, u32),
-    pub mask_id: u32,
+    pub tile: TilePosition,
     pub fill_rule: u16,
     pub backdrop: i16,
 }
@@ -51,7 +55,7 @@ unsafe impl bytemuck::Zeroable for Mask {}
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct CircleMask {
-    pub mask_id: u32,
+    pub tile: TilePosition,
     pub radius: f32,
     pub center: [f32; 2],
 }
@@ -92,7 +96,7 @@ pub struct TileRenderer {
 
 
 impl TileRenderer {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout, gpu_store: &GpuStore) -> Self {
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
         let mask_atlas_desc_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -108,6 +112,16 @@ impl TileRenderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }
             ],
         });
 
@@ -161,11 +175,7 @@ impl TileRenderer {
         });
 
         let defaults = PipelineDefaults::new();
-        let mut attributes = VertexBuilder::new();
-        attributes.push(wgpu::VertexFormat::Uint32);
-        attributes.push(wgpu::VertexFormat::Uint32);
-        attributes.push(wgpu::VertexFormat::Uint32);
-        attributes.push(wgpu::VertexFormat::Uint32);
+        let attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
 
         let opaque_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Opaque solid tiles"),
@@ -368,6 +378,19 @@ impl TileRenderer {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
                 },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("gpu store"),
+                        format: Some(wgpu::TextureFormat::Rgba32Float),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        aspect: TextureAspect::All,
+                        base_mip_level: 0,
+                        base_array_layer: 0,
+                        mip_level_count: NonZeroU32::new(1),
+                        array_layer_count: NonZeroU32::new(1),
+                    }))
+                }
             ],
         });
 
@@ -877,6 +900,8 @@ impl BumpAllocatedBuffer {
 
         true
     }
+
+    pub fn buffer(&self) -> &wgpu::Buffer { &self.buffer }
 }
 
 pub struct BufferBumpAllocator {

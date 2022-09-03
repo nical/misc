@@ -12,6 +12,7 @@ pub mod tile_renderer;
 pub mod checkerboard_pattern;
 pub mod custom_pattern;
 pub mod simple_gradient;
+pub mod gpu_store;
 
 pub use tiler::*;
 pub use occlusion::*;
@@ -42,6 +43,15 @@ impl Color {
         | (self.g as u32) << 16
         | (self.b as u32) << 8
         | self.a as u32
+    }
+
+    pub fn to_f32(&self) -> [f32; 4] {
+        [
+            self.r as f32 / 255.0,
+            self.g as f32 / 255.0,
+            self.b as f32 / 255.0,
+            self.a as f32 / 255.0,
+        ]
     }
 
     pub fn linear_to_srgb(r: u8, g: u8, b: u8, a:u8) -> Self {

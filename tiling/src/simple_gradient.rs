@@ -1,4 +1,6 @@
-use crate::{Color, Point, vector};
+use crate::gpu_store::{GpuStore, GpuStoreHandle};
+use crate::tile_renderer::TileInstance;
+use crate::{Color, Point, TilePosition};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
@@ -6,20 +8,22 @@ use crate::custom_pattern::*;
 pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;
 pub type SimpleGradientRenderer = CustomPatternRenderer<SimpleGradient>;
 
+pub fn add_gradient(store: &mut GpuStore, p0: Point, color0: Color, p1: Point, color1: Color) -> SimpleGradient {
+    let is_opaque = color0.is_opaque() && color1.is_opaque();
+    let color0 = color0.to_f32();
+    let color1 = color1.to_f32();
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct SimpleGradientTile {
-    pub tile_id: u32,
-    pub padding: u32,
-    pub from_color: u32,
-    pub to_color: u32,
-    pub from_pos: [f32; 2],
-    pub to_pos: [f32; 2],
+    let handle = store.push(&[
+        p0.x, p0.y, p1.x, p1.y,
+        color0[0], color0[1], color0[2], color0[3],
+        color1[0], color1[1], color1[2], color1[3],
+    ]);
+
+    SimpleGradient {
+        handle,
+        is_opaque,
+    }
 }
-
-unsafe impl bytemuck::Pod for SimpleGradientTile {}
-unsafe impl bytemuck::Zeroable for SimpleGradientTile {}
 
 #[derive(Copy, Clone, Debug)]
 pub struct Stop {
@@ -27,35 +31,35 @@ pub struct Stop {
     pub color: Color,
 }
 pub struct SimpleGradient {
-    stops: [Stop; 2],
+    handle: GpuStoreHandle,
     is_opaque: bool,
 }
 
 impl SimpleGradient {
-    pub fn new(stops: [Stop; 2]) -> Self {
+    pub fn new() -> Self {
         SimpleGradient {
-            is_opaque: stops[0].color.is_opaque() && stops[1].color.is_opaque(),
-            stops,
+            handle: GpuStoreHandle::INVALID,
+            is_opaque: false,
         }
     }
 }
 
 impl CustomPattern for SimpleGradient {
-    type Instance = SimpleGradientTile;
+    type Instance = TileInstance;
     type RenderData = ();
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&self, tile_id: u32, x: f32, y: f32) -> Self::Instance {
-        let offset = vector(x, y);
+    fn new_tile(&mut self, atlas_tile_id: TilePosition, x: u32, y: u32) -> Self::Instance {
+        let pattern_position = TilePosition::new(x, y);
 
-        SimpleGradientTile {
-            tile_id,
-            padding: 0,
-            from_color: self.stops[0].color.to_u32(),
-            to_color: self.stops[1].color.to_u32(),
-            from_pos: (self.stops[0].position - offset).to_array(),
-            to_pos: (self.stops[1].position - offset).to_array(),
+        TileInstance {
+            position: atlas_tile_id,
+            mask: TilePosition::ZERO,
+            pattern_data: [
+                pattern_position.to_u32(),
+                self.handle.to_u32(),
+            ],
         }
     }
 
@@ -70,10 +74,7 @@ impl CustomPattern for SimpleGradient {
         let module = shaders.create_shader_module(device, label, src, &[]);
 
         let defaults = PipelineDefaults::new();
-        let attributes = VertexBuilder::from_slice(&[
-            wgpu::VertexFormat::Uint32x4,
-            wgpu::VertexFormat::Float32x4,
-        ]);
+        let attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),

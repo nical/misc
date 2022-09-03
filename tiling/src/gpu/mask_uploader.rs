@@ -1,5 +1,5 @@
 use std::ops::Range;
-use crate::buffer::{Buffer, UniformBufferPool};
+use crate::{buffer::{Buffer, UniformBufferPool}, TilePosition};
 
 
 const STAGING_BUFFER_SIZE: u32 = 65536;
@@ -7,7 +7,7 @@ const STAGING_BUFFER_SIZE: u32 = 65536;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CpuMask {
-    pub mask_id: u32,
+    pub position: TilePosition,
     pub byte_offset: u32,
 }
 
@@ -185,7 +185,10 @@ impl MaskUploader {
         self.current_instance_start = 0;
     }
 
-    pub fn new_mask(&mut self, id: u32) -> Range<usize> {
+    pub fn new_mask(&mut self, id: TilePosition) -> Range<usize> {
+
+        unimplemented!(); // TODO move from atlas index to tile position.
+/*
         const TILE_SIZE: usize = 16;
 
         let atlas_index = id / self.masks_per_atlas;
@@ -217,11 +220,12 @@ impl MaskUploader {
         let end = start + (TILE_SIZE * TILE_SIZE);
 
         self.copy_instances.push(CpuMask {
-            mask_id: id,
+            position: id,
             byte_offset: start as u32,
         });
 
         start..end
+        */
     }
 
     pub fn needs_upload(&self) -> bool {

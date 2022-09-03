@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use tiling::*;
+use tiling::gpu_store::GpuStore;
+use tiling::{*, Transform2D};
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPattern;
 use tiling::checkerboard_pattern::CheckerboardPattern;
@@ -8,7 +9,7 @@ use tiling::tile_renderer::PatternRenderer;
 use tiling::gpu::{GpuTileAtlasDescriptor, ShaderSources};
 use tiling::load_svg::*;
 use tiling::gpu::mask_uploader::MaskUploader;
-use lyon::path::geom::euclid::{size2, Transform2D};
+use lyon::path::geom::euclid::size2;
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -31,7 +32,7 @@ fn main() {
     let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 128;
-    let tile_atlas_size: u32 = 1024;
+    let tile_atlas_size: u32 = 4096;
     let inital_window_size = size2(1200u32, 1000);
 
     let mut tiler_config = TilerConfig {
@@ -141,15 +142,20 @@ fn main() {
         Stop { position: point(600.0, 500.0), color: Color { r: 100, g: 100, b: 250, a: 255} },
     ]});
 
-    canvas.fill(Arc::new(builder.build()), Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 30.0 });
+    canvas.fill(
+        Arc::new(builder.build()),
+        Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 25.0 }
+    );
 
     canvas.pop_transform();
 
     canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 180}));
 
-    let commands = canvas.finish();
+    let mut commands = canvas.finish();
 
     let mut shaders = ShaderSources::new();
+
+    let mut gpu_store = GpuStore::new(1024, 1024, &device);
 
     let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
         &device,
@@ -157,12 +163,13 @@ fn main() {
         tile_size as u32,
         tile_atlas_size as u32,
         &globals_bind_group_layout,
+        &gpu_store,
     );
 
     let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
     let mut gradients = SimpleGradient::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
 
-    frame_builder.build(&commands);
+    frame_builder.build(&commands, &mut gpu_store);
 
     let te = &frame_builder.targets[0].tile_encoder;
     println!("view box: {:?}", view_box);
@@ -191,7 +198,9 @@ fn main() {
 
     let mut scene = SceneGlobals {
         zoom: 1.0,
+        target_zoom: 1.0,
         pan: [0.0, 0.0],
+        target_pan: [0.0, 0.0],
         window_size,
         wireframe: false,
         size_changed: true,
@@ -204,6 +213,12 @@ fn main() {
         if !update_inputs(event, &window, control_flow, &mut scene) {
             return;
         }
+
+        let tx = scene.pan[0];
+        let ty = scene.pan[1];
+        let transform = Transform2D::scale(scene.zoom, scene.zoom)
+           .then_translate(vector(tx, ty));
+        commands.set_transform(1, &transform);
 
         if scene.size_changed {
             scene.size_changed = false;
@@ -242,7 +257,10 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        frame_builder.build(&commands);
+        gpu_store.clear();
+        gpu_store.push(&[0.0]);
+        gpu_store.push(&[0.0]);
+        frame_builder.build(&commands, &mut gpu_store);
 
         tile_renderer.begin_frame();
         checkerboard.begin_frame();
@@ -260,6 +278,7 @@ fn main() {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
             target.checkerboard_pattern.upload(&mut checkerboard, &queue);
             target.gradient_pattern.upload(&mut gradients, &queue);
+            gpu_store.upload(&queue);
         }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -285,7 +304,9 @@ fn main() {
 #[derive(Copy, Clone, Debug)]
 pub struct SceneGlobals {
     pub zoom: f32,
+    pub target_zoom: f32,
     pub pan: [f32; 2],
+    pub target_pan: [f32; 2],
     pub window_size: PhysicalSize<u32>,
     pub wireframe: bool,
     pub size_changed: bool,
@@ -341,22 +362,22 @@ fn update_inputs(
                 return false;
             }
             VirtualKeyCode::PageDown => {
-                scene.zoom *= 0.8;
+                scene.target_zoom *= 0.8;
             }
             VirtualKeyCode::PageUp => {
-                scene.zoom *= 1.25;
+                scene.target_zoom *= 1.25;
             }
             VirtualKeyCode::Left => {
-                scene.pan[0] -= 50.0 / scene.pan[0];
+                scene.target_pan[0] += 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Right => {
-                scene.pan[0] += 50.0 / scene.pan[0];
+                scene.target_pan[0] -= 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Up => {
-                scene.pan[1] += 50.0 / scene.pan[1];
+                scene.target_pan[1] += 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Down => {
-                scene.pan[1] -= 50.0 / scene.pan[1];
+                scene.target_pan[1] -= 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::W => {
                 scene.wireframe = !scene.wireframe;
@@ -367,6 +388,10 @@ fn update_inputs(
             //println!("{:?}", _evt);
         }
     }
+
+    scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
+    scene.pan[0] += (scene.target_pan[0] - scene.pan[0]) * 0.15;
+    scene.pan[1] += (scene.target_pan[1] - scene.pan[1]) * 0.15;
 
     *control_flow = ControlFlow::Poll;
 
