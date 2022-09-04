@@ -1,6 +1,5 @@
 use crate::gpu_store::{GpuStore, GpuStoreHandle};
-use crate::tile_renderer::TileInstance;
-use crate::{Color, Point, TilePosition};
+use crate::{Color, Point, TilePosition, PatternData};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
@@ -45,22 +44,15 @@ impl SimpleGradient {
 }
 
 impl CustomPattern for SimpleGradient {
-    type Instance = TileInstance;
     type RenderData = ();
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&mut self, atlas_tile_id: TilePosition, x: u32, y: u32) -> Self::Instance {
-        let pattern_position = TilePosition::new(x, y);
-
-        TileInstance {
-            position: atlas_tile_id,
-            mask: TilePosition::ZERO,
-            pattern_data: [
-                pattern_position.to_u32(),
-                self.handle.to_u32(),
-            ],
-        }
+    fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData {
+        [
+           pattern_position.to_u32(),
+            self.handle.to_u32(),
+        ]
     }
 
     fn new_renderer(

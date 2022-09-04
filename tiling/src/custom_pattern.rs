@@ -1,19 +1,16 @@
-use bytemuck::Pod;
-
 use crate::{TILED_IMAGE_PATTERN, TilePosition, PatternData};
 use crate::gpu::ShaderSources;
 use crate::tile_encoder::{BufferRange, TileAllocator};
-use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator};
+use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator, TileInstance};
 
 use std::ops::Range;
 
 pub trait CustomPattern: Sized {
-    type Instance: Pod;
     type RenderData;
 
     fn is_opaque(&self) -> bool;
 
-    fn new_tile(&mut self, atlas_tile_id: TilePosition, x: u32, y: u32) -> Self::Instance;
+    fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData;
 
     fn new_renderer(
         device: &wgpu::Device,
@@ -29,7 +26,7 @@ pub trait CustomPattern: Sized {
 
 pub struct CustomPatternBuilder<Parameters: CustomPattern> {
     parameters: Parameters,
-    tiles: Vec<Parameters::Instance>,
+    tiles: Vec<TileInstance>,
     vbo_range: BufferRange,
     render_passes: Vec<Range<u32>>,
     current_texture: u32,
@@ -72,7 +69,7 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
         if !self.tiles.is_empty() {
             queue.write_buffer(
                 &renderer.vbo,
-                self.vbo_range.byte_offset::<Parameters::Instance>(),
+                self.vbo_range.byte_offset::<TileInstance>(),
                 bytemuck::cast_slice(&self.tiles),
             );
             renderer.render_passes.clear();
@@ -108,13 +105,13 @@ impl<Parameters: CustomPattern> crate::tiler::TilerPattern for CustomPatternBuil
             self.current_texture = texture;
         }
 
-        let instance = self.parameters.new_tile(
-            atlas_tile_id,
-            self.x,
-            self.y,
-        );
+        let pattern_data = self.parameters.new_tile(TilePosition::new(self.x, self.y));
 
-        self.tiles.push(instance);
+        self.tiles.push(TileInstance {
+            position: atlas_tile_id,
+            mask: TilePosition::ZERO,
+            pattern_data,
+        });
 
         [atlas_tile_id.to_u32(), 0]
     }

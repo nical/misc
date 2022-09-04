@@ -1,8 +1,7 @@
 use lyon::math::Point;
 
 use crate::gpu_store::{GpuStoreHandle, GpuStore};
-use crate::tile_renderer::TileInstance;
-use crate::{Color, TilePosition};
+use crate::{Color, TilePosition, PatternData};
 use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
@@ -39,20 +38,15 @@ impl CheckerboardPattern {
 }
 
 impl CustomPattern for CheckerboardPattern {
-    type Instance = TileInstance;
     type RenderData = ();
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&mut self, position: TilePosition, x: u32, y: u32) -> Self::Instance {
-        TileInstance {
-            position,
-            mask: TilePosition::ZERO,
-            pattern_data: [
-                TilePosition::new(x, y).to_u32(),
-                self.handle.to_u32(),
-            ]
-        }
+    fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData {
+        [
+            pattern_position.to_u32(),
+            self.handle.to_u32(),
+        ]
     }
 
     fn new_renderer(
