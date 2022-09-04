@@ -2,11 +2,11 @@ use std::sync::Arc;
 use tiling::gpu_store::GpuStore;
 use tiling::{*, Transform2D};
 use tiling::canvas::*;
-use tiling::custom_pattern::CustomPattern;
+use tiling::custom_pattern::CustomPatterns;
 use tiling::checkerboard_pattern::CheckerboardPattern;
 use tiling::simple_gradient::{SimpleGradient, Stop};
 use tiling::tile_renderer::PatternRenderer;
-use tiling::gpu::{GpuTileAtlasDescriptor, ShaderSources};
+use tiling::gpu::{GpuTargetDescriptor, ShaderSources};
 use tiling::load_svg::*;
 use tiling::gpu::mask_uploader::MaskUploader;
 use lyon::path::geom::euclid::size2;
@@ -73,18 +73,15 @@ fn main() {
     )).unwrap();
 
     let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Globals"),
+        label: Some("Window target"),
         contents: bytemuck::cast_slice(&[
-            tiling::gpu::GpuGlobals {
-                target_tiles: GpuTileAtlasDescriptor::new(window_size.width as u32, window_size.height, tile_size as u32),
-                src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-                src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-            }
+            GpuTargetDescriptor::new(window_size.width, window_size.height),
         ]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    let globals_bind_group_layout = tiling::gpu::GpuGlobals::create_bind_group_layout(&device);
+    // TODO: redundant.
+    let globals_bind_group_layout = tiling::gpu::GpuTargetDescriptor::create_bind_group_layout(&device);
     let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Globals"),
         layout: &globals_bind_group_layout,
@@ -166,8 +163,10 @@ fn main() {
         &gpu_store,
     );
 
-    let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
-    let mut gradients = SimpleGradient::new_renderer(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
+    let mut custom_patterns = CustomPatterns::new(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
+
+    let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut custom_patterns);
+    let mut gradients = SimpleGradient::new_renderer(&device, &mut custom_patterns);
 
     frame_builder.build(&commands, &mut gpu_store);
 
@@ -234,11 +233,7 @@ fn main() {
             queue.write_buffer(
                 &globals_ubo,
                 0,
-                bytemuck::cast_slice(&[tiling::gpu::GpuGlobals {
-                    target_tiles: GpuTileAtlasDescriptor::new(scene.window_size.width as u32, scene.window_size.height, tile_size as u32),
-                    src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-                    src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-                }]),
+                bytemuck::cast_slice(&[GpuTargetDescriptor::new(scene.window_size.width as u32, scene.window_size.height)]),
             );    
         }
 

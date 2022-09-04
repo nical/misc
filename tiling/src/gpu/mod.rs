@@ -6,40 +6,30 @@ use std::{collections::HashMap};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct GpuTileAtlasDescriptor {
+pub struct GpuTargetDescriptor {
+    pub width: f32,
+    pub height: f32,
     pub inv_width: f32,
     pub inv_height: f32,
-    pub tiles_per_row: u32,
-    pub tiles_per_atlas: u32,
 }
 
-impl GpuTileAtlasDescriptor {
-    pub fn new(w: u32, h: u32, tile_size: u32) -> Self {
-        let inv_width = 1.0 / (w as f32);
-        let inv_height = 1.0 / (h as f32);
-        let tiles_per_row = (w + tile_size - 1) / tile_size;
-        let tiles_per_atlas = tiles_per_row * ((h + tile_size - 1) / tile_size);
-        GpuTileAtlasDescriptor { inv_width, inv_height, tiles_per_row, tiles_per_atlas }
+impl GpuTargetDescriptor {
+    pub fn new(w: u32, h: u32) -> Self {
+        let width = w as  f32;
+        let height = h as f32;
+        let inv_width = 1.0 / width;
+        let inv_height = 1.0 / height;
+        GpuTargetDescriptor { width, height, inv_width, inv_height }
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct GpuGlobals {
-    pub target_tiles: GpuTileAtlasDescriptor,
-    pub src_masks: GpuTileAtlasDescriptor,
-    pub src_color: GpuTileAtlasDescriptor,
-}
+unsafe impl bytemuck::Pod for GpuTargetDescriptor {}
+unsafe impl bytemuck::Zeroable for GpuTargetDescriptor {}
 
-unsafe impl bytemuck::Pod for GpuGlobals {}
-unsafe impl bytemuck::Zeroable for GpuGlobals {}
-unsafe impl bytemuck::Pod for GpuTileAtlasDescriptor {}
-unsafe impl bytemuck::Zeroable for GpuTileAtlasDescriptor {}
-
-impl GpuGlobals {
+impl GpuTargetDescriptor {
     pub fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Globals"),
+            label: Some("target descriptor"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -47,27 +37,7 @@ impl GpuGlobals {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuGlobals>() as u64),
-                    },
-                    count: None,
-                },
-            ],
-        })
-    }
-}
-
-impl GpuTileAtlasDescriptor {
-    pub fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mask atlas descriptor"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuTileAtlasDescriptor>() as u64),
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuTargetDescriptor>() as u64),
                     },
                     count: None,
                 },
@@ -122,6 +92,10 @@ impl ShaderSources {
         });
 
         module
+    }
+
+    pub fn define(&mut self, name: &str, content: &str) {
+        self.source_library.insert(name.into(), content.into());
     }
 }
 

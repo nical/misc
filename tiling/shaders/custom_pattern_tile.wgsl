@@ -1,13 +1,17 @@
 #import tiling
 #import render_target
 #import rect
-#import pattern::color
+
+struct Pattern {
+#mixin custom_pattern_struct_src
+}
+
+#mixin custom_pattern_src
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
-    #if SOLID_PATTERN { @location(1) @interpolate(flat) color: vec4<f32>, }
-    #if TILED_IMAGE_PATTERN { @location(1) src_uv: vec2<f32>, }
+    #mixin custom_pattern_varyings_src
 };
 
 @vertex fn vs_main(
@@ -20,51 +24,32 @@ struct VertexOutput {
     var pos = tiling_decode_position(tile.tile_index, uv);
     var target_pos = canvas_to_target(pos);
 
+    var pattern = pattern_vertex(tile, uv);
+
     #if TILED_MASK {
         var mask_uv = tiling_decode_position(tile.mask_index, uv);
-    }
-
-    #if TILED_IMAGE_PATTERN {
-        var tiled_image_uv = tiling_decode_position(tile.pattern_data.x, uv);
-    }
-
-    #if SOLID_PATTERN {
-        var color = decode_color(tile.pattern_data.x);
     }
 
     return VertexOutput(
         target_pos,
         #if TILED_MASK { mask_uv, }
-        #if SOLID_PATTERN { color, }
-        #if TILED_IMAGE_PATTERN { tiled_image_uv, }
+        #mixin custom_pattern_pass_varyings_src
     );
 }
-
 
 #if TILED_MASK {
     @group(1) @binding(0) var mask_texture: texture_2d<f32>;
 }
 
-#if TILED_IMAGE_PATTERN {
-    @group(2) @binding(0) var src_texture: texture_2d<f32>;
-}
-
 @fragment fn fs_main(
     #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
-    #if SOLID_PATTERN { @location(1) @interpolate(flat) in_color: vec4<f32>, }
-    #if TILED_IMAGE_PATTERN { @location(1) tiled_image_uv: vec2<f32>, }
+    #mixin custom_pattern_varyings_src
 ) -> @location(0) vec4<f32> {
+    var pattern = Pattern(
+        #mixin custom_pattern_fragment_arguments_src
+    );
 
-    var color = vec4(1.0);
-
-    #if SOLID_PATTERN {{
-        color *= in_color;
-    }}
-
-    #if TILED_IMAGE_PATTERN {{
-        var uv = vec2<i32>(i32(tiled_image_uv.x), i32(tiled_image_uv.y));
-        color *= textureLoad(src_texture, uv, 0);
-    }}
+    var color = pattern_fragment(pattern);
 
     #if TILED_MASK {{
         var uv = vec2<i32>(i32(mask_uv.x), i32(mask_uv.y));

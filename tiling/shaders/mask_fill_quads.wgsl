@@ -8,8 +8,6 @@
 #import render_target
 #import tiling
 
-@group(0) @binding(0) var<uniform> atlas: TileAtlasDescriptor;
-
 struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) edges: vec2<u32>,
@@ -30,7 +28,7 @@ struct VertexOutput {
 
     var uv = rect_get_uv(vertex_index);
     var pos = tiling_decode_position(in_mask_id, uv);
-    let target_pos = normalized_to_target(pos * atlas.inv_resolution);
+    let target_pos = canvas_to_target(pos);
 
     return VertexOutput(
         uv * TILE_SIZE_F32,

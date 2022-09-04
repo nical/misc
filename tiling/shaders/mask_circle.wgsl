@@ -9,8 +9,6 @@
 #import tiling
 #import mask::circle
 
-@group(0) @binding(0) var<uniform> atlas: TileAtlasDescriptor;
-
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -26,7 +24,7 @@ struct VertexOutput {
 ) -> VertexOutput {
     var uv = rect_get_uv(vertex_index);
     var pos = tiling_decode_position(mask_id, uv);
-    let target_pos = normalized_to_target(pos * atlas.inv_resolution);
+    let target_pos = canvas_to_target(pos);
 
     return VertexOutput(
         target_pos,

@@ -5,7 +5,7 @@ use crate::{TilePosition, PatternData};
 ///
 /// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
 
-use crate::gpu::{ShaderSources, GpuTileAtlasDescriptor, VertexBuilder, PipelineDefaults};
+use crate::gpu::{ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults};
 use crate::gpu::mask_uploader::{MaskUploadCopies};
 use crate::gpu_store::GpuStore;
 use crate::tile_encoder::{TileEncoder, BufferRange, LineEdge};
@@ -98,7 +98,7 @@ pub struct TileRenderer {
 impl TileRenderer {
     pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout, gpu_store: &GpuStore) -> Self {
 
-        let atlas_desc_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
+        let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
         let mask_atlas_desc_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile mask atlas"),
             entries: &[
@@ -128,7 +128,7 @@ impl TileRenderer {
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
             contents: bytemuck::cast_slice(&[
-                GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size)
+                GpuTargetDescriptor::new(tile_atlas_size, tile_atlas_size)
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -733,7 +733,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
     let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
     let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);
 
-    let mask_globals_buffer_size = std::mem::size_of::<GpuTileAtlasDescriptor>() as u64;
+    let mask_globals_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
 
     let mask_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask"),

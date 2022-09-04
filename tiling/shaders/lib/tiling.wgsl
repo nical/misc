@@ -16,13 +16,6 @@ fn tiling_decode_instance(encoded: vec4<u32>) -> TileInstance {
     return instance;
 }
 
-struct TileAtlasDescriptor {
-    inv_resolution: vec2<f32>,
-    // TODO: dont need these two anymore.
-    tiles_per_row: u32,
-    tiles_per_atlas: u32,
-};
-
 let TILE_COORD_MASK: u32 = 0x3FFu;
 
 fn tiling_decode_position(encoded: u32, uv: vec2<f32>) -> vec2<f32> {

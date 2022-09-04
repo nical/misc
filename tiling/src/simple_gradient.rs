@@ -1,6 +1,5 @@
 use crate::gpu_store::{GpuStore, GpuStoreHandle};
 use crate::{Color, Point, TilePosition, PatternData};
-use crate::gpu::{ShaderSources, VertexBuilder, PipelineDefaults};
 
 use crate::custom_pattern::*;
 
@@ -41,6 +40,31 @@ impl SimpleGradient {
             is_opaque: false,
         }
     }
+
+    pub fn new_renderer(
+        device: &wgpu::Device,
+        helper: &mut CustomPatterns,
+    ) -> CustomPatternRenderer<Self> {
+        let varyings = &[
+            Varying { name: "position", kind: "vec2<f32>", interpolate: "perspective" },
+            Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
+            Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
+            Varying { name: "dir_offset", kind: "vec3<f32>", interpolate: "flat" },
+        ];
+
+        let src = include_str!("../shaders/simple_gradient_pattern.wgsl");
+
+        let name = &"simple gradient";
+        let pipeline = helper.create_tile_render_pipeline(
+            device,
+            &[],
+            name,
+            varyings,
+            src,
+        );
+
+        CustomPatternRenderer::new(name, device, pipeline, ())
+    }
 }
 
 impl CustomPattern for SimpleGradient {
@@ -53,48 +77,6 @@ impl CustomPattern for SimpleGradient {
            pattern_position.to_u32(),
             self.handle.to_u32(),
         ]
-    }
-
-    fn new_renderer(
-        device: &wgpu::Device,
-        shaders: &mut ShaderSources,
-        tile_atlas_desc_layout: &wgpu::BindGroupLayout,
-    ) -> CustomPatternRenderer<Self> {
-        let label = &"simple_gradient";
-
-        let src = include_str!("../shaders/simple_gradient_pattern.wgsl");
-        let module = shaders.create_shader_module(device, label, src, &[]);
-
-        let defaults = PipelineDefaults::new();
-        let attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[&tile_atlas_desc_layout],
-            push_constant_ranges: &[],
-        });
-        let pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: "vs_main",
-                buffers: &[attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state_no_blend(),
-            }),
-            primitive: defaults.primitive_state(),
-            depth_stencil: None,
-            multiview: None,
-            multisample: wgpu::MultisampleState::default(),
-        };
-
-        let pipeline = device.create_render_pipeline(&pipeline_descriptor);
-
-        CustomPatternRenderer::new(label, device, pipeline, ())
     }
 
     fn set_render_pass_state<'a, 'b: 'a>(_: &'a Self::RenderData, _: &mut wgpu::RenderPass<'b>) {}

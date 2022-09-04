@@ -1,9 +1,100 @@
 use crate::{TILED_IMAGE_PATTERN, TilePosition, PatternData};
-use crate::gpu::ShaderSources;
+use crate::gpu::{ShaderSources, PipelineDefaults, VertexBuilder};
 use crate::tile_encoder::{BufferRange, TileAllocator};
 use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator, TileInstance};
 
 use std::ops::Range;
+
+pub struct CustomPatterns<'l> {
+    shaders: &'l mut ShaderSources,
+    defaults: PipelineDefaults,
+    attributes: VertexBuilder,
+    default_layout: wgpu::PipelineLayout,
+}
+
+pub struct Varying<'l> {
+    pub name: &'l str,
+    pub kind: &'l str,
+    pub interpolate: &'l str,
+}
+
+impl<'l> CustomPatterns<'l> {
+    pub fn new(device: &wgpu::Device, shaders: &'l mut ShaderSources, tile_atlas_desc_layout: &wgpu::BindGroupLayout) -> Self {
+        CustomPatterns {
+            shaders,
+            defaults: PipelineDefaults::new(),
+            attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]),
+            default_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Pattern"),
+                bind_group_layouts: &[tile_atlas_desc_layout],
+                push_constant_ranges: &[],
+            }),
+        }
+    }
+
+    pub fn create_tile_render_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        extra_bind_group_layouts: &[&wgpu::BindGroupLayout],
+        name: &str,
+        varyings: &[Varying],
+        src: &str,
+    ) -> wgpu::RenderPipeline {
+
+        let mut location = 2;
+        let mut varyings_src = String::new();
+        let mut pass_varyings_src = String::new();
+        let mut frag_arguments_src = String::new();
+        let mut pattern_struct_src = String::new();
+        for varying in varyings {
+            varyings_src.push_str(&format!(
+                "    @location({}) @interpolate({}) {}: {},\n",
+                location, varying.interpolate, varying.name, varying.kind
+            ));
+            pass_varyings_src.push_str(&format!("    pattern.{},\n", varying.name));
+            frag_arguments_src.push_str(&format!("    {},\n", varying.name));
+            pattern_struct_src.push_str(&format!("    {}: {},\n", varying.name, varying.kind));
+            location += 1;
+        }
+    
+        self.shaders.define("custom_pattern_src", &src);
+        self.shaders.define("custom_pattern_varyings_src", &varyings_src);
+        self.shaders.define("custom_pattern_pass_varyings_src", &pass_varyings_src);
+        self.shaders.define("custom_pattern_fragment_arguments_src", &frag_arguments_src);
+        self.shaders.define("custom_pattern_struct_src", &pattern_struct_src);
+    
+        let base_src = include_str!("./../shaders/custom_pattern_tile.wgsl");
+    
+        let module = self.shaders.create_shader_module(device, name, base_src, &[]);
+
+        let layout = if extra_bind_group_layouts.is_empty() {
+            &self.default_layout
+        } else {
+            unimplemented!()
+        };
+
+        let pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some(name),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: "vs_main",
+                buffers: &[self.attributes.buffer_layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: "fs_main",
+                targets: self.defaults.color_target_state_no_blend(),
+            }),
+            primitive: self.defaults.primitive_state(),
+            depth_stencil: None,
+            multiview: None,
+            multisample: wgpu::MultisampleState::default(),
+        };
+
+        device.create_render_pipeline(&pipeline_descriptor)
+    }
+}
 
 pub trait CustomPattern: Sized {
     type RenderData;
@@ -11,12 +102,6 @@ pub trait CustomPattern: Sized {
     fn is_opaque(&self) -> bool;
 
     fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData;
-
-    fn new_renderer(
-        device: &wgpu::Device,
-        shaders: &mut ShaderSources,
-        tile_atlas_desc_layout: &wgpu::BindGroupLayout,
-    ) -> CustomPatternRenderer<Self>;
 
     fn set_render_pass_state<'a, 'b: 'a>(data: &'a Self::RenderData, pass: &mut wgpu::RenderPass<'b>);
 
