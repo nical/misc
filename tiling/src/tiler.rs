@@ -10,11 +10,102 @@ use crate::tile_encoder::TileAllocator;
 
 pub use crate::occlusion::{TileMask, TileMaskRow};
 use crate::tile_encoder::TileEncoder;
-use crate::Color;
+use crate::tile_renderer::TileInstance;
 
 use copyless::VecHelper;
 
 const INVALID_TILE_ID: TilePosition = TilePosition::INVALID;
+
+pub struct FillOptions<'l> {
+    pub fill_rule: FillRule,
+    pub tolerance: f32,
+    pub merge_tiles: bool,
+    pub prerender_pattern: bool,
+    pub transform: Option<&'l Transform2D<f32>>,
+}
+
+impl<'l> FillOptions<'l> {
+    pub fn new() -> FillOptions<'static> {
+        FillOptions {
+            fill_rule: FillRule::EvenOdd,
+            tolerance: 0.1,
+            merge_tiles: true,
+            prerender_pattern: false,
+            transform: None,
+        }
+    }
+
+    pub fn transformed<'a>(transform: &'a Transform2D<f32>) -> FillOptions<'a> {
+        FillOptions {
+            fill_rule: FillRule::EvenOdd,
+            tolerance: 0.1,
+            merge_tiles: true,
+            prerender_pattern: false,
+            transform: Some(transform),
+        }
+    }
+
+    pub fn with_transform<'a>(self, transform: Option<&'a Transform2D<f32>>) -> FillOptions<'a> 
+    where 'l: 'a
+    {
+        FillOptions {
+            fill_rule: self.fill_rule,
+            tolerance: self.tolerance,
+            merge_tiles: self.merge_tiles,
+            prerender_pattern: self.prerender_pattern,
+            transform,
+        }
+    }
+
+    pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
+        self.fill_rule = fill_rule;
+        self
+    }
+
+    pub fn with_tolerance(mut self, tolerance: f32) -> Self {
+        self.tolerance = tolerance;
+        self
+    }
+
+    pub fn with_merged_tiles(mut self, merge_tiles: bool) -> Self {
+        self.merge_tiles = merge_tiles;
+        self
+    }
+
+    pub fn with_prerendered_pattern(mut self, prerender: bool) -> Self {
+        self.prerender_pattern = prerender;
+        self
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Stats {
+    pub opaque_tiles: usize,
+    pub alpha_tiles: usize,
+    pub prerendered_tiles: usize,
+    pub gpu_mask_tiles: usize,
+    pub cpu_mask_tiles: usize,
+    pub edges: usize,
+    pub batches: usize,
+}
+
+impl Stats {
+    pub fn new() -> Self {
+        Stats {
+            opaque_tiles: 0,
+            alpha_tiles: 0,
+            prerendered_tiles: 0,
+            gpu_mask_tiles: 0,
+            cpu_mask_tiles: 0,
+            edges: 0,
+            batches: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Stats::new();
+    }
+}
 
 struct Row {
     edges: Vec<RowEdge>,
@@ -182,13 +273,13 @@ impl Tiler {
     /// - begin_Path
     /// - add_monotonic_edge
     /// - end_path
-    pub fn tile_path(
+    pub fn fill_path(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
-        transform: Option<&Transform2D<f32>>,
+        options: &FillOptions,
+        pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         tiled_output: Option<&mut TiledOutput>,
-        pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
         profiling::scope!("tile_path");
@@ -198,8 +289,11 @@ impl Tiler {
 
         let t0 = time::precise_time_ns();
 
+        self.draw.tolerance = options.tolerance;
+        self.draw.merge_solid_tiles = options.merge_tiles && pattern.is_mergeable();
+        encoder.prerender_pattern = options.prerender_pattern;
         let identity = Transform2D::identity();
-        let transform = transform.unwrap_or(&identity);
+        let transform = options.transform.unwrap_or(&identity);
 
         self.begin_path();
 
@@ -690,15 +784,7 @@ impl Tiler {
                 encoder.add_fill_mask(tile, &self.draw, active_edges)
             };
 
-            let pattern_data = pattern.request_tile(&mut encoder.src.color_tiles);
-
-            encoder.add_tile(
-                &self.draw,
-                opaque,
-                tile_position,
-                pattern_data,
-                mask_tile,
-            );
+            encoder.add_tile(pattern, opaque, tile_position, mask_tile);
         }
 
         if empty && self.draw.is_clip_in {
@@ -761,18 +847,20 @@ impl Tiler {
         }
     }
 
-    pub fn tile_circle(
+    pub fn fill_circle(
         &mut self,
         mut center: Point,
         mut radius: f32,
-        transform: Option<&Transform2D<f32>>,
+        options: &FillOptions,
+        pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         tiled_output: Option<&mut TiledOutput>,
-        pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
+        encoder.prerender_pattern = options.prerender_pattern;
+
         let mut simple = true;
-        if let Some(transform) = &transform {
+        if let Some(transform) = &options.transform {
             simple = false;
             if let Some((scale, offset)) = as_scale_offset(transform) {
                 if (scale.x - scale.y).abs() < 0.01 {
@@ -784,12 +872,12 @@ impl Tiler {
         }
 
         if simple {
-            self.tile_transformed_circle(
+            self.fill_transformed_circle(
                 center,
                 radius,
+                pattern,
                 tile_mask,
                 tiled_output,
-                pattern,
                 encoder
             );
         } else {
@@ -797,24 +885,24 @@ impl Tiler {
             path.add_circle(center, radius, Winding::Positive);
             let path = path.build();
 
-            self.tile_path(
+            self.fill_path(
                 path.iter(),
-                transform,
+                options,
+                pattern,
                 tile_mask,
                 tiled_output,
-                pattern,
                 encoder,
             );
         }
     }
 
-    fn tile_transformed_circle(
+    fn fill_transformed_circle(
         &mut self,
         center: Point,
         radius: f32,
+        pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         mut tiled_output: Option<&mut TiledOutput>,
-        pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
     ) {
         self.output_is_tiled = tiled_output.is_some();
@@ -881,20 +969,13 @@ impl Tiler {
                     mask_id = encoder.add_cricle_mask(center, radius);
                 }
 
-                let pattern_data = pattern.request_tile(&mut encoder.src.color_tiles);
-                let tile_index = if self.output_is_tiled {
+                let tile_position = if self.output_is_tiled {
                     self.set_indirect_output_rect(tile_x, opaque, output_indirection_buffer, output_tile_alloc)
                 } else {
                     TilePosition::new(tile_x, tile_y)
                 };
 
-                encoder.add_tile(
-                    &self.draw,
-                    opaque,
-                    tile_index,
-                    pattern_data,
-                    mask_id,
-                );
+                encoder.add_tile(pattern, opaque, tile_position, mask_id);
             }
         }
     }
@@ -1172,10 +1253,10 @@ impl IndirectionBuffer {
 }
 
 pub type PatternKind = u32;
-pub const SOLID_COLOR_PATTERN: PatternKind = 0;
-pub const TILED_IMAGE_PATTERN: PatternKind = 1;
+pub const TILED_IMAGE_PATTERN: PatternKind = 0;
+pub const SOLID_COLOR_PATTERN: PatternKind = 1;
 
-pub type PatternData = [u32; 2];
+pub type PatternData = u32;
 
 // Note: the statefullness with set_tile(x, y) followed by tile-specific getters
 // is unfortunate, the reason for it at the moment is the need to query whether
@@ -1190,33 +1271,12 @@ pub trait TilerPattern {
 
     fn set_render_pass(&mut self, pass_idx: u32);
     fn set_tile(&mut self, x: u32, y: u32);
-    fn request_tile(&mut self, atlas: &mut TileAllocator) -> PatternData;
+    fn tile_data(&mut self) -> PatternData;
+    fn opaque_tiles(&mut self) -> &mut Vec<TileInstance>;
+    fn prerender_tile(&mut self, atlas: &mut TileAllocator) -> (TilePosition, PatternData);
     fn tile_is_opaque(&self) -> bool { false }
     fn tile_is_empty(&self) -> bool { false }
-}
-
-pub struct SolidColorPattern {
-    color: u32,
-    is_opaque: bool,
-}
-
-impl SolidColorPattern {
-    pub fn new(color: Color) -> Self {
-        SolidColorPattern { color: color.to_u32(), is_opaque: color.is_opaque() }
-    }
-
-    pub fn set_color(&mut self, color: Color) {
-        self.color = color.to_u32();
-        self.is_opaque = color.is_opaque();
-    }
-}
-
-impl TilerPattern for SolidColorPattern {
-    fn set_render_pass(&mut self, _: u32) {}
-    fn pattern_kind(&self) -> u32 { SOLID_COLOR_PATTERN }
-    fn set_tile(&mut self, _: u32, _: u32) {}
-    fn tile_is_opaque(&self) -> bool { self.is_opaque }
-    fn request_tile(&mut self, _: &mut TileAllocator) -> PatternData { [self.color, 0] }
+    fn is_mergeable(&self) -> bool { false }
 }
 
 pub struct TiledSourcePattern {
@@ -1240,17 +1300,18 @@ impl TilerPattern for TiledSourcePattern {
             self.current_tile_is_empty = true;
         }
     }
-    fn request_tile(&mut self, _: &mut TileAllocator) -> PatternData {
-        [self.current_tile, 0]
+    fn opaque_tiles(&mut self) -> &mut Vec<TileInstance> {
+        unimplemented!();
     }
-}
 
-impl TilerPattern for () {
-    fn set_render_pass(&mut self, _: u32) {}
-    fn pattern_kind(&self) -> u32 { std::u32::MAX }
-    fn set_tile(&mut self, _: u32, _: u32) {}
-    fn tile_is_empty(&self) -> bool { true }
-    fn request_tile(&mut self, _: &mut TileAllocator) -> PatternData { [std::u32::MAX, std::u32::MAX] }
+    fn prerender_tile(&mut self, _: &mut TileAllocator) -> (TilePosition, PatternData) {
+        // TODO: should the first ine be current_tile?
+        (TilePosition::INVALID, self.current_tile)
+    }
+
+    fn tile_data(&mut self) -> PatternData {
+        self.current_tile
+    }
 }
 
 pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {

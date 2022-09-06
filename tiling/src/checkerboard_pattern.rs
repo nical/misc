@@ -2,7 +2,6 @@ use lyon::math::Point;
 
 use crate::gpu_store::{GpuStoreHandle, GpuStore};
 use crate::{Color, TilePosition, PatternData};
-
 use crate::custom_pattern::*;
 
 pub type CheckerboardPatternBuilder = CustomPatternBuilder<CheckerboardPattern>;
@@ -39,24 +38,18 @@ impl CheckerboardPattern {
         device: &wgpu::Device,
         helper: &mut CustomPatterns,
     ) -> CustomPatternRenderer<Self> {
-        let varyings = &[
-            Varying { name: "uv", kind: "vec2<f32>", interpolate: "perspective" },
-            Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
-            Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
-        ];
+        let descriptor = CustomPatternDescriptor {
+            name: "checkerboard",
+            source: include_str!("../shaders/checkerboard_pattern.wgsl"),
+            varyings:  &[
+                Varying { name: "uv", kind: "vec2<f32>", interpolate: "perspective" },
+                Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
+                Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
+            ],
+            extra_bind_groups: &[],
+        };
 
-        let src = include_str!("../shaders/checkerboard_pattern.wgsl");
-
-        let name = &"checkerboard";
-        let pipeline = helper.create_tile_render_pipeline(
-            device,
-            &[],
-            name,
-            varyings,
-            src,
-        );
-
-        CustomPatternRenderer::new(name, device, pipeline, ())
+        CustomPatternRenderer::new(device, helper, &descriptor, ())
     }
 }
 
@@ -65,12 +58,7 @@ impl CustomPattern for CheckerboardPattern {
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData {
-        [
-            pattern_position.to_u32(),
-            self.handle.to_u32(),
-        ]
+    fn new_tile(&mut self, _: TilePosition) -> PatternData {
+            self.handle.to_u32()
     }
-
-    fn set_render_pass_state<'a, 'b: 'a>(_: &'a Self::RenderData, _: &mut wgpu::RenderPass<'b>) {}
 }

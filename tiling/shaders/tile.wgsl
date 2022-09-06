@@ -14,32 +14,22 @@ struct VertexOutput {
     @builtin(vertex_index) vertex_index: u32,
     @location(0) instance_data: vec4<u32>,
 ) -> VertexOutput {
-    var tile = tiling_decode_instance(instance_data);
-
     var uv = rect_get_uv(vertex_index);
-    var pos = tiling_decode_position(tile.tile_index, uv);
-    var target_pos = canvas_to_target(pos);
+    var tile = tiling_decode_instance(instance_data, uv);
 
-    #if TILED_MASK {
-        var mask_uv = tiling_decode_position(tile.mask_index, uv);
-    }
-
-    #if TILED_IMAGE_PATTERN {
-        var tiled_image_uv = tiling_decode_position(tile.pattern_data.x, uv);
-    }
+    var target_pos = canvas_to_target(tile.position);
 
     #if SOLID_PATTERN {
-        var color = decode_color(tile.pattern_data.x);
+        var color = decode_color(tile.pattern_data);
     }
 
     return VertexOutput(
         target_pos,
-        #if TILED_MASK { mask_uv, }
+        #if TILED_MASK { tile.mask_position, }
         #if SOLID_PATTERN { color, }
-        #if TILED_IMAGE_PATTERN { tiled_image_uv, }
+        #if TILED_IMAGE_PATTERN { tile.pattern_position, }
     );
 }
-
 
 #if TILED_MASK {
     @group(1) @binding(0) var mask_texture: texture_2d<f32>;

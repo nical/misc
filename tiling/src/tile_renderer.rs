@@ -10,6 +10,7 @@ use crate::gpu::mask_uploader::{MaskUploadCopies};
 use crate::gpu_store::GpuStore;
 use crate::tile_encoder::{TileEncoder, BufferRange, LineEdge};
 
+use lyon::geom::euclid::default::Size2D;
 use wgpu::TextureAspect;
 use wgpu::util::DeviceExt;
 
@@ -26,6 +27,8 @@ When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Gr
 pub trait PatternRenderer {
     fn begin_frame(&mut self);
     fn render<'a, 'b: 'a>(&'b self, pass_idx: u32, pass: &mut wgpu::RenderPass<'a>);
+    fn render_opaque_pass<'a, 'b: 'a>(&'b self, pass: &mut wgpu::RenderPass<'a>);
+    fn prepare_alpha_pass<'a, 'b: 'a>(&'b self, pass: &mut wgpu::RenderPass<'a>);
     fn has_content(&self, pass_idx: u32) -> bool;
 }
 
@@ -34,6 +37,7 @@ pub trait PatternRenderer {
 pub struct TileInstance {
     pub position: TilePosition,
     pub mask: TilePosition,
+    pub pattern_position: TilePosition,
     pub pattern_data: PatternData,
 }
 
@@ -67,13 +71,10 @@ pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
 
-    pub masked_solid_pipeline: wgpu::RenderPipeline,
     pub masked_image_pipeline: wgpu::RenderPipeline,
-    pub opaque_solid_pipeline: wgpu::RenderPipeline,
     pub opaque_image_pipeline: wgpu::RenderPipeline,
     pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
-
-    pub mask_atlas_desc_bind_group_layout: wgpu::BindGroupLayout,
+    pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
 
     //mask_texture: wgpu::Texture,
     mask_texture_view: wgpu::TextureView,
@@ -83,7 +84,8 @@ pub struct TileRenderer {
     mask_texture_bind_group: wgpu::BindGroup,
     src_color_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
-    mask_atlas_desc_bind_group: wgpu::BindGroup,
+    main_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
 
     quad_ibo: wgpu::Buffer,
     pub tiles_vbo: BumpAllocatedBuffer,
@@ -92,16 +94,17 @@ pub struct TileRenderer {
     // TODO: some way to account for a per-TileEncoder offset or range.
     pub edges_ssbo: BumpAllocatedBuffer,
     mask_params_ubo: wgpu::Buffer,
+    main_target_descriptor_ubo: wgpu::Buffer,
 }
 
-
 impl TileRenderer {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, tile_size: u32, tile_atlas_size: u32, globals_bind_group_layout: &wgpu::BindGroupLayout, gpu_store: &GpuStore) -> Self {
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, target_size: Size2D<u32>, tile_atlas_size: u32, gpu_store: &GpuStore) -> Self {
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
-        let mask_atlas_desc_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Tile mask atlas"),
+        let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Target and gpu store"),
             entries: &[
+                // target descriptor
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -112,6 +115,7 @@ impl TileRenderer {
                     },
                     count: None,
                 },
+                // GPU store
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -132,14 +136,19 @@ impl TileRenderer {
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mask params"),
+            contents: bytemuck::cast_slice(&[
+                GpuTargetDescriptor::new(target_size.width, target_size.height)
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
-        let mask_upload_copies = MaskUploadCopies::new(&device, &globals_bind_group_layout);
+        let mask_upload_copies = MaskUploadCopies::new(&device, &target_and_gpu_store_layout);
         let masks = Masks::new(&device, shaders);
 
         let src = include_str!("./../shaders/tile.wgsl");
-        let masked_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["TILED_MASK", "SOLID_PATTERN"]);
         let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
-        let opaque_solid_module = shaders.create_shader_module(device, "masked_tile_solid", src, &["SOLID_PATTERN"]);
         let opaque_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_IMAGE_PATTERN",]);
 
         let mask_texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -177,20 +186,10 @@ impl TileRenderer {
         let defaults = PipelineDefaults::new();
         let attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
 
-        let opaque_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Opaque solid tiles"),
-            bind_group_layouts: &[&globals_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let masked_solid_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Masked solid tiles"),
-            bind_group_layouts: &[&globals_bind_group_layout, &mask_texture_bind_group_layout],
-            push_constant_ranges: &[],
-        });
         let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Masked image tiles"),
             bind_group_layouts: &[
-                &globals_bind_group_layout,
+                &target_and_gpu_store_layout,
                 &mask_texture_bind_group_layout,
                 &src_color_bind_group_layout,
             ],
@@ -199,25 +198,6 @@ impl TileRenderer {
 
         let primitive = defaults.primitive_state();
         let multisample = wgpu::MultisampleState::default();
-
-        let masked_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("Masked solid tiles"),
-            layout: Some(&masked_solid_tile_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &masked_solid_module,
-                entry_point: "vs_main",
-                buffers: &[attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &masked_solid_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state(),
-            }),
-            primitive,
-            depth_stencil: None,
-            multiview: None,
-            multisample,
-        };
 
         let masked_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("Masked image tiles"),
@@ -231,25 +211,6 @@ impl TileRenderer {
                 module: &masked_img_module,
                 entry_point: "fs_main",
                 targets: defaults.color_target_state()
-            }),
-            primitive,
-            depth_stencil: None,
-            multiview: None,
-            multisample,
-        };
-
-        let opaque_solid_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("Opaque solid tiles"),
-            layout: Some(&opaque_solid_tile_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &opaque_solid_module,
-                entry_point: "vs_main",
-                buffers: &[attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &opaque_solid_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state_no_blend(),
             }),
             primitive,
             depth_stencil: None,
@@ -276,9 +237,7 @@ impl TileRenderer {
             multisample,
         };
 
-        let masked_solid_pipeline = device.create_render_pipeline(&masked_solid_tile_pipeline_descriptor);
         let masked_image_pipeline = device.create_render_pipeline(&masked_image_tile_pipeline_descriptor);
-        let opaque_solid_pipeline = device.create_render_pipeline(&opaque_solid_tile_pipeline_descriptor);
         let opaque_image_pipeline = device.create_render_pipeline(&opaque_image_tile_pipeline_descriptor);
 
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
@@ -370,9 +329,35 @@ impl TileRenderer {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
-        let mask_atlas_desc_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Mask atlas descriptor"),
-            layout: &mask_atlas_desc_bind_group_layout,
+        let gpu_store_view = gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gpu store"),
+            format: Some(wgpu::TextureFormat::Rgba32Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            mip_level_count: NonZeroU32::new(1),
+            array_layer_count: NonZeroU32::new(1),
+        });
+
+        let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Main target & gpu store"),
+            layout: &target_and_gpu_store_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(main_target_descriptor_ubo.as_entire_buffer_binding())
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gpu_store_view),
+                }
+            ],
+        });
+
+        let atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Atlas target & gpu store"),
+            layout: &target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -380,16 +365,7 @@ impl TileRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
-                        label: Some("gpu store"),
-                        format: Some(wgpu::TextureFormat::Rgba32Float),
-                        dimension: Some(wgpu::TextureViewDimension::D2),
-                        aspect: TextureAspect::All,
-                        base_mip_level: 0,
-                        base_array_layer: 0,
-                        mip_level_count: NonZeroU32::new(1),
-                        array_layer_count: NonZeroU32::new(1),
-                    }))
+                    resource: wgpu::BindingResource::TextureView(&gpu_store_view)
                 }
             ],
         });
@@ -413,13 +389,11 @@ impl TileRenderer {
             mask_upload_copies,
             masks,
 
-            opaque_solid_pipeline,
             opaque_image_pipeline,
-            masked_solid_pipeline,
             masked_image_pipeline,
             mask_texture_bind_group_layout,
 
-            mask_atlas_desc_bind_group_layout,
+            target_and_gpu_store_layout,
             quad_ibo,
             //mask_texture,
             mask_texture_view,
@@ -427,13 +401,23 @@ impl TileRenderer {
             mask_texture_bind_group,
             src_color_bind_group,
             masks_bind_group,
-            mask_atlas_desc_bind_group,
+            main_target_and_gpu_store_bind_group,
+            atlas_target_and_gpu_store_bind_group,
             edges_ssbo,
             tiles_vbo,
             masks_vbo,
             circles_vbo,
             mask_params_ubo,
+            main_target_descriptor_ubo,
         }
+    }
+
+    pub fn resize(&mut self, size: Size2D<u32>, queue: &wgpu::Queue) {
+        queue.write_buffer(
+            &self.main_target_descriptor_ubo,
+            0,
+            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width, size.height)]),
+        );
     }
 
     pub fn begin_frame(&mut self) {
@@ -473,7 +457,6 @@ impl TileRenderer {
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
-        globals_bind_group: &wgpu::BindGroup,
     ) {
         // TODO: the logic here is soooo hacky and fragile.
 
@@ -496,7 +479,7 @@ impl TileRenderer {
                 depth_stencil_attachment: None,
             });
 
-            pass.set_bind_group(0, &self.mask_atlas_desc_bind_group, &[]);
+            pass.set_bind_group(0, &self.atlas_target_and_gpu_store_bind_group, &[]);
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
 
             for pattern in patterns {
@@ -543,7 +526,7 @@ impl TileRenderer {
             tile_encoder.mask_uploader.upload(
                 &device,
                 &mut pass,
-                globals_bind_group,
+                &self.atlas_target_and_gpu_store_bind_group,
                 &self.mask_upload_copies.pipeline,
                 &self.quad_ibo,
                 (tile_encoder.mask_passes.len().max(1) - 1) as u32, // Last index or zero.
@@ -566,13 +549,8 @@ impl TileRenderer {
             });
 
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.set_bind_group(0, &self.main_target_and_gpu_store_bind_group, &[]);
 
-            if !tile_encoder.ranges.opaque_solid_tiles.is_empty() {
-                pass.set_pipeline(&self.opaque_solid_pipeline);
-                pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
-                pass.draw_indexed(0..6, 0, tile_encoder.ranges.opaque_solid_tiles.to_u32());
-            }
             if !tile_encoder.ranges.opaque_image_tiles.is_empty() {
                 pass.set_pipeline(&self.opaque_image_pipeline);
                 pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
@@ -580,21 +558,21 @@ impl TileRenderer {
                 pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                 pass.draw_indexed(0..6, 0, tile_encoder.ranges.opaque_image_tiles.to_u32());
             }
+            for pattern in patterns {
+                pattern.render_opaque_pass(&mut pass);
+            }
 
             if !first_mask_pass.batches.is_empty() {
                 pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<TileInstance>()));
                 pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                 for batch in &tile_encoder.batches[first_mask_pass.batches.clone()] {
                     match batch.batch_kind {
-                        0 => {
-                            pass.set_pipeline(&self.masked_solid_pipeline);
-                        }
-                        1 => {
+                        crate::tiler::TILED_IMAGE_PATTERN => {
                             pass.set_pipeline(&self.masked_image_pipeline);
                             pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                         }
                         _ => {
-                            unimplemented!()
+                            patterns[batch.batch_kind as usize - 1].prepare_alpha_pass(&mut pass);
                         }
                     }
                     pass.draw_indexed(0..6, 0, batch.tiles.clone());
@@ -620,9 +598,9 @@ impl TileRenderer {
                         })],
                         depth_stencil_attachment: None,
                     });
-        
+
                     pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                    pass.set_bind_group(0, &self.mask_atlas_desc_bind_group, &[]);
+                    pass.set_bind_group(0, &self.atlas_target_and_gpu_store_bind_group, &[]);
 
                     for pattern in patterns {
                         pattern.render(src_color_atlas, &mut pass);
@@ -662,7 +640,7 @@ impl TileRenderer {
                     tile_encoder.mask_uploader.upload(
                         &device,
                         &mut pass,
-                        &globals_bind_group,
+                        &self.atlas_target_and_gpu_store_bind_group,
                         &self.mask_upload_copies.pipeline,
                         &self.quad_ibo,
                         pass_idx as u32,
@@ -686,26 +664,22 @@ impl TileRenderer {
                     pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                     pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<TileInstance>()));
 
-                    pass.set_bind_group(0, globals_bind_group, &[]);
+
+                    pass.set_bind_group(0, &self.main_target_and_gpu_store_bind_group, &[]);
 
                     for batch in &tile_encoder.batches[mask_ranges.batches.clone()] {
                         match batch.batch_kind {
-                            0 => {
-                                pass.set_pipeline(&self.masked_solid_pipeline);
-                                pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
-                            }
-                            1 => {
+                            crate::tiler::TILED_IMAGE_PATTERN => {
                                 pass.set_pipeline(&self.masked_image_pipeline);
                                 pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
                                 pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                             }
                             _ => {
-                                unimplemented!()
+                                patterns[batch.batch_kind as usize - 1].prepare_alpha_pass(&mut pass);
                             }
                         }
                         pass.draw_indexed(0..6, 0, batch.tiles.clone());
                     }
-    
                 }
             }
         }

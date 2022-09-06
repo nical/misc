@@ -1,10 +1,10 @@
 #import gpu_store
 
-fn pattern_vertex(tile: TileInstance, uv: vec2<f32>) -> Pattern {
-    var pattern = gpu_store_fetch_3(tile.pattern_data.y);
+fn pattern_vertex(pattern_pos: vec2<f32>, uv: vec2<f32>, pattern_handle: u32) -> Pattern {
+    var pattern = gpu_store_fetch_3(pattern_handle);
     var offset = pattern[2].xy;
     var scale = pattern[2].z;
-    var checker_uv = (tiling_decode_position(tile.pattern_data.x, uv) - offset) / scale;
+    var checker_uv = (pattern_pos - offset) / scale;
 
     return Pattern(checker_uv, pattern[0], pattern[1]);
 }

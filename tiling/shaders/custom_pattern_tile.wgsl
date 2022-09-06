@@ -18,21 +18,15 @@ struct VertexOutput {
     @builtin(vertex_index) vertex_index: u32,
     @location(0) instance_data: vec4<u32>,
 ) -> VertexOutput {
-    var tile = tiling_decode_instance(instance_data);
-
     var uv = rect_get_uv(vertex_index);
-    var pos = tiling_decode_position(tile.tile_index, uv);
-    var target_pos = canvas_to_target(pos);
+    var tile = tiling_decode_instance(instance_data, uv);
+    var target_pos = canvas_to_target(tile.position);
 
-    var pattern = pattern_vertex(tile, uv);
-
-    #if TILED_MASK {
-        var mask_uv = tiling_decode_position(tile.mask_index, uv);
-    }
+    var pattern = pattern_vertex(tile.pattern_position, uv, tile.pattern_data);
 
     return VertexOutput(
         target_pos,
-        #if TILED_MASK { mask_uv, }
+        #if TILED_MASK { tile.mask_position, }
         #mixin custom_pattern_pass_varyings_src
     );
 }

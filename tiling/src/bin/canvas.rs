@@ -4,9 +4,10 @@ use tiling::{*, Transform2D};
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPatterns;
 use tiling::checkerboard_pattern::CheckerboardPattern;
-use tiling::simple_gradient::{SimpleGradient, Stop};
+use tiling::simple_gradient::SimpleGradient;
+use tiling::solid_color::SolidColor;
 use tiling::tile_renderer::PatternRenderer;
-use tiling::gpu::{GpuTargetDescriptor, ShaderSources};
+use tiling::gpu::{ShaderSources};
 use tiling::load_svg::*;
 use tiling::gpu::mask_uploader::MaskUploader;
 use lyon::path::geom::euclid::size2;
@@ -15,7 +16,6 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
-use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
 fn main() {
@@ -72,29 +72,6 @@ fn main() {
         None,
     )).unwrap();
 
-    let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Window target"),
-        contents: bytemuck::cast_slice(&[
-            GpuTargetDescriptor::new(window_size.width, window_size.height),
-        ]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // TODO: redundant.
-    let globals_bind_group_layout = tiling::gpu::GpuTargetDescriptor::create_bind_group_layout(&device);
-    let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Globals"),
-        layout: &globals_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
-            },
-        ],
-    });
-
-    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &globals_bind_group_layout);
-
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
     } else {
@@ -112,6 +89,19 @@ fn main() {
 
     let mut canvas = Canvas::new(tiler_config.view_box);
 
+    let mut shaders = ShaderSources::new();
+
+    let mut gpu_store = GpuStore::new(1024, 1024, &device);
+
+    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+        &device,
+        &mut shaders,
+        Size2D::new(window_size.width, window_size.height),
+        tile_atlas_size as u32,
+        &gpu_store,
+    );
+
+    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &tile_renderer.target_and_gpu_store_layout);
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
@@ -131,16 +121,27 @@ fn main() {
     builder.end(true);
 
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));
+    canvas.fill_circle(
+        point(500.0, 500.0), 800.0,
+        Pattern::Gradient {
+            p0: point(100.0, 100.0), color0: Color { r: 200, g: 150, b: 0, a: 255},
+            p1: point(100.0, 1000.0), color1: Color { r: 250, g: 50, b: 10, a: 255},
+        }
+    );
+
     for (path, color) in paths {
-        canvas.fill(Arc::new(path), Pattern::Color(color));
+        canvas.fill(Arc::new(path), FillRule::EvenOdd, Pattern::Color(color));
     }
-    canvas.fill_circle(point(500.0, 300.0,), 200.0, Pattern::Gradient { stops: [
-        Stop { position: point(500.0, 100.0), color: Color { r: 10, g: 200, b: 100, a: 255} },
-        Stop { position: point(600.0, 500.0), color: Color { r: 100, g: 100, b: 250, a: 255} },
-    ]});
+    canvas.fill_circle(
+        point(500.0, 300.0), 200.0,
+        Pattern::Gradient {
+            p0: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 255},
+            p1: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
+        }
+    );
 
     canvas.fill(
-        Arc::new(builder.build()),
+        Arc::new(builder.build()), FillRule::EvenOdd,
         Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 25.0 }
     );
 
@@ -150,35 +151,27 @@ fn main() {
 
     let mut commands = canvas.finish();
 
-    let mut shaders = ShaderSources::new();
-
-    let mut gpu_store = GpuStore::new(1024, 1024, &device);
-
-    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+    let mut custom_patterns = CustomPatterns::new(
         &device,
         &mut shaders,
-        tile_size as u32,
-        tile_atlas_size as u32,
-        &globals_bind_group_layout,
-        &gpu_store,
+        &tile_renderer.target_and_gpu_store_layout,
+        &tile_renderer.mask_texture_bind_group_layout,
     );
 
-    let mut custom_patterns = CustomPatterns::new(&device, &mut shaders, &tile_renderer.mask_atlas_desc_bind_group_layout);
-
+    let mut solid_color = SolidColor::new_renderer(&device, &mut custom_patterns);
     let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut custom_patterns);
     let mut gradients = SimpleGradient::new_renderer(&device, &mut custom_patterns);
 
     frame_builder.build(&commands, &mut gpu_store);
 
+    let mut stats = Stats::new();
     let te = &frame_builder.targets[0].tile_encoder;
+    te.update_stats(&mut stats);
+    frame_builder.targets[0].solid_color_pattern.update_stats(&mut stats);
+    frame_builder.targets[0].checkerboard_pattern.update_stats(&mut stats);
+    frame_builder.targets[0].gradient_pattern.update_stats(&mut stats);
     println!("view box: {:?}", view_box);
-    println!("{} solid tiles", te.opaque_solid_tiles.len() + frame_builder.targets[0].tile_encoder.opaque_image_tiles.len());
-    println!("{} alpha tiles", te.alpha_tiles.len());
-    println!("{} gpu masks", te.gpu_masks.len());
-    println!("{} cpu masks", te.num_cpu_masks());
-    println!("{} line edges", te.line_edges.len());
-    println!("{} quad edges", te.quad_edges.len());
-    println!("{} batches", te.batches.len());
+    println!("{:#?}", stats);
     println!("#edge distributions: {:?}", te.edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
@@ -230,11 +223,7 @@ fn main() {
             let tiles = tiler_config.num_tiles();
             frame_builder.tile_mask.init(tiles.width, tiles.height);
 
-            queue.write_buffer(
-                &globals_ubo,
-                0,
-                bytemuck::cast_slice(&[GpuTargetDescriptor::new(scene.window_size.width as u32, scene.window_size.height)]),
-            );    
+            tile_renderer.resize(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue)
         }
 
         if !scene.render {
@@ -258,11 +247,13 @@ fn main() {
         frame_builder.build(&commands, &mut gpu_store);
 
         tile_renderer.begin_frame();
+        solid_color.begin_frame();
         checkerboard.begin_frame();
         gradients.begin_frame();
 
         for target in &mut frame_builder.targets {
             target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
+            target.solid_color_pattern.allocate_buffer_ranges(&mut solid_color);            
             target.checkerboard_pattern.allocate_buffer_ranges(&mut checkerboard);
             target.gradient_pattern.allocate_buffer_ranges(&mut gradients);
         }
@@ -271,6 +262,7 @@ fn main() {
 
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
+            target.solid_color_pattern.upload(&mut solid_color, &queue);
             target.checkerboard_pattern.upload(&mut checkerboard, &queue);
             target.gradient_pattern.upload(&mut gradients, &queue);
             gpu_store.upload(&queue);
@@ -283,11 +275,10 @@ fn main() {
         let target = &mut frame_builder.targets[0];
         tile_renderer.render(
             &mut target.tile_encoder,
-            &[&checkerboard, &gradients],
+            &[&solid_color, &checkerboard, &gradients],
             &device,
             &frame_view,
             &mut encoder,
-            &globals_bind_group,
         );
 
         queue.submit(Some(encoder.finish()));

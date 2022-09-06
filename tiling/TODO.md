@@ -4,31 +4,32 @@
  - [x] CPU mask rasterization fallback.
  - [x] Opaque tile occlusion culling.
  - [x] Experiment with basic multi-threading support.
- - [ ] Overlap the row decomposition and row processing stages when running in parallel.
  - [x] Solid color pattern.
- - [ ] Fix the CPU rasterizer code path (it's gltitchy).
+ - [x] Try to send quadratic bézier curves to the GPU and flatten them in the mask rasterization shader.
+ - [x] Support multiple atlas textures.
+ - [x] configurable atlas texture sizes.
+ - [x] Option to merge consecutive solid tiles.
+ - [x] Custom patterns
+ - [x] Tiled image patterns.
+ - [x] Simple linear gradient patterns.
+ - [x] Support storing gpu data without SSBO
+ - [ ] Image patterns.
+ - [ ] Custom masks
+ - [ ] Support rasterizing masks with static loops
+ - [ ] mix tiled and non-tiled draws
+ - [ ] Overlap the row decomposition and row processing stages when running in parallel.
+ - [ ] Fix the CPU rasterizer code path.
+ - [ ] Rasterize CPU masks asynchronously.
+ - [ ] Stroke mask shader (round joins/caps).
  - [ ] Use SIMD instructions for the CPU rasterizer's prefix sums.
   - Encode rasterized masks in column major (flip it back in the copy shader).
   - do N rows at a time (one per SIMD lane), each with their own prefix sum.
- - [x] Try to send quadratic bézier curves to the GPU and flatten them in the mask rasterization shader.
  - [ ] Try a cheaper quad flattening algorithm (knowing we generate few segments most of the time).
  - [ ] Compress the curves sent to the GPU.
- - [ ] Rasterize CPU masks asynchronously (using the job scheduler).
- - [x] Support multiple atlas textures.
- - [x] configurable atlas texture sizes.
  - [ ] Better upload paths (write data directly into mapped gpu buffers).
- - [ ] Stroke mask shader (round joins/caps).
  - [ ] Compute shader version for the rasterization and compositing.
- - [x] Option to merge consecutive solid tiles.
  - [ ] See if there are benefits from doing multiple quads per instance.
- - [x] Tiled image patterns.
- - [ ] Image patterns.
- - [ ] Gradient patterns.
  - [ ] Axis-aligned rectangular clips.
  - [ ] Clip paths.
  - [ ] GPU tiling (compute shaders).
  - [ ] Support for combining masks
- - [ ] Custom patterns
- - [ ] Custom masks
- - [ ] Support rasterizing masks with static loops
- - [ ] Support storing gpu data without SSBO

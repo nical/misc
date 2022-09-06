@@ -1,12 +1,12 @@
 use crate::gpu_store::{GpuStore, GpuStoreHandle};
 use crate::{Color, Point, TilePosition, PatternData};
-
 use crate::custom_pattern::*;
 
 pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;
 pub type SimpleGradientRenderer = CustomPatternRenderer<SimpleGradient>;
 
 pub fn add_gradient(store: &mut GpuStore, p0: Point, color0: Color, p1: Point, color1: Color) -> SimpleGradient {
+    let is_mergeable = p1.x == p1.y || color0 == color1;
     let is_opaque = color0.is_opaque() && color1.is_opaque();
     let color0 = color0.to_f32();
     let color1 = color1.to_f32();
@@ -20,17 +20,13 @@ pub fn add_gradient(store: &mut GpuStore, p0: Point, color0: Color, p1: Point, c
     SimpleGradient {
         handle,
         is_opaque,
+        is_mergeable,
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct Stop {
-    pub position: Point,
-    pub color: Color,
 }
 pub struct SimpleGradient {
     handle: GpuStoreHandle,
     is_opaque: bool,
+    is_mergeable: bool,
 }
 
 impl SimpleGradient {
@@ -38,6 +34,7 @@ impl SimpleGradient {
         SimpleGradient {
             handle: GpuStoreHandle::INVALID,
             is_opaque: false,
+            is_mergeable: false,
         }
     }
 
@@ -45,25 +42,19 @@ impl SimpleGradient {
         device: &wgpu::Device,
         helper: &mut CustomPatterns,
     ) -> CustomPatternRenderer<Self> {
-        let varyings = &[
-            Varying { name: "position", kind: "vec2<f32>", interpolate: "perspective" },
-            Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
-            Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
-            Varying { name: "dir_offset", kind: "vec3<f32>", interpolate: "flat" },
-        ];
+        let descriptor = CustomPatternDescriptor {
+            name: "simple gradient",
+            source: include_str!("../shaders/simple_gradient_pattern.wgsl"),
+            varyings: &[
+                Varying { name: "position", kind: "vec2<f32>", interpolate: "perspective" },
+                Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
+                Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
+                Varying { name: "dir_offset", kind: "vec3<f32>", interpolate: "flat" },
+            ],
+            extra_bind_groups: &[],
+        };
 
-        let src = include_str!("../shaders/simple_gradient_pattern.wgsl");
-
-        let name = &"simple gradient";
-        let pipeline = helper.create_tile_render_pipeline(
-            device,
-            &[],
-            name,
-            varyings,
-            src,
-        );
-
-        CustomPatternRenderer::new(name, device, pipeline, ())
+        CustomPatternRenderer::new(device, helper, &descriptor, ())
     }
 }
 
@@ -72,12 +63,9 @@ impl CustomPattern for SimpleGradient {
 
     fn is_opaque(&self) -> bool { self.is_opaque }
 
-    fn new_tile(&mut self, pattern_position: TilePosition) -> PatternData {
-        [
-           pattern_position.to_u32(),
-            self.handle.to_u32(),
-        ]
-    }
+    fn is_mergeable(&self) -> bool { self.is_mergeable }
 
-    fn set_render_pass_state<'a, 'b: 'a>(_: &'a Self::RenderData, _: &mut wgpu::RenderPass<'b>) {}
+    fn new_tile(&mut self, _: TilePosition) -> PatternData {
+        self.handle.to_u32()
+    }
 }

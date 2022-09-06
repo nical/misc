@@ -2,19 +2,11 @@ let TILE_SIZE_U32: u32 = 16u;
 let TILE_SIZE_F32: f32 = 16.0;
 
 struct TileInstance {
-    tile_index: u32,
-    mask_index: u32,
-    pattern_data: vec2<u32>,
+    position: vec2<f32>,
+    mask_position: vec2<f32>,
+    pattern_position: vec2<f32>,
+    pattern_data: u32,
 };
-
-fn tiling_decode_instance(encoded: vec4<u32>) -> TileInstance {
-    var instance: TileInstance;
-    instance.tile_index = encoded.x;
-    instance.mask_index = encoded.y;
-    instance.pattern_data = encoded.zw;
-
-    return instance;
-}
 
 let TILE_COORD_MASK: u32 = 0x3FFu;
 
@@ -30,3 +22,16 @@ fn tiling_decode_position(encoded: u32, uv: vec2<f32>) -> vec2<f32> {
 
     return (offset + (uv + extended)) * TILE_SIZE_F32;
 }
+
+fn tiling_decode_instance(encoded: vec4<u32>, uv: vec2<f32>) -> TileInstance {
+    var instance: TileInstance;
+    instance.position = tiling_decode_position(encoded.x, uv);
+    #if TILED_MASK {
+        instance.mask_position = tiling_decode_position(encoded.y, uv);
+    }
+    instance.pattern_position = tiling_decode_position(encoded.z, uv);
+    instance.pattern_data = encoded.w;
+
+    return instance;
+}
+
