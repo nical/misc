@@ -548,7 +548,6 @@ impl TileEncoder {
         let edges_start = edges_start as u32;
         let edges_end = self.quad_edges.len() as u32;
         assert!(edges_end > edges_start, "{:?}", active_edges);
-        assert!(edges_end - edges_start < 500, "edges {:?}", edges_start..edges_end);
         let tile_position = self.allocate_mask_tile();
 
         self.gpu_masks.push(GpuMask {
@@ -568,18 +567,15 @@ impl TileEncoder {
         let mut accum = [0.0; 32 * 32];
         let mut backdrops = [tile.backdrop as f32; 32];
 
-        //left.print();
-        //println!("offset {:?} : {:?}", tile.inner_rect.min.y, backdrops);
-
         let tile_offset = tile.inner_rect.min.to_vector();
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
-                add_backdrop(edge.from.y, 1.0, &mut backdrops[0..draw.tile_size.height as usize]);
+                add_backdrop(edge.from.y, -1.0, &mut backdrops[0..draw.tile_size.height as usize]);
             }
 
             if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
-                add_backdrop(edge.to.y, -1.0, &mut backdrops[0..draw.tile_size.height as usize]);
+                add_backdrop(edge.to.y, 1.0, &mut backdrops[0..draw.tile_size.height as usize]);
             }
 
             let from = edge.from - tile_offset;
@@ -611,10 +607,9 @@ impl TileEncoder {
             &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
         );
 
-        //crate::cpu_rasterizer::dump_mask_png(
-        //    draw.tile_size.width as u32, draw.tile_size.height as u32,
-        //    &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()]
-        //);
+        //let mask_name = format!("mask-{}.png", mask_id.to_u32());
+        //crate::cpu_rasterizer::save_mask_png(16, 16, &self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()], &mask_name);
+        //crate::cpu_rasterizer::save_accum_png(16, 16, &accum, &backdrops, &format!("accum-{}.png", mask_id.to_u32()));
 
         mask_id
     }

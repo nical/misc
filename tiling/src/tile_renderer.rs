@@ -144,7 +144,7 @@ impl TileRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let mask_upload_copies = MaskUploadCopies::new(&device, &target_and_gpu_store_layout);
+        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout);
         let masks = Masks::new(&device, shaders);
 
         let src = include_str!("./../shaders/tile.wgsl");

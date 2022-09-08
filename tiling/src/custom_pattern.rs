@@ -238,8 +238,8 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
                 self.opaque_vbo_range.byte_offset::<TileInstance>(),
                 bytemuck::cast_slice(&self.opaque_tiles),
             );
-            renderer.opaque_pass = self.opaque_vbo_range.to_u32();
         }
+        renderer.opaque_pass = self.opaque_vbo_range.to_u32();
 
         self.parameters.upload(&mut renderer.data, queue);
     }

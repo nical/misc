@@ -24,14 +24,16 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let mut use_quads = false;
+    let mut force_gl = false;
     for arg in &args {
         if arg == "--quads" { use_quads = true; }
+        if arg == "--gl" { force_gl = true; }
     }
 
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 128;
+    let max_edges_per_gpu_tile = 8;
     let tile_atlas_size: u32 = 4096;
     let inital_window_size = size2(1200u32, 1000);
 
@@ -50,8 +52,13 @@ fn main() {
         .build(&event_loop).unwrap();
     let window_size = window.inner_size();
 
+    let backends = if force_gl {
+        wgpu::Backends::GL
+    } else {
+        wgpu::Backends::all()
+    };
     // create an instance
-    let instance = wgpu::Instance::new(wgpu::Backends::all());
+    let instance = wgpu::Instance::new(backends);
 
     // create an surface
     let surface = unsafe { instance.create_surface(&window) };
@@ -101,7 +108,7 @@ fn main() {
         &gpu_store,
     );
 
-    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &tile_renderer.target_and_gpu_store_layout);
+    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
@@ -354,16 +361,16 @@ fn update_inputs(
                 scene.target_zoom *= 1.25;
             }
             VirtualKeyCode::Left => {
-                scene.target_pan[0] += 100.0 / scene.target_zoom;
+                scene.target_pan[0] += 100.0;
             }
             VirtualKeyCode::Right => {
-                scene.target_pan[0] -= 100.0 / scene.target_zoom;
+                scene.target_pan[0] -= 100.0;
             }
             VirtualKeyCode::Up => {
-                scene.target_pan[1] += 100.0 / scene.target_zoom;
+                scene.target_pan[1] += 100.0;
             }
             VirtualKeyCode::Down => {
-                scene.target_pan[1] -= 100.0 / scene.target_zoom;
+                scene.target_pan[1] -= 100.0;
             }
             VirtualKeyCode::W => {
                 scene.wireframe = !scene.wireframe;

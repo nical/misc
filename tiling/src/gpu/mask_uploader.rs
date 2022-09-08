@@ -1,5 +1,6 @@
 use std::ops::Range;
 use crate::{buffer::{Buffer, UniformBufferPool}, TilePosition};
+use crate::gpu::ShaderSources;
 
 
 const STAGING_BUFFER_SIZE: u32 = 65536;
@@ -21,20 +22,14 @@ pub struct MaskUploadCopies {
 }
 
 impl MaskUploadCopies {
-    pub fn new(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> Self {
-        create_mask_upload_pipeline(device, globals_bg_layout)
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, globals_bg_layout: &wgpu::BindGroupLayout) -> Self {
+        create_mask_upload_pipeline(device, shaders, globals_bg_layout)
     }
 }
 
-fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskUploadCopies {
-    let vs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Mask upload copy vs"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.vs.wgsl").into()),
-    });
-    let fs_module = &device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Mask upload copy fs"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("./../../shaders/mask_upload_copy.fs.wgsl").into()),
-    });
+fn create_mask_upload_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, globals_bg_layout: &wgpu::BindGroupLayout) -> MaskUploadCopies {
+    let src = include_str!("./../../shaders/mask_upload_copy.wgsl");
+    let module = shaders.create_shader_module(device, "mask upload copy", src, &[]);
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask upload copy"),
@@ -62,8 +57,8 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
         label: Some("Mask upload copy"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &vs_module,
-            entry_point: "main",
+            module: &module,
+            entry_point: "vs_main",
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<CpuMask>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -82,8 +77,8 @@ fn create_mask_upload_pipeline(device: &wgpu::Device, globals_bg_layout: &wgpu::
             }],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &fs_module,
-            entry_point: "main",
+            module: &module,
+            entry_point: "fs_main",
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
@@ -183,15 +178,15 @@ impl MaskUploader {
         self.copy_instances.clear();
         self.current_atlas = 0;
         self.current_instance_start = 0;
+        self.copy_instance_buffer = None;
     }
 
-    pub fn new_mask(&mut self, id: TilePosition) -> Range<usize> {
+    pub fn new_mask(&mut self, position: TilePosition) -> Range<usize> {
 
-        unimplemented!(); // TODO move from atlas index to tile position.
-/*
         const TILE_SIZE: usize = 16;
 
-        let atlas_index = id / self.masks_per_atlas;
+        //let atlas_index = id / self.masks_per_atlas;
+        let atlas_index = self.current_atlas;
 
         if atlas_index != self.current_atlas || self.current_mask_buffer.remaining_capacity() < TILE_SIZE * TILE_SIZE {
             let instance_end = self.copy_instances.len() as u32;
@@ -220,12 +215,11 @@ impl MaskUploader {
         let end = start + (TILE_SIZE * TILE_SIZE);
 
         self.copy_instances.push(CpuMask {
-            position: id,
+            position,
             byte_offset: start as u32,
         });
 
         start..end
-        */
     }
 
     pub fn needs_upload(&self) -> bool {

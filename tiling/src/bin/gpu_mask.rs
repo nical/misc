@@ -10,8 +10,11 @@ use winit::window::Window;
 use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
+use tiling::tile_renderer::PatternRenderer;
 use tiling::tile_encoder::TileEncoder;
-use tiling::gpu::{GpuTileAtlasDescriptor, ShaderSources};
+use tiling::gpu::{ShaderSources};
+use solid_color::*;
+use custom_pattern::*;
 
 fn main() {
     profiling::register_thread!("Main");
@@ -49,7 +52,7 @@ fn main() {
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 128;
+    let max_edges_per_gpu_tile = 64;
     let n = if profile { 1000 } else { 1 };
     let tile_atlas_size: u32 = 2048;
 
@@ -90,32 +93,6 @@ fn main() {
         None,
     )).unwrap();
 
-    let globals_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Globals"),
-        contents: bytemuck::cast_slice(&[
-            tiling::gpu::GpuGlobals {
-                target_tiles: GpuTileAtlasDescriptor::new(window_size.width as u32, window_size.height, tile_size as u32),
-                src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-                src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-            }
-        ]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let globals_bind_group_layout = tiling::gpu::GpuGlobals::create_bind_group_layout(&device);
-    let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Globals"),
-        layout: &globals_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(globals_ubo.as_entire_buffer_binding())
-            },
-        ],
-    });
-
-    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &globals_bind_group_layout);
-
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
     } else {
@@ -139,6 +116,18 @@ fn main() {
     let mut tile_mask = TileMask::new(tiles_x, tiles_y);
 
     use tiling::gpu::mask_uploader::MaskUploader;
+    let mut shaders = ShaderSources::new();
+
+    let mut gpu_store = GpuStore::new(1024, 1024, &device);
+    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+        &device,
+        &mut shaders,
+        size,
+        tile_atlas_size as u32,
+        &mut gpu_store,
+    );
+
+    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
@@ -147,6 +136,16 @@ fn main() {
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
+
+    let mut custom_patterns = CustomPatterns::new(
+        &device,
+        &mut shaders,
+        &tile_renderer.target_and_gpu_store_layout,
+        &tile_renderer.mask_texture_bind_group_layout,
+    );
+
+    let mut color_pattern = SolidColorBuilder::new(SolidColor::new(Color::BLACK), 1);
+    let mut solid_color = SolidColor::new_renderer(&device, &mut custom_patterns);
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -174,12 +173,18 @@ fn main() {
                 }
             }
 
-            tiler.tile_path(
+            color_pattern.set(SolidColor::new(*color));
+
+            let options = FillOptions::new()
+                .with_transform(Some(&transform))
+                .with_tolerance(tiler_config.tolerance);
+
+            tiler.fill_path(
                 path.iter(),
-                Some(&transform),
+                &options,
+                &mut color_pattern,
                 &mut tile_mask,
                 None,
-                &mut SolidColorPattern::new(*color),
                 &mut builder,
             );
 
@@ -201,13 +206,12 @@ fn main() {
 
     let t = (t1 - t0) / n;
 
+    let mut stats = Stats::new();
+    builder.update_stats(&mut stats);
+    color_pattern.update_stats(&mut stats);
+
     println!("view box: {:?}", view_box);
-    println!("{} solid tiles", builder.opaque_solid_tiles.len());
-    println!("{} alpha tiles", builder.alpha_tiles.len());
-    println!("{} gpu masks", builder.gpu_masks.len());
-    println!("{} cpu masks", builder.num_cpu_masks());
-    println!("{} line edges", builder.line_edges.len());
-    println!("{} quad edges", builder.quad_edges.len());
+    println!("{:#?}", stats);
     println!("#edge distributions: {:?}", builder.edge_distributions);
     println!("");
     println!("-> {}ns", t);
@@ -221,19 +225,6 @@ fn main() {
         builder.reset();
         return;
     }
-
-    let mut shaders = ShaderSources::new();
-
-    let mut gpu_store = GpuStore::new(1024, 1024, &device);
-    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
-        &device,
-        &mut shaders,
-        tile_size as u32,
-        tile_atlas_size as u32,
-        &globals_bind_group_layout,
-        &mut gpu_store,
-    );
-
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -291,20 +282,13 @@ fn main() {
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         tile_renderer.begin_frame();
+        solid_color.begin_frame();
 
         builder.allocate_buffer_ranges(&mut tile_renderer);
+        color_pattern.allocate_buffer_ranges(&mut solid_color);
         tile_renderer.allocate(&device);
         builder.upload(&mut tile_renderer, &queue);
-
-        queue.write_buffer(
-            &globals_ubo,
-            0,
-            bytemuck::cast_slice(&[tiling::gpu::GpuGlobals {
-                target_tiles: GpuTileAtlasDescriptor::new(scene.window_size.width as u32, scene.window_size.height, tile_size as u32),
-                src_color: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-                src_masks: GpuTileAtlasDescriptor::new(tile_atlas_size, tile_atlas_size, tile_size as u32),
-            }]),
-        );
+        color_pattern.upload(&mut solid_color, &queue);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),
@@ -312,8 +296,8 @@ fn main() {
 
         tile_renderer.render(
             &mut builder,
-            &[],
-            &device, &frame_view, &mut encoder, &globals_bind_group
+            &[&solid_color],
+            &device, &frame_view, &mut encoder,
         );
 
         queue.submit(Some(encoder.finish()));

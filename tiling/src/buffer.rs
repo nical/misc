@@ -73,7 +73,7 @@ impl<T> Buffer<T> {
     #[inline]
     pub unsafe fn set_len(&mut self, len: usize) {
         let len = len as u32;
-        assert!(len <= self.cap);
+        assert!(len <= self.cap, "length ({:?}) < capacity ({:?})", len, self.cap);
 
         self.len = len;
     }

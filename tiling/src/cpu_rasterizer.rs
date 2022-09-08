@@ -448,6 +448,8 @@ pub fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
         for _ in 0..PIXEL_SIZE {
             for x in 0..TILE_SIZE {
                 let a = mask[y * TILE_SIZE + x];
+                let n = 15;
+                let a = if a < 255 - n { a + n } else { a };
                 for _ in 0..PIXEL_SIZE {
                     bytes.push(a);
                     bytes.push(a);
@@ -523,7 +525,6 @@ fn accum_even_odd_01() {
     assert_eq!(&dst[48..64], &[0, 0, 51, 204, 255, 255, 255, 255,   255, 255, 255, 255, 255, 255, 255, 255]);
 }
 
-/*
 #[test]
 fn simple_line() {
     let mut accum = [0.0; TILE_SIZE * TILE_SIZE];
@@ -536,7 +537,15 @@ fn simple_line() {
     ];
 
     for line in &lines {
-        draw_line(line.0, line.1);
+        if line.0.x < -0.5 && line.0.y != -0.5 {
+            add_backdrop(line.0.y, 1.0, &mut backdrops[0..TILE_SIZE]);
+        }
+
+        if line.1.x < -0.5 && line.1.y != -0.5 {
+            add_backdrop(line.1.y, -1.0, &mut backdrops[0..TILE_SIZE]);
+        }
+
+        draw_line(line.0, line.1, &mut accum);
     }
 
     accumulate_even_odd(&accum, &backdrops, &mut mask);
@@ -551,7 +560,6 @@ fn simple_line() {
     //}
 
 }
-*/
 
 // This a rust port of piet's line rasterization routine, just for the sake of
 // understanding and testing the code. There's no reason to run this on the CPU.
