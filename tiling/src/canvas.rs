@@ -2,10 +2,10 @@ use std::sync::Arc;
 use lyon::math::{Point, point, vector};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D};
-use crate::checkerboard_pattern::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard};
+use crate::pattern::checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard};
+use crate::pattern::simple_gradient::{SimpleGradientBuilder, SimpleGradient, add_gradient};
+use crate::pattern::solid_color::{SolidColorBuilder, SolidColor};
 use crate::gpu_store::GpuStore;
-use crate::simple_gradient::{SimpleGradientBuilder, SimpleGradient, add_gradient};
-use crate::solid_color::{SolidColorBuilder, SolidColor};
 use crate::{Color, FillOptions};
 use crate::occlusion::TileMask;
 

@@ -40,7 +40,7 @@ impl CheckerboardPattern {
     ) -> CustomPatternRenderer<Self> {
         let descriptor = CustomPatternDescriptor {
             name: "checkerboard",
-            source: include_str!("../shaders/checkerboard_pattern.wgsl"),
+            source: include_str!("../../shaders/pattern/checkerboard.wgsl"),
             varyings:  &[
                 Varying { name: "uv", kind: "vec2<f32>", interpolate: "perspective" },
                 Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },

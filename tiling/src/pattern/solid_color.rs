@@ -23,7 +23,7 @@ impl SolidColor {
     ) -> CustomPatternRenderer<Self> {
         let descriptor = CustomPatternDescriptor {
             name: "solid color",
-            source: include_str!("../shaders/solid_color_pattern.wgsl"),
+            source: include_str!("../../shaders/pattern/solid_color.wgsl"),
             varyings: &[
                 Varying { name: "color", kind: "vec4<f32>", interpolate: "flat" },
             ],

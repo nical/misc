@@ -9,10 +9,8 @@ pub mod gpu;
 pub mod buffer;
 //pub mod flatten_simd;
 pub mod tile_renderer;
-pub mod checkerboard_pattern;
+pub mod pattern;
 pub mod custom_pattern;
-pub mod simple_gradient;
-pub mod solid_color;
 pub mod gpu_store;
 
 pub use tiler::*;

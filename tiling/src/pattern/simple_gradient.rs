@@ -44,7 +44,7 @@ impl SimpleGradient {
     ) -> CustomPatternRenderer<Self> {
         let descriptor = CustomPatternDescriptor {
             name: "simple gradient",
-            source: include_str!("../shaders/simple_gradient_pattern.wgsl"),
+            source: include_str!("../../shaders/pattern/simple_gradient.wgsl"),
             varyings: &[
                 Varying { name: "position", kind: "vec2<f32>", interpolate: "perspective" },
                 Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
