@@ -11,10 +11,10 @@ struct Gradient {
 fn fetch_gradient(address: u32) -> Gradient {
     var raw = gpu_store_fetch_3(address);
     var gradient: Gradient;
-    gradient.p0 = raw[0].xy;
-    gradient.p1 = raw[0].zw;
-    gradient.color0 = raw[1];
-    gradient.color1 = raw[2];
+    gradient.p0 = raw.data0.xy;
+    gradient.p1 = raw.data0.zw;
+    gradient.color0 = raw.data1;
+    gradient.color1 = raw.data2;
 
     return gradient;
 }

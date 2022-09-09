@@ -18,7 +18,7 @@
  - [ ] Support rasterizing masks with static loops
  - [ ] mix tiled and non-tiled draws
  - [ ] Overlap the row decomposition and row processing stages when running in parallel.
- - [ ] Fix the CPU rasterizer code path.
+ - [x] Fix the CPU rasterizer code path.
  - [ ] Rasterize CPU masks asynchronously.
  - [ ] Stroke mask shader (round joins/caps).
  - [ ] Use SIMD instructions for the CPU rasterizer's prefix sums.
@@ -33,3 +33,4 @@
  - [ ] Clip paths.
  - [ ] GPU tiling (compute shaders).
  - [ ] Support for combining masks
+ - [ ] Get a demo working on top of GL without ssbos.

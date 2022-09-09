@@ -9,31 +9,35 @@ fn gpu_store_decode_uv(address: u32) -> vec2<i32> {
     );
 }
 
+struct GpuData2 { data0: vec4<f32>, data1: vec4<f32> };
+struct GpuData3 { data0: vec4<f32>, data1: vec4<f32>, data2: vec4<f32> };
+struct GpuData4 { data0: vec4<f32>, data1: vec4<f32>, data2: vec4<f32>, data3: vec4<f32> };
+
 fn gpu_store_fetch_1(address: u32) -> vec4<f32> {
     var uv = gpu_store_decode_uv(address);
     return textureLoad(gpu_store_texture, uv, 0);
 }
 
-fn gpu_store_fetch_2(address: u32) -> array<vec4<f32>, 2> {
+fn gpu_store_fetch_2(address: u32) -> GpuData2 {
     var uv = gpu_store_decode_uv(address);
-    return array<vec4<f32>, 2>(
+    return GpuData2(
         textureLoad(gpu_store_texture, uv, 0),
         textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
     );
 }
 
-fn gpu_store_fetch_3(address: u32) -> array<vec4<f32>, 3> {
+fn gpu_store_fetch_3(address: u32) -> GpuData3 {
     var uv = gpu_store_decode_uv(address);
-    return array<vec4<f32>, 3>(
+    return GpuData3(
         textureLoad(gpu_store_texture, uv, 0),
         textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
         textureLoad(gpu_store_texture, uv + vec2<i32>(2, 0), 0),
     );
 }
 
-fn gpu_store_fetch_4(address: u32) -> array<vec4<f32>, 4> {
+fn gpu_store_fetch_4(address: u32) -> GpuData4 {
     var uv = gpu_store_decode_uv(address);
-    return array<vec4<f32>, 4>(
+    return GpuData4(
         textureLoad(gpu_store_texture, uv, 0),
         textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
         textureLoad(gpu_store_texture, uv + vec2<i32>(2, 0), 0),

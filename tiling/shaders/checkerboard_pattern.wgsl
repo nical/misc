@@ -2,11 +2,11 @@
 
 fn pattern_vertex(pattern_pos: vec2<f32>, uv: vec2<f32>, pattern_handle: u32) -> Pattern {
     var pattern = gpu_store_fetch_3(pattern_handle);
-    var offset = pattern[2].xy;
-    var scale = pattern[2].z;
+    var offset = pattern.data2.xy;
+    var scale = pattern.data2.z;
     var checker_uv = (pattern_pos - offset) / scale;
 
-    return Pattern(checker_uv, pattern[0], pattern[1]);
+    return Pattern(checker_uv, pattern.data0, pattern.data1);
 }
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {

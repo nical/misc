@@ -28,12 +28,17 @@ fn main() {
     for arg in &args {
         if arg == "--quads" { use_quads = true; }
         if arg == "--gl" { force_gl = true; }
+        if arg == "--x11" {
+            // This used to get this demo to work in renderdoc (with the gl backend) but now
+            // it runs into new issues.
+            std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+        }
     }
 
     let tile_size = 16.0;
     let tolerance = 0.1;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 8;
+    let max_edges_per_gpu_tile = 256;
     let tile_atlas_size: u32 = 4096;
     let inital_window_size = size2(1200u32, 1000);
 
@@ -116,9 +121,6 @@ fn main() {
     //frame_builder.tiler.set_scissor(&Box2D { min: point(500.0, 600.0), max: point(1000.0, 800.0) });
     frame_builder.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     frame_builder.tiler.draw.use_quads = use_quads;
-
-    //frame_builder.tiler.output_is_tiled = true;
-    //frame_builder.tiler.color_tiles_per_row = 128;
 
     let mut builder = lyon::path::Path::builder();
     builder.begin(point(0.0, 0.0));
