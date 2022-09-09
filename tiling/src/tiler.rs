@@ -1318,10 +1318,7 @@ pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
     // Same as Skia's SK_ScalarNearlyZero.
     const ESPILON: f32 = 1.0 / 4096.0;
 
-    if m.m12.abs() > ESPILON ||
-        m.m21.abs() > ESPILON ||
-        m.m31.abs() > ESPILON ||
-        m.m32.abs() > ESPILON {
+    if m.m12.abs() > ESPILON || m.m21.abs() > ESPILON {
         return None;
     }
 
