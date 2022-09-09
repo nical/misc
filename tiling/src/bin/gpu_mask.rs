@@ -7,14 +7,13 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
-use wgpu::util::DeviceExt;
 use futures::executor::block_on;
 
 use tiling::tile_renderer::PatternRenderer;
 use tiling::tile_encoder::TileEncoder;
 use tiling::gpu::{ShaderSources};
-use solid_color::*;
-use custom_pattern::*;
+use tiling::pattern::solid_color::*;
+use tiling::custom_pattern::*;
 
 fn main() {
     profiling::register_thread!("Main");
@@ -132,7 +131,6 @@ fn main() {
 
     // Main builder.
     let mut builder = TileEncoder::new(&tiler_config, mask_uploader);
-    builder.set_tile_texture_size(tile_atlas_size, tile_size as u32);
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;

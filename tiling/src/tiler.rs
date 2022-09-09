@@ -1084,11 +1084,6 @@ impl ActiveEdge {
     fn max_x(&self) -> f32 { self.from.x.max(self.to.x).max(self.ctrl.x) }
 }
 
-#[test]
-fn active_edge_size() {
-    println!("{}", std::mem::size_of::<ActiveEdge>());
-}
-
 pub struct TileInfo {
     /// X-offset in number of tiles.
     pub x: u32,
@@ -1166,7 +1161,7 @@ fn clip_quadratic_bezier_to_row(
         }
     }
 
-    // Because of precision issues when comuting the split range and when
+    // Because of precision issues when computing the split range and when
     // splitting, the split point won't be exactly at the tile's upper side.
     // It's not an issue if the split point ends up above, but it breaks counting
     // backdrop winding numbers when the split point is below, so we do two things:

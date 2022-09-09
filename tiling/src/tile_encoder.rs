@@ -129,6 +129,10 @@ impl TileAllocator {
 
         (pos, self.current_texture)
     }
+
+    pub fn width(&self) -> u32 { self.tiles_per_row }
+
+    pub fn height(&self) -> u32 { self.tiles_per_atlas / self.tiles_per_row }
 }
 
 pub struct SourceTiles {
@@ -161,11 +165,7 @@ pub struct TileEncoder {
     // mask atlas, which is the primary reason for starting a new mask pass).
     masks_texture_index: u32,
 
-    mask_id_range: Range<u32>,
-    // TODO: move to drawing parameters.
-    pub masks_per_atlas: u32,
-    pub masks_per_row: u32,
-    pub reversed: bool,
+    reversed: bool,
 
     // Transient state (only useful within a path):
 
@@ -190,7 +190,6 @@ impl TileEncoder {
     pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
         let atlas_tiles_x = config.mask_atlas_size.width as u32 / config.tile_size.width as u32;
         let atlas_tiles_y = config.mask_atlas_size.height as u32 / config.tile_size.height as u32;
-        let tiles_per_atlas = atlas_tiles_x * atlas_tiles_y;
         TileEncoder {
             quad_edges: Vec::with_capacity(0),
             line_edges: Vec::with_capacity(8196),
@@ -211,9 +210,6 @@ impl TileEncoder {
 
             mask_uploader,
 
-            mask_id_range: 0..0,
-            masks_per_atlas: tiles_per_atlas,
-            masks_per_row: atlas_tiles_x,
             reversed: false,
 
             ranges: BufferRanges::default(),
@@ -229,8 +225,6 @@ impl TileEncoder {
     }
 
     pub fn create_similar(&self) -> Self {
-        let atlas_tiles_x = self.masks_per_row;
-        let atlas_tiles_y = self.masks_per_atlas / atlas_tiles_x;
         TileEncoder {
             quad_edges: Vec::with_capacity(8196),
             line_edges: Vec::with_capacity(8196),
@@ -251,9 +245,6 @@ impl TileEncoder {
 
             mask_uploader: self.mask_uploader.create_similar(),
 
-            mask_id_range: 0..0,
-            masks_per_atlas: self.masks_per_atlas,
-            masks_per_row: self.masks_per_row,
             reversed: false,
 
             ranges: BufferRanges::default(),
@@ -261,15 +252,11 @@ impl TileEncoder {
             edge_distributions: [0; 16],
 
             src: SourceTiles {
-                mask_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
-                color_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
+                mask_tiles: TileAllocator::new(self.src.mask_tiles.width(), self.src.mask_tiles.height()),
+                color_tiles: TileAllocator::new(self.src.color_tiles.width(), self.src.color_tiles.height()),
             },
-            prerender_pattern: self.prerender_pattern,
+            prerender_pattern: true,
         }
-    }
-
-    pub fn set_tile_texture_size(&mut self, size: u32, tile_size: u32) {
-        self.masks_per_atlas = (size * size) / (tile_size * tile_size);
     }
 
     pub fn reset(&mut self) {
@@ -284,7 +271,6 @@ impl TileEncoder {
         self.mask_uploader.reset();
         self.current_pattern_kind = None;
         self.edge_distributions = [0; 16];
-        self.mask_id_range = 0..0;
         self.gpu_masks_start = 0;
         self.circle_masks_start = 0;
         self.batches_start = 0;
