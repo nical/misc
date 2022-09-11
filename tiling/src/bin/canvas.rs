@@ -39,7 +39,7 @@ fn main() {
     let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 256;
-    let tile_atlas_size: u32 = 4096;
+    let tile_atlas_size: u32 = 1024;
     let inital_window_size = size2(1200u32, 1000);
 
     let mut tiler_config = TilerConfig {

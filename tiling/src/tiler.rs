@@ -1264,11 +1264,10 @@ pub trait TilerPattern {
     /// pattern kind is TILED_IMAGE_PATTERN.
     fn pattern_kind(&self) -> PatternKind;
 
-    fn set_render_pass(&mut self, pass_idx: u32);
     fn set_tile(&mut self, x: u32, y: u32);
     fn tile_data(&mut self) -> PatternData;
     fn opaque_tiles(&mut self) -> &mut Vec<TileInstance>;
-    fn prerender_tile(&mut self, atlas: &mut TileAllocator) -> (TilePosition, PatternData);
+    fn prerender_tile(&mut self, tile_position: TilePosition, atlas_index: u32);
     fn tile_is_opaque(&self) -> bool { false }
     fn tile_is_empty(&self) -> bool { false }
     fn is_mergeable(&self) -> bool { false }
@@ -1282,7 +1281,6 @@ pub struct TiledSourcePattern {
 }
 
 impl TilerPattern for TiledSourcePattern {
-    fn set_render_pass(&mut self, _: u32) {}
     fn pattern_kind(&self) -> u32 { TILED_IMAGE_PATTERN }
     fn set_tile(&mut self, x: u32, y: u32) {
         if let Some((tile, opaque)) = self.indirection_buffer.get(x, y) {
@@ -1299,9 +1297,8 @@ impl TilerPattern for TiledSourcePattern {
         unimplemented!();
     }
 
-    fn prerender_tile(&mut self, _: &mut TileAllocator) -> (TilePosition, PatternData) {
-        // TODO: should the first ine be current_tile?
-        (TilePosition::INVALID, self.current_tile)
+    fn prerender_tile(&mut self, _: TilePosition, _: u32) {
+        unimplemented!();
     }
 
     fn tile_data(&mut self) -> PatternData {

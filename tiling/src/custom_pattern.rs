@@ -1,6 +1,6 @@
 use crate::{TilePosition, PatternData, PatternKind, Stats};
 use crate::gpu::{ShaderSources, PipelineDefaults, VertexBuilder};
-use crate::tile_encoder::{BufferRange, TileAllocator};
+use crate::tile_encoder::BufferRange;
 use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator, TileInstance};
 
 use std::ops::Range;
@@ -283,35 +283,21 @@ impl<Parameters: CustomPattern> crate::tiler::TilerPattern for CustomPatternBuil
         self.parameters.new_tile(TilePosition::new(self.x, self.y))
     }
 
-    fn prerender_tile(&mut self, atlas: &mut TileAllocator) -> (TilePosition, PatternData) {
-        let (atlas_tile_position, texture) = atlas.allocate();
-
-        if texture != self.current_texture {
+    fn prerender_tile(&mut self, tile_position: TilePosition, atlas_index: u32) {
+        if atlas_index != self.current_texture {
             self.end_render_pass();
-            self.current_texture = texture;
+            self.current_texture = atlas_index;
         }
 
         let pattern_position = TilePosition::new(self.x, self.y);
         let pattern_data = self.parameters.new_tile(pattern_position);
 
         self.prerendered_tiles.push(TileInstance {
-            position: atlas_tile_position,
+            position: tile_position,
             mask: TilePosition::ZERO,
             pattern_position,
             pattern_data,
         });
-
-        (atlas_tile_position, 0)
-    }
-
-    fn set_render_pass(&mut self, pass_index: u32) {
-        if pass_index == self.current_texture {
-            return;
-        }
-
-        self.end_render_pass();
-
-        self.current_texture = pass_index;
     }
 }
 
