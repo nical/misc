@@ -23,6 +23,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
+    let mut trace = None;
     let mut use_quads = false;
     let mut force_gl = false;
     for arg in &args {
@@ -32,6 +33,9 @@ fn main() {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
             // it runs into new issues.
             std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+        }
+        if arg == "--trace" {
+            trace = Some(std::path::Path::new("./trace"));
         }
     }
 
@@ -81,7 +85,7 @@ fn main() {
             features: wgpu::Features::default(),
             limits: wgpu::Limits::default(),
         },
-        None,
+        trace,
     )).unwrap();
 
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {

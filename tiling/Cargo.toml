@@ -30,3 +30,4 @@ debug=true
 
 [features]
 tracy_profiling = ["profiling/profile-with-tracy", "parasol/tracy"]
+trace = ["wgpu/trace"]
