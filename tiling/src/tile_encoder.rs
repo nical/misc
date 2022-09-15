@@ -28,7 +28,7 @@ unsafe impl bytemuck::Zeroable for LineEdge {}
 // multiple passes. Each pass builds the atlas and renders it into the color target.
 #[derive(Debug)]
 pub struct RenderPass {
-    //pub opaque_image_tiles: Range<u32>, // TODO
+    pub opaque_image_tiles: Range<u32>, // TODO
     pub batches: Range<usize>,
     //pub circle_masks: Range<u32>,
     pub mask_atlas_index: AtlasIndex,
@@ -163,19 +163,19 @@ pub struct TileEncoder {
     pub render_passes: Vec<RenderPass>,
     pub batches: Vec<AlphaBatch>,
     pub alpha_tiles: Vec<TileInstance>,
-    // TODO: opaque image tiles can point to pre-rendered tiles from multiple atlases so
-    // we need a range of them per render pass.
     pub opaque_image_tiles: Vec<TileInstance>,
 
     current_pattern_kind: Option<u32>,
     // First mask index of the current mask pass.
     batches_start: usize,
+    opaque_image_tiles_start: u32,
     //cpu_masks_start: u32,
     // First masked color tile of the current mask pass.
     alpha_tiles_start: u32,
     // Index of the current mask texture (increments every time we run out of space in the
     // mask atlas, which is the primary reason for starting a new mask pass).
     masks_texture_index: AtlasIndex,
+    color_texture_index: AtlasIndex,
 
     reversed: bool,
 
@@ -211,9 +211,11 @@ impl TileEncoder {
             current_pattern_kind: None,
             current_mergeable_tile: 0, // Will be set in begin_row
             batches_start: 0,
+            opaque_image_tiles_start: 0,
             //cpu_masks_start: 0,
             alpha_tiles_start: 0,
             masks_texture_index: 0,
+            color_texture_index: 0,
 
             mask_uploader,
 
@@ -244,9 +246,11 @@ impl TileEncoder {
             current_pattern_kind: None,
             current_mergeable_tile: 0,
             batches_start: 0,
+            opaque_image_tiles_start: 0,
             //cpu_masks_start: 0,
             alpha_tiles_start: 0,
             masks_texture_index: 0,
+            color_texture_index: 0,
 
             mask_uploader: self.mask_uploader.create_similar(),
 
@@ -277,9 +281,11 @@ impl TileEncoder {
         self.current_pattern_kind = None;
         self.edge_distributions = [0; 16];
         self.batches_start = 0;
+        self.opaque_image_tiles_start = 0;
         //self.cpu_masks_start = 0;
         self.alpha_tiles_start = 0;
         self.masks_texture_index = 0;
+        self.color_texture_index = 0;
         self.reversed = false;
         self.ranges.reset();
         self.src.mask_tiles.reset();
@@ -364,7 +370,7 @@ impl TileEncoder {
                 &mut self.alpha_tiles
             };
 
-            tiles.push(TileInstance {
+            tiles.alloc().init(TileInstance {
                 position: tile_position,
                 mask,
                 pattern_position,
@@ -373,15 +379,11 @@ impl TileEncoder {
         }
     }
 
-    fn allocate_mask_tile(&mut self) -> TilePosition {
-        let (id, texture) = self.src.mask_tiles.allocate();
-
-        if texture != self.masks_texture_index {
+    fn maybe_flush_render_pass(&mut self) {
+        if self.masks_texture_index != self.src.mask_tiles.current_atlas
+        || self.color_texture_index != self.src.color_tiles.current_atlas {
             self.flush_render_pass();
-            self.masks_texture_index = texture;
         }
-
-        id
     }
 
     // TODO: first allocate the mask and color tiles and then flush if either is
@@ -389,13 +391,16 @@ impl TileEncoder {
     fn flush_render_pass(&mut self) {
         self.end_batch();
         let batches_end = self.batches.len();
+        let opaque_image_tiles_end = self.opaque_image_tiles.len() as u32;
         if batches_end != self.batches_start {
-            self.render_passes.push(RenderPass {
+            self.render_passes.alloc().init(RenderPass {
+                opaque_image_tiles: self.opaque_image_tiles_start..opaque_image_tiles_end,
                 batches: self.batches_start..batches_end,
                 mask_atlas_index: self.masks_texture_index,
                 color_atlas_index: self.src.color_tiles.current_atlas,
             });
             self.batches_start = batches_end;
+            self.opaque_image_tiles_start = opaque_image_tiles_end;
         }
 
         if self.src.color_tiles.is_nearly_full() {
@@ -404,6 +409,9 @@ impl TileEncoder {
         if self.src.mask_tiles.is_nearly_full() {
             self.src.mask_tiles.finish_atlas();
         }
+
+        self.masks_texture_index = self.src.mask_tiles.current_atlas;
+        self.color_texture_index = self.src.color_tiles.current_atlas;
     }
 
     pub fn end_batch(&mut self) {
@@ -417,7 +425,7 @@ impl TileEncoder {
         if self.alpha_tiles_start == alpha_tiles_end {
             return;
         }
-        self.batches.push(AlphaBatch {
+        self.batches.alloc().init(AlphaBatch {
             tiles: self.alpha_tiles_start..alpha_tiles_end,
             batch_kind,
         });
@@ -435,8 +443,9 @@ impl TileEncoder {
     }
 
     pub fn add_cricle_mask(&mut self, center: Point, radius: f32) -> TilePosition {
-        let tile = self.allocate_mask_tile();
-        let atlas_index = self.masks_texture_index;
+        let (tile, atlas_index) = self.src.mask_tiles.allocate();
+        self.maybe_flush_render_pass();
+
         self.circle_masks.prerender_mask(atlas_index, CircleMask { tile, radius, center: center.to_array() });
 
         tile
@@ -477,7 +486,7 @@ impl TileEncoder {
             } else {
                 let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 flatten_quad(&curve, draw.tolerance, &mut |segment| {
-                    self.line_edges.push(LineEdge(segment.from, segment.to));
+                    self.line_edges.alloc().init(LineEdge(segment.from, segment.to));
                 });
             }
         }
@@ -486,8 +495,10 @@ impl TileEncoder {
         let edges_end = self.line_edges.len() as u32;
         debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
-        let tile_position = self.allocate_mask_tile();
-        let atlas_index = self.masks_texture_index;
+        let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
+
+        self.maybe_flush_render_pass();
+
         debug_assert!(tile_position.to_u32() != 0);
 
         self.fill_masks.prerender_mask(
@@ -543,7 +554,9 @@ impl TileEncoder {
         let edges_start = edges_start as u32;
         let edges_end = self.quad_edges.len() as u32;
         assert!(edges_end > edges_start, "{:?}", active_edges);
-        let tile_position = self.allocate_mask_tile();
+
+        let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
+        self.maybe_flush_render_pass();
 
         unimplemented!();
         // TODO
@@ -586,9 +599,10 @@ impl TileEncoder {
             }
         }
 
-        let mask_id = self.allocate_mask_tile();
+        let (tile_position, _atlas_index) = self.src.mask_tiles.allocate();
+        self.maybe_flush_render_pass();
 
-        let mask_buffer_range = self.mask_uploader.new_mask(mask_id);
+        let mask_buffer_range = self.mask_uploader.new_mask(tile_position);
         unsafe {
             self.mask_uploader.current_mask_buffer.set_len(mask_buffer_range.end as usize);
         }
@@ -608,7 +622,7 @@ impl TileEncoder {
         //crate::cpu_rasterizer::save_mask_png(16, 16, &self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()], &mask_name);
         //crate::cpu_rasterizer::save_accum_png(16, 16, &accum, &backdrops, &format!("accum-{}.png", mask_id.to_u32()));
 
-        mask_id
+        tile_position
     }
 
     pub fn reverse_alpha_tiles(&mut self) {
@@ -670,6 +684,7 @@ impl TileEncoder {
         stats.alpha_tiles += self.alpha_tiles.len();
         stats.gpu_mask_tiles += self.fill_masks.masks.len() + self.circle_masks.masks.len();
         stats.cpu_mask_tiles += self.num_cpu_masks();
+        stats.render_passes += self.render_passes.len();
         stats.batches += self.batches.len();
         stats.edges += self.line_edges.len() + self.quad_edges.len();
     }
@@ -790,8 +805,8 @@ impl<T> MaskEncoder<T> {
             return;
         }
 
-        while self.render_passes.len() as u32 <= self.current_atlas {
-            self.render_passes.push(0..0);
+        if self.render_passes.len() <= self.current_atlas as usize {
+            self.render_passes.resize(self.current_atlas as usize + 1, 0..0);
         }
         self.render_passes[self.current_atlas as usize] = self.masks_start..masks_end;
         self.masks_start = masks_end;

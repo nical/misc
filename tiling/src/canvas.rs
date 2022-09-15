@@ -19,6 +19,7 @@ pub enum Pattern {
 pub enum Shape {
     Path(Arc<Path>, FillRule),
     Circle { center: Point, radius: f32 },
+    Canvas,
 }
 
 pub struct Fill {
@@ -143,6 +144,16 @@ impl Canvas {
     pub fn fill_circle(&mut self, center: Point, radius: f32, pattern: Pattern) {
         self.current_group.commands.push(Command::Fill(Fill {
             shape: Shape::Circle { center, radius },
+            pattern,
+            transform: self.current_transform,
+            z_index: self.z_index,
+        }));
+        self.z_index += 1;
+    }
+
+    pub fn fill_canvas(&mut self, pattern: Pattern) {
+        self.current_group.commands.push(Command::Fill(Fill {
+            shape: Shape::Canvas,
             pattern,
             transform: self.current_transform,
             z_index: self.z_index,
@@ -350,6 +361,9 @@ impl FrameBuilder {
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance);
                             self.tiler.fill_circle(*center, *radius, &options, pattern, &mut self.tile_mask, None, encoder)
+                        }
+                        Shape::Canvas => {
+                            self.tiler.fill_canvas(pattern, &mut self.tile_mask, None, encoder);
                         }
                     }
 

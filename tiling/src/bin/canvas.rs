@@ -26,6 +26,7 @@ fn main() {
     let mut trace = None;
     let mut use_quads = false;
     let mut force_gl = false;
+    let mut asap = false;
     for arg in &args {
         if arg == "--quads" { use_quads = true; }
         if arg == "--gl" { force_gl = true; }
@@ -36,6 +37,9 @@ fn main() {
         }
         if arg == "--trace" {
             trace = Some(std::path::Path::new("./trace"));
+        }
+        if arg == "--asap" {
+            asap = true;
         }
     }
 
@@ -133,7 +137,13 @@ fn main() {
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
 
+    canvas.fill_canvas(Pattern::Gradient {
+            p0: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
+            p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 150, a: 255},
+    });
+
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));
+
     canvas.fill_circle(
         point(500.0, 500.0), 800.0,
         Pattern::Gradient {
@@ -142,9 +152,11 @@ fn main() {
         }
     );
 
+
     for (path, color) in paths {
         canvas.fill(Arc::new(path), FillRule::EvenOdd, Pattern::Color(color));
     }
+
     canvas.fill_circle(
         point(500.0, 300.0), 200.0,
         Pattern::Gradient {
@@ -212,6 +224,11 @@ fn main() {
         render: true,
     };
 
+    let mut frame_build_time = Duration::zero();
+    let mut render_time = Duration::zero();
+    let mut row_time = Duration::zero();
+    let mut tile_time = Duration::zero();
+    let mut frame_idx = 0;
     event_loop.run(move |event, _, control_flow| {
         device.poll(wgpu::Maintain::Poll);
 
@@ -221,8 +238,12 @@ fn main() {
 
         let tx = scene.pan[0];
         let ty = scene.pan[1];
-        let transform = Transform2D::scale(scene.zoom, scene.zoom)
-           .then_translate(vector(tx, ty));
+        let ww = (scene.window_size.width as f32) * 0.5;
+        let wh = (scene.window_size.height as f32) * 0.5;
+        let transform = Transform2D::translation(tx, ty)
+            .then_translate(-vector(ww, wh))
+            .then_scale(scene.zoom, scene.zoom)
+            .then_translate(vector(ww, wh));
         commands.set_transform(1, &transform);
 
         if scene.size_changed {
@@ -257,7 +278,14 @@ fn main() {
         gpu_store.clear();
         gpu_store.push(&[0.0]);
         gpu_store.push(&[0.0]);
+
+        let frame_build_start = time::precise_time_ns();
         frame_builder.build(&commands, &mut gpu_store);
+        frame_build_time += Duration::from_ns(time::precise_time_ns() - frame_build_start);
+        row_time += frame_builder.stats().row_time;
+        tile_time += frame_builder.stats().tile_time;
+
+        let render_start = time::precise_time_ns();
 
         tile_renderer.begin_frame();
         solid_color.begin_frame();
@@ -295,7 +323,29 @@ fn main() {
         );
 
         queue.submit(Some(encoder.finish()));
+
+        render_time += Duration::from_ns(time::precise_time_ns() - render_start);
+
+        let n = 300;
+        frame_idx += 1;
+        if frame_idx == n {
+            let fbt = frame_build_time.ms() / (n as f64);
+            let rt = render_time.ms() / (n as f64);
+            let row = row_time.ms() / (n as f64);
+            let tile = tile_time.ms() / (n as f64);
+            frame_build_time = Duration::zero();
+            render_time = Duration::zero();
+            row_time = Duration::zero();
+            tile_time = Duration::zero();
+            frame_idx = 0;
+            println!("frame build {:.2} (row: {:.2}, tile {:.2}) render {:.2}", fbt, row, tile, rt);
+        }
+
         frame.present();
+
+        if asap {
+            window.request_redraw();
+        }
     });
 }
 
@@ -318,12 +368,11 @@ fn update_inputs(
     control_flow: &mut ControlFlow,
     scene: &mut SceneGlobals,
 ) -> bool {
+    let p = scene.pan;
+    let z = scene.zoom;
     match event {
         Event::RedrawRequested(_) => {
             scene.render = true;
-        }
-        Event::RedrawEventsCleared => { 
-            window.request_redraw();
         }
         Event::WindowEvent {
             event: WindowEvent::Destroyed,
@@ -342,6 +391,21 @@ fn update_inputs(
         } => {
             scene.window_size = size;
             scene.size_changed = true
+        }
+        Event::WindowEvent { event: WindowEvent::MouseWheel { delta , phase, .. }, ..} => {
+            use winit::event::MouseScrollDelta::*;
+            let (dx, dy) = match delta {
+                LineDelta(x, y) => (x * 20.0, -y * 20.0),
+                PixelDelta(v) => (v.x as f32, -v.y as f32),
+            };
+            let dx = dx / scene.target_zoom;
+            let dy = dy / scene.target_zoom;
+            if dx != 0.0 || dy != 0.0 {
+                scene.target_pan[0] -= dx;
+                scene.target_pan[1] -= dy;
+                scene.pan[0] -= dx;
+                scene.pan[1] -= dy;
+            }
         }
         Event::WindowEvent {
             event:
@@ -367,16 +431,16 @@ fn update_inputs(
                 scene.target_zoom *= 1.25;
             }
             VirtualKeyCode::Left => {
-                scene.target_pan[0] += 100.0;
+                scene.target_pan[0] += 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Right => {
-                scene.target_pan[0] -= 100.0;
+                scene.target_pan[0] -= 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Up => {
-                scene.target_pan[1] += 100.0;
+                scene.target_pan[1] += 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::Down => {
-                scene.target_pan[1] -= 100.0;
+                scene.target_pan[1] -= 100.0 / scene.target_zoom;
             }
             VirtualKeyCode::W => {
                 scene.wireframe = !scene.wireframe;
@@ -391,6 +455,9 @@ fn update_inputs(
     scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
     scene.pan[0] += (scene.target_pan[0] - scene.pan[0]) * 0.15;
     scene.pan[1] += (scene.target_pan[1] - scene.pan[1]) * 0.15;
+    if p != scene.pan || z != scene.zoom {
+        window.request_redraw();
+    }
 
     *control_flow = ControlFlow::Poll;
 

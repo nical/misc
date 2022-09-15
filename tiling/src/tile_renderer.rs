@@ -528,10 +528,14 @@ impl TileRenderer {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        let mask_ranges = &tile_encoder.render_passes[pass_idx];
+        if tile_encoder.render_passes.is_empty() {
+            return;
+        }
 
-        if *src_color_atlas != mask_ranges.color_atlas_index {
-            *src_color_atlas = mask_ranges.color_atlas_index;
+        let render_pass = &tile_encoder.render_passes[pass_idx];
+
+        if *src_color_atlas != render_pass.color_atlas_index {
+            *src_color_atlas = render_pass.color_atlas_index;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Color tile atlas"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -553,8 +557,8 @@ impl TileRenderer {
             }
         }
 
-        if *src_mask_atlas != mask_ranges.mask_atlas_index {
-            *src_mask_atlas = mask_ranges.mask_atlas_index;
+        if *src_mask_atlas != render_pass.mask_atlas_index {
+            *src_mask_atlas = render_pass.mask_atlas_index;
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Mask atlas"),
@@ -600,20 +604,21 @@ impl TileRenderer {
         patterns: &[&'a dyn PatternRenderer],
         pass: &mut wgpu::RenderPass<'a>,
     ) {
-        let mask_ranges = &tile_encoder.render_passes[pass_idx];
+        let render_pass = &tile_encoder.render_passes[pass_idx];
 
         pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
 
         pass.set_bind_group(0, &self.main_target_and_gpu_store_bind_group, &[]);
 
+        if !render_pass.opaque_image_tiles.is_empty() {
+            pass.set_pipeline(&self.opaque_image_pipeline);
+            pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
+            pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
+            pass.set_bind_group(2, &self.src_color_bind_group, &[]);
+            pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
+        }
+
         if pass_idx == 0 {
-            if !tile_encoder.ranges.opaque_image_tiles.is_empty() {
-                pass.set_pipeline(&self.opaque_image_pipeline);
-                pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
-                pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
-                pass.set_bind_group(2, &self.src_color_bind_group, &[]);
-                pass.draw_indexed(0..6, 0, tile_encoder.ranges.opaque_image_tiles.to_u32());
-            }
             for pattern in patterns {
                 pattern.render_opaque_pass(pass);
             }
@@ -622,7 +627,7 @@ impl TileRenderer {
         pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<TileInstance>()));
         pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
 
-        for batch in &tile_encoder.batches[mask_ranges.batches.clone()] {
+        for batch in &tile_encoder.batches[render_pass.batches.clone()] {
             match batch.batch_kind {
                 crate::tiler::TILED_IMAGE_PATTERN => {
                     pass.set_pipeline(&self.masked_image_pipeline);

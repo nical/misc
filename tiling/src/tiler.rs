@@ -86,6 +86,7 @@ pub struct Stats {
     pub gpu_mask_tiles: usize,
     pub cpu_mask_tiles: usize,
     pub edges: usize,
+    pub render_passes: usize,
     pub batches: usize,
 }
 
@@ -98,6 +99,7 @@ impl Stats {
             gpu_mask_tiles: 0,
             cpu_mask_tiles: 0,
             edges: 0,
+            render_passes: 0,
             batches: 0,
         }
     }
@@ -787,10 +789,10 @@ impl Tiler {
             encoder.add_tile(pattern, opaque, tile_position, mask_tile);
         }
 
-        if empty && self.draw.is_clip_in {
-            // For clip-in it's the empty tiles that completely mask content out.
-            coarse_mask.write_clip(tile.x);
-        }
+        //if empty && self.draw.is_clip_in {
+        //    // For clip-in it's the empty tiles that completely mask content out.
+        //    coarse_mask.write_clip(tile.x);
+        //}
 
         tile.inner_rect.min.x += self.draw.tile_size.width;
         tile.inner_rect.max.x += self.draw.tile_size.width;
@@ -976,6 +978,58 @@ impl Tiler {
                 };
 
                 encoder.add_tile(pattern, opaque, tile_position, mask_id);
+            }
+        }
+    }
+
+    pub fn fill_canvas(
+        &mut self,
+        pattern: &mut dyn TilerPattern,
+        tile_mask: &mut TileMask,
+        mut tiled_output: Option<&mut TiledOutput>,
+        encoder: &mut TileEncoder,
+    ) {
+        encoder.begin_path(pattern);
+
+        let (column_start, column_end) = self.affected_range(
+            self.scissor.min.x,
+            self.scissor.max.x,
+            self.scissor.min.x,
+            self.scissor.max.x,
+            self.draw.tile_size.width,
+        );
+
+        for tile_y in 0..self.rows.len() as u32 {
+            let mut tile_mask = tile_mask.row(tile_y);
+            let mut dummy_tile_alloc = TileAllocator::new(0, 0);
+            let dummy_buffer: &mut [TilePosition] = &mut [];
+            let (output_indirection_buffer, output_tile_alloc) = if let Some(ref mut output) = &mut tiled_output {
+                (output.indirection_buffer.row_mut(tile_y), &mut output.tile_allocator)
+            } else {
+                (dummy_buffer, &mut dummy_tile_alloc)
+            };
+
+            for tile_x in column_start .. column_end {
+                let tile_x = tile_x as u32;
+
+                pattern.set_tile(tile_x, tile_y);
+                let opaque = pattern.tile_is_opaque();
+
+                if pattern.tile_is_empty() {
+                    continue;
+                }
+
+                if !tile_mask.test(tile_x as u32, opaque) {
+                    continue;
+                }
+
+                let tile_position = if self.output_is_tiled {
+                    self.set_indirect_output_rect(tile_x, opaque, output_indirection_buffer, output_tile_alloc)
+                } else {
+                    TilePosition::new(tile_x, tile_y)
+                };
+
+                encoder.add_tile(pattern, opaque, tile_position, TilePosition::ZERO);
             }
         }
     }
