@@ -1,5 +1,7 @@
 pub mod mask_uploader;
-//pub mod render_target;
+pub mod gpu_store;
+
+pub use gpu_store::*;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 use std::{collections::HashMap};

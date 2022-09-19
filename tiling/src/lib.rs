@@ -1,20 +1,14 @@
 pub mod canvas;
-pub mod tiler;
-pub mod tile_encoder;
-pub mod advanced_raster_encoder;
-pub mod cpu_rasterizer;
-pub mod occlusion;
 pub mod load_svg;
 pub mod gpu;
 pub mod buffer;
 //pub mod flatten_simd;
-pub mod tile_renderer;
 pub mod pattern;
 pub mod custom_pattern;
-pub mod gpu_store;
+pub mod tiling;
 
-pub use tiler::*;
-pub use occlusion::*;
+pub use tiling::tiler::*;
+pub use tiling::occlusion::*;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 

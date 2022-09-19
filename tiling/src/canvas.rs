@@ -5,9 +5,33 @@ use lyon::geom::euclid::default::{Transform2D, Box2D};
 use crate::pattern::checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard};
 use crate::pattern::simple_gradient::{SimpleGradientBuilder, SimpleGradient, add_gradient};
 use crate::pattern::solid_color::{SolidColorBuilder, SolidColor};
-use crate::gpu_store::GpuStore;
-use crate::{Color, FillOptions};
-use crate::occlusion::TileMask;
+use crate::gpu::GpuStore;
+use crate::{Color};
+use crate::tiling::{
+    TilerPattern, FillOptions,
+    occlusion::TileMask,
+    tiler::{Tiler, TilerConfig, TileEncoder}
+};
+use crate::gpu::mask_uploader::MaskUploader;
+
+
+/*
+
+ 1--A-----------4--C-----6
+    |              |
+    +--2--B        +--5
+          |
+          +--3
+.
+
+tile order: 6 C* 5 C 4 A* B* 3 B 2 A 1
+
+renderer order: 3, 2 B, 5, 1 A 4 C 6
+
+for each render pass, first render associated push group(s).
+if multiple groups don't fit into an atlas, create a new render pass.
+
+*/
 
 pub enum Pattern {
     Color(Color),
@@ -26,7 +50,6 @@ pub struct Fill {
     shape: Shape,
     pattern: Pattern,
     transform: usize,
-    z_index: u16,
 }
 
 pub struct Group {
@@ -136,7 +159,6 @@ impl Canvas {
             shape: Shape::Path(path, fill_rule),
             pattern,
             transform: self.current_transform,
-            z_index: self.z_index,
         }));
         self.z_index += 1;
     }
@@ -146,9 +168,7 @@ impl Canvas {
             shape: Shape::Circle { center, radius },
             pattern,
             transform: self.current_transform,
-            z_index: self.z_index,
         }));
-        self.z_index += 1;
     }
 
     pub fn fill_canvas(&mut self, pattern: Pattern) {
@@ -156,9 +176,7 @@ impl Canvas {
             shape: Shape::Canvas,
             pattern,
             transform: self.current_transform,
-            z_index: self.z_index,
         }));
-        self.z_index += 1;
     }
 
     pub fn push_clip(&mut self, path: Arc<Path>) {
@@ -171,7 +189,6 @@ impl Canvas {
         self.current_group.transform = self.current_transform;
         self.current_group.group_stack_depth = depth;
         self.max_group_stack_depth = self.max_group_stack_depth.max(depth);
-        self.z_index += 1;
     }
 
     pub fn pop_clip(&mut self) {
@@ -191,10 +208,6 @@ impl Canvas {
         }
     }
 }
-
-use crate::tile_encoder::TileEncoder;
-use crate::tiler::{Tiler, TilerConfig, TilerPattern};
-use crate::gpu::mask_uploader::MaskUploader;
 
 pub struct TargetData {
     pub tile_encoder: TileEncoder,
@@ -253,6 +266,7 @@ impl FrameBuilder {
             target.checkerboard_pattern.reset();
             target.gradient_pattern.reset();
         }
+        self.tiler.edges.clear();
         self.tile_mask.clear();
 
         self.process_group(&commands.root, &commands, gpu_store);
@@ -269,29 +283,9 @@ impl FrameBuilder {
     }
 
     pub fn process_group(&mut self, group: &Group, commands: &Commands, gpu_store: &mut GpuStore) {
+        let mut saved_tile_mask = None;
         if let Some(_clip) = &group.clip {
-            // TODO: save clip state.
-
-            // TODO: support clipping the root.
-            let parent_group_depth = group.group_stack_depth as usize - 1;
-            let target = &mut self.targets[parent_group_depth];
-
-            let _transform = if group.transform != 0 {
-                Some(&commands.transforms[group.transform].transform)
-            } else {
-                None
-            };
-
-            self.tiler.draw.is_clip_in = true;
-
-            //self.tiler.tile_path(clip.iter(), transform, &mut self.tile_mask, None, &mut pattern, &mut target.encoder);
-
-            self.stats.row_time += Duration::from_ns(self.tiler.row_decomposition_time_ns);
-            self.stats.tile_time += Duration::from_ns(self.tiler.tile_decomposition_time_ns);
-
-            // TODO: tile clip
-            // TODO: push clip state.
-            self.stats.tiled_paths += 1;
+            saved_tile_mask = Some(self.tile_mask.clone());
         }
 
         for cmd in group.commands.iter().rev() {
@@ -299,9 +293,6 @@ impl FrameBuilder {
                 Command::Fill(fill) => {
                     let target = &mut self.targets[group.group_stack_depth as usize];
                     let encoder = &mut target.tile_encoder;
-
-                    self.tiler.draw.z_index = fill.z_index;
-                    self.tiler.draw.is_clip_in = false;
 
                     let transform = if fill.transform != 0 {
                         Some(&commands.transforms[fill.transform].transform)
@@ -377,8 +368,8 @@ impl FrameBuilder {
             }
         }
 
-        if group.clip.is_some() {
-            // TODO: restore clip state.
+        if let Some(tile_mask) = saved_tile_mask {
+            self.tile_mask = tile_mask;
         }
     }
 

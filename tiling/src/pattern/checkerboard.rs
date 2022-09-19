@@ -1,7 +1,8 @@
 use lyon::math::Point;
 
-use crate::gpu_store::{GpuStoreHandle, GpuStore};
-use crate::{Color, TilePosition, PatternData};
+use crate::gpu::{GpuStoreHandle, GpuStore};
+use crate::tiling::{TilePosition, PatternData};
+use crate::{Color};
 use crate::custom_pattern::*;
 
 pub type CheckerboardPatternBuilder = CustomPatternBuilder<CheckerboardPattern>;

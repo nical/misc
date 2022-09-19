@@ -1,5 +1,6 @@
-use crate::gpu_store::{GpuStore, GpuStoreHandle};
-use crate::{Color, Point, TilePosition, PatternData};
+use crate::tiling::{TilePosition, PatternData};
+use crate::gpu::{GpuStore, GpuStoreHandle};
+use crate::{Color, Point};
 use crate::custom_pattern::*;
 
 pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;

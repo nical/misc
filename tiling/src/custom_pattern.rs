@@ -1,7 +1,8 @@
-use crate::{TilePosition, PatternData, PatternKind, Stats};
+use crate::tiling::{
+    TilePosition, PatternData, PatternKind, Stats, BufferRange,
+    tile_renderer::{PatternRenderer, BufferBumpAllocator, TileInstance},
+};
 use crate::gpu::{ShaderSources, PipelineDefaults, VertexBuilder};
-use crate::tile_encoder::BufferRange;
-use crate::tile_renderer::{PatternRenderer, BufferBumpAllocator, TileInstance};
 
 use std::ops::Range;
 
@@ -263,7 +264,7 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
     }
 }
 
-impl<Parameters: CustomPattern> crate::tiler::TilerPattern for CustomPatternBuilder<Parameters> {
+impl<Parameters: CustomPattern> crate::tiling::TilerPattern for CustomPatternBuilder<Parameters> {
     fn pattern_kind(&self) -> u32 { self.kind }
     fn tile_is_opaque(&self) -> bool { self.parameters.is_opaque() }
     fn set_tile(&mut self, x: u32, y: u32) {

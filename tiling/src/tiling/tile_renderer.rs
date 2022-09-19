@@ -1,14 +1,14 @@
 use std::num::NonZeroU32;
 
-use crate::{TilePosition, PatternData};
-/// A lot of the boilerplate for the interaction between the tiling code a wgpu moved into one place.
-///
-/// It's not very good, it can only serves the purpose of the prototype, it's just so that the code isn't all in main().
-
-use crate::gpu::{ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults};
-use crate::gpu::mask_uploader::{MaskUploadCopies};
-use crate::gpu_store::GpuStore;
-use crate::tile_encoder::{TileEncoder, BufferRange, LineEdge, MaskRenderer};
+use crate::gpu::{
+    gpu_store::GpuStore,
+    mask_uploader::{MaskUploadCopies},
+    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults
+};
+use crate::tiling::{
+    tiler::{TileEncoder, LineEdge, MaskRenderer},
+    TilePosition, PatternData, BufferRange
+};
 
 use lyon::geom::euclid::default::Size2D;
 use wgpu::TextureAspect;
@@ -150,7 +150,7 @@ impl TileRenderer {
         let fill_masks = MaskRenderer::new::<Mask>(device, "fill masks", 4096 * 4);
         let circle_masks = MaskRenderer::new::<CircleMask>(device, "circle masks", 4096);
 
-        let src = include_str!("./../shaders/tile.wgsl");
+        let src = include_str!("./../../shaders/tile.wgsl");
         let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
         let opaque_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_IMAGE_PATTERN",]);
 
@@ -629,7 +629,7 @@ impl TileRenderer {
 
         for batch in &tile_encoder.batches[render_pass.batches.clone()] {
             match batch.batch_kind {
-                crate::tiler::TILED_IMAGE_PATTERN => {
+                crate::tiling::TILED_IMAGE_PATTERN => {
                     pass.set_pipeline(&self.masked_image_pipeline);
                     pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                 }
@@ -656,9 +656,9 @@ impl Masks {
 }
 
 fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> Masks {
-    let quad_src = include_str!("../shaders/mask_fill_quads.wgsl");
-    let lin_src = include_str!("../shaders/mask_fill.wgsl");
-    let circle_src = include_str!("../shaders/mask_circle.wgsl");
+    let quad_src = include_str!("../../shaders/mask_fill_quads.wgsl");
+    let lin_src = include_str!("../../shaders/mask_fill.wgsl");
+    let circle_src = include_str!("../../shaders/mask_circle.wgsl");
     let lin_module = &shaders.create_shader_module(device, "Mask fill linear", lin_src, &[]);
     let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
     let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);

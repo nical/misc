@@ -1,16 +1,17 @@
 use std::sync::Arc;
-use tiling::gpu_store::GpuStore;
-use tiling::{*, Transform2D};
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPatterns;
-use tiling::pattern::checkerboard::CheckerboardPattern;
-use tiling::pattern::simple_gradient::SimpleGradient;
-use tiling::pattern::solid_color::SolidColor;
-use tiling::tile_renderer::PatternRenderer;
-use tiling::gpu::{ShaderSources};
+use tiling::pattern::{
+    checkerboard::CheckerboardPattern,
+    simple_gradient::SimpleGradient,
+    solid_color::SolidColor,
+};
 use tiling::load_svg::*;
+use tiling::gpu::{ShaderSources, GpuStore};
 use tiling::gpu::mask_uploader::MaskUploader;
+use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
+use tiling::{Color, Size2D, Transform2D, FillRule};
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -23,11 +24,18 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
+    let mut tolerance = 0.1;
+
     let mut trace = None;
     let mut use_quads = false;
     let mut force_gl = false;
     let mut asap = false;
+    let mut read_tolerance = false;
     for arg in &args {
+        if read_tolerance {
+            tolerance = arg.parse::<f32>().unwrap();
+            println!("tolerance: {}", tolerance);
+        }
         if arg == "--quads" { use_quads = true; }
         if arg == "--gl" { force_gl = true; }
         if arg == "--x11" {
@@ -41,10 +49,12 @@ fn main() {
         if arg == "--asap" {
             asap = true;
         }
+        if arg == "--tolerance" {
+            read_tolerance = true;
+        }
     }
 
     let tile_size = 16.0;
-    let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 256;
     let tile_atlas_size: u32 = 1024;
@@ -113,7 +123,7 @@ fn main() {
 
     let mut gpu_store = GpuStore::new(1024, 1024, &device);
 
-    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+    let mut tile_renderer = TileRenderer::new(
         &device,
         &mut shaders,
         Size2D::new(window_size.width, window_size.height),
@@ -190,14 +200,16 @@ fn main() {
     frame_builder.build(&commands, &mut gpu_store);
 
     let mut stats = Stats::new();
-    let te = &frame_builder.targets[0].tile_encoder;
-    te.update_stats(&mut stats);
-    frame_builder.targets[0].solid_color_pattern.update_stats(&mut stats);
-    frame_builder.targets[0].checkerboard_pattern.update_stats(&mut stats);
-    frame_builder.targets[0].gradient_pattern.update_stats(&mut stats);
+    for target in &frame_builder.targets {
+        target.tile_encoder.update_stats(&mut stats);
+        target.solid_color_pattern.update_stats(&mut stats);
+        target.checkerboard_pattern.update_stats(&mut stats);
+        target.gradient_pattern.update_stats(&mut stats);
+    }
+    frame_builder.tiler.edges.update_stats(&mut stats);
     println!("view box: {:?}", view_box);
     println!("{:#?}", stats);
-    println!("#edge distributions: {:?}", te.edge_distributions);
+    println!("#edge distributions: {:?}", frame_builder.targets[0].tile_encoder.edge_distributions);
     println!("");
     println!("{:?}", frame_builder.stats());
 
@@ -292,6 +304,7 @@ fn main() {
         checkerboard.begin_frame();
         gradients.begin_frame();
 
+        frame_builder.tiler.edges.allocate_buffer_ranges(&mut tile_renderer);
         for target in &mut frame_builder.targets {
             target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
             target.solid_color_pattern.allocate_buffer_ranges(&mut solid_color);            
@@ -301,6 +314,7 @@ fn main() {
 
         tile_renderer.allocate(&device);
 
+        frame_builder.tiler.edges.upload(&mut tile_renderer, &queue);
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
             target.solid_color_pattern.upload(&mut solid_color, &queue);
@@ -392,7 +406,7 @@ fn update_inputs(
             scene.window_size = size;
             scene.size_changed = true
         }
-        Event::WindowEvent { event: WindowEvent::MouseWheel { delta , phase, .. }, ..} => {
+        Event::WindowEvent { event: WindowEvent::MouseWheel { delta , .. }, ..} => {
             use winit::event::MouseScrollDelta::*;
             let (dx, dy) = match delta {
                 LineDelta(x, y) => (x * 20.0, -y * 20.0),

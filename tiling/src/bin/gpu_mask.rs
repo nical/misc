@@ -1,5 +1,6 @@
-use tiling::*;
-use tiling::gpu_store::GpuStore;
+use tiling::{Color, point, Box2D};
+use tiling::tiling::*;
+use tiling::gpu::GpuStore;
 use tiling::load_svg::*;
 use lyon::path::geom::euclid::{size2, Transform2D};
 
@@ -9,8 +10,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use futures::executor::block_on;
 
-use tiling::tile_renderer::PatternRenderer;
-use tiling::tile_encoder::TileEncoder;
+use tiling::tiling::tile_renderer::PatternRenderer;
+use tiling::tiling::tiler::{Tiler, TileEncoder, TilerConfig};
+use tiling::tiling::tile_renderer::TileRenderer;
 use tiling::gpu::{ShaderSources};
 use tiling::pattern::solid_color::*;
 use tiling::custom_pattern::*;
@@ -118,7 +120,7 @@ fn main() {
     let mut shaders = ShaderSources::new();
 
     let mut gpu_store = GpuStore::new(1024, 1024, &device);
-    let mut tile_renderer = tiling::tile_renderer::TileRenderer::new(
+    let mut tile_renderer = TileRenderer::new(
         &device,
         &mut shaders,
         size,
@@ -154,19 +156,19 @@ fn main() {
 
         builder.reset();
         tile_mask.clear();
-        tiler.draw.z_index = paths.len() as u16;
+        let mut z_index = paths.len() as u16;
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
         for (path, color) in paths.iter().rev() {
             if let Some(idx) = select_path_range {
-                if idx < tiler.draw.z_index {
-                    tiler.draw.z_index -= 1;
+                if idx < z_index {
+                    z_index -= 1;
                     continue;
                 }
             }
             if let Some(idx) = select_path {
-                if idx != tiler.draw.z_index {
-                    tiler.draw.z_index -= 1;
+                if idx != z_index {
+                    z_index -= 1;
                     continue;
                 }
             }
@@ -186,7 +188,7 @@ fn main() {
                 &mut builder,
             );
 
-            tiler.draw.z_index -= 1;
+            z_index -= 1;
 
             row_time += tiler.row_decomposition_time_ns;
             tile_time += tiler.tile_decomposition_time_ns;

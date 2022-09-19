@@ -1,6 +1,7 @@
 use std::ops::Range;
-use crate::{buffer::{Buffer, UniformBufferPool}, TilePosition};
+use crate::buffer::{Buffer, UniformBufferPool};
 use crate::gpu::ShaderSources;
+use crate::tiling::TilePosition;
 
 
 const STAGING_BUFFER_SIZE: u32 = 65536;

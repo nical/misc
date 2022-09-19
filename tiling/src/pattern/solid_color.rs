@@ -1,4 +1,5 @@
-use crate::{Color, TilePosition, PatternData};
+use crate::{Color};
+use crate::tiling::{TilePosition, PatternData};
 use crate::custom_pattern::*;
 
 pub type SolidColorBuilder = CustomPatternBuilder<SolidColor>;
