@@ -435,34 +435,61 @@ impl Tiler {
         path: impl Iterator<Item = PathEvent>,
     ) {
         profiling::scope!("assign_rows_quadratic");
+        let square_tolerance = self.draw.tolerance * self.draw.tolerance;
+        let mut from = point(0.0, 0.0);
         for evt in path {
             match evt {
-                PathEvent::Begin { .. } => {}
-                PathEvent::End { last, first, .. } => {
-                    let segment = LineSegment { from: last, to: first }.transformed(transform);
+                PathEvent::Begin { at, .. } => {
+                    from = at;
+                }
+                PathEvent::End { first, .. } => {
+                    if first == from {
+                        continue;
+                    }
+                    let segment = LineSegment { from, to: first }.transformed(transform);
                     let edge = MonotonicEdge::linear(segment);
                     self.add_monotonic_edge(&edge);
+                    from = first;
                 }
-                PathEvent::Line { from, to } => {
+                PathEvent::Line { to, .. } => {
                     let segment = LineSegment { from, to }.transformed(transform);
+                    if segment.to_vector().square_length() < square_tolerance {
+                        continue;
+                    }
                     let edge = MonotonicEdge::linear(segment);
                     self.add_monotonic_edge(&edge);
+                    from = to;
                 }
-                PathEvent::Quadratic { from, ctrl, to } => {
+                PathEvent::Quadratic { ctrl, to, .. } => {
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl - center).square_length() < square_tolerance {
+                            continue;
+                        }
+                    }
                     segment.for_each_monotonic(&mut|monotonic| {
                         let edge = MonotonicEdge::quadratic(*monotonic);
                         self.add_monotonic_edge(&edge);
                     });
+                    from = to;
                 }
-                PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+                PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl1 - center).square_length() < square_tolerance
+                        && (segment.ctrl2 - center).square_length() < square_tolerance {
+                            continue;
+                        }
+                    }
                     segment.for_each_quadratic_bezier(self.draw.tolerance, &mut|segment| {
                         segment.for_each_monotonic(&mut|monotonic| {
                             let edge = MonotonicEdge::quadratic(*monotonic);
                             self.add_monotonic_edge(&edge);
                         });
                     });
+                    from = to;
                 }
             }
         }
@@ -474,32 +501,56 @@ impl Tiler {
         path: impl Iterator<Item = PathEvent>,
     ) {
         profiling::scope!("assign_rows_linear");
+        let mut from = point(0.0, 0.0);
+        let square_tolerance = self.draw.tolerance * self.draw.tolerance;
         for evt in path {
             match evt {
-                PathEvent::Begin { .. } => {}
-                PathEvent::End { last, first, .. } => {
-                    let segment = LineSegment { from: last, to: first }.transformed(transform);
+                PathEvent::Begin { at } => {
+                    from = at;
+                }
+                PathEvent::End { first, .. } => {
+                    let segment = LineSegment { from, to: first }.transformed(transform);
                     let edge = MonotonicEdge::linear(segment);
                     self.add_monotonic_edge(&edge);
+                    from = first;
                 }
-                PathEvent::Line { from, to } => {
+                PathEvent::Line { to, .. } => {
                     let segment = LineSegment { from, to }.transformed(transform);
                     let edge = MonotonicEdge::linear(segment);
+                    if segment.to_vector().square_length() < square_tolerance {
+                        continue;
+                    }
                     self.add_monotonic_edge(&edge);
+                    from = to;
                 }
-                PathEvent::Quadratic { from, ctrl, to } => {
+                PathEvent::Quadratic { ctrl, to, .. } => {
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl - center).square_length() < square_tolerance {
+                            continue;
+                        }
+                    }
                     segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
                         let edge = MonotonicEdge::linear(*segment);
                         self.add_monotonic_edge(&edge);
                     });
+                    from = to;
                 }
-                PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+                PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
                     let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl1 - center).square_length() < square_tolerance
+                        && (segment.ctrl2 - center).square_length() < square_tolerance {
+                            continue;
+                        }
+                    }
                     segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
                         let edge = MonotonicEdge::linear(*segment);
                         self.add_monotonic_edge(&edge);
                     });
+                    from = to;
                 }
             }
         }
