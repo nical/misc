@@ -1,3 +1,4 @@
+use core::num;
 use std::ops::Range;
 
 use ordered_float::OrderedFloat;
@@ -27,7 +28,6 @@ pub struct DrawParams {
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub use_quads: bool,
-    pub merge_solid_tiles: bool,
     pub encoded_fill_rule: u16,
 }
 
@@ -100,7 +100,6 @@ impl Tiler {
                 fill_rule: FillRule::NonZero,
                 max_edges_per_gpu_tile: 4096,
                 use_quads: false,
-                merge_solid_tiles: true,
                 encoded_fill_rule: 1,
             },
             size,
@@ -183,7 +182,6 @@ impl Tiler {
         let t0 = time::precise_time_ns();
 
         self.draw.tolerance = options.tolerance;
-        self.draw.merge_solid_tiles = options.merge_tiles && pattern.is_mergeable();
         encoder.prerender_pattern = options.prerender_pattern;
         let identity = Transform2D::identity();
         let transform = options.transform.unwrap_or(&identity);
@@ -606,7 +604,6 @@ impl Tiler {
         let mut tile = TileInfo {
             x,
             y: tile_y,
-            index: tile_y * self.num_tiles_x + x,
             inner_rect,
             outer_rect,
             backdrop: 0,
@@ -642,7 +639,17 @@ impl Tiler {
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x && tile.x < tiles_end {
-                self.finish_tile(&mut tile, active_edges, coarse_mask, pattern, &mut tiled_output, encoder, edge_buffer);
+                if active_edges.is_empty() {
+                    let tx = ((edge.min_x.0 / self.draw.tile_size.width) as u32).min(tiles_end);
+                    let n = tx - tile.x;
+                    assert!(n > 0, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.outer_rect.min.x);
+                    if self.draw.fill_rule.is_in(tile.backdrop) {
+                        self.span(tile.x, tile.y, n, coarse_mask, &mut tiled_output, pattern, encoder);
+                    }
+                    self.update_tile_rects(&mut tile, n);
+                } else {
+                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, &mut tiled_output, encoder, edge_buffer);
+                }
             }
 
             if tile.x >= tiles_end {
@@ -666,7 +673,7 @@ impl Tiler {
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
         while tile.x < tiles_end && !active_edges.is_empty() {
-            self.finish_tile(&mut tile, active_edges, coarse_mask, pattern, &mut tiled_output, encoder, edge_buffer);
+            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, &mut tiled_output, encoder, edge_buffer);
         }
 
         encoder.end_row();
@@ -692,7 +699,41 @@ impl Tiler {
         color_tile_id
     }
 
-    fn finish_tile(
+    pub fn update_tile_rects(&self, tile: &mut TileInfo, num_tiles: u32) {
+        let nt = num_tiles as f32;
+        let d = self.draw.tile_size.width * nt;
+        // Note: this is accumulating precision errors, but haven't seen
+        // issues in practice.
+        tile.inner_rect.min.x += d;
+        tile.inner_rect.max.x += d;
+        tile.outer_rect.min.x += d;
+        tile.outer_rect.max.x += d;
+        tile.x += num_tiles;
+    }
+
+    fn span(
+        &self,
+        tile_x: u32,
+        tile_y: u32,
+        num_tiles: u32,
+        tile_mask: &mut TileMaskRow,
+        tiled_output: &mut Option<(&mut[TilePosition], &mut TileAllocator)>,
+        pattern: &mut dyn TilerPattern,
+        encoder: &mut TileEncoder,
+    ) {
+        let not_tiled = tiled_output.is_none();
+        if not_tiled && pattern.is_entirely_opaque() {
+            opaque_span(tile_x, tile_y, num_tiles, tile_mask, pattern);
+        } else if not_tiled && !encoder.prerender_pattern {
+            alpha_span(tile_x, tile_y, num_tiles, tile_mask, pattern, encoder);
+        } else if not_tiled && encoder.prerender_pattern && pattern.is_mergeable() {
+            stretched_prerendered_span(tile_x, tile_y, num_tiles, tile_mask, pattern, encoder);
+        } else {
+            slow_span(&self, tile_x, tile_y, num_tiles, tile_mask, tiled_output, pattern, encoder);
+        }
+    }
+
+    fn masked_tile(
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
@@ -702,52 +743,27 @@ impl Tiler {
         encoder: &mut TileEncoder,
         edge_buffer: &mut EdgeBuffer,
     ) {
-        let mut full_tile = false;
-        let mut empty = false;
-        if active_edges.is_empty() {
-            let is_in = self.draw.fill_rule.is_in(tile.backdrop);
-            full_tile = is_in;
-            empty = !is_in;
-        }
-
         pattern.set_tile(tile.x, tile.y);
 
-        let opaque = full_tile && pattern.tile_is_opaque();
-        empty = empty || pattern.tile_is_empty();
-
-        // Decide where to draw the tile.
-        // Two configurations: Either we render in a plain target in which case the position
-        // corresponds to the actual coordinates of the tile's content, or we are rendering
-        // to a tiled intermediate target in which case the destination is linearly allocated.
-        // The indirection buffer is used to determine whether an aallocation was already made
-        // for this position.
-        let tile_position = if let Some((indirection_buffer, tile_alloc)) = tiled_output {
-            self.set_indirect_output_rect(tile.x, opaque, indirection_buffer, tile_alloc)
-        } else {
-            TilePosition::new(tile.x, tile.y)
-        };
-
-        if !empty && coarse_mask.test(tile.x, opaque) {
-            let mask_tile = if full_tile {
-                TilePosition::ZERO
+        let opaque = false;
+        if !pattern.tile_is_empty() && coarse_mask.test(tile.x, opaque) {
+            // Decide where to draw the tile.
+            // Two configurations: Either we render in a plain target in which case the position
+            // corresponds to the actual coordinates of the tile's content, or we are rendering
+            // to a tiled intermediate target in which case the destination is linearly allocated.
+            // The indirection buffer is used to determine whether an aallocation was already made
+            // for this position.
+            let tile_position = if let Some((indirection_buffer, tile_alloc)) = tiled_output {
+                self.set_indirect_output_rect(tile.x, opaque, indirection_buffer, tile_alloc)
             } else {
-                encoder.add_fill_mask(tile, &self.draw, active_edges, edge_buffer)
+                TilePosition::new(tile.x, tile.y)
             };
 
+            let mask_tile = encoder.add_fill_mask(tile, &self.draw, active_edges, edge_buffer);
             encoder.add_tile(pattern, opaque, tile_position, mask_tile);
         }
 
-        //if empty && self.draw.is_clip_in {
-        //    // For clip-in it's the empty tiles that completely mask content out.
-        //    coarse_mask.write_clip(tile.x);
-        //}
-
-        tile.inner_rect.min.x += self.draw.tile_size.width;
-        tile.inner_rect.max.x += self.draw.tile_size.width;
-        tile.outer_rect.min.x += self.draw.tile_size.width;
-        tile.outer_rect.max.x += self.draw.tile_size.width;
-        tile.x += 1;
-        tile.index += 1;
+        self.update_tile_rects(tile, 1);
 
         Self::update_active_edges(
             active_edges,
@@ -877,53 +893,112 @@ impl Tiler {
 
         for tile_y in row_start..row_end {
             let mut tile_mask = tile_mask.row(tile_y);
+            let mut tiled_output = if let Some(ref mut output) = &mut tiled_output {
+                Some((output.indirection_buffer.row_mut(tile_y), &mut output.tile_allocator))
+            } else {
+                None
+            };
+
             let mut tile_center = point(
                 (column_start as f32 + 0.5) * self.draw.tile_size.width,
                 (tile_y as f32 + 0.5) * self.draw.tile_size.height,
             );
             encoder.begin_row();
 
-            let mut dummy_tile_alloc = TileAllocator::new(0, 0);
-            let dummy_buffer: &mut [TilePosition] = &mut [];
-            let (output_indirection_buffer, output_tile_alloc) = if let Some(ref mut output) = &mut tiled_output {
-                (output.indirection_buffer.row_mut(tile_y), &mut output.tile_allocator)
-            } else {
-                (dummy_buffer, &mut dummy_tile_alloc)
-            };
-
-            for tile_x in column_start .. column_end {
-                let tc = tile_center;
-                tile_center.x += self.draw.tile_size.width;
-
-                let d = (tc - center).length();
-                if d - tile_radius > radius {
-                    continue;
+            let mut tile_x = column_start;
+            while tile_x < column_end {
+                let d = (tile_center - center).length();
+                if d - tile_radius < radius {
+                    break;
                 }
 
-                pattern.set_tile(tile_x, tile_y);
+                tile_center.x += self.draw.tile_size.width;
+                tile_x += 1;
+            }
+
+            let mut full = false;
+            while tile_x < column_end {
+                let d = (tile_center - center).length();
+
+                full = d + tile_radius < radius;
+                let outside = d - tile_radius > radius;
+                if full || outside {
+                    break;
+                }
+
+                let tx = tile_x;
+
+                tile_center.x += self.draw.tile_size.width;
+                tile_x += 1;
+
+                pattern.set_tile(tx, tile_y);
 
                 if pattern.tile_is_empty() {
                     continue;
                 }
 
-                let opaque = d + tile_radius < radius && pattern.tile_is_opaque();
-
-                if !tile_mask.test(tile_x as u32, opaque) {
+                let opaque = false;
+                if !tile_mask.test(tx as u32, opaque) {
                     continue;
                 }
 
-                let mut mask_id = TilePosition::ZERO;
-                if !opaque {
-                    let tile_offset = vector(tile_x as f32, tile_y as f32) * self.draw.tile_size.width;
-                    let center = center - tile_offset;
-                    mask_id = encoder.add_cricle_mask(center, radius);
+                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size.width;
+                let center = center - tile_offset;
+                let mask_id = encoder.add_cricle_mask(center, radius);
+
+                let tile_position = TilePosition::new(tx, tile_y);
+
+                encoder.add_tile(pattern, opaque, tile_position, mask_id);
+            }
+
+            if full {
+                let first_full_tile = tile_x;
+                while tile_x < column_end {
+                    tile_center.x += self.draw.tile_size.width;
+                    tile_x += 1;
+
+                    let d = (tile_center - center).length();
+    
+                    let full = d + tile_radius < radius;
+                    if !full {
+                        break;
+                    }
                 }
 
-                let tile_position = if self.output_is_tiled {
-                    self.set_indirect_output_rect(tile_x, opaque, output_indirection_buffer, output_tile_alloc)
-                } else {
-                    TilePosition::new(tile_x, tile_y)
-                };
+                let num_tiles = (tile_x - first_full_tile) as u32;
+                assert!(num_tiles > 0);
+                let start = first_full_tile as u32;
+                self.span(start, tile_y, num_tiles, &mut tile_mask, &mut tiled_output, pattern, encoder);
+            }
+
+            while tile_x < column_end {
+                let d = (tile_center - center).length();
+
+                if d - tile_radius > radius {
+                    break;
+                }
+
+                let tx = tile_x;
+
+                tile_center.x += self.draw.tile_size.width;
+                tile_x += 1;
+
+                pattern.set_tile(tx, tile_y);
+
+                if pattern.tile_is_empty() {
+                    continue;
+                }
+
+                let opaque = false;
+                if !tile_mask.test(tx as u32, opaque) {
+                    continue;
+                }
+
+                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size.width;
+                let center = center - tile_offset;
+                let mask_id = encoder.add_cricle_mask(center, radius);
+
+                let tile_position = TilePosition::new(tx, tile_y);
 
                 encoder.add_tile(pattern, opaque, tile_position, mask_id);
             }
@@ -949,36 +1024,15 @@ impl Tiler {
 
         for tile_y in 0..self.rows.len() as u32 {
             let mut tile_mask = tile_mask.row(tile_y);
-            let mut dummy_tile_alloc = TileAllocator::new(0, 0);
-            let dummy_buffer: &mut [TilePosition] = &mut [];
-            let (output_indirection_buffer, output_tile_alloc) = if let Some(ref mut output) = &mut tiled_output {
-                (output.indirection_buffer.row_mut(tile_y), &mut output.tile_allocator)
+            let mut tiled_output = if let Some(ref mut output) = &mut tiled_output {
+                Some((output.indirection_buffer.row_mut(tile_y), &mut output.tile_allocator))
             } else {
-                (dummy_buffer, &mut dummy_tile_alloc)
+                None
             };
 
-            for tile_x in column_start .. column_end {
-                let tile_x = tile_x as u32;
-
-                pattern.set_tile(tile_x, tile_y);
-                let opaque = pattern.tile_is_opaque();
-
-                if pattern.tile_is_empty() {
-                    continue;
-                }
-
-                if !tile_mask.test(tile_x as u32, opaque) {
-                    continue;
-                }
-
-                let tile_position = if self.output_is_tiled {
-                    self.set_indirect_output_rect(tile_x, opaque, output_indirection_buffer, output_tile_alloc)
-                } else {
-                    TilePosition::new(tile_x, tile_y)
-                };
-
-                encoder.add_tile(pattern, opaque, tile_position, TilePosition::ZERO);
-            }
+            let num_tiles = (column_end - column_start) as u32;
+            let start = column_start as u32;
+            self.span(start, tile_y, num_tiles, &mut tile_mask, &mut tiled_output, pattern, encoder);
         }
     }
 
@@ -1095,8 +1149,6 @@ pub struct TileInfo {
     pub x: u32,
     /// Y-offset in number of tiles.
     pub y: u32,
-    /// y * width + x
-    pub index: u32,
     /// Rectangle of the tile aligned with the tile grid.
     pub inner_rect: Box2D<f32>,
     /// Rectangle including the tile padding.
@@ -1184,6 +1236,402 @@ fn clip_quadratic_bezier_to_row(
     if snap_from || segment.from.y - min < SNAP { segment.from.y = min };
     if snap_to || segment.to.y - min < SNAP { segment.to.y = min };
 }
+
+fn opaque_span(
+    mut x: u32,
+    y: u32,
+    num_tiles: u32,
+    tile_mask: &mut TileMaskRow,
+    pattern: &mut dyn TilerPattern,
+) {
+    let mut start_x = x;
+    let last_x = x + num_tiles;
+
+    let mut occluded = !tile_mask.test(x, true);
+    let mut is_last = false;
+
+    // Loop over x indices including 1 index past the range so that we
+    // don't need to flush after the loop.
+    'outer: loop {
+        let flush = (occluded || is_last) && x > start_x;
+
+        if flush {
+            let ext = x - start_x - 1;
+
+            let position = TilePosition::extended(start_x, y, ext);
+            pattern.set_tile(start_x, y);
+            let pattern_data = pattern.tile_data();
+            pattern.opaque_tiles().alloc().init(TileInstance {
+                position: position,
+                mask: TilePosition::ZERO,
+                pattern_position: position,
+                pattern_data,
+            });
+
+            start_x = x;
+        }
+
+        if is_last {
+            break;
+        }
+
+        if occluded {
+            // Skip over occluded tiles in a tight loop.
+            loop {
+                x += 1;
+                is_last = x == last_x;
+                if is_last {
+                    break 'outer;
+                }
+
+                if occluded {
+                    start_x = x;
+                }
+
+                occluded = !tile_mask.test(x, true);
+                if !occluded {
+                    break;
+                }
+            }
+        }
+
+        // Go over visible span in a tight loop.
+        loop {
+            x += 1;
+            is_last = x == last_x;
+            if is_last {
+                break;
+            }
+
+            occluded = !tile_mask.test(x, true);
+            if occluded {
+                break;
+            }
+        }
+    }
+}
+
+fn alpha_span(
+    mut x: u32,
+    y: u32,
+    num_tiles: u32,
+    tile_mask: &mut TileMaskRow,
+    pattern: &mut dyn TilerPattern,
+    encoder: &mut TileEncoder,
+) {
+    let mut start_x = x;
+    let last_x = x + num_tiles;
+
+    let opaque = false;
+    let mut occluded = !tile_mask.test(x, opaque);
+    let mut is_last = false;
+
+    // Loop over x indices including 1 index past the range so that we
+    // don't need to flush after the loop.
+    'outer: loop {
+        let flush = (occluded || is_last) && x > start_x;
+
+        if flush {
+            let ext = x - start_x - 1;
+
+            let position = TilePosition::extended(start_x, y, ext);
+            pattern.set_tile(start_x, y);
+            encoder.alpha_tiles.alloc().init(TileInstance {
+                position: position,
+                mask: TilePosition::ZERO,
+                pattern_position: position,
+                pattern_data: pattern.tile_data(),
+            });
+
+            start_x = x;
+        }
+
+        if is_last {
+            break;
+        }
+
+        if occluded {
+            // Skip over occluded tiles in a tight loop.
+            loop {
+                x += 1;
+                is_last = x == last_x;
+                if is_last {
+                    break 'outer;
+                }
+
+                if occluded {
+                    start_x = x;
+                }
+
+                occluded = !tile_mask.test(x, opaque);
+                if !occluded {
+                    break;
+                }
+            }
+        }
+
+        // Go over visible span in a tight loop.
+        loop {
+            x += 1;
+            is_last = x == last_x;
+            if is_last {
+                break;
+            }
+
+            occluded = !tile_mask.test(x, opaque);
+            if occluded {
+                break;
+            }
+        }
+    }
+}
+
+fn stretched_prerendered_span(
+    mut x: u32,
+    y: u32,
+    num_tiles: u32,
+    tile_mask: &mut TileMaskRow,
+    pattern: &mut dyn TilerPattern,
+    encoder: &mut TileEncoder,
+) {
+    let mut start_x = x;
+    let last_x = x + num_tiles;
+
+    let mut occluded = !tile_mask.test(x, false);
+    let mut is_last = false;
+    let mut prerendered_tile = None;
+
+    // Loop over x indices including 1 index past the range so that we
+    // don't need to flush after the loop.
+    'outer: loop {
+        let flush = (occluded || is_last) && x > start_x;
+
+        if flush {
+            let ext = x - start_x - 1;
+
+            let position = TilePosition::extended(start_x, y, ext);
+            pattern.set_tile(start_x, y);
+
+            let prerendered = match prerendered_tile {
+                Some(tile) => tile,
+                None => {
+                    let (atlas_position, atlas_index) = encoder.src.color_tiles.allocate();
+                    pattern.prerender_tile(atlas_position, atlas_index);
+                    prerendered_tile = Some(atlas_position);
+                    atlas_position
+                }
+            };
+
+            encoder.alpha_tiles.alloc().init(TileInstance {
+                position: position,
+                mask: TilePosition::ZERO,
+                pattern_position: prerendered,
+                pattern_data: 0,
+            });
+
+            start_x = x;
+        }
+
+        if is_last {
+            break;
+        }
+
+        if occluded {
+            // Skip over occluded tiles in a tight loop.
+            loop {
+                x += 1;
+                is_last = x == last_x;
+                if is_last {
+                    break 'outer;
+                }
+
+                if occluded {
+                    start_x = x;
+                }
+
+                occluded = !tile_mask.test(x, false);
+                if !occluded {
+                    break;
+                }
+            }
+        }
+
+        // Go over visible span in a tight loop.
+        loop {
+            x += 1;
+            is_last = x == last_x;
+            if is_last {
+                break;
+            }
+
+            occluded = !tile_mask.test(x, false);
+            if occluded {
+                break;
+            }
+        }
+    }
+}
+
+fn slow_span(
+    tiler: &Tiler,
+    x: u32,
+    y: u32,
+    num_tiles: u32,
+    tile_mask: &mut TileMaskRow,
+    tiled_output: &mut Option<(&mut[TilePosition], &mut TileAllocator)>,
+    pattern: &mut dyn TilerPattern,
+    encoder: &mut TileEncoder,
+) {
+    for x in x .. x + num_tiles {
+        pattern.set_tile(x, y);
+        if pattern.tile_is_empty() {
+            continue;
+        }
+        let opaque = pattern.tile_is_opaque();
+
+        // Decide where to draw the tile.
+        // Two configurations: Either we render in a plain target in which case the position
+        // corresponds to the actual coordinates of the tile's content, or we are rendering
+        // to a tiled intermediate target in which case the destination is linearly allocated.
+        // The indirection buffer is used to determine whether an aallocation was already made
+        // for this position.
+        let tile_position = if let Some((indirection_buffer, tile_alloc)) = tiled_output {
+            tiler.set_indirect_output_rect(x, opaque, indirection_buffer, tile_alloc)
+        } else {
+            TilePosition::new(x, y)
+        };
+
+        if tile_mask.test(x, opaque) {
+            let mask_tile = TilePosition::ZERO;
+            encoder.add_tile(pattern, opaque, tile_position, mask_tile);
+        }
+    }
+}
+
+#[cfg(test)]
+struct TestPattern {
+    x: u32,
+    opaque_tiles: Vec<TileInstance>,
+}
+
+#[cfg(test)]
+impl TilerPattern for TestPattern {
+    fn pattern_kind(&self) -> PatternKind { 42 }
+
+    fn set_tile(&mut self, x: u32, _: u32) { self.x = x; }
+    fn tile_data(&mut self) -> PatternData { self.x }
+    fn opaque_tiles(&mut self) -> &mut Vec<TileInstance> { &mut self.opaque_tiles }
+    fn prerender_tile(&mut self, _: TilePosition, _: u32) {}
+    fn is_entirely_opaque(&self) -> bool { true }
+    fn tile_is_opaque(&self) -> bool { true }
+    fn tile_is_empty(&self) -> bool { false }
+    fn is_mergeable(&self) -> bool { false }
+}
+
+#[test]
+fn test_opaque_span() {
+    let mut pattern = TestPattern {
+        x: 0,
+        opaque_tiles: Vec::new(),
+    };
+
+    let mut mask = TileMask::new(16, 16);
+
+    {
+        let mut mask_row = mask.row(0);
+        opaque_span(0, 0, 16, &mut mask_row, &mut pattern);
+        for x in 0..16 {
+            // All tiles should be masked now.
+            assert!(!mask_row.test(x, false));
+        }
+
+        let expected_x = vec![0];
+        let expected_ext = vec![15];
+        let tiles_x: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.x()).collect();
+        let tiles_ext: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.extension()).collect();
+        let tiles_data: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.pattern_data).collect();
+        assert_eq!(tiles_x, expected_x);
+        assert_eq!(tiles_data, expected_x);
+        assert_eq!(tiles_ext, expected_ext);
+    }
+
+    {
+        pattern.opaque_tiles.clear();
+        let mut mask_row = mask.row(1);
+        mask_row.test(0, true);
+        mask_row.test(4, true);
+        mask_row.test(5, true);
+        mask_row.test(6, true);
+        mask_row.test(10, true);
+        mask_row.test(15, true);
+
+        opaque_span(0, 1, 16, &mut mask_row, &mut pattern);
+
+        for x in 0..16 {
+            // All tiles should be masked now.
+            assert!(!mask_row.test(x, false));
+        }
+
+        let expected_x = vec![1, 7, 11];
+        let expected_ext = vec![2, 2, 3];
+        let tiles_x: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.x()).collect();
+        let tiles_ext: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.extension()).collect();
+        let tiles_data: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.pattern_data).collect();
+        assert_eq!(tiles_x, expected_x);
+        assert_eq!(tiles_data, expected_x);
+        assert_eq!(tiles_ext, expected_ext);
+    }
+
+    {
+        pattern.opaque_tiles.clear();
+        let mut mask_row = mask.row(2);
+        mask_row.test(4, true);
+        mask_row.test(5, true);
+        mask_row.test(6, true);
+
+        opaque_span(0, 2, 16, &mut mask_row, &mut pattern);
+
+        for x in 0..16 {
+            // All tiles should be masked now.
+            assert!(!mask_row.test(x, false));
+        }
+
+        let expected_x = vec![0, 7];
+        let expected_ext = vec![3, 8];
+        let tiles_x: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.x()).collect();
+        let tiles_ext: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.extension()).collect();
+        let tiles_data: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.pattern_data).collect();
+        assert_eq!(tiles_x, expected_x);
+        assert_eq!(tiles_data, expected_x);
+        assert_eq!(tiles_ext, expected_ext);
+    }
+
+    {
+        pattern.opaque_tiles.clear();
+        let mut mask_row = mask.row(3);
+        mask_row.test(10, true);
+
+        opaque_span(2, 3, 1, &mut mask_row, &mut pattern);
+        opaque_span(10, 3, 1, &mut mask_row, &mut pattern);
+
+        for x in 0..16 {
+            // All tiles should be masked now.
+            if x == 2 || x == 10 {
+                assert!(!mask_row.test(x, false));
+            } else {
+                assert!(mask_row.test(x, false));
+            }
+        }
+
+        let expected_x = vec![2];
+        let expected_ext = vec![0];
+        let tiles_x: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.x()).collect();
+        let tiles_ext: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.position.extension()).collect();
+        let tiles_data: Vec<u32> = pattern.opaque_tiles.iter().map(|tile| tile.pattern_data).collect();
+        assert_eq!(tiles_x, expected_x);
+        assert_eq!(tiles_data, expected_x);
+        assert_eq!(tiles_ext, expected_ext);
+    }}
 
 pub fn clip_line_segment_1d(
     from: f32,
@@ -1337,10 +1785,6 @@ pub struct TileEncoder {
 
     reversed: bool,
 
-    /// index of the last opaque solid tile in the current path. Used to detect
-    /// consecutive solid tiles that can be merged.
-    current_mergeable_tile: u32,
-
     pub ranges: BufferRanges,
 
     pub prerender_pattern: bool,
@@ -1364,7 +1808,6 @@ impl TileEncoder {
             render_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
             current_pattern_kind: None,
-            current_mergeable_tile: 0, // Will be set in begin_row
             batches_start: 0,
             opaque_image_tiles_start: 0,
             //cpu_masks_start: 0,
@@ -1397,7 +1840,6 @@ impl TileEncoder {
             render_passes: Vec::with_capacity(16),
             batches: Vec::with_capacity(64),
             current_pattern_kind: None,
-            current_mergeable_tile: 0,
             batches_start: 0,
             opaque_image_tiles_start: 0,
             //cpu_masks_start: 0,
@@ -1460,7 +1902,6 @@ impl TileEncoder {
     }
 
     pub fn begin_row(&mut self) {
-        self.current_mergeable_tile = std::u32::MAX - 1;
     }
 
     pub fn begin_path(&mut self, pattern: &mut dyn TilerPattern) {
@@ -1487,21 +1928,6 @@ impl TileEncoder {
     ) {
         // It is always more efficient to render opaque tiles directly.
         let prerender = self.prerender_pattern && !opaque;
-        let mergeable = opaque;
-
-        if !prerender && mergeable && self.current_mergeable_tile + 1 == tile_position.x() {
-            let tile = pattern.opaque_tiles().last_mut().unwrap();
-            tile.position.extend();
-            if !prerender {
-                tile.pattern_position.extend();
-            }
-            self.current_mergeable_tile += 1;
-            return;
-        }
-
-        if mergeable {
-            self.current_mergeable_tile = tile_position.x();
-        }
 
         let (pattern_position, pattern_data) = if prerender {
             let (atlas_position, atlas_index) = self.src.color_tiles.allocate();

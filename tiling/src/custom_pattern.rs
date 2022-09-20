@@ -266,6 +266,7 @@ impl<Parameters: CustomPattern> CustomPatternBuilder<Parameters> {
 
 impl<Parameters: CustomPattern> crate::tiling::TilerPattern for CustomPatternBuilder<Parameters> {
     fn pattern_kind(&self) -> u32 { self.kind }
+    fn is_entirely_opaque(&self) -> bool { self.parameters.is_opaque() }
     fn tile_is_opaque(&self) -> bool { self.parameters.is_opaque() }
     fn set_tile(&mut self, x: u32, y: u32) {
         self.x = x;

@@ -33,6 +33,7 @@ fn main() {
     let mut read_tolerance = false;
     for arg in &args {
         if read_tolerance {
+            read_tolerance = false;
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
         }
@@ -149,7 +150,7 @@ fn main() {
 
     canvas.fill_canvas(Pattern::Gradient {
             p0: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
-            p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 150, a: 255},
+            p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
     });
 
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));

@@ -50,6 +50,10 @@ impl TilePosition {
         self.0 += 1 << 20;
     }
 
+    pub fn extend_n(&mut self, n: u32) {
+        self.0 += n << 20;
+    }
+
     pub fn with_flag(mut self) -> Self {
         self.add_flag();
         self
@@ -184,7 +188,8 @@ pub trait TilerPattern {
     fn tile_data(&mut self) -> PatternData;
     fn opaque_tiles(&mut self) -> &mut Vec<TileInstance>;
     fn prerender_tile(&mut self, tile_position: TilePosition, atlas_index: u32);
-    fn tile_is_opaque(&self) -> bool { false }
+    fn is_entirely_opaque(&self) -> bool { false }
+    fn tile_is_opaque(&self) -> bool { self.is_entirely_opaque() }
     fn tile_is_empty(&self) -> bool { false }
     fn is_mergeable(&self) -> bool { false }
 }
