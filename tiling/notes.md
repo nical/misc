@@ -27,8 +27,20 @@ On the GPU side a paths are first rasterized in a mask atlas texture in a single
 
 While this work is inspried from pathfinder it has a few key differences:
 
+On the GPU side:
+
 - Pathfinder renders masks into a float texture  using a quad per edge with addirive blending to build winding numbers.
 - This renders the mask in an alpha texture with a quad per tile, looping over edges in the fragment shader. This further reduces pressure on the blending hardware / fill rate which tends to be the bottleneck.
+
+The CPU side:
+ - This prototypes binning algorithm first bins edges into tile rows, then sort them, and a scan pass bins them into tiles and accumulates backdrops/winding numbers.
+ - Pathfinder's binning algorithm writes mask edges into a vertex buffer and allocate mask tiles directly and then scans tiles to propagate backdrops
+
+Beyond the binning startegy, the main difference is that pathfinder does not attempt to perform occlusion culling. That allows the tiler to run in parallel. As a result pathfinder has better multi-core CPU time and worse single-core CPU time (withing 20% either way), and generates more work for the GPU.
+
+It's possible that pathinder's binning algorithm with occlusion culling added would get the best single core performance (need to try and see).
+
+Pathfinder's binning code is not necessarily much simpler but definitely a lot less verbose.
 
 ### Occlusion culling
 

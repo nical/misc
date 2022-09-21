@@ -13,6 +13,9 @@
  - [x] Tiled image patterns.
  - [x] Simple linear gradient patterns.
  - [x] Support storing gpu data without SSBO
+ - [ ] Try a sweep line algorithm for row decomposition
+ - [ ] Try pathfinder's binning algorithm
+ - [ ] inverted fill
  - [ ] Image patterns.
  - [ ] Custom masks
  - [ ] Support rasterizing masks with static loops
