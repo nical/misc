@@ -107,8 +107,8 @@ The two ideas above are not very easy to express with rayon/parasol today, howev
 ### Other
 
 - We observe that Firefox rendering performance is more often CPU than GPU-bound. So speeding up the tiling routine is important to take as little of the limited frame budget.
-- Currently the tiling algorithm takes about 3 to 4 milliseconds to preprocess the filled paths of the ghostscript tiger at a resolution of 1800x1800 on a decent but not high end computer. This testcase is heavier than what is typically seen on the web (226 paths covering a large amount of pixels) although it also benefits more from the occlusion culling optimization than typical web content.
-    - This fits quite well in a typical frame budget. This opens the opportunity for tiling paths during frame building (especially clip paths) and re-render them on the fly during zoom.
+- Currently the tiling algorithm takes about 3 to 4 milliseconds to preprocess the filled paths of the ghostscript tiger at a resolution of 1800x1800 on a decent but not high end computer in high power state and about twice as much on low power state. This testcase is heavier than what is typically seen on the web (226 paths covering a large amount of pixels) although it also benefits more from the occlusion culling optimization than typical web content.
+    - This fits reasonably well in a typical frame budget. This opens the opportunity for tiling paths during frame building (especially clip paths) and re-render them on the fly during zoom.
 - Much of the tiling time is spent approximating curves with sequences of flattened paths. It is a pretty expensive operation in general. all curve are first approximated with sequences of quadratic bézier segments, a lot of time is spent flattening these quadratic bézier segments. The method usef for flattening is the one described at https://raphlinus.github.io/graphics/curves/2019/12/23/flatten-quadbez.html. I've tried a number of things with varying degress of success:
     - use a (simpler) recursive flattening algorithm. while a lot less ALU intensive it generates a lot more edges for the same approximation criteria which slows the rest of the process more than it speeds up flattening.
     - use the flattening algorithm described in the paper "Fast, Precise Flattening of Cubic Bézier Segment Offset Curves" (we use it in Firefox to render dashed strokes). It was in fact what I started with but Raph Levien's algorithm produced better output and as a result performed better.
@@ -123,3 +123,11 @@ The two ideas above are not very easy to express with rayon/parasol today, howev
 - Other pathologic cases could lead to having a very large amount of paths in a single tile, at which point the edges represent a lot more data than the pixels of the tile.
     - To prevent this family of issues the tiler can fall back to rasterizing the mask on the CPU and upload it.
 
+# GPU performance
+
+Rasterizing the masks is very much ALU bound, while compositing is spends a faire amount of time waiting for texture fetches. This suggest that we would get speedups from rasterizing masks directly in the main alpha passes since the could overlap with fetching the patterns pre-rendered texture data, or at least remove the time spent fetching the mask.
+The downside is adding more shader combinations and potentially breaking batches, especially if we want to support multiple mask types within a single path (multiple specialized mask shaders withed number of edges).
+
+Right now always rasterizing masks in an atlas has the benefit of having any number of ways to generate the masks with little impact to the number of draw calls.
+
+A solution could be to have much more complex alpha tile shaders that can rasterize the mask in the must common ways and default to reading the mask atlas. This should perform well on modern GPUs but it's not clear that older ones would handle that well.
