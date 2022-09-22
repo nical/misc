@@ -64,7 +64,7 @@ fn main() {
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(inital_window_size.to_f32()),
         tile_size: size2(tile_size, tile_size),
-        tile_padding: 0.5,
+        tile_padding: 0.0,
         tolerance,
         flatten: false,
         mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
@@ -175,7 +175,6 @@ fn main() {
             p1: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
         }
     );
-
     canvas.fill(
         Arc::new(builder.build()), FillRule::EvenOdd,
         Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 25.0 }
@@ -184,6 +183,19 @@ fn main() {
     canvas.pop_transform();
 
     canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 180}));
+
+    canvas.fill_rect(
+        Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) },
+        Pattern::Color(Color::BLACK),
+    );
+
+    canvas.fill_rect(
+        Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) },
+        Pattern::Color(Color::BLACK),
+    );
+
+    canvas.push_transform(&Transform2D::translation(10.0, 1.0));
+    canvas.pop_transform();
 
     let mut commands = canvas.finish();
 

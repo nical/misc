@@ -1,4 +1,3 @@
-use core::num;
 use std::ops::Range;
 
 use ordered_float::OrderedFloat;
@@ -159,12 +158,6 @@ impl Tiler {
         self.scissor = scissor.intersection_unchecked(&Box2D::from_size(self.size));
     }
 
-    /// Tile an entire path.
-    ///
-    /// This internally does all of the steps:
-    /// - begin_Path
-    /// - add_monotonic_edge
-    /// - end_path
     pub fn fill_path(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
@@ -281,14 +274,12 @@ impl Tiler {
                     std::mem::swap(&mut segment.from, &mut segment.to);
                 }
 
-                if segment.from.y != segment.to.y {
-                    row.edges.alloc().init(RowEdge {
-                        from: segment.from,
-                        to: segment.to,
-                        ctrl: point(segment.from.x, std::f32::NAN),
-                        min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                    });
-                }
+                row.edges.alloc().init(RowEdge {
+                    from: segment.from,
+                    to: segment.to,
+                    ctrl: point(segment.from.x, std::f32::NAN),
+                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
+                });
 
                 row_idx += 1;
             }
@@ -307,14 +298,12 @@ impl Tiler {
                     std::mem::swap(&mut segment.from, &mut segment.to);
                 }
 
-                if segment.from.y != segment.to.y {
-                    row.edges.alloc().init(RowEdge {
-                        from: segment.from,
-                        to: segment.to,
-                        ctrl: segment.ctrl,
-                        min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
-                    });
-                }
+                row.edges.alloc().init(RowEdge {
+                    from: segment.from,
+                    to: segment.to,
+                    ctrl: segment.ctrl,
+                    min_x: OrderedFloat(segment.from.x.min(segment.to.x)),
+                });
 
                 row_idx += 1;
             }
@@ -796,11 +785,8 @@ impl Tiler {
         loop {
             let edge = &active_edges[i];
             if edge.max_x() < left_x {
-                if edge.from.y == tile_y || edge.to.y == tile_y && edge.from.y != edge.to.y {
+                if (edge.from.y == tile_y || edge.to.y == tile_y) && edge.from.y != edge.to.y {
                     *backdrop += if edge.from.y < edge.to.y { 1 } else { -1 };
-                    //println!(" # bacdrop {} (removing edge {:?})", *backdrop, edge);
-                } else {
-                    //println!(" # remove {:?}", edge);
                 }
 
                 active_edges.swap_remove(i);
@@ -811,6 +797,48 @@ impl Tiler {
             }
             i -= 1;
         }
+    }
+
+    pub fn fill_rect(
+        &mut self,
+        rect: &Box2D<f32>,
+        options: &FillOptions,
+        pattern: &mut dyn TilerPattern,
+        tile_mask: &mut TileMask,
+        tiled_output: Option<&mut TiledOutput>,
+        encoder: &mut TileEncoder,
+    ) {
+        let mut transformed_rect = *rect;
+        let mut simple = true;
+        if let Some(transform) = &options.transform {
+            simple = false;
+            if as_scale_offset(transform).is_some() {
+                transformed_rect = transform.outer_transformed_box(rect);
+                simple = true;
+            }
+        }
+
+        // TODO: fast path.
+        // if simple {
+        //     self.fill_axis_aligned_rect(
+        //         &transformed_rect,
+        //         pattern,
+        //         tile_mask,
+        //         tiled_output,
+        //         encoder,
+        //     );
+        //     return;
+        // }
+
+        let mut path = lyon::path::Path::builder();
+        path.begin(rect.min);
+        path.line_to(point(rect.max.x, rect.min.y));
+        path.line_to(rect.max);
+        path.line_to(point(rect.min.x, rect.max.y));
+        path.end(true);
+        let path = path.build();
+
+        self.fill_path(path.iter(), options, pattern, tile_mask, tiled_output, encoder);    
     }
 
     pub fn fill_circle(
@@ -1067,9 +1095,19 @@ impl MonotonicEdge {
             1
         };
 
+        // TODO: offsetting edges by half a pixel so that the
+        // result matches what canvas/SVG expect: lines at integer
+        // pixel coordinates show anti-aliasing while lines landing
+        // on `.5` corrdinates are crisp.
+        // Note also the the offset begin unapplied in mask_fill.wgsl.
+        // This is obviously the wrong way to deal with this. The tile
+        // bounds probably should be offset instead of of applying/unapplying
+        // it on edges.
+        let half_px = vector(0.5, 0.5);
+
         MonotonicEdge {
-            from: segment.from,
-            to: segment.to,
+            from: segment.from - half_px,
+            to: segment.to - half_px,
             ctrl: point(segment.from.x, std::f32::NAN),
             kind: EdgeKind::Linear,
             winding,
@@ -1084,10 +1122,11 @@ impl MonotonicEdge {
             1
         };
 
+        let half_px = vector(0.5, 0.5);
         MonotonicEdge {
-            from: segment.from,
-            to: segment.to,
-            ctrl: segment.ctrl,
+            from: segment.from - half_px,
+            to: segment.to - half_px,
+            ctrl: segment.ctrl - half_px,
             kind: EdgeKind::Quadratic,
             winding,
         }
@@ -2059,7 +2098,9 @@ impl TileEncoder {
             }
 
             if edge.is_line() {
-                edges.line_edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
+                if edge.from.y != edge.to.y {
+                    edges.line_edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
+                }
             } else {
                 let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 flatten_quad(&curve, draw.tolerance, &mut |segment| {
@@ -2070,7 +2111,7 @@ impl TileEncoder {
 
         let edges_start = edges_start as u32;
         let edges_end = edges.line_edges.len() as u32;
-        debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
+        //debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
         let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
 

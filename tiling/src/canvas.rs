@@ -42,6 +42,7 @@ pub enum Pattern {
 
 pub enum Shape {
     Path(Arc<Path>, FillRule),
+    Rect(Box2D<f32>),
     Circle { center: Point, radius: f32 },
     Canvas,
 }
@@ -161,6 +162,14 @@ impl Canvas {
             transform: self.current_transform,
         }));
         self.z_index += 1;
+    }
+
+    pub fn fill_rect(&mut self, rect: Box2D<f32>, pattern: Pattern) {
+        self.current_group.commands.push(Command::Fill(Fill {
+            shape: Shape::Rect(rect),
+            pattern,
+            transform: self.current_transform,
+        }));
     }
 
     pub fn fill_circle(&mut self, center: Point, radius: f32, pattern: Pattern) {
@@ -352,6 +361,13 @@ impl FrameBuilder {
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance);
                             self.tiler.fill_circle(*center, *radius, &options, pattern, &mut self.tile_mask, None, encoder)
+                        }
+                        Shape::Rect(rect) => {
+                            let options = FillOptions::new()
+                                .with_transform(transform)
+                                .with_prerendered_pattern(prerender)
+                                .with_tolerance(self.tolerance);
+                            self.tiler.fill_rect(rect, &options, pattern, &mut self.tile_mask, None, encoder)
                         }
                         Shape::Canvas => {
                             self.tiler.fill_canvas(pattern, &mut self.tile_mask, None, encoder);

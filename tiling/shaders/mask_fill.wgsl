@@ -63,9 +63,15 @@ struct Edges {
         var edge = edges.data[edge_idx];
         edge_idx = edge_idx + 1u;
 
+        // Position of this pixel's top-left corner (in_uv
+        // points to the pixel's center).
+        // See comment in tiler.rs about the half-pixel
+        // offset.
+        let pixel_offset = in_uv - vec2<f32>(0.5);
+
         // Move to coordinates local to the current pixel.
-        var p0 = edge.xy - in_uv;
-        var p1 = edge.zw - in_uv;
+        var p0 = edge.xy - pixel_offset;
+        var p1 = edge.zw - pixel_offset;
 
         winding_number = winding_number + rasterize_edge(p0, p1);
     }
