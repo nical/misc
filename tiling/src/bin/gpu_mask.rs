@@ -50,7 +50,7 @@ fn main() {
         if arg == "--quads" { use_quads = true; }
     }
 
-    let tile_size = 16.0;
+    let tile_size = 16;
     let tolerance = 0.1;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 64;
@@ -59,7 +59,7 @@ fn main() {
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(size2(1200.0, 1000.0)),
-        tile_size: size2(tile_size, tile_size),
+        tile_size,
         tile_padding: 0.5,
         tolerance,
         flatten: false,
@@ -111,9 +111,9 @@ fn main() {
     tiler.selected_row = select_row;
 
     let size = tiler_config.view_box.size().to_u32();
-    let ts = tiler_config.tile_size.to_u32();
-    let tiles_x = (size.width + ts.width - 1) / ts.width;
-    let tiles_y = (size.height + ts.height - 1) / ts.height;
+    let ts = tiler_config.tile_size;
+    let tiles_x = (size.width + ts - 1) / ts;
+    let tiles_y = (size.height + ts - 1) / ts;
     let mut tile_mask = TileMask::new(tiles_x, tiles_y);
 
     use tiling::gpu::mask_uploader::MaskUploader;

@@ -23,7 +23,7 @@ struct Row {
 
 pub struct DrawParams {
     pub tolerance: f32,
-    pub tile_size: Size2D<f32>,
+    pub tile_size: f32,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub use_quads: bool,
@@ -65,7 +65,7 @@ pub struct Tiler {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TilerConfig {
     pub view_box: Box2D<f32>,
-    pub tile_size: Size2D<f32>,
+    pub tile_size: u32,
     pub tile_padding: f32,
     pub tolerance: f32,
     pub flatten: bool,
@@ -76,8 +76,8 @@ impl TilerConfig {
     pub fn num_tiles(&self) -> Size2D<u32> {
         let w = self.view_box.size().to_u32().width;
         let h = self.view_box.size().to_u32().height;
-        let tw = self.tile_size.width as u32;
-        let th = self.tile_size.height as u32;
+        let tw = self.tile_size;
+        let th = self.tile_size;
         Size2D::new(
             (w + tw - 1) / tw,
             (h + th - 1) / th,
@@ -90,12 +90,13 @@ unsafe impl Sync for Tiler {}
 impl Tiler {
     /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
+        let tile_size = config.tile_size as f32;
         let size = config.view_box.size();
-        let num_tiles_y = f32::ceil(size.height / config.tile_size.height);
+        let num_tiles_y = f32::ceil(size.height / tile_size);
         Tiler {
             draw: DrawParams {
                 tolerance: config.tolerance,
-                tile_size: config.tile_size,
+                tile_size,
                 fill_rule: FillRule::NonZero,
                 max_edges_per_gpu_tile: 4096,
                 use_quads: false,
@@ -104,7 +105,7 @@ impl Tiler {
             size,
             scissor: Box2D::from_size(size),
             tile_padding: config.tile_padding,
-            num_tiles_x: f32::ceil(size.width / config.tile_size.width) as u32,
+            num_tiles_x: f32::ceil(size.width / tile_size) as u32,
             num_tiles_y,
             flatten: config.flatten,
 
@@ -135,12 +136,13 @@ impl Tiler {
     /// a previous tiling run.
     pub fn init(&mut self, config: &TilerConfig) {
         let size = config.view_box.size();
+        let tile_size = config.tile_size as f32;
         self.size = size;
         self.scissor = Box2D::from_size(size);
-        self.draw.tile_size = config.tile_size;
+        self.draw.tile_size = tile_size;
         self.tile_padding = config.tile_padding;
-        self.num_tiles_x = f32::ceil(size.width / config.tile_size.width) as u32;
-        self.num_tiles_y = f32::ceil(size.height / config.tile_size.height);
+        self.num_tiles_x = f32::ceil(size.width / tile_size) as u32;
+        self.num_tiles_y = f32::ceil(size.height / tile_size);
         self.draw.tolerance = config.tolerance;
         self.flatten = config.flatten;
         self.edges.clear();
@@ -209,7 +211,7 @@ impl Tiler {
             y_min, y_max,
             self.scissor.min.y,
             self.scissor.max.y,
-            self.draw.tile_size.height
+            self.draw.tile_size
         )
     }
 
@@ -235,7 +237,7 @@ impl Tiler {
         debug_assert!(edge.from.y <= edge.to.y);
 
         let min = -self.tile_padding;
-        let max = self.num_tiles_y * self.draw.tile_size.height + self.tile_padding;
+        let max = self.num_tiles_y * self.draw.tile_size + self.tile_padding;
 
         if edge.from.y > max || edge.to.y < min {
             return;
@@ -247,11 +249,11 @@ impl Tiler {
         self.last_row = self.last_row.max(end_idx);
 
         let offset_min = -self.tile_padding;
-        let offset_max = self.draw.tile_size.height + self.tile_padding;
+        let offset_max = self.draw.tile_size + self.tile_padding;
         let mut row_idx = start_idx as u32;
         if edge.is_line() {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = row_idx as f32 * self.draw.tile_size.height;
+                let y_offset = row_idx as f32 * self.draw.tile_size;
 
                 let mut segment = LineSegment { from: edge.from, to: edge.to };
                 segment.from.y -= y_offset;
@@ -285,7 +287,7 @@ impl Tiler {
             }
         } else {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = row_idx as f32 * self.draw.tile_size.height;
+                let y_offset = row_idx as f32 * self.draw.tile_size;
 
                 let mut segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 segment.from.y -= y_offset;
@@ -401,11 +403,11 @@ impl Tiler {
                     continue;
                 }
 
-                let src_x = (src_tile_id * self.color_tiles_per_row) as f32 * self.draw.tile_size.width;
-                let src_y = (src_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size.height;
+                let src_x = (src_tile_id * self.color_tiles_per_row) as f32 * self.draw.tile_size;
+                let src_y = (src_tile_id / self.color_tiles_per_row) as f32 * self.draw.tile_size;
 
-                let dst_x = i as f32 + self.draw.tile_size.width;
-                let dst_y = row_idx as f32 * self.draw.tile_size.height;
+                let dst_x = i as f32 + self.draw.tile_size;
+                let dst_y = row_idx as f32 * self.draw.tile_size;
 
                 let src_rect = Box2D::from_origin_and_size(point(src_x, src_y), self.draw.tile_size);
                 let dst_rect = Box2D::from_origin_and_size(point(dst_x, dst_y), self.draw.tile_size);
@@ -560,22 +562,22 @@ impl Tiler {
 
         active_edges.clear();
 
-        let inv_tw = 1.0 / self.draw.tile_size.width;
+        let inv_tw = 1.0 / self.draw.tile_size;
         let tiles_start = (self.scissor.min.x * inv_tw).floor();
         let tiles_end = self.num_tiles_x.min((self.scissor.max.x * inv_tw).ceil() as u32);
 
-        let tx = tiles_start * self.draw.tile_size.width;
-        let ty = tile_y as f32 * self.draw.tile_size.height;
+        let tx = tiles_start * self.draw.tile_size;
+        let ty = tile_y as f32 * self.draw.tile_size;
         let output_rect = Box2D {
             min: point(tx, ty),
-            max: point(tx + self.draw.tile_size.width, ty + self.draw.tile_size.height)
+            max: point(tx + self.draw.tile_size, ty + self.draw.tile_size)
         };
 
         // The inner rect is equivalent to the output rect with an y offset so that
         // its upper side is at y=0.
         let inner_rect = Box2D {
             min: point(output_rect.min.x, 0.0),
-            max: point(output_rect.max.x, self.draw.tile_size.height),
+            max: point(output_rect.max.x, self.draw.tile_size),
         };
 
         let outer_rect = Box2D {
@@ -585,7 +587,7 @@ impl Tiler {
             ),
             max: point(
                 inner_rect.max.x + self.tile_padding,
-                self.draw.tile_size.height + self.tile_padding,
+                self.draw.tile_size + self.tile_padding,
             ),
         };
 
@@ -629,7 +631,7 @@ impl Tiler {
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.outer_rect.max.x && tile.x < tiles_end {
                 if active_edges.is_empty() {
-                    let tx = ((edge.min_x.0 / self.draw.tile_size.width) as u32).min(tiles_end);
+                    let tx = ((edge.min_x.0 / self.draw.tile_size) as u32).min(tiles_end);
                     let n = tx - tile.x;
                     assert!(n > 0, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.outer_rect.min.x);
                     if self.draw.fill_rule.is_in(tile.backdrop) {
@@ -690,7 +692,7 @@ impl Tiler {
 
     pub fn update_tile_rects(&self, tile: &mut TileInfo, num_tiles: u32) {
         let nt = num_tiles as f32;
-        let d = self.draw.tile_size.width * nt;
+        let d = self.draw.tile_size * nt;
         // Note: this is accumulating precision errors, but haven't seen
         // issues in practice.
         tile.inner_rect.min.x += d;
@@ -910,13 +912,13 @@ impl Tiler {
             x_min, x_max,
             self.scissor.min.x,
             self.scissor.max.x,
-            self.draw.tile_size.width,
+            self.draw.tile_size,
         );
         let row_start = row_start as u32;
         let row_end = row_end as u32;
         let column_start = column_start as u32;
         let column_end = column_end as u32;
-        let tile_radius = std::f32::consts::SQRT_2 * 0.5 * self.draw.tile_size.width + self.tile_padding;
+        let tile_radius = std::f32::consts::SQRT_2 * 0.5 * self.draw.tile_size + self.tile_padding;
         encoder.begin_path(pattern);
 
         for tile_y in row_start..row_end {
@@ -928,8 +930,8 @@ impl Tiler {
             };
 
             let mut tile_center = point(
-                (column_start as f32 + 0.5) * self.draw.tile_size.width,
-                (tile_y as f32 + 0.5) * self.draw.tile_size.height,
+                (column_start as f32 + 0.5) * self.draw.tile_size,
+                (tile_y as f32 + 0.5) * self.draw.tile_size,
             );
             encoder.begin_row();
 
@@ -940,7 +942,7 @@ impl Tiler {
                     break;
                 }
 
-                tile_center.x += self.draw.tile_size.width;
+                tile_center.x += self.draw.tile_size;
                 tile_x += 1;
             }
 
@@ -956,7 +958,7 @@ impl Tiler {
 
                 let tx = tile_x;
 
-                tile_center.x += self.draw.tile_size.width;
+                tile_center.x += self.draw.tile_size;
                 tile_x += 1;
 
                 pattern.set_tile(tx, tile_y);
@@ -970,7 +972,7 @@ impl Tiler {
                     continue;
                 }
 
-                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size.width;
+                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size;
                 let center = center - tile_offset;
                 let mask_id = encoder.add_cricle_mask(center, radius);
 
@@ -982,7 +984,7 @@ impl Tiler {
             if full {
                 let first_full_tile = tile_x;
                 while tile_x < column_end {
-                    tile_center.x += self.draw.tile_size.width;
+                    tile_center.x += self.draw.tile_size;
                     tile_x += 1;
 
                     let d = (tile_center - center).length();
@@ -1008,7 +1010,7 @@ impl Tiler {
 
                 let tx = tile_x;
 
-                tile_center.x += self.draw.tile_size.width;
+                tile_center.x += self.draw.tile_size;
                 tile_x += 1;
 
                 pattern.set_tile(tx, tile_y);
@@ -1022,7 +1024,7 @@ impl Tiler {
                     continue;
                 }
 
-                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size.width;
+                let tile_offset = vector(tx as f32, tile_y as f32) * self.draw.tile_size;
                 let center = center - tile_offset;
                 let mask_id = encoder.add_cricle_mask(center, radius);
 
@@ -1047,7 +1049,7 @@ impl Tiler {
             self.scissor.max.x,
             self.scissor.min.x,
             self.scissor.max.x,
-            self.draw.tile_size.width,
+            self.draw.tile_size,
         );
 
         for tile_y in 0..self.rows.len() as u32 {
@@ -1837,8 +1839,8 @@ pub struct TileEncoder {
 
 impl TileEncoder {
     pub fn new(config: &TilerConfig, mask_uploader: MaskUploader) -> Self {
-        let atlas_tiles_x = config.mask_atlas_size.width as u32 / config.tile_size.width as u32;
-        let atlas_tiles_y = config.mask_atlas_size.height as u32 / config.tile_size.height as u32;
+        let atlas_tiles_x = config.mask_atlas_size.width as u32 / config.tile_size as u32;
+        let atlas_tiles_y = config.mask_atlas_size.height as u32 / config.tile_size as u32;
         TileEncoder {
             opaque_image_tiles: Vec::with_capacity(2048),
             alpha_tiles: Vec::with_capacity(8192),
@@ -2190,8 +2192,8 @@ impl TileEncoder {
     }
 
     pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> TilePosition {
-        debug_assert!(draw.tile_size.width <= 32.0);
-        debug_assert!(draw.tile_size.height <= 32.0);
+        debug_assert!(draw.tile_size <= 32.0);
+        debug_assert!(draw.tile_size <= 32.0);
 
         let mut accum = [0.0; 32 * 32];
         let mut backdrops = [tile.backdrop as f32; 32];
@@ -2200,11 +2202,11 @@ impl TileEncoder {
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
-                add_backdrop(edge.from.y, -1.0, &mut backdrops[0..draw.tile_size.height as usize]);
+                add_backdrop(edge.from.y, -1.0, &mut backdrops[0..draw.tile_size as usize]);
             }
 
             if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
-                add_backdrop(edge.to.y, 1.0, &mut backdrops[0..draw.tile_size.height as usize]);
+                add_backdrop(edge.to.y, 1.0, &mut backdrops[0..draw.tile_size as usize]);
             }
 
             let from = edge.from - tile_offset;

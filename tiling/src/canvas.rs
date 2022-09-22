@@ -236,9 +236,9 @@ pub struct FrameBuilder {
 impl FrameBuilder {
     pub fn new(config: &TilerConfig, uploader: MaskUploader) -> Self {
         let size = config.view_box.size().to_u32();
-        let tile_size = config.tile_size.to_u32();
-        let tiles_x = (size.width + tile_size.width - 1) / tile_size.width;
-        let tiles_y = (size.height + tile_size.height - 1) / tile_size.height;
+        let tile_size = config.tile_size as u32;
+        let tiles_x = (size.width + tile_size - 1) / tile_size;
+        let tiles_y = (size.height + tile_size - 1) / tile_size;
         FrameBuilder {
             targets: vec![TargetData {
                 tile_encoder: TileEncoder::new(config, uploader),
