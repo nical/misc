@@ -65,6 +65,8 @@ pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
     masks: Masks,
 
+    // TODO: masked/opaque tiled images are similar to other patterns, maybe they
+    // could be implemented as patterns.
     pub masked_image_pipeline: wgpu::RenderPipeline,
     pub opaque_image_pipeline: wgpu::RenderPipeline,
     pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -79,7 +81,8 @@ pub struct TileRenderer {
     src_color_bind_group: wgpu::BindGroup,
     masks_bind_group: wgpu::BindGroup,
     main_target_and_gpu_store_bind_group: wgpu::BindGroup,
-    atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    mask_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    color_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
 
     quad_ibo: wgpu::Buffer,
     pub tiles_vbo: BumpAllocatedBuffer,
@@ -98,7 +101,8 @@ impl TileRenderer {
         device: &wgpu::Device,
         shaders: &mut ShaderSources,
         target_size: Size2D<u32>,
-        tile_atlas_size: u32,
+        mask_atlas_size: u32,
+        color_atlas_size: u32,
         gpu_store: &GpuStore,
     ) -> Self {
 
@@ -134,7 +138,14 @@ impl TileRenderer {
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
             contents: bytemuck::cast_slice(&[
-                GpuTargetDescriptor::new(tile_atlas_size, tile_atlas_size)
+                GpuTargetDescriptor::new(mask_atlas_size, mask_atlas_size)
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let color_tiles_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mask params"),
+            contents: bytemuck::cast_slice(&[
+                GpuTargetDescriptor::new(color_atlas_size, color_atlas_size)
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -255,8 +266,8 @@ impl TileRenderer {
             label: Some("Mask atlas"),
             dimension: wgpu::TextureDimension::D2,
             size: wgpu::Extent3d {
-                width: tile_atlas_size,
-                height: tile_atlas_size,
+                width: mask_atlas_size,
+                height: mask_atlas_size,
                 depth_or_array_layers: 1,
             },
             format: wgpu::TextureFormat::R8Unorm,
@@ -271,8 +282,8 @@ impl TileRenderer {
             label: Some("Color tile atlas"),
             dimension: wgpu::TextureDimension::D2,
             size: wgpu::Extent3d {
-                width: tile_atlas_size,
-                height: tile_atlas_size,
+                width: color_atlas_size,
+                height: color_atlas_size,
                 depth_or_array_layers: 1,
             },
             format: wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -345,13 +356,28 @@ impl TileRenderer {
             ],
         });
 
-        let atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mask_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Atlas target & gpu store"),
             layout: &target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(mask_params_ubo.as_entire_buffer_binding())
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gpu_store_view)
+                }
+            ],
+        });
+
+        let color_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Atlas target & gpu store"),
+            layout: &target_and_gpu_store_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(color_tiles_params_ubo.as_entire_buffer_binding())
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -392,7 +418,8 @@ impl TileRenderer {
             src_color_bind_group,
             masks_bind_group,
             main_target_and_gpu_store_bind_group,
-            atlas_target_and_gpu_store_bind_group,
+            mask_atlas_target_and_gpu_store_bind_group,
+            color_atlas_target_and_gpu_store_bind_group,
             edges_ssbo,
             tiles_vbo,
             fill_masks,
@@ -553,7 +580,7 @@ impl TileRenderer {
 
             pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-            pass.set_bind_group(0, &self.atlas_target_and_gpu_store_bind_group, &[]);
+            pass.set_bind_group(0, &self.color_atlas_target_and_gpu_store_bind_group, &[]);
 
             for batch in tile_encoder.get_color_atlas_batches(render_pass.color_atlas_index) {
                 let mut range = batch.tiles.clone();
@@ -597,7 +624,7 @@ impl TileRenderer {
             tile_encoder.mask_uploader.upload(
                 &device,
                 &mut pass,
-                &self.atlas_target_and_gpu_store_bind_group,
+                &self.mask_atlas_target_and_gpu_store_bind_group,
                 &self.mask_upload_copies.pipeline,
                 &self.quad_ibo,
                 pass_idx as u32,

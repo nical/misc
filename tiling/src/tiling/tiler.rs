@@ -70,6 +70,7 @@ pub struct TilerConfig {
     pub tolerance: f32,
     pub flatten: bool,
     pub mask_atlas_size: Size2D<u32>,
+    pub color_atlas_size: Size2D<u32>,
 }
 
 impl TilerConfig {
@@ -1731,8 +1732,10 @@ pub struct TileEncoder {
 
 impl TileEncoder {
     pub fn new(config: &TilerConfig, mask_uploader: MaskUploader, num_patterns: usize) -> Self {
-        let atlas_tiles_x = config.mask_atlas_size.width as u32 / config.tile_size as u32;
-        let atlas_tiles_y = config.mask_atlas_size.height as u32 / config.tile_size as u32;
+        let mask_atlas_tiles_x = config.mask_atlas_size.width / config.tile_size;
+        let mask_atlas_tiles_y = config.mask_atlas_size.height / config.tile_size;
+        let color_atlas_tiles_x = config.color_atlas_size.width / config.tile_size;
+        let color_atlas_tiles_y = config.color_atlas_size.height / config.tile_size;
         let mut patterns = Vec::with_capacity(num_patterns);
         for _ in 0..num_patterns {
             patterns.alloc().init(PatternTiles {
@@ -1771,8 +1774,8 @@ impl TileEncoder {
             edge_distributions: [0; 16],
 
             src: SourceTiles {
-                mask_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
-                color_tiles: TileAllocator::new(atlas_tiles_x, atlas_tiles_y),
+                mask_tiles: TileAllocator::new(mask_atlas_tiles_x, mask_atlas_tiles_y),
+                color_tiles: TileAllocator::new(color_atlas_tiles_x, color_atlas_tiles_y),
             },
             prerender_pattern: true,
         }
@@ -2281,6 +2284,10 @@ impl TileEncoder {
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
+        for pattern in &self.patterns {
+            stats.opaque_tiles += pattern.opaque.len();
+            stats.prerendered_tiles += pattern.prerendered.len();
+        }
         stats.opaque_tiles += self.opaque_image_tiles.len();
         stats.alpha_tiles += self.alpha_tiles.len();
         stats.gpu_mask_tiles += self.fill_masks.masks.len() + self.circle_masks.masks.len();

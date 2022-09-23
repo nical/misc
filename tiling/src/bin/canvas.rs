@@ -57,8 +57,9 @@ fn main() {
 
     let tile_size = 16;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 256;
-    let tile_atlas_size: u32 = 1024;
+    let max_edges_per_gpu_tile = 128;
+    let mask_atlas_size: u32 = 4096;
+    let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
 
     let mut tiler_config = TilerConfig {
@@ -67,7 +68,8 @@ fn main() {
         tile_padding: 0.0,
         tolerance,
         flatten: false,
-        mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
+        mask_atlas_size: size2(mask_atlas_size, mask_atlas_size),
+        color_atlas_size: size2(color_atlas_size, color_atlas_size),
     };
 
     let event_loop = EventLoop::new();
@@ -128,7 +130,8 @@ fn main() {
         &device,
         &mut shaders,
         Size2D::new(window_size.width, window_size.height),
-        tile_atlas_size as u32,
+        mask_atlas_size,
+        color_atlas_size,
         &gpu_store,
     );
 
@@ -144,7 +147,7 @@ fn main() {
     tile_renderer.register_pattern(CheckerboardPattern::create_pipelines(&device, &mut pattern_builder));
 
     let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
-    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
+    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, mask_atlas_size);
 
     let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
 
@@ -160,8 +163,8 @@ fn main() {
     builder.end(true);
 
     canvas.fill_canvas(Pattern::Gradient {
-            p0: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
-            p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
+        p0: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
+        p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
     });
 
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));
@@ -211,17 +214,6 @@ fn main() {
     let mut commands = canvas.finish();
 
     frame_builder.build(&commands, &mut gpu_store);
-
-    let mut stats = Stats::new();
-    for target in &frame_builder.targets {
-        target.tile_encoder.update_stats(&mut stats);
-    }
-    frame_builder.tiler.edges.update_stats(&mut stats);
-    println!("view box: {:?}", view_box);
-    println!("{:#?}", stats);
-    println!("#edge distributions: {:?}", frame_builder.targets[0].tile_encoder.edge_distributions);
-    println!("");
-    println!("{:?}", frame_builder.stats());
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -353,6 +345,7 @@ fn main() {
             tile_time = Duration::zero();
             frame_idx = 0;
             println!("frame build {:.2} (row: {:.2}, tile {:.2}) render {:.2}", fbt, row, tile, rt);
+            print_stats(&frame_builder, scene.window_size);
         }
 
         frame.present();
@@ -361,6 +354,29 @@ fn main() {
             window.request_redraw();
         }
     });
+}
+
+fn print_stats(frame_builder: &FrameBuilder, window_size: PhysicalSize<u32>) {
+    let mut stats = Stats::new();
+    for target in &frame_builder.targets {
+        target.tile_encoder.update_stats(&mut stats);
+    }
+    frame_builder.tiler.edges.update_stats(&mut stats);
+    println!("{:#?}", stats);
+    println!("Data:");
+    println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
+    println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
+    println!("  cpu masks: {:2} kb", stats.cpu_masks_bytes() as f32 / 1000.0);
+    println!("   uploaded: {:2} kb", stats.uploaded_bytes() as f32 / 1000.0);
+    let win_bytes = (window_size.width * window_size.height * 4) as f32;
+    println!(
+        " resolution: {}x{} ({:2} kb)  overhead {:2}%",
+        window_size.width, window_size.height, win_bytes / 1000.0,
+        stats.uploaded_bytes() as f32 * 100.0 / win_bytes as f32,
+    );
+    println!("#edge distributions: {:?}", frame_builder.targets[0].tile_encoder.edge_distributions);
+    println!("\n");
+
 }
 
 // Default scene has all values set to zero

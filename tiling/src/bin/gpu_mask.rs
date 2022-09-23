@@ -63,6 +63,7 @@ fn main() {
         tolerance,
         flatten: false,
         mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
+        color_atlas_size: size2(tile_atlas_size, tile_atlas_size),
     };
 
     let event_loop = EventLoop::new();
@@ -124,6 +125,7 @@ fn main() {
         &mut shaders,
         size,
         tile_atlas_size as u32,
+        tile_atlas_size as u32,
         &mut gpu_store,
     );
 
@@ -144,7 +146,7 @@ fn main() {
     );
 
     let mut color_pattern = SolidColorBuilder::new(SolidColor::new(Color::BLACK), 0);
-    let mut color_pipelines = SolidColor::create_pipelines(&device, &mut custom_patterns);
+    let color_pipelines = SolidColor::create_pipelines(&device, &mut custom_patterns);
     tile_renderer.register_pattern(color_pipelines);
 
     let mut row_time: u64 = 0;

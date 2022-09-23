@@ -12,12 +12,10 @@ use std::ops::Range;
 use lyon::geom::euclid::default::{Transform2D, Size2D};
 use lyon::path::FillRule;
 
+pub type PatternData = u32;
+pub type AtlasIndex = u32;
 pub type PatternIndex = usize;
 pub const TILED_IMAGE_PATTERN: PatternIndex = 10000; // TODO
-
-pub type PatternData = u32;
-
-pub type AtlasIndex = u32;
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -45,10 +43,6 @@ impl TilePosition {
 
     pub fn extend(&mut self) {
         self.0 += 1 << 20;
-    }
-
-    pub fn extend_n(&mut self, n: u32) {
-        self.0 += n << 20;
     }
 
     pub fn with_flag(mut self) -> Self {
@@ -296,6 +290,22 @@ impl Stats {
 
     pub fn clear(&mut self) {
         *self = Stats::new();
+    }
+
+    pub fn tiles_bytes(&self) -> usize {
+        (self.opaque_tiles + self.alpha_tiles + self.prerendered_tiles + self.gpu_mask_tiles) * std::mem::size_of::<TileInstance>()
+    }
+
+    pub fn edges_bytes(&self) -> usize {
+        self.edges * std::mem::size_of::<TileInstance>()
+    }
+
+    pub fn cpu_masks_bytes(&self) -> usize {
+        self.cpu_mask_tiles * 16 * 16 // TODO other tile sizes
+    }
+
+    pub fn uploaded_bytes(&self) -> usize {
+        self.tiles_bytes() + self.edges_bytes() + self.cpu_masks_bytes()
     }
 }
 
