@@ -1,10 +1,10 @@
 use std::num::NonZeroU32;
 
-use crate::gpu::{
+use crate::{gpu::{
     gpu_store::GpuStore,
     mask_uploader::{MaskUploadCopies},
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults
-};
+}, custom_pattern::TilePipelines};
 use crate::tiling::{
     tiler::{TileEncoder, LineEdge, MaskRenderer},
     TilePosition, PatternData, BufferRange
@@ -13,6 +13,8 @@ use crate::tiling::{
 use lyon::geom::euclid::default::Size2D;
 use wgpu::TextureAspect;
 use wgpu::util::DeviceExt;
+
+use super::PatternIndex;
 
 /*
 
@@ -23,14 +25,6 @@ When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Gr
   - ~0.48ms alpha tiles
 
 */
-
-pub trait PatternRenderer {
-    fn begin_frame(&mut self);
-    fn render<'a, 'b: 'a>(&'b self, pass_idx: u32, pass: &mut wgpu::RenderPass<'a>);
-    fn render_opaque_pass<'a, 'b: 'a>(&'b self, pass: &mut wgpu::RenderPass<'a>);
-    fn prepare_alpha_pass<'a, 'b: 'a>(&'b self, pass: &mut wgpu::RenderPass<'a>);
-    fn has_content(&self, pass_idx: u32) -> bool;
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -96,10 +90,17 @@ pub struct TileRenderer {
     pub edges_ssbo: BumpAllocatedBuffer,
     mask_params_ubo: wgpu::Buffer,
     main_target_descriptor_ubo: wgpu::Buffer,
+    patterns: Vec<TilePipelines>,
 }
 
 impl TileRenderer {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, target_size: Size2D<u32>, tile_atlas_size: u32, gpu_store: &GpuStore) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        shaders: &mut ShaderSources,
+        target_size: Size2D<u32>,
+        tile_atlas_size: u32,
+        gpu_store: &GpuStore,
+    ) -> Self {
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
         let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -398,7 +399,14 @@ impl TileRenderer {
             circle_masks,
             mask_params_ubo,
             main_target_descriptor_ubo,
+            patterns: Vec::new(),
         }
+    }
+
+    pub fn register_pattern(&mut self, pipelines: TilePipelines) -> PatternIndex {
+        let idx = self.patterns.len() as PatternIndex;
+        self.patterns.push(pipelines);
+        idx
     }
 
     pub fn resize(&mut self, size: Size2D<u32>, queue: &wgpu::Queue) {
@@ -442,7 +450,6 @@ impl TileRenderer {
     pub fn render(
         &mut self,
         tile_encoder: &mut TileEncoder,
-        patterns: &[&dyn PatternRenderer],
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
@@ -455,7 +462,6 @@ impl TileRenderer {
             &mut src_mask_atlas,
             &mut src_color_atlas,
             tile_encoder,
-            patterns,
             device,
             encoder,
         );
@@ -478,7 +484,6 @@ impl TileRenderer {
             self.render_pass(
                 0,
                 tile_encoder,
-                patterns,
                 &mut pass,
             )
         }
@@ -490,7 +495,6 @@ impl TileRenderer {
                     &mut src_mask_atlas,
                     &mut src_color_atlas,
                     tile_encoder,
-                    patterns,
                     device,
                     encoder,
                 );
@@ -511,7 +515,6 @@ impl TileRenderer {
                 self.render_pass(
                     pass_idx,
                     tile_encoder,
-                    patterns,
                     &mut pass,
                 )
             }
@@ -524,7 +527,6 @@ impl TileRenderer {
         src_mask_atlas: &mut u32,
         src_color_atlas: &mut u32,
         tile_encoder: &mut TileEncoder,
-        patterns: &[&dyn PatternRenderer],
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -549,11 +551,17 @@ impl TileRenderer {
                 depth_stencil_attachment: None,
             });
 
+            pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
             pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_bind_group(0, &self.atlas_target_and_gpu_store_bind_group, &[]);
 
-            for pattern in patterns {
-                pattern.render(*src_color_atlas, &mut pass);
+            for batch in tile_encoder.get_color_atlas_batches(render_pass.color_atlas_index) {
+                let mut range = batch.tiles.clone();
+                let offset = tile_encoder.patterns[batch.pattern].prerendered_vbo_range.start();
+                range.start += offset;
+                range.end += offset;
+                pass.set_pipeline(&self.patterns[batch.pattern].opaque);
+                pass.draw_indexed(0..6, 0, range);
             }
         }
 
@@ -601,40 +609,44 @@ impl TileRenderer {
         &'b mut self,
         pass_idx: usize,
         tile_encoder: &mut TileEncoder,
-        patterns: &[&'a dyn PatternRenderer],
         pass: &mut wgpu::RenderPass<'a>,
     ) {
         let render_pass = &tile_encoder.render_passes[pass_idx];
 
+        pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
         pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-
         pass.set_bind_group(0, &self.main_target_and_gpu_store_bind_group, &[]);
+
+        if pass_idx == 0 {
+            for pattern_idx in 0..self.patterns.len() {
+                let range = tile_encoder.get_opaque_batch(pattern_idx);
+                if range.is_empty() {
+                    continue;
+                }
+                // TODO: optional hook to bind extra data
+                pass.set_pipeline(&self.patterns[pattern_idx].opaque);
+                pass.draw_indexed(0..6, 0, range);
+            }
+        }
 
         if !render_pass.opaque_image_tiles.is_empty() {
             pass.set_pipeline(&self.opaque_image_pipeline);
-            pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(..));
             pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
             pass.set_bind_group(2, &self.src_color_bind_group, &[]);
             pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
         }
 
-        if pass_idx == 0 {
-            for pattern in patterns {
-                pattern.render_opaque_pass(pass);
-            }
-        }
-
         pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<TileInstance>()));
         pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
 
-        for batch in &tile_encoder.batches[render_pass.batches.clone()] {
-            match batch.batch_kind {
+        for batch in &tile_encoder.alpha_batches[render_pass.alpha_batches.clone()] {
+            match batch.pattern {
                 crate::tiling::TILED_IMAGE_PATTERN => {
                     pass.set_pipeline(&self.masked_image_pipeline);
                     pass.set_bind_group(2, &self.src_color_bind_group, &[]);
                 }
                 _ => {
-                    patterns[batch.batch_kind as usize - 1].prepare_alpha_pass(pass);
+                    pass.set_pipeline(&self.patterns[batch.pattern].masked);
                 }
             }
             pass.draw_indexed(0..6, 0, batch.tiles.clone());

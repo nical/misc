@@ -12,11 +12,8 @@ use std::ops::Range;
 use lyon::geom::euclid::default::{Transform2D, Size2D};
 use lyon::path::FillRule;
 
-use tile_renderer::TileInstance;
-
-pub type PatternKind = u32;
-pub const TILED_IMAGE_PATTERN: PatternKind = 0;
-pub const SOLID_COLOR_PATTERN: PatternKind = 1;
+pub type PatternIndex = usize;
+pub const TILED_IMAGE_PATTERN: PatternIndex = 10000; // TODO
 
 pub type PatternData = u32;
 
@@ -162,6 +159,7 @@ impl TileAllocator {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BufferRange(pub u32, pub u32);
 impl BufferRange {
+    pub fn start(&self) -> u32 { self.0 }
     pub fn is_empty(&self) -> bool { self.0 >= self.1 }
     pub fn to_u32(&self) -> Range<u32> { self.0 .. self.1 }
     pub fn byte_range<Ty>(&self) -> Range<u64> {
@@ -173,25 +171,29 @@ impl BufferRange {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TileVisibility {
+    Opaque,
+    Alpha,
+    Empty,
+}
+
+impl TileVisibility {
+    pub fn is_empty(self) -> bool { self == TileVisibility::Empty }
+    pub fn is_opaque(self) -> bool { self == TileVisibility::Opaque }
+}
+
 // Note: the statefullness with set_tile(x, y) followed by tile-specific getters
 // is unfortunate, the reason for it at the moment is the need to query whether
 // a tile is empty or fully opaque before culling, while we want to only request
 // tile if we really need to, that is after culling.
 pub trait TilerPattern {
-    /// Simply put, what type of shader do we use to draw the tiles in the main
-    /// color pass.
-    /// A lot of fancy patterns would pre-render into a tiled color atlas, so their
-    /// pattern kind is TILED_IMAGE_PATTERN.
-    fn pattern_kind(&self) -> PatternKind;
+    fn index(&self) -> PatternIndex;
 
-    fn set_tile(&mut self, x: u32, y: u32);
-    fn tile_data(&mut self) -> PatternData;
-    fn opaque_tiles(&mut self) -> &mut Vec<TileInstance>;
-    fn prerender_tile(&mut self, tile_position: TilePosition, atlas_index: u32);
     fn is_entirely_opaque(&self) -> bool { false }
-    fn tile_is_opaque(&self) -> bool { self.is_entirely_opaque() }
-    fn tile_is_empty(&self) -> bool { false }
-    fn is_mergeable(&self) -> bool { false }
+    fn tile_data(&mut self, x: u32, y: u32) -> PatternData;
+    fn tile_visibility(&self, _x: u32, _y: u32) -> TileVisibility { TileVisibility::Alpha }
+    fn can_stretch_horizontally(&self) -> bool { false }
 }
 
 pub struct TiledSourcePattern {
@@ -202,28 +204,18 @@ pub struct TiledSourcePattern {
 }
 
 impl TilerPattern for TiledSourcePattern {
-    fn pattern_kind(&self) -> u32 { TILED_IMAGE_PATTERN }
-    fn set_tile(&mut self, x: u32, y: u32) {
-        if let Some((tile, opaque)) = self.indirection_buffer.get(x, y) {
-            self.current_tile = tile.to_u32();
-            self.current_tile_is_opaque = opaque;
-            self.current_tile_is_empty = false;
-        } else {
-            self.current_tile = std::u32::MAX;
-            self.current_tile_is_opaque = false;
-            self.current_tile_is_empty = true;
+    fn index(&self) -> PatternIndex { TILED_IMAGE_PATTERN }
+
+    fn tile_visibility(&self, x: u32, y: u32) -> TileVisibility {
+        match self.indirection_buffer.get(x, y) {
+            Some((_, true)) => TileVisibility::Opaque,
+            Some((_, false)) => TileVisibility::Alpha,
+            None => TileVisibility::Empty,
         }
     }
-    fn opaque_tiles(&mut self) -> &mut Vec<TileInstance> {
-        unimplemented!();
-    }
 
-    fn prerender_tile(&mut self, _: TilePosition, _: u32) {
-        unimplemented!();
-    }
-
-    fn tile_data(&mut self) -> PatternData {
-        self.current_tile
+    fn tile_data(&mut self, x: u32, y: u32) -> PatternData {
+        self.indirection_buffer.get(x, y).unwrap().0.to_u32()
     }
 }
 

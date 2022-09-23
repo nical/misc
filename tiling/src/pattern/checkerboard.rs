@@ -6,7 +6,6 @@ use crate::{Color};
 use crate::custom_pattern::*;
 
 pub type CheckerboardPatternBuilder = CustomPatternBuilder<CheckerboardPattern>;
-pub type CheckerboardPatternRenderer = CustomPatternRenderer<CheckerboardPattern>;
 
 pub fn add_checkerboard(gpu_store: &mut GpuStore, color0: Color, color1: Color, offset: Point, scale: f32) -> CheckerboardPattern {
     let is_opaque = color0.is_opaque() && color1.is_opaque();
@@ -35,22 +34,22 @@ impl CheckerboardPattern {
         }
     }
 
-    pub fn new_renderer(
+    pub fn create_pipelines(
         device: &wgpu::Device,
         helper: &mut CustomPatterns,
-    ) -> CustomPatternRenderer<Self> {
+    ) -> TilePipelines {
         let descriptor = CustomPatternDescriptor {
             name: "checkerboard",
             source: include_str!("../../shaders/pattern/checkerboard.wgsl"),
             varyings:  &[
-                Varying { name: "uv", kind: "vec2<f32>", interpolate: "perspective" },
-                Varying { name: "color0", kind: "vec4<f32>", interpolate: "flat" },
-                Varying { name: "color1", kind: "vec4<f32>", interpolate: "flat" },
+                Varying { name: "uv", kind: "vec2<f32>", interpolated: true },
+                Varying { name: "color0", kind: "vec4<f32>", interpolated: false },
+                Varying { name: "color1", kind: "vec4<f32>", interpolated: false },
             ],
             extra_bind_groups: &[],
         };
 
-        CustomPatternRenderer::new(device, helper, &descriptor, ())
+        helper.create_tile_render_pipelines(device, &descriptor)
     }
 }
 

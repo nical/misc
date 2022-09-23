@@ -241,10 +241,10 @@ impl FrameBuilder {
         let tiles_y = (size.height + tile_size - 1) / tile_size;
         FrameBuilder {
             targets: vec![TargetData {
-                tile_encoder: TileEncoder::new(config, uploader),
-                solid_color_pattern: SolidColorBuilder::new(SolidColor::new(Color::BLACK), 1),
+                tile_encoder: TileEncoder::new(config, uploader, 3),
+                solid_color_pattern: SolidColorBuilder::new(SolidColor::new(Color::BLACK), 0),
+                gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new(), 1),
                 checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new(), 2),
-                gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new(), 3),
             }],
             tiler: Tiler::new(config),
             tile_mask: TileMask::new(tiles_x, tiles_y),
@@ -271,9 +271,6 @@ impl FrameBuilder {
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.reset();
-            target.solid_color_pattern.reset();
-            target.checkerboard_pattern.reset();
-            target.gradient_pattern.reset();
         }
         self.tiler.edges.clear();
         self.tile_mask.clear();
@@ -283,9 +280,6 @@ impl FrameBuilder {
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.end_paths();
             target.tile_encoder.reverse_alpha_tiles();
-            target.solid_color_pattern.end_render_pass();
-            target.checkerboard_pattern.end_render_pass();
-            target.gradient_pattern.end_render_pass();
         }
 
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);

@@ -132,6 +132,17 @@ fn main() {
         &gpu_store,
     );
 
+    let mut pattern_builder = CustomPatterns::new(
+        &device,
+        &mut shaders,
+        &tile_renderer.target_and_gpu_store_layout,
+        &tile_renderer.mask_texture_bind_group_layout,
+    );
+
+    tile_renderer.register_pattern(SolidColor::create_pipelines(&device, &mut pattern_builder));
+    tile_renderer.register_pattern(SimpleGradient::create_pipelines(&device, &mut pattern_builder));
+    tile_renderer.register_pattern(CheckerboardPattern::create_pipelines(&device, &mut pattern_builder));
+
     let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
@@ -199,25 +210,11 @@ fn main() {
 
     let mut commands = canvas.finish();
 
-    let mut custom_patterns = CustomPatterns::new(
-        &device,
-        &mut shaders,
-        &tile_renderer.target_and_gpu_store_layout,
-        &tile_renderer.mask_texture_bind_group_layout,
-    );
-
-    let mut solid_color = SolidColor::new_renderer(&device, &mut custom_patterns);
-    let mut checkerboard = CheckerboardPattern::new_renderer(&device, &mut custom_patterns);
-    let mut gradients = SimpleGradient::new_renderer(&device, &mut custom_patterns);
-
     frame_builder.build(&commands, &mut gpu_store);
 
     let mut stats = Stats::new();
     for target in &frame_builder.targets {
         target.tile_encoder.update_stats(&mut stats);
-        target.solid_color_pattern.update_stats(&mut stats);
-        target.checkerboard_pattern.update_stats(&mut stats);
-        target.gradient_pattern.update_stats(&mut stats);
     }
     frame_builder.tiler.edges.update_stats(&mut stats);
     println!("view box: {:?}", view_box);
@@ -313,16 +310,10 @@ fn main() {
         let render_start = time::precise_time_ns();
 
         tile_renderer.begin_frame();
-        solid_color.begin_frame();
-        checkerboard.begin_frame();
-        gradients.begin_frame();
 
         frame_builder.tiler.edges.allocate_buffer_ranges(&mut tile_renderer);
         for target in &mut frame_builder.targets {
             target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
-            target.solid_color_pattern.allocate_buffer_ranges(&mut solid_color);            
-            target.checkerboard_pattern.allocate_buffer_ranges(&mut checkerboard);
-            target.gradient_pattern.allocate_buffer_ranges(&mut gradients);
         }
 
         tile_renderer.allocate(&device);
@@ -330,9 +321,6 @@ fn main() {
         frame_builder.tiler.edges.upload(&mut tile_renderer, &queue);
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
-            target.solid_color_pattern.upload(&mut solid_color, &queue);
-            target.checkerboard_pattern.upload(&mut checkerboard, &queue);
-            target.gradient_pattern.upload(&mut gradients, &queue);
             gpu_store.upload(&queue);
         }
 
@@ -343,7 +331,6 @@ fn main() {
         let target = &mut frame_builder.targets[0];
         tile_renderer.render(
             &mut target.tile_encoder,
-            &[&solid_color, &checkerboard, &gradients],
             &device,
             &frame_view,
             &mut encoder,

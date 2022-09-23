@@ -10,7 +10,6 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use futures::executor::block_on;
 
-use tiling::tiling::tile_renderer::PatternRenderer;
 use tiling::tiling::tiler::{Tiler, TileEncoder, TilerConfig};
 use tiling::tiling::tile_renderer::TileRenderer;
 use tiling::gpu::{ShaderSources};
@@ -132,7 +131,7 @@ fn main() {
     let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
 
     // Main builder.
-    let mut builder = TileEncoder::new(&tiler_config, mask_uploader);
+    let mut builder = TileEncoder::new(&tiler_config, mask_uploader, 1);
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
@@ -144,8 +143,9 @@ fn main() {
         &tile_renderer.mask_texture_bind_group_layout,
     );
 
-    let mut color_pattern = SolidColorBuilder::new(SolidColor::new(Color::BLACK), 1);
-    let mut solid_color = SolidColor::new_renderer(&device, &mut custom_patterns);
+    let mut color_pattern = SolidColorBuilder::new(SolidColor::new(Color::BLACK), 0);
+    let mut color_pipelines = SolidColor::create_pipelines(&device, &mut custom_patterns);
+    tile_renderer.register_pattern(color_pipelines);
 
     let mut row_time: u64 = 0;
     let mut tile_time: u64 = 0;
@@ -208,7 +208,6 @@ fn main() {
 
     let mut stats = Stats::new();
     builder.update_stats(&mut stats);
-    color_pattern.update_stats(&mut stats);
 
     println!("view box: {:?}", view_box);
     println!("{:#?}", stats);
@@ -282,23 +281,16 @@ fn main() {
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         tile_renderer.begin_frame();
-        solid_color.begin_frame();
 
         builder.allocate_buffer_ranges(&mut tile_renderer);
-        color_pattern.allocate_buffer_ranges(&mut solid_color);
         tile_renderer.allocate(&device);
         builder.upload(&mut tile_renderer, &queue);
-        color_pattern.upload(&mut solid_color, &queue);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),
         });
 
-        tile_renderer.render(
-            &mut builder,
-            &[&solid_color],
-            &device, &frame_view, &mut encoder,
-        );
+        tile_renderer.render(&mut builder, &device, &frame_view, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
         frame.present();
