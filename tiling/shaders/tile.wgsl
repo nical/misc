@@ -6,7 +6,6 @@
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
-    #if SOLID_PATTERN { @location(1) @interpolate(flat) color: vec4<f32>, }
     #if TILED_IMAGE_PATTERN { @location(1) src_uv: vec2<f32>, }
 };
 
@@ -26,7 +25,6 @@ struct VertexOutput {
     return VertexOutput(
         target_pos,
         #if TILED_MASK { tile.mask_position, }
-        #if SOLID_PATTERN { color, }
         #if TILED_IMAGE_PATTERN { tile.pattern_position, }
     );
 }
@@ -41,15 +39,10 @@ struct VertexOutput {
 
 @fragment fn fs_main(
     #if TILED_MASK { @location(0) mask_uv: vec2<f32>, }
-    #if SOLID_PATTERN { @location(1) @interpolate(flat) in_color: vec4<f32>, }
     #if TILED_IMAGE_PATTERN { @location(1) tiled_image_uv: vec2<f32>, }
 ) -> @location(0) vec4<f32> {
 
     var color = vec4(1.0);
-
-    #if SOLID_PATTERN {{
-        color *= in_color;
-    }}
 
     #if TILED_IMAGE_PATTERN {{
         var uv = vec2<i32>(i32(tiled_image_uv.x), i32(tiled_image_uv.y));

@@ -1630,7 +1630,6 @@ pub struct BufferRanges {
 impl BufferRanges {
     pub fn reset(&mut self) {
         self.opaque_image_tiles = BufferRange(0, 0);
-        self.opaque_image_tiles = BufferRange(0, 0);
         self.alpha_tiles = BufferRange(0, 0);
         self.masks = BufferRange(0, 0);
         self.circles = BufferRange(0, 0);
