@@ -50,7 +50,7 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
     }
 
     // Invert mode.
-    if ((fill_rule & 2u) == 1u) {
+    if ((fill_rule & 2u) != 0u) {
         mask = 1.0 - mask;
     }
 

@@ -2,11 +2,11 @@ use std::sync::Arc;
 use lyon::math::{Point, point, vector};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D};
-use crate::pattern::checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard};
-use crate::pattern::simple_gradient::{SimpleGradientBuilder, SimpleGradient, add_gradient};
+use crate::pattern::checkerboard::*;
+use crate::pattern::simple_gradient::*;
 use crate::pattern::solid_color::{SolidColorBuilder, SolidColor};
 use crate::gpu::GpuStore;
-use crate::{Color};
+use crate::Color;
 use crate::tiling::{
     TilerPattern, FillOptions,
     occlusion::TileMask,
@@ -33,23 +33,125 @@ if multiple groups don't fit into an atlas, create a new render pass.
 
 */
 
-pub enum Pattern {
-    Color(Color),
-    Gradient { p0: Point, color0: Color, p1: Point, color1: Color },
-    Image(u32),
-    Checkerboard { colors: [Color; 2], scale: f32 },
+pub trait Shape {
+    fn to_command(self) -> RecordedShape;
 }
 
-pub enum Shape {
-    Path(Arc<Path>, FillRule),
+pub trait Pattern {
+    fn to_command(self) -> RecordedPattern;
+}
+
+pub struct PathShape {
+    pub path: Arc<Path>,
+    pub fill_rule: FillRule,
+    pub inverted: bool,
+}
+
+impl PathShape {
+    pub fn new(path: Arc<Path>) -> Self {
+        PathShape { path, fill_rule: FillRule::EvenOdd, inverted: false }
+    }
+    pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
+        self.fill_rule = fill_rule;
+        self
+    }
+    pub fn inverted(mut self) -> Self {
+        self.inverted = !self.inverted;
+        self
+    }
+}
+
+impl Shape for PathShape {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Path(self)
+    }
+}
+
+impl Shape for Arc<Path> {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Path(PathShape::new(self))
+    }
+}
+
+pub struct Circle {
+    pub center: Point,
+    pub radius: f32,
+    pub inverted: bool,
+}
+
+impl Circle {
+    pub fn new(center: Point, radius: f32) -> Self {
+        Circle { center, radius, inverted: false }
+    }
+
+    pub fn inverted(mut self) -> Self {
+        self.inverted = !self.inverted;
+        self
+    }
+}
+
+impl Shape for Circle {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Circle(self)
+    }
+}
+
+impl Shape for Box2D<f32> {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Rect(self)
+    }
+}
+
+impl Shape for Box2D<i32> {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Rect(self.to_f32())
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct All;
+
+impl Shape for All {
+    fn to_command(self) -> RecordedShape {
+        RecordedShape::Canvas
+    }
+}
+
+impl Pattern for Color {
+    fn to_command(self) -> RecordedPattern {
+        RecordedPattern::Color(self)
+    }
+}
+
+impl Pattern for Gradient {
+    fn to_command(self) -> RecordedPattern {
+        RecordedPattern::Gradient(self)
+    }
+}
+
+impl Pattern for Checkerboard {
+    fn to_command(self) -> RecordedPattern {
+        RecordedPattern::Checkerboard(self)
+    }
+}
+
+pub enum RecordedPattern {
+    Color(Color),
+    Gradient(Gradient),
+    Image(u32),
+    Checkerboard(Checkerboard),
+}
+
+pub enum RecordedShape {
+    Path(PathShape),
     Rect(Box2D<f32>),
-    Circle { center: Point, radius: f32 },
+    Circle(Circle),
     Canvas,
 }
 
 pub struct Fill {
-    shape: Shape,
-    pattern: Pattern,
+    shape: RecordedShape,
+    pattern: RecordedPattern,
     transform: usize,
 }
 
@@ -155,37 +257,13 @@ impl Canvas {
         self.current_transform = self.transforms[self.current_transform].parent.unwrap_or(0);
     }
 
-    pub fn fill(&mut self, path: Arc<Path>, fill_rule: FillRule, pattern: Pattern) {
+    pub fn fill<S: Shape, P: Pattern>(&mut self, shape: S, pattern: P) {
         self.current_group.commands.push(Command::Fill(Fill {
-            shape: Shape::Path(path, fill_rule),
-            pattern,
+            shape: shape.to_command(),
+            pattern: pattern.to_command(),
             transform: self.current_transform,
         }));
         self.z_index += 1;
-    }
-
-    pub fn fill_rect(&mut self, rect: Box2D<f32>, pattern: Pattern) {
-        self.current_group.commands.push(Command::Fill(Fill {
-            shape: Shape::Rect(rect),
-            pattern,
-            transform: self.current_transform,
-        }));
-    }
-
-    pub fn fill_circle(&mut self, center: Point, radius: f32, pattern: Pattern) {
-        self.current_group.commands.push(Command::Fill(Fill {
-            shape: Shape::Circle { center, radius },
-            pattern,
-            transform: self.current_transform,
-        }));
-    }
-
-    pub fn fill_canvas(&mut self, pattern: Pattern) {
-        self.current_group.commands.push(Command::Fill(Fill {
-            shape: Shape::Canvas,
-            pattern,
-            transform: self.current_transform,
-        }));
     }
 
     pub fn push_clip(&mut self, path: Arc<Path>) {
@@ -305,65 +383,59 @@ impl FrameBuilder {
 
                     let mut prerender = false;
                     let pattern: &mut dyn TilerPattern = match fill.pattern {
-                        Pattern::Color(color) => {
+                        RecordedPattern::Color(color) => {
                             target.solid_color_pattern.set(SolidColor::new(color));
                             &mut target.solid_color_pattern
                         },
-                        Pattern::Checkerboard { colors, scale } => {
+                        RecordedPattern::Checkerboard(checkerboard) => {
                             prerender = true;
-                            let mut scale = scale;
-                            let mut pos = point(0.0, 0.0);
+                            let mut checkerboard = checkerboard;
                             if let Some(transform) = transform {
-                                pos = transform.transform_point(pos);
-                                scale = transform.transform_vector(vector(0.0, scale)).y
+                                checkerboard.offset = transform.transform_point(checkerboard.offset);
+                                checkerboard.scale = transform.transform_vector(vector(0.0, checkerboard.scale)).y
                             }
-                            let checkerboard = add_checkerboard(gpu_store, colors[0], colors[1], pos, scale);
-                            target.checkerboard_pattern.set(checkerboard);
+                            target.checkerboard_pattern.set(add_checkerboard(gpu_store, &checkerboard));
                             &mut target.checkerboard_pattern
                         }
-                        Pattern::Gradient { p0, color0, p1, color1 } => {
-                            let mut p0 = p0;
-                            let mut p1 = p1;
+                        RecordedPattern::Gradient(gradient) => {
+                            let mut gradient = gradient;
                             if let Some(transform) = transform {
-                                p0 = transform.transform_point(p0);
-                                p1 = transform.transform_point(p1);
+                                gradient.from = transform.transform_point(gradient.from);
+                                gradient.to = transform.transform_point(gradient.to);
                             }
-                            let gradient = add_gradient(
-                                gpu_store,
-                                p0, color0,
-                                p1, color1,
-                            );
 
-                            target.gradient_pattern.set(gradient);
+                            target.gradient_pattern.set(gradient.write_gpu_data(gpu_store));
                             &mut target.gradient_pattern
                         }
                         _ => { unimplemented!() }
                     };
 
                     match &fill.shape {
-                        Shape::Path(path, fill_rule) => {
+                        RecordedShape::Path(shape) => {
                             let options = FillOptions::new()
                                 .with_transform(transform)
-                                .with_fill_rule(*fill_rule)
+                                .with_fill_rule(shape.fill_rule)
                                 .with_prerendered_pattern(prerender)
-                                .with_tolerance(self.tolerance);
-                            self.tiler.fill_path(path.iter(), &options, pattern, &mut self.tile_mask, None, encoder);
+                                .with_tolerance(self.tolerance)
+                                .with_inverted(shape.inverted);
+                            self.tiler.fill_path(shape.path.iter(), &options, pattern, &mut self.tile_mask, None, encoder);
                         }
-                        Shape::Circle { center, radius } => {
+                        RecordedShape::Circle(circle) => {
                             let options = FillOptions::new()
                                 .with_transform(transform)
                                 .with_prerendered_pattern(prerender)
-                                .with_tolerance(self.tolerance);
-                            self.tiler.fill_circle(*center, *radius, &options, pattern, &mut self.tile_mask, None, encoder)
+                                .with_tolerance(self.tolerance)
+                                .with_inverted(circle.inverted);
+                                self.tiler.fill_circle(circle.center, circle.radius, &options, pattern, &mut self.tile_mask, None, encoder)
                         }
-                        Shape::Rect(rect) => {
+                        RecordedShape::Rect(rect) => {
                             let options = FillOptions::new()
                                 .with_transform(transform)
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance);
                             self.tiler.fill_rect(rect, &options, pattern, &mut self.tile_mask, None, encoder)
                         }
-                        Shape::Canvas => {
+                        RecordedShape::Canvas => {
                             self.tiler.fill_canvas(pattern, &mut self.tile_mask, None, encoder);
                         }
                     }

@@ -311,6 +311,7 @@ impl Stats {
 
 pub struct FillOptions<'l> {
     pub fill_rule: FillRule,
+    pub inverted: bool,
     pub tolerance: f32,
     pub merge_tiles: bool,
     pub prerender_pattern: bool,
@@ -321,6 +322,7 @@ impl<'l> FillOptions<'l> {
     pub fn new() -> FillOptions<'static> {
         FillOptions {
             fill_rule: FillRule::EvenOdd,
+            inverted: false,
             tolerance: 0.1,
             merge_tiles: true,
             prerender_pattern: false,
@@ -331,6 +333,7 @@ impl<'l> FillOptions<'l> {
     pub fn transformed<'a>(transform: &'a Transform2D<f32>) -> FillOptions<'a> {
         FillOptions {
             fill_rule: FillRule::EvenOdd,
+            inverted: false,
             tolerance: 0.1,
             merge_tiles: true,
             prerender_pattern: false,
@@ -343,6 +346,7 @@ impl<'l> FillOptions<'l> {
     {
         FillOptions {
             fill_rule: self.fill_rule,
+            inverted: false,
             tolerance: self.tolerance,
             merge_tiles: self.merge_tiles,
             prerender_pattern: self.prerender_pattern,
@@ -367,6 +371,16 @@ impl<'l> FillOptions<'l> {
 
     pub fn with_prerendered_pattern(mut self, prerender: bool) -> Self {
         self.prerender_pattern = prerender;
+        self
+    }
+
+    pub fn inverted(mut self) -> Self {
+        self.inverted = true;
+        self
+    }
+
+    pub fn with_inverted(mut self, inverted: bool) -> Self {
+        self.inverted = inverted;
         self
     }
 }

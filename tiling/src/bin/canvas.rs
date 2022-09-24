@@ -2,8 +2,8 @@ use std::sync::Arc;
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPatterns;
 use tiling::pattern::{
-    checkerboard::CheckerboardPattern,
-    simple_gradient::SimpleGradient,
+    checkerboard::{Checkerboard, CheckerboardPattern},
+    simple_gradient::{Gradient, SimpleGradient},
     solid_color::SolidColor,
 };
 use tiling::load_svg::*;
@@ -11,7 +11,8 @@ use tiling::gpu::{ShaderSources, GpuStore};
 use tiling::gpu::mask_uploader::MaskUploader;
 use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
-use tiling::{Color, Size2D, Transform2D, FillRule};
+use tiling::{Color, Size2D, Transform2D};
+//use lyon::extra::rust_logo::build_logo_path;
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -162,51 +163,46 @@ fn main() {
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
 
-    canvas.fill_canvas(Pattern::Gradient {
-        p0: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
-        p1: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
-    });
+    canvas.fill(
+        All,
+        Gradient {
+            from: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
+            to: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
+        }
+    );
 
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));
 
-    canvas.fill_circle(
-        point(500.0, 500.0), 800.0,
-        Pattern::Gradient {
-            p0: point(100.0, 100.0), color0: Color { r: 200, g: 150, b: 0, a: 255},
-            p1: point(100.0, 1000.0), color1: Color { r: 250, g: 50, b: 10, a: 255},
+    canvas.fill(
+        Circle::new(point(500.0, 500.0), 800.0),
+        Gradient {
+            from: point(100.0, 100.0), color0: Color { r: 200, g: 150, b: 0, a: 255},
+            to: point(100.0, 1000.0), color1: Color { r: 250, g: 50, b: 10, a: 255},
         }
     );
-
 
     for (path, color) in paths {
-        canvas.fill(Arc::new(path), FillRule::EvenOdd, Pattern::Color(color));
+        canvas.fill(Arc::new(path), color);
     }
 
-    canvas.fill_circle(
-        point(500.0, 300.0), 200.0,
-        Pattern::Gradient {
-            p0: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 255},
-            p1: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
+    canvas.fill(
+        Circle::new(point(500.0, 300.0), 200.0),
+        Gradient {
+            from: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 255},
+            to: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
         }
     );
+
     canvas.fill(
-        Arc::new(builder.build()), FillRule::EvenOdd,
-        Pattern::Checkerboard { colors: [Color { r: 10, g: 100, b: 250, a: 255 }, Color::WHITE], scale: 25.0 }
+        PathShape::new(Arc::new(builder.build())),
+        Checkerboard { color0: Color { r: 10, g: 100, b: 250, a: 255 }, color1: Color::WHITE, scale: 25.0, offset: point(0.0, 0.0) }
     );
 
     canvas.pop_transform();
 
-    canvas.fill_circle(point(600.0, 400.0,), 100.0, Pattern::Color(Color { r: 200, g: 100, b: 120, a: 180}));
-
-    canvas.fill_rect(
-        Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) },
-        Pattern::Color(Color::BLACK),
-    );
-
-    canvas.fill_rect(
-        Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) },
-        Pattern::Color(Color::BLACK),
-    );
+    canvas.fill(Circle::new(point(600.0, 400.0,), 100.0), Color { r: 200, g: 100, b: 120, a: 180});
+    canvas.fill(Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) }, Color::BLACK);
+    canvas.fill(Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) }, Color::BLACK);
 
     canvas.push_transform(&Transform2D::translation(10.0, 1.0));
     canvas.pop_transform();

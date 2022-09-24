@@ -3,26 +3,37 @@ use crate::gpu::{GpuStore, GpuStoreHandle};
 use crate::{Color, Point};
 use crate::custom_pattern::*;
 
-pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Gradient {
+    pub from: Point,
+    pub to: Point,
+    pub color0: Color,
+    pub color1: Color,
+}
 
-pub fn add_gradient(store: &mut GpuStore, p0: Point, color0: Color, p1: Point, color1: Color) -> SimpleGradient {
-    let can_stretch_horizontally = p1.x == p1.y || color0 == color1;
-    let is_opaque = color0.is_opaque() && color1.is_opaque();
-    let color0 = color0.to_f32();
-    let color1 = color1.to_f32();
-
-    let handle = store.push(&[
-        p0.x, p0.y, p1.x, p1.y,
-        color0[0], color0[1], color0[2], color0[3],
-        color1[0], color1[1], color1[2], color1[3],
-    ]);
-
-    SimpleGradient {
-        handle,
-        is_opaque,
-        can_stretch_horizontally,
+impl Gradient {
+    pub fn write_gpu_data(&self, store: &mut GpuStore) -> SimpleGradient {
+        let can_stretch_horizontally = self.from.x == self.to.y || self.color0 == self.color1;
+        let is_opaque = self.color0.is_opaque() && self.color1.is_opaque();
+        let color0 = self.color0.to_f32();
+        let color1 = self.color1.to_f32();
+    
+        let handle = store.push(&[
+            self.from.x, self.from.y, self.to.x, self.to.y,
+            color0[0], color0[1], color0[2], color0[3],
+            color1[0], color1[1], color1[2], color1[3],
+        ]);
+    
+        SimpleGradient {
+            handle,
+            is_opaque,
+            can_stretch_horizontally,
+        }    
     }
 }
+
+pub type SimpleGradientBuilder = CustomPatternBuilder<SimpleGradient>;
+
 pub struct SimpleGradient {
     handle: GpuStoreHandle,
     is_opaque: bool,
