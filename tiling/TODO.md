@@ -20,7 +20,6 @@
  - [ ] Custom masks
  - [ ] Support rasterizing masks with static loops
  - [ ] mix tiled and non-tiled draws
- - [ ] Overlap the row decomposition and row processing stages when running in parallel.
  - [x] Fix the CPU rasterizer code path.
  - [ ] Rasterize CPU masks asynchronously.
  - [ ] Stroke mask shader (round joins/caps).

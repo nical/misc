@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use lyon::path::Path;
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPatterns;
 use tiling::pattern::{
@@ -200,7 +201,7 @@ fn main() {
 
     canvas.pop_transform();
 
-    canvas.fill(Circle::new(point(600.0, 400.0,), 100.0), Color { r: 200, g: 100, b: 120, a: 180});
+    //canvas.fill(Circle::new(point(600.0, 400.0,), 100.0), Color { r: 200, g: 100, b: 120, a: 180});
     canvas.fill(Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) }, Color::BLACK);
     canvas.fill(Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) }, Color::BLACK);
 
