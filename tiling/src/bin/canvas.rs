@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use lyon::path::Path;
+//use lyon::path::Path;
 use tiling::canvas::*;
 use tiling::custom_pattern::CustomPatterns;
 use tiling::pattern::{
