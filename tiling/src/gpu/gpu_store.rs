@@ -63,6 +63,7 @@ impl GpuStore {
         assert!(data.len() <= self.width);
         let size = (data.len() + 3) & !3;
 
+        assert!(self.current_row_offset <= self.width);
         let rem = self.width - self.current_row_offset;
         if rem < size {
             self.current_row += 1;
@@ -78,7 +79,7 @@ impl GpuStore {
         );
         self.current_row_offset += size;
 
-        assert!(self.current_row_offset < self.height as usize);
+        assert!(self.current_row_offset < self.width as usize);
 
         return handle;
     }

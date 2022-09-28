@@ -39,6 +39,9 @@ impl TileMask {
     pub fn height(&self) -> u32 { self.height }
 
     pub fn row(&mut self, y: u32) -> TileMaskRow {
+        if self.data.is_empty() {
+            return TileMaskRow { data: &mut[] };
+        }
         let offset = y as usize * self.width;
         TileMaskRow { data: &mut self.data[offset..(offset + self.width)] }
     }
@@ -83,18 +86,25 @@ pub struct TileMaskRow<'l> {
 
 impl<'l> TileMaskRow<'l> {
     pub fn get(&mut self, offset: u32) -> bool {
-        self.data[offset as usize] != 0
+        self.data.get(offset as usize).map(|d| *d != 0).unwrap_or(true)
     }
 
     pub fn write_clip(&mut self, offset: u32) {
-        self.data[offset as usize] |= 2
+        if let Some(data) = self.data.get_mut(offset as usize) {
+            *data |= 2;
+        }
     }
 
     /// Returns true if the tile at the provided offset wasn't masked.
     ///
     /// If 'write' is true, mark tile as masked.
     pub fn test(&mut self, offset: u32, write: bool) -> bool {
-        let payload = &mut self.data[offset as usize];
+        let payload = match self.data.get_mut(offset as usize) {
+            Some(p) => p,
+            None => {
+                return true;
+            }
+        };
         let result = *payload == 0;
 
         if write {

@@ -26,7 +26,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
-    let mut tolerance = 0.1;
+    let mut tolerance = 0.25;
 
     let mut trace = None;
     let mut use_quads = false;
@@ -59,8 +59,8 @@ fn main() {
 
     let tile_size = 16;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 128;
-    let mask_atlas_size: u32 = 4096;
+    let max_edges_per_gpu_tile = 64;
+    let mask_atlas_size: u32 = 1024;
     let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
 
@@ -117,7 +117,7 @@ fn main() {
         builder.line_to(point(400.0, 50.0));
         builder.end(true);
 
-        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
+        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), SvgPattern::Color(Color { r: 50, g: 200, b: 100, a: 255 }))])
     };
 
     tiler_config.view_box = view_box;
@@ -126,7 +126,7 @@ fn main() {
 
     let mut shaders = ShaderSources::new();
 
-    let mut gpu_store = GpuStore::new(1024, 1024, &device);
+    let mut gpu_store = GpuStore::new(4096, 4096, &device);
 
     let mut tile_renderer = TileRenderer::new(
         &device,
@@ -182,8 +182,15 @@ fn main() {
         }
     );
 
-    for (path, color) in paths {
-        canvas.fill(Arc::new(path), color);
+    for (path, pattern) in paths {
+        match pattern {
+            SvgPattern::Color(color) => {
+                canvas.fill(Arc::new(path), color);
+            }
+            SvgPattern::Gradient { color0, color1, from, to } => {
+                canvas.fill(Arc::new(path), Gradient { color0, color1, from, to });
+            }
+        }
     }
 
     canvas.fill(
