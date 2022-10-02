@@ -6,7 +6,8 @@ use crate::{gpu::{
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults
 }, custom_pattern::TilePipelines};
 use crate::tiling::{
-    tiler::{TileEncoder, LineEdge, MaskRenderer},
+    tiler::{MaskRenderer},
+    encoder::{TileEncoder, LineEdge},
     TilePosition, PatternData, BufferRange
 };
 

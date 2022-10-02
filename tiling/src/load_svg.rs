@@ -71,7 +71,6 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, Sv
                                     SvgPattern::Color(FALLBACK_COLOR)
                                 })
                             }
-                            _ => SvgPattern::Color(FALLBACK_COLOR),
                         }
                     }
                     None => {

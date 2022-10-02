@@ -10,7 +10,8 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use futures::executor::block_on;
 
-use tiling::tiling::tiler::{Tiler, TileEncoder, TilerConfig};
+use tiling::tiling::tiler::{Tiler, TilerConfig};
+use tiling::tiling::encoder::TileEncoder;
 use tiling::tiling::tile_renderer::TileRenderer;
 use tiling::gpu::{ShaderSources};
 use tiling::pattern::solid_color::*;
@@ -59,7 +60,6 @@ fn main() {
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(size2(1200.0, 1000.0)),
         tile_size,
-        tile_padding: 0.5,
         tolerance,
         flatten: false,
         mask_atlas_size: size2(tile_atlas_size, tile_atlas_size),
@@ -104,7 +104,7 @@ fn main() {
         builder.line_to(point(400.0, 50.0));
         builder.end(true);
 
-        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), Color { r: 50, g: 200, b: 100, a: 255 })])
+        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(builder.build(), SvgPattern::Color(Color { r: 50, g: 200, b: 100, a: 255 }))])
     };
 
     let mut tiler = Tiler::new(&tiler_config);
@@ -161,7 +161,7 @@ fn main() {
         let mut z_index = paths.len() as u16;
         // Loop over the paths in front-to-back order to take advantage of
         // occlusion culling.
-        for (path, color) in paths.iter().rev() {
+        for (path, pattern) in paths.iter().rev() {
             if let Some(idx) = select_path_range {
                 if idx < z_index {
                     z_index -= 1;
@@ -175,7 +175,13 @@ fn main() {
                 }
             }
 
-            color_pattern.set(SolidColor::new(*color));
+            let color = if let SvgPattern::Color(color) = pattern {
+                *color
+            } else {
+                Color::RED
+            };
+
+            color_pattern.set(SolidColor::new(color));
 
             let options = FillOptions::new()
                 .with_transform(Some(&transform))
@@ -186,7 +192,6 @@ fn main() {
                 &options,
                 &mut color_pattern,
                 &mut tile_mask,
-                None,
                 &mut builder,
             );
 

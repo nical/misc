@@ -1,4 +1,5 @@
 pub mod tiler;
+pub mod encoder;
 pub mod occlusion;
 pub mod tile_renderer;
 pub mod cpu_rasterizer;

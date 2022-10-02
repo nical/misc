@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use lyon::math::{Point, point, vector};
+use lyon::math::{Point, vector};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D};
 use crate::pattern::checkerboard::*;
@@ -10,7 +10,8 @@ use crate::Color;
 use crate::tiling::{
     TilerPattern, FillOptions,
     occlusion::TileMask,
-    tiler::{Tiler, TilerConfig, TileEncoder}
+    tiler::{Tiler, TilerConfig},
+    encoder::TileEncoder,
 };
 use crate::gpu::mask_uploader::MaskUploader;
 
