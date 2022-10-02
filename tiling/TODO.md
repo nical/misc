@@ -14,6 +14,7 @@
  - [x] Simple linear gradient patterns.
  - [x] Support storing gpu data without SSBO
  - [x] inverted fill
+ - [ ] Rasterize fill masks directly in the color pass
  - [ ] Try a sweep line algorithm for row decomposition
  - [ ] Try pathfinder's binning algorithm
  - [ ] Image patterns.
@@ -28,7 +29,6 @@
   - do N rows at a time (one per SIMD lane), each with their own prefix sum.
  - [ ] Try a cheaper quad flattening algorithm (knowing we generate few segments most of the time).
  - [ ] Compress the curves sent to the GPU.
- - [ ] Better upload paths (write data directly into mapped gpu buffers).
  - [ ] Compute shader version for the rasterization and compositing.
  - [ ] See if there are benefits from doing multiple quads per instance.
  - [ ] Axis-aligned rectangular clips.

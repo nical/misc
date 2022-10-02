@@ -37,7 +37,6 @@ pub struct Tiler {
 
     size: Size2D<f32>,
     scissor: Box2D<f32>,
-    tile_padding: f32,
 
     num_tiles_x: u32,
     num_tiles_y: f32,
@@ -64,7 +63,6 @@ pub struct Tiler {
 pub struct TilerConfig {
     pub view_box: Box2D<f32>,
     pub tile_size: u32,
-    pub tile_padding: f32,
     pub tolerance: f32,
     pub flatten: bool,
     pub mask_atlas_size: Size2D<u32>,
@@ -104,7 +102,6 @@ impl Tiler {
             },
             size,
             scissor: Box2D::from_size(size),
-            tile_padding: config.tile_padding,
             num_tiles_x: f32::ceil(size.width / tile_size) as u32,
             num_tiles_y,
             flatten: config.flatten,
@@ -137,7 +134,6 @@ impl Tiler {
         self.size = size;
         self.scissor = Box2D::from_size(size);
         self.draw.tile_size = tile_size;
-        self.tile_padding = config.tile_padding;
         self.num_tiles_x = f32::ceil(size.width / tile_size) as u32;
         self.num_tiles_y = f32::ceil(size.height / tile_size);
         self.draw.tolerance = config.tolerance;
@@ -222,8 +218,8 @@ impl Tiler {
         let first_row_y = (scissor_min * inv_tile_size).floor();
         let last_row_y = (scissor_max * inv_tile_size).ceil();
 
-        let y_start_tile = f32::floor((min - self.tile_padding) * inv_tile_size).max(first_row_y);
-        let y_end_tile = f32::ceil((max + self.tile_padding) * inv_tile_size).min(last_row_y);
+        let y_start_tile = f32::floor(min * inv_tile_size).max(first_row_y);
+        let y_end_tile = f32::ceil(max * inv_tile_size).min(last_row_y);
 
         let start_idx = y_start_tile as usize;
         let end_idx = (y_end_tile as usize).max(start_idx);
@@ -237,10 +233,9 @@ impl Tiler {
     pub fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
         debug_assert!(edge.from.y <= edge.to.y);
 
-        let min = -self.tile_padding;
-        let max = self.num_tiles_y * self.draw.tile_size + self.tile_padding;
+        let max = self.num_tiles_y * self.draw.tile_size;
 
-        if edge.from.y > max || edge.to.y < min {
+        if edge.from.y > max || edge.to.y < 0.0 {
             return;
         }
 
@@ -249,8 +244,8 @@ impl Tiler {
         self.first_row = self.first_row.min(start_idx);
         self.last_row = self.last_row.max(end_idx);
 
-        let offset_min = -self.tile_padding;
-        let offset_max = self.draw.tile_size + self.tile_padding;
+        let offset_min = 0.0;
+        let offset_max = self.draw.tile_size;
         let mut row_idx = start_idx as u32;
         if edge.is_line() {
             for row in &mut self.rows[start_idx .. end_idx] {
@@ -563,28 +558,16 @@ impl Tiler {
 
         // The inner rect is equivalent to the output rect with an y offset so that
         // its upper side is at y=0.
-        let inner_rect = Box2D {
+        let rect = Box2D {
             min: point(output_rect.min.x, 0.0),
             max: point(output_rect.max.x, self.draw.tile_size),
-        };
-
-        let outer_rect = Box2D {
-            min: point(
-                inner_rect.min.x - self.tile_padding,
-                -self.tile_padding,
-            ),
-            max: point(
-                inner_rect.max.x + self.tile_padding,
-                self.draw.tile_size + self.tile_padding,
-            ),
         };
 
         let x = tiles_start as u32;
         let mut tile = TileInfo {
             x,
             y: tile_y,
-            inner_rect,
-            outer_rect,
+            rect,
             backdrop: 0,
         };
 
@@ -594,7 +577,7 @@ impl Tiler {
         // During this phase we only need to keep track of the backdrop winding number
         // and detect edges that end in the tiling area.
         for edge in &row[..] {
-            if edge.min_x.0 >= tile.outer_rect.min.x {
+            if edge.min_x.0 >= tile.rect.min.x {
                 break;
             }
 
@@ -604,8 +587,8 @@ impl Tiler {
                 ctrl: edge.ctrl,
             });
 
-            while edge.min_x.0 > tile.outer_rect.max.x {
-                Self::update_active_edges(active_edges, tile.outer_rect.min.x, tile.outer_rect.min.y, &mut tile.backdrop);
+            while edge.min_x.0 > tile.rect.max.x {
+                Self::update_active_edges(active_edges, tile.rect.min.x, tile.rect.min.y, &mut tile.backdrop);
             }
 
             current_edge += 1;
@@ -617,10 +600,10 @@ impl Tiler {
         // Each time we get to a new tile, we remove all active edges that end side of the tile.
         // In practice this means all active edges intersect the current tile.
         for edge in &row[current_edge..] {
-            while edge.min_x.0 > tile.outer_rect.max.x && tile.x < tiles_end {
+            while edge.min_x.0 > tile.rect.max.x && tile.x < tiles_end {
                 if active_edges.is_empty() {
                     let tx = ((edge.min_x.0 / self.draw.tile_size) as u32).min(tiles_end);
-                    assert!(tx > tile.x, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.outer_rect.min.x);
+                    assert!(tx > tile.x, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.rect.min.x);
                     if self.draw.fill_rule.is_in(tile.backdrop) ^ self.draw.inverted {
                         encoder.span(tile.x..tx, tile.y, coarse_mask, tiled_output, pattern);
                     }
@@ -666,10 +649,8 @@ impl Tiler {
         let d = self.draw.tile_size * nt;
         // Note: this is accumulating precision errors, but haven't seen
         // issues in practice.
-        tile.inner_rect.min.x += d;
-        tile.inner_rect.max.x += d;
-        tile.outer_rect.min.x += d;
-        tile.outer_rect.max.x += d;
+        tile.rect.min.x += d;
+        tile.rect.max.x += d;
         tile.x += num_tiles;
     }
 
@@ -697,8 +678,8 @@ impl Tiler {
 
         Self::update_active_edges(
             active_edges,
-            tile.outer_rect.min.x,
-            tile.outer_rect.min.y,
+            tile.rect.min.x,
+            tile.rect.min.y,
             &mut tile.backdrop
         );
     }
@@ -1049,7 +1030,7 @@ impl Tiler {
         let row_end = row_end as u32;
         let column_start = column_start as u32;
         let column_end = column_end as u32;
-        let tile_radius = std::f32::consts::SQRT_2 * 0.5 * self.draw.tile_size + self.tile_padding;
+        let tile_radius = std::f32::consts::SQRT_2 * 0.5 * self.draw.tile_size;
         encoder.begin_path(pattern);
 
         for tile_y in row_start..row_end {
@@ -1317,9 +1298,7 @@ pub struct TileInfo {
     /// Y-offset in number of tiles.
     pub y: u32,
     /// Rectangle of the tile aligned with the tile grid.
-    pub inner_rect: Box2D<f32>,
-    /// Rectangle including the tile padding.
-    pub outer_rect: Box2D<f32>,
+    pub rect: Box2D<f32>,
 
     pub backdrop: i16,
 }
@@ -2211,7 +2190,7 @@ impl TileEncoder {
 
         let edges_start = edges.line_edges.len();
 
-        let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
+        let offset = vector(tile.rect.min.x, tile.rect.min.y);
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
         // rasterizing them on the CPU.
@@ -2222,17 +2201,17 @@ impl TileEncoder {
 
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
-            if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
+            if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
                 edges.line_edges.alloc().init(LineEdge(
-                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, tile.rect.max.y),
                     point(-10.0, edge.from.y),
                 ));
             }
 
-            if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
+            if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
                 edges.line_edges.alloc().init(LineEdge(
                     point(-10.0, edge.to.y),
-                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, tile.rect.max.y),
                 ));
             }
 
@@ -2273,7 +2252,7 @@ impl TileEncoder {
     pub fn add_quad_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer) -> Option<TilePosition> {
         let edges_start = edges.quad_edges.len();
 
-        let offset = vector(tile.inner_rect.min.x, tile.inner_rect.min.y);
+        let offset = vector(tile.rect.min.x, tile.rect.min.y);
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
         // rasterizing them on the CPU.
@@ -2284,19 +2263,19 @@ impl TileEncoder {
 
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
-            if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
+            if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
                 edges.quad_edges.alloc().init(QuadEdge(
-                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, tile.rect.max.y),
                     point(123.0, 456.0),
                     point(-10.0, edge.from.y),
                     0, 0,
                 ));
             }
 
-            if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
+            if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
                 edges.line_edges.alloc().init(LineEdge(
                     point(-10.0, edge.to.y),
-                    point(-10.0, tile.outer_rect.max.y),
+                    point(-10.0, tile.rect.max.y),
                 ));
             }
 
@@ -2334,14 +2313,14 @@ impl TileEncoder {
         let mut accum = [0.0; 32 * 32];
         let mut backdrops = [tile.backdrop as f32; 32];
 
-        let tile_offset = tile.inner_rect.min.to_vector();
+        let tile_offset = tile.rect.min.to_vector();
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
-            if edge.from.x < tile.outer_rect.min.x && edge.from.y != tile.outer_rect.min.y {
+            if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
                 add_backdrop(edge.from.y, -1.0, &mut backdrops[0..draw.tile_size as usize]);
             }
 
-            if edge.to.x < tile.outer_rect.min.x && edge.to.y != tile.outer_rect.min.y {
+            if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
                 add_backdrop(edge.to.y, 1.0, &mut backdrops[0..draw.tile_size as usize]);
             }
 
