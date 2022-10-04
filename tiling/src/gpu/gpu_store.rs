@@ -1,5 +1,8 @@
 use core::num::NonZeroU32;
 
+const GPU_STORE_WIDTH: u32 = 2048;
+const FLOATS_PER_ROW: usize = GPU_STORE_WIDTH as usize * 4;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GpuStoreHandle(u32);
 
@@ -9,36 +12,27 @@ unsafe impl bytemuck::Zeroable for GpuStoreHandle {}
 impl GpuStoreHandle {
     pub const INVALID: Self = GpuStoreHandle(std::u32::MAX);
 
-    fn new(x: u32, y: u32) -> Self {
-        debug_assert!(x < 1 << 16);
-        debug_assert!(y < 1 << 16);
-        GpuStoreHandle((x << 16) | y)
-    }
-
     pub fn to_u32(self) -> u32 { self.0 }
 }
 
 pub struct GpuStore {
     data: Vec<f32>,
 
-    current_row: usize,
-    current_row_offset: usize,
-    width: usize,
-    height: u16,
+    offset: usize,
+    height: usize,
 
     texture: wgpu::Texture,
 }
 
 impl GpuStore {
-    pub fn new(w: u16, h: u16, device: &wgpu::Device) -> Self {
-        let w = w as usize;
-        let size = w * h as usize;
+    pub fn new(h: u32, device: &wgpu::Device) -> Self {
+        let size = FLOATS_PER_ROW * h as usize;
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gpu store"),
             size: wgpu::Extent3d {
-                width: w as u32,
-                height: h as u32,
+                width: GPU_STORE_WIDTH,
+                height: h,
                 depth_or_array_layers: 1,
             },
             sample_count: 1,
@@ -49,52 +43,58 @@ impl GpuStore {
         });
 
         GpuStore {
-            current_row: 0,
-            current_row_offset: 0,
+            offset: 0,
             data: vec![0.0; size],
-            width: w * 4,
-            height: h,
+            height: h as usize,
 
             texture,
         }
     }
 
     pub fn push(&mut self, data: &[f32]) -> GpuStoreHandle {
-        assert!(data.len() <= self.width);
         let size = (data.len() + 3) & !3;
-
-        assert!(self.current_row_offset <= self.width);
-        let rem = self.width - self.current_row_offset;
-        if rem < size {
-            self.current_row += 1;
-            self.current_row_offset = 0;
+        if self.data.len() < self.offset + size {
+            self.data.resize(self.data.len() * 2, 0.0);
         }
 
-        let offset = self.current_row * self.width + self.current_row_offset;
-        self.data[offset .. offset + data.len()].copy_from_slice(data);
+        self.data[self.offset .. self.offset + data.len()].copy_from_slice(data);
 
-        let handle = GpuStoreHandle::new(
-            (self.current_row_offset / 4) as u32,
-            self.current_row as u32
-        );
-        self.current_row_offset += size;
-
-        assert!(self.current_row_offset < self.width as usize);
+        let handle = GpuStoreHandle(self.offset as u32 / 4);
+        self.offset += size;
 
         return handle;
     }
 
     pub fn clear(&mut self) {
-        self.current_row = 0;
-        self.current_row_offset = 0;
+        self.offset = 0;
     }
 
-    pub fn upload(&self, queue: &wgpu::Queue) {
-        if self.current_row == 0 && self.current_row_offset == 0 {
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.offset == 0 {
             return;
         }
 
-        let rows = self.current_row + if self.current_row_offset == 0 { 0 } else { 1 };
+        let w = 4 * GPU_STORE_WIDTH as usize;
+        let rows = self.offset / w + if self.offset % w == 0 { 0 } else { 1 };
+
+        if rows > self.height {
+            self.height = self.data.len() / FLOATS_PER_ROW;
+            self.texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gpu store"),
+                size: wgpu::Extent3d {
+                    width: GPU_STORE_WIDTH,
+                    height: self.height as u32,
+                    depth_or_array_layers: 1,
+                },
+                sample_count: 1,
+                mip_level_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            });
+    
+        }
+
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.texture,
@@ -102,14 +102,14 @@ impl GpuStore {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&self.data[..(rows * self.width)]),
+            bytemuck::cast_slice(&self.data[..(rows * w)]),
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: NonZeroU32::new(self.width as u32 * 4),
+                bytes_per_row: NonZeroU32::new(GPU_STORE_WIDTH * 16),
                 rows_per_image: NonZeroU32::new(rows as u32),
             },
             wgpu::Extent3d {
-                width: self.width as u32 / 4,
+                width: GPU_STORE_WIDTH,
                 height: rows as u32,
                 depth_or_array_layers: 1,
             }

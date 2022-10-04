@@ -119,7 +119,7 @@ fn main() {
     use tiling::gpu::mask_uploader::MaskUploader;
     let mut shaders = ShaderSources::new();
 
-    let mut gpu_store = GpuStore::new(1024, 1024, &device);
+    let mut gpu_store = GpuStore::new(1024, &device);
     let mut tile_renderer = TileRenderer::new(
         &device,
         &mut shaders,

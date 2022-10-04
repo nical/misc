@@ -125,7 +125,7 @@ fn main() {
 
     let mut shaders = ShaderSources::new();
 
-    let mut gpu_store = GpuStore::new(4096, 4096, &device);
+    let mut gpu_store = GpuStore::new(2048, &device);
 
     let mut tile_renderer = TileRenderer::new(
         &device,
@@ -316,8 +316,8 @@ fn main() {
         frame_builder.tiler.edges.upload(&mut tile_renderer, &queue);
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
-            gpu_store.upload(&queue);
         }
+        gpu_store.upload(&device, &queue);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Tile"),

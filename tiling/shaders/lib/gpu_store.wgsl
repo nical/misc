@@ -1,11 +1,11 @@
-let GPU_STORE_16_BITS_MASK: u32 = 0xFFFFu;
+let GPU_STORE_WIDTH: u32 = 2048u;
 
 @group(0) @binding(1) var gpu_store_texture: texture_2d<f32>;
 
 fn gpu_store_decode_uv(address: u32) -> vec2<i32> {
     return vec2<i32>(
-        i32((address >> 16u) & GPU_STORE_16_BITS_MASK),
-        i32(address & GPU_STORE_16_BITS_MASK),
+        i32(address % GPU_STORE_WIDTH),
+        i32(address / GPU_STORE_WIDTH),
     );
 }
 
@@ -21,27 +21,27 @@ fn gpu_store_fetch_1(address: u32) -> vec4<f32> {
 fn gpu_store_fetch_2(address: u32) -> GpuData2 {
     var uv = gpu_store_decode_uv(address);
     return GpuData2(
-        textureLoad(gpu_store_texture, uv, 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 1u), 0),
     );
 }
 
 fn gpu_store_fetch_3(address: u32) -> GpuData3 {
     var uv = gpu_store_decode_uv(address);
     return GpuData3(
-        textureLoad(gpu_store_texture, uv, 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(2, 0), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 1u), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 2u), 0),
     );
 }
 
 fn gpu_store_fetch_4(address: u32) -> GpuData4 {
     var uv = gpu_store_decode_uv(address);
     return GpuData4(
-        textureLoad(gpu_store_texture, uv, 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(1, 0), 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(2, 0), 0),
-        textureLoad(gpu_store_texture, uv + vec2<i32>(3, 0), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 1u), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 2u), 0),
+        textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 3u), 0),
     );
 }
 
