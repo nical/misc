@@ -384,11 +384,9 @@ impl EdgeBuffer {
         } else {
             bytemuck::cast_slice(&self.quad_edges)
         };
-        queue.write_buffer(
-            &tile_renderer.edges_ssbo.buffer,
-            0,
-            edges
-        );
+
+        // TODO: non-zero offsets.
+        tile_renderer.edges.upload_bytes(0, edges, queue);
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
@@ -396,7 +394,7 @@ impl EdgeBuffer {
     }
 
     pub fn allocate_buffer_ranges(&mut self, tile_renderer: &mut TileRenderer) {
-        tile_renderer.edges_ssbo.allocator.push(self.line_edges.len());
+        tile_renderer.edges.bump_allocator().push(self.line_edges.len());
     }
 
     pub fn clear(&mut self) {

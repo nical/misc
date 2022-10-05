@@ -39,11 +39,25 @@ struct VertexOutput {
     );
 }
 
-struct Edges {
-    data: array<vec4<f32>>,
-};
+#if EDGE_TEXTURE {
+    @group(0) @binding(1) var edge_texture: texture_2d<f32>;
+    let EDGE_TEXTURE_WIDTH: u32 = 1024u;
 
-@group(0) @binding(1) var<storage> edges: Edges;
+    fn read_edge(idx: u32) -> vec4<f32> {
+        let uv = vec2<i32>(
+            i32(idx % EDGE_TEXTURE_WIDTH),
+            i32(idx / EDGE_TEXTURE_WIDTH),
+        );
+        return textureLoad(edge_texture, uv, 0);
+    }
+} #else {
+    struct Edges { data: array<vec4<f32>> };
+    @group(0) @binding(1) var<storage> edge_buffer: Edges;
+
+    fn read_edge(idx: u32) -> vec4<f32> {
+        return edge_buffer.data[idx];
+    }
+}
 
 @fragment fn fs_main(
     @location(0) in_uv: vec2<f32>,
@@ -60,7 +74,7 @@ struct Edges {
             break;
         }
 
-        var edge = edges.data[edge_idx];
+        var edge = read_edge(edge_idx);
         edge_idx = edge_idx + 1u;
 
         // Position of this pixel's top-left corner (in_uv

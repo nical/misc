@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use crate::{gpu::{
     gpu_store::GpuStore,
     mask_uploader::{MaskUploadCopies},
-    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults
+    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*
 }, custom_pattern::TilePipelines};
 use crate::tiling::{
     tiler::{MaskRenderer},
@@ -103,7 +103,7 @@ pub struct TileRenderer {
     pub circle_masks: MaskRenderer,
     pub rect_masks: MaskRenderer,
     // TODO: some way to account for a per-TileEncoder offset or range.
-    pub edges_ssbo: BumpAllocatedBuffer,
+    pub edges: StorageBuffer,
     mask_params_ubo: wgpu::Buffer,
     main_target_descriptor_ubo: wgpu::Buffer,
     patterns: Vec<TilePipelines>,
@@ -118,6 +118,12 @@ impl TileRenderer {
         color_atlas_size: u32,
         gpu_store: &GpuStore,
     ) -> Self {
+        let edges = StorageBuffer::new::<LineEdge>(
+            device,
+            "edges",
+            4096 * 256,
+            StorageKind::Buffer,
+        );
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
         let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -171,7 +177,7 @@ impl TileRenderer {
         });
 
         let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout);
-        let masks = Masks::new(&device, shaders);
+        let masks = Masks::new(&device, shaders, &edges);
         let fill_masks = MaskRenderer::new::<Mask>(device, "fill masks", 4096 * 4);
         let circle_masks = MaskRenderer::new::<CircleMask>(device, "circle masks", 4096);
         let rect_masks = MaskRenderer::new::<RectangleMask>(device, "rectangle masks", 4096);
@@ -337,13 +343,6 @@ impl TileRenderer {
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         );
 
-        let edges_ssbo = BumpAllocatedBuffer::new::<LineEdge>(
-            device,
-            "edges",
-            4096 * 256,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
-
         let gpu_store_view = gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
             label: Some("gpu store"),
             format: Some(wgpu::TextureFormat::Rgba32Float),
@@ -410,7 +409,7 @@ impl TileRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Buffer(edges_ssbo.buffer.as_entire_buffer_binding()),
+                    resource: edges.binding_resource(),
                 },
             ],
         });
@@ -434,7 +433,7 @@ impl TileRenderer {
             main_target_and_gpu_store_bind_group,
             mask_atlas_target_and_gpu_store_bind_group,
             color_atlas_target_and_gpu_store_bind_group,
-            edges_ssbo,
+            edges,
             tiles_vbo,
             fill_masks,
             circle_masks,
@@ -464,7 +463,7 @@ impl TileRenderer {
         self.fill_masks.begin_frame();
         self.circle_masks.begin_frame();
         self.rect_masks.begin_frame();
-        self.edges_ssbo.begin_frame();
+        self.edges.begin_frame();
     }
 
     pub fn allocate(&mut self, device: &wgpu::Device) {
@@ -472,7 +471,7 @@ impl TileRenderer {
         self.fill_masks.ensure_allocated(device);
         self.circle_masks.ensure_allocated(device);
         self.rect_masks.ensure_allocated(device);
-        if self.edges_ssbo.ensure_allocated(device) {
+        if self.edges.ensure_allocated(device) {
             // reallocated the buffer, need to re-create the bind group.
             self.masks_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Masks"),
@@ -484,7 +483,7 @@ impl TileRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Buffer(self.edges_ssbo.buffer.as_entire_buffer_binding()),
+                        resource: self.edges.binding_resource(),
                     },
                 ],
             });
@@ -629,7 +628,7 @@ impl TileRenderer {
             pass.set_bind_group(0, &self.masks_bind_group, &[]);
 
             if self.fill_masks.has_content(*src_mask_atlas) {
-                pass.set_pipeline(&self.masks.line_pipeline);
+                pass.set_pipeline(&self.masks.fill_pipeline);
                 self.fill_masks.render(*src_mask_atlas, &mut pass);
             }
 
@@ -704,26 +703,23 @@ impl TileRenderer {
 }
 
 pub struct Masks {
-    pub line_pipeline: wgpu::RenderPipeline,
-    pub quad_pipeline: wgpu::RenderPipeline,
+    pub fill_pipeline: wgpu::RenderPipeline,
     pub circle_pipeline: wgpu::RenderPipeline,
     pub rect_pipeline: wgpu::RenderPipeline,
     pub mask_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl Masks {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources) -> Self {
-        create_mask_pipeline(device, shaders)
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer) -> Self {
+        create_mask_pipeline(device, shaders, edges)
     }
 }
 
-fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> Masks {
+fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer) -> Masks {
     let quad_src = include_str!("../../shaders/mask_fill_quads.wgsl");
     let lin_src = include_str!("../../shaders/mask_fill.wgsl");
     let circle_src = include_str!("../../shaders/mask_circle.wgsl");
     let rect_src = include_str!("../../shaders/mask_rect.wgsl");
-    let lin_module = &shaders.create_shader_module(device, "Mask fill linear", lin_src, &[]);
-    let quad_module = &shaders.create_shader_module(device, "Mask fill quad", quad_src, &[]);
     let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);
     let rect_module = &shaders.create_shader_module(device, "Rectangle mask", rect_src, &[]);
 
@@ -745,11 +741,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(32),
-                },
+                ty: edges.binding_type(),
                 count: None,
             },
         ],
@@ -766,17 +758,27 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
     attributes.push(wgpu::VertexFormat::Uint32x2);
     attributes.push(wgpu::VertexFormat::Uint32);
     attributes.push(wgpu::VertexFormat::Uint32);
-
-    let line_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-        label: Some("Tile mask linear"),
+    let lines = true; // TODO: fix or remove quad fill.
+    let fill_module = if lines {
+        let features: &[&str] = if edges.texture().is_some() {
+            &["EDGE_TEXTURE"]
+        } else {
+            &[]
+        };
+        shaders.create_shader_module(device, "Mask fill linear", lin_src, features)
+    } else {
+        shaders.create_shader_module(device, "Mask fill quad", quad_src, &[])
+    };
+    let fill_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("Fill mask"),
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &lin_module,
+            module: &fill_module,
             entry_point: "vs_main",
             buffers: &[attributes.buffer_layout()],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &lin_module,
+            module: &fill_module,
             entry_point: "fs_main",
             targets: defaults.alpha_target_state(),
         }),
@@ -786,27 +788,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
         multisample: wgpu::MultisampleState::default(),
     };
 
-    let quad_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-        label: Some("Tile mask quad"),
-        layout: Some(&tile_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &quad_module,
-            entry_point: "vs_main",
-            buffers: &[attributes.buffer_layout()],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &quad_module,
-            entry_point: "fs_main",
-            targets: defaults.alpha_target_state(),
-        }),
-        primitive: defaults.primitive_state(),
-        depth_stencil: None,
-        multiview: None,
-        multisample: wgpu::MultisampleState::default(),
-    };
-
-    let line_pipeline = device.create_render_pipeline(&line_tile_pipeline_descriptor);
-    let quad_pipeline = device.create_render_pipeline(&quad_tile_pipeline_descriptor);
+    let fill_pipeline = device.create_render_pipeline(&fill_pipeline_descriptor);
 
     let mut attributes = VertexBuilder::new();
     attributes.push(wgpu::VertexFormat::Uint32);
@@ -859,8 +841,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources) -> M
     let rect_pipeline = device.create_render_pipeline(&rect_pipeline_descriptor);
 
     Masks {
-        line_pipeline,
-        quad_pipeline,
+        fill_pipeline,
         circle_pipeline,
         rect_pipeline,
         mask_bind_group_layout,
