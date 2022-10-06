@@ -224,6 +224,7 @@ fn main() {
         width: window_size.width,
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
     };
 
     surface.configure(&device, &surface_desc);
