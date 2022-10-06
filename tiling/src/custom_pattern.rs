@@ -24,7 +24,8 @@ pub struct CustomPatternDescriptor<'l> {
 pub struct CustomPatterns<'l> {
     shaders: &'l mut ShaderSources,
     defaults: PipelineDefaults,
-    attributes: VertexBuilder,
+    masked_attributes: VertexBuilder,
+    opaque_attributes: VertexBuilder,
     opaque_layout: wgpu::PipelineLayout,
     masked_layout: wgpu::PipelineLayout,
     next_index: PatternIndex,
@@ -40,7 +41,8 @@ impl<'l> CustomPatterns<'l> {
         CustomPatterns {
             shaders,
             defaults: PipelineDefaults::new(),
-            attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]),
+            masked_attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4, wgpu::VertexFormat::Uint32x4]),
+            opaque_attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]),
             opaque_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("opaque pattern"),
                 bind_group_layouts: &[tile_atlas_desc_layout],
@@ -115,7 +117,7 @@ impl<'l> CustomPatterns<'l> {
             vertex: wgpu::VertexState {
                 module: &opaque_module,
                 entry_point: "vs_main",
-                buffers: &[self.attributes.buffer_layout()],
+                buffers: &[self.opaque_attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &opaque_module,
@@ -135,7 +137,7 @@ impl<'l> CustomPatterns<'l> {
             vertex: wgpu::VertexState {
                 module: &masked_module,
                 entry_point: "vs_main",
-                buffers: &[self.attributes.buffer_layout()],
+                buffers: &[self.masked_attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &masked_module,

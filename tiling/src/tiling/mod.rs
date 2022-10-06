@@ -326,7 +326,8 @@ impl Stats {
     }
 
     pub fn tiles_bytes(&self) -> usize {
-        (self.opaque_tiles + self.alpha_tiles + self.prerendered_tiles + self.gpu_mask_tiles) * std::mem::size_of::<TileInstance>()
+        (self.opaque_tiles + self.gpu_mask_tiles) * std::mem::size_of::<TileInstance>()
+            + (self.alpha_tiles + self.prerendered_tiles) * std::mem::size_of::<MaskedTileInstance>()
     }
 
     pub fn edges_bytes(&self) -> usize {

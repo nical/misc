@@ -9,7 +9,7 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment};
 use crate::tiling::*;
 use crate::tiling::tiler::{CircleMaskEncoder, RectangleMaskEncoder, GpuMaskEncoder};
 use crate::tiling::cpu_rasterizer::*;
-use crate::tiling::tile_renderer::{TileRenderer, TileInstance, Mask as GpuMask, CircleMask};
+use crate::tiling::tile_renderer::{TileRenderer, TileInstance, MaskedTileInstance, Mask as GpuMask, CircleMask};
 use crate::gpu::mask_uploader::MaskUploader;
 
 use copyless::VecHelper;
@@ -114,11 +114,14 @@ fn alpha_span(
             let ext = x - start_x - 1;
 
             let position = TilePosition::extended(start_x, y, ext);
-            encoder.alpha_tiles.alloc().init(TileInstance {
-                position: position,
-                mask: TilePosition::ZERO,
-                pattern_position: position,
-                pattern_data: pattern.tile_data(start_x, y),
+            encoder.alpha_tiles.alloc().init(MaskedTileInstance {
+                tile: TileInstance {
+                    position: position,
+                    mask: TilePosition::ZERO,
+                    pattern_position: position,
+                    pattern_data: pattern.tile_data(start_x, y),
+                },
+                mask: [0; 4],
             });
 
             start_x = x;
@@ -207,11 +210,14 @@ fn stretched_prerendered_span(
                 }
             };
 
-            encoder.alpha_tiles.alloc().init(TileInstance {
-                position: position,
-                mask: TilePosition::ZERO,
-                pattern_position: prerendered,
-                pattern_data: 0,
+            encoder.alpha_tiles.alloc().init(MaskedTileInstance {
+                tile: TileInstance {
+                    position: position,
+                    mask: TilePosition::ZERO,
+                    pattern_position: prerendered,
+                    pattern_data: 0,
+                },
+                mask: [0; 4],
             });
 
             start_x = x;
@@ -424,7 +430,7 @@ pub struct TileEncoder {
     pub opaque_batches: Vec<Batch>,
     pub atlas_pattern_batches: Vec<Batch>,
     pub color_atlas_passes: Vec<Range<usize>>,
-    pub alpha_tiles: Vec<TileInstance>,
+    pub alpha_tiles: Vec<MaskedTileInstance>,
     pub opaque_image_tiles: Vec<TileInstance>,
     pub patterns: Vec<PatternTiles>,
 
@@ -672,14 +678,12 @@ impl TileEncoder {
             (tile_position, pattern.tile_data(tile_position.x(), tile_position.y()))
         };
 
-        {
-            // Add the tile that will be rendered into the main pass.
-            let tiles = if prerender && opaque {
+        // Add the tile that will be rendered into the main pass.
+        if opaque {
+            let tiles = if prerender {
                 &mut self.opaque_image_tiles
-            } else if opaque {
-                &mut self.patterns[pattern.index()].opaque
             } else {
-                &mut self.alpha_tiles
+                &mut self.patterns[pattern.index()].opaque
             };
 
             tiles.alloc().init(TileInstance {
@@ -687,6 +691,16 @@ impl TileEncoder {
                 mask,
                 pattern_position,
                 pattern_data,
+            });
+        } else {
+            self.alpha_tiles.alloc().init(MaskedTileInstance {
+                tile: TileInstance {
+                    position: tile_position,
+                    mask,
+                    pattern_position,
+                    pattern_data,
+                },
+                mask: [0; 4],
             });
         }
     }
@@ -1019,7 +1033,7 @@ impl TileEncoder {
         self.circle_masks.allocate_buffer_ranges(&mut tile_renderer.circle_masks);
         self.rect_masks.allocate_buffer_ranges(&mut tile_renderer.rect_masks);
         self.ranges.opaque_image_tiles = tile_renderer.tiles_vbo.allocator.push(self.opaque_image_tiles.len());
-        self.ranges.alpha_tiles = tile_renderer.tiles_vbo.allocator.push(self.alpha_tiles.len());
+        self.ranges.alpha_tiles = tile_renderer.alpha_tiles_vbo.allocator.push(self.alpha_tiles.len());
         for pattern in &mut self.patterns {
             pattern.opaque_vbo_range = tile_renderer.tiles_vbo.allocator.push(pattern.opaque.len());
             pattern.prerendered_vbo_range = tile_renderer.tiles_vbo.allocator.push(pattern.prerendered.len());
@@ -1038,7 +1052,7 @@ impl TileEncoder {
         );
 
         queue.write_buffer(
-            &tile_renderer.tiles_vbo.buffer,
+            &tile_renderer.alpha_tiles_vbo.buffer,
             self.ranges.alpha_tiles.byte_offset::<TileInstance>(),
             bytemuck::cast_slice(&self.alpha_tiles),
         );

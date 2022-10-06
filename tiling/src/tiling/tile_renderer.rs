@@ -41,6 +41,16 @@ unsafe impl bytemuck::Zeroable for TileInstance {}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
+pub struct MaskedTileInstance {
+    pub tile: TileInstance,
+    pub mask: [u32; 4],
+}
+
+unsafe impl bytemuck::Pod for MaskedTileInstance {}
+unsafe impl bytemuck::Zeroable for MaskedTileInstance {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
 pub struct Mask {
     pub edges: (u32, u32),
     pub tile: TilePosition,
@@ -98,6 +108,7 @@ pub struct TileRenderer {
 
     quad_ibo: wgpu::Buffer,
     pub tiles_vbo: BumpAllocatedBuffer,
+    pub alpha_tiles_vbo: BumpAllocatedBuffer,
     //pub masks_vbo: BumpAllocatedBuffer,
     pub fill_masks: MaskRenderer,
     pub circle_masks: MaskRenderer,
@@ -219,7 +230,11 @@ impl TileRenderer {
         });
 
         let defaults = PipelineDefaults::new();
-        let attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
+        let opaque_attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
+        let masked_attributes = VertexBuilder::from_slice(&[
+            wgpu::VertexFormat::Uint32x4,
+            wgpu::VertexFormat::Uint32x4,
+        ]);
 
         let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Masked image tiles"),
@@ -240,7 +255,7 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &masked_img_module,
                 entry_point: "vs_main",
-                buffers: &[attributes.buffer_layout()],
+                buffers: &[masked_attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &masked_img_module,
@@ -259,7 +274,7 @@ impl TileRenderer {
             vertex: wgpu::VertexState {
                 module: &opaque_img_module,
                 entry_point: "vs_main",
-                buffers: &[attributes.buffer_layout()],
+                buffers: &[opaque_attributes.buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &opaque_img_module,
@@ -337,6 +352,13 @@ impl TileRenderer {
         });
 
         let tiles_vbo = BumpAllocatedBuffer::new::<TileInstance>(
+            device,
+            "tiles",
+            4096 * 16,
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        );
+
+        let alpha_tiles_vbo = BumpAllocatedBuffer::new::<MaskedTileInstance>(
             device,
             "tiles",
             4096 * 16,
@@ -435,6 +457,7 @@ impl TileRenderer {
             color_atlas_target_and_gpu_store_bind_group,
             edges,
             tiles_vbo,
+            alpha_tiles_vbo,
             fill_masks,
             circle_masks,
             rect_masks,
@@ -460,6 +483,7 @@ impl TileRenderer {
 
     pub fn begin_frame(&mut self) {
         self.tiles_vbo.begin_frame();
+        self.alpha_tiles_vbo.begin_frame();
         self.fill_masks.begin_frame();
         self.circle_masks.begin_frame();
         self.rect_masks.begin_frame();
@@ -468,6 +492,7 @@ impl TileRenderer {
 
     pub fn allocate(&mut self, device: &wgpu::Device) {
         self.tiles_vbo.ensure_allocated(device);
+        self.alpha_tiles_vbo.ensure_allocated(device);
         self.fill_masks.ensure_allocated(device);
         self.circle_masks.ensure_allocated(device);
         self.rect_masks.ensure_allocated(device);
@@ -684,7 +709,7 @@ impl TileRenderer {
             pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
         }
 
-        pass.set_vertex_buffer(0, self.tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<TileInstance>()));
+        pass.set_vertex_buffer(0, self.alpha_tiles_vbo.buffer.slice(tile_encoder.ranges.alpha_tiles.byte_range::<MaskedTileInstance>()));
         pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
 
         for batch in &tile_encoder.alpha_batches[render_pass.alpha_batches.clone()] {
