@@ -95,11 +95,22 @@
 //! ```
 
 mod raw;
+//pub mod store;
+//pub mod chunked;
+//pub mod value;
 
 use std::mem;
 use std::ops::{Index, IndexMut};
 
-use raw::{AllocError, BufferSize, RawBuffer};
+use raw::{AllocError, BufferSize, RawBuffer, HeaderBuffer};
+
+// TODO: Value oriented vectors are cool for simple things but interact poorly with mutability of surrounding code
+// or some types of APIs like `last_mut`. Maybe a compromise would be to make both vectors mutable by default, but
+// also provide a `Value<V>` wrapper that people can opt into to get a subset of the API ina value-oriented way.
+
+
+// TODO: if checking the atomic refcount is costly, we could set a bit in SharedVector when we know the handle
+// to be unique to avoid that.
 
 /// A heap allocated, reference counted, immutable contiguous buffer containing elements of type `T`.
 ///
@@ -121,6 +132,11 @@ pub struct SharedVector<T> {
 pub struct MutableVector<T> {
     inner: RawBuffer<T>,
 }
+
+pub struct UniqueVector<T> {
+    inner: HeaderBuffer<raw::Header, T>,
+}
+
 
 impl<T> SharedVector<T> {
     /// Creates an empty shared buffer without allocating memory.
@@ -151,7 +167,7 @@ impl<T> SharedVector<T> {
     /// Returns `true` if the vector contains no elements.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.inner.len() == 0
+        self.inner.is_empty()
     }
 
     /// Returns the number of elements in the vector, also referred to as its ‘length’.
@@ -210,17 +226,20 @@ impl<T> SharedVector<T> {
     /// Returns true if this is the only existing handle to the buffer.
     #[inline]
     pub fn can_mutate(&self) -> bool {
-        self.inner.can_mutate()
+        let b = self.inner.can_mutate();
+        assert!(b);
+        b
     }
 
     /// Converts this SharedVector into an immutable one, allocating a new one if there are other references.
     #[inline]
-    pub fn into_mut(self) -> MutableVector<T>
+    pub fn into_mut(mut self) -> MutableVector<T>
     where
         T: Clone,
     {
+        self.ensure_mutable();
         MutableVector {
-            inner: self.ensure_mutable().inner,
+            inner: self.inner,
         }
     }
 
@@ -236,52 +255,74 @@ impl<T> SharedVector<T> {
         }
     }
 
-    pub fn push(self, val: T) -> Self
+    #[inline]
+    pub fn first(&self) -> Option<&T> {
+        unsafe { self.inner.first().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn last(&self) -> Option<&T> {
+        unsafe { self.inner.last().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn first_mut(&mut self) -> Option<&mut T> where T: Clone {
+        self.ensure_mutable();
+        unsafe { self.inner.first().map(|ptr| &mut *ptr) }
+    }
+
+    #[inline]
+    pub fn last_mut(&mut self) -> Option<&mut T>  where T: Clone {
+        self.ensure_mutable();
+        unsafe { self.inner.last().map(|ptr| &mut *ptr) }
+    }
+
+    pub fn push(&mut self, val: T)
     where
         T: Clone,
     {
-        let mut this = self.ensure_capacity(1);
+        self.ensure_capacity(1);
         unsafe {
-            this.inner.push(val);
+            self.inner.push(val);
         }
-
-        this
     }
 
-    pub fn pop(self) -> (Self, Option<T>)
+    pub fn pop(&mut self) -> Option<T>
     where
         T: Clone,
     {
-        let mut this = self.ensure_mutable();
-        let popped = unsafe { this.inner.pop() };
-
-        (this, popped)
+        self.ensure_mutable();
+        unsafe { self.inner.pop() }
     }
 
-    pub fn push_slice(self, data: &[T]) -> Self
+    pub fn push_slice(&mut self, data: &[T])
     where
         T: Clone,
     {
-        let mut this = self.ensure_capacity(data.len());
+        self.ensure_capacity(data.len());
         unsafe {
-            this.inner.try_push_slice(data).unwrap();
+            self.inner.try_push_slice(data).unwrap();
         }
-
-        this
     }
 
-    pub fn extend(self, data: impl IntoIterator<Item = T>) -> Self
+    pub fn extend(&mut self, data: impl IntoIterator<Item = T>)
     where
         T: Clone,
     {
         let mut iter = data.into_iter();
         let (min, max) = iter.size_hint();
-        let mut this = self.ensure_capacity(max.unwrap_or(min));
+        self.ensure_capacity(max.unwrap_or(min));
         unsafe {
-            this.inner.try_extend(&mut iter).unwrap();
+            self.inner.try_extend(&mut iter).unwrap();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if self.can_mutate() {
+            unsafe { self.inner.clear(); }
         }
 
-        this
+        *self = Self::with_capacity(self.capacity());
     }
 
     /// Returns true if the two shapred buffers point to the same underlying storage.
@@ -290,31 +331,39 @@ impl<T> SharedVector<T> {
     }
 
     #[inline]
-    fn ensure_mutable(self) -> Self
+    fn ensure_mutable(&mut self)
     where
         T: Clone,
     {
-        if self.can_mutate() {
-            self
-        } else {
-            self.clone_buffer()
+        if !self.can_mutate() {
+            self.inner = self.inner.try_clone_buffer().unwrap();
         }
     }
-    
+
     /// Returns a buffer that can be safely mutated and has enough extra capacity to
     /// add `additional` more items.
-    pub fn ensure_capacity(mut self, additional: usize) -> Self
+    #[inline]
+    pub fn ensure_capacity(&mut self, additional: usize)
     where
         T: Clone,
     {
-        if self.can_mutate() {
-            if self.remaining_capacity() > additional {
-                // Best case, just use this buffer which is both mutable and large enough.
-                return self;
-            }
+        let can_mutate = self.can_mutate();
+        let off_capacity = self.remaining_capacity() <= additional;
 
-            let new_cap = grow_amortized(self.len(), additional);
+        if !can_mutate || off_capacity {
+            // Hopefully the least common case.
+            self.realloc(can_mutate, additional);
+        }
+    }
 
+    #[cold]
+    fn realloc(&mut self, can_mutate: bool, additional: usize)
+    where
+        T: Clone,
+    {
+        let new_cap = grow_amortized(self.len(), additional);
+
+        if can_mutate {
             // The buffer is not large enough, we'll have to create a new one, however we
             // know that we have the only reference to it so we'll move the data with
             // a simple memcpy instead of cloning it.
@@ -322,40 +371,44 @@ impl<T> SharedVector<T> {
                 let dst = raw::copy_buffer(self.inner.header, Some(new_cap as BufferSize)).unwrap();
                 self.inner.set_len(0);
 
-                return SharedVector { inner: dst };
+                self.inner = dst;
             }
         }
 
         // The slowest path, we pay for both the new allocation and the need to clone
         // each item one by one.
         let new_cap = grow_amortized(self.len(), additional);
-        SharedVector {
-            inner: RawBuffer::try_from_slice(self.as_slice(), Some(new_cap)).unwrap(),
-        }
+        self.inner = RawBuffer::try_from_slice(self.as_slice(), Some(new_cap)).unwrap();
     }
 
     /// Returns the concatenation of two vectors.
-    pub fn concatenate(self, mut other: Self) -> Self
+    pub fn concatenate(mut self, mut other: Self) -> Self
     where
         T: Clone,
     {
-        let mut this = self.ensure_capacity(other.len());
+        self.ensure_capacity(other.len());
 
         unsafe {
             if other.can_mutate() {
                 // Fast path: memcpy
-                other.inner.move_data(&mut this.inner);
+                other.inner.move_data(&mut self.inner);
             } else {
                 // Slow path, clone each item.
-                this.inner.try_push_slice(other.as_slice()).unwrap();
+                self.inner.try_push_slice(other.as_slice()).unwrap();
             }
         }
 
-        this
+        self
     }
 }
 
 unsafe impl<T: Sync> Send for SharedVector<T> {}
+
+impl<T> Clone for SharedVector<T> {
+    fn clone(&self) -> Self {
+        self.new_ref()
+    }
+}
 
 impl<T: PartialEq<T>> PartialEq<SharedVector<T>> for SharedVector<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -422,7 +475,7 @@ impl<T> MutableVector<T> {
 
     /// Returns `true` if the vector contains no elements.
     pub fn is_empty(&self) -> bool {
-        self.inner.len() == 0
+        self.inner.is_empty()
     }
 
     /// Returns the number of elements in the vector, also referred to as its ‘length’.
@@ -459,6 +512,26 @@ impl<T> MutableVector<T> {
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         // Safe because this type guarantees mutability.
         unsafe { self.inner.as_mut_slice() }
+    }
+
+    #[inline]
+    pub fn first(&self) -> Option<&T> {
+        unsafe { self.inner.first().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn last(&self) -> Option<&T> {
+        unsafe { self.inner.last().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn first_mut(&mut self) -> Option<&mut T> {
+        unsafe { self.inner.first().map(|ptr| &mut *ptr) }
+    }
+
+    #[inline]
+    pub fn last_mut(&mut self) -> Option<&mut T> {
+        unsafe { self.inner.last().map(|ptr| &mut *ptr) }
     }
 
     #[inline]
@@ -501,12 +574,10 @@ impl<T> MutableVector<T> {
     }
 
     #[inline]
-    pub fn clear(mut self) -> Self {
+    pub fn clear(&mut self) {
         unsafe {
             self.inner.clear();
         }
-
-        self
     }
 
     pub fn clone_buffer(&self) -> Self
@@ -528,6 +599,8 @@ impl<T> MutableVector<T> {
     }
 
     fn try_realloc(&mut self, new_cap: usize) -> Result<(), AllocError> {
+        let new_cap = grow_amortized(self.len(), new_cap);
+
         if new_cap < self.len() {
             return Err(AllocError::CapacityOverflow);
         }
@@ -541,14 +614,16 @@ impl<T> MutableVector<T> {
         Ok(())
     }
 
+    // Note: Marking this #[inline(never)] is a pretty large regression in the push benchmark.
+    #[cold]
     fn realloc(&mut self, new_cap: usize) {
         self.try_realloc(new_cap).unwrap();
     }
 
-    fn ensure_capacity(&mut self, cap: usize) {
-        if self.remaining_capacity() < cap {
-            let new_cap = grow_amortized(self.len(), cap);
-            self.realloc(new_cap)
+    #[inline]
+    fn ensure_capacity(&mut self, additional: usize) {
+        if self.remaining_capacity() < additional {
+            self.realloc(additional)
         }
     }
 }
@@ -616,9 +691,190 @@ where
     }
 }
 
+
+
+impl<T> UniqueVector<T> {
+    /// Allocates a mutable buffer with a default capacity of 16.
+    pub fn new() -> Self {
+        Self::with_capacity(16)
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        UniqueVector {
+            inner: HeaderBuffer::try_with_capacity(cap).unwrap(),
+        }
+    }
+
+    pub fn from_slice(data: &[T]) -> Self
+    where
+        T: Clone,
+    {
+        UniqueVector {
+            inner: HeaderBuffer::try_from_slice(data, None).unwrap(),
+        }
+    }
+
+    /// Returns `true` if the vector contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns the number of elements in the vector, also referred to as its ‘length’.
+    pub fn len(&self) -> usize {
+        self.inner.len() as usize
+    }
+
+    /// Returns the total number of elements the vector can hold without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity() as usize
+    }
+
+    /// Returns number of elements that can be added without reallocating.
+    #[inline]
+    fn remaining_capacity(&self) -> usize {
+        self.inner.remaining_capacity() as usize
+    }
+
+    // /// Make this SharedVector immutable.
+    // ///
+    // /// This operation is cheap, the underlying storage does not not need
+    // /// to be reallocated.
+    // #[inline]
+    // pub fn into_shared(self) -> SharedVector<T> {
+    //     SharedVector { inner: self.inner }
+    // }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        self.inner.as_slice()
+    }
+
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // Safe because this type guarantees mutability.
+        unsafe { self.inner.as_mut_slice() }
+    }
+
+    #[inline]
+    pub fn first(&self) -> Option<&T> {
+        unsafe { self.inner.first().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn last(&self) -> Option<&T> {
+        unsafe { self.inner.last().map(|ptr| &*ptr) }
+    }
+
+    #[inline]
+    pub fn first_mut(&mut self) -> Option<&mut T> {
+        unsafe { self.inner.first().map(|ptr| &mut *ptr) }
+    }
+
+    #[inline]
+    pub fn last_mut(&mut self) -> Option<&mut T> {
+        unsafe { self.inner.last().map(|ptr| &mut *ptr) }
+    }
+
+    #[inline]
+    pub fn push(&mut self, val: T) {
+        self.ensure_capacity(1);
+
+        // Safe because this type guarantees mutability.
+        unsafe {
+            self.inner.push(val);
+        }
+    }
+
+    #[inline]
+    pub fn pop(&mut self) -> Option<T> {
+        // Safe because this type guarantees mutability.
+        unsafe { self.inner.pop() }
+    }
+
+    #[inline]
+    pub fn push_slice(&mut self, data: &[T])
+    where
+        T: Clone,
+    {
+        self.ensure_capacity(data.len());
+
+        // Safe because this type guarantees mutability.
+        unsafe {
+            self.inner.try_push_slice(data).unwrap();
+        }
+    }
+
+    pub fn extend(&mut self, data: impl IntoIterator<Item = T>) {
+        let mut iter = data.into_iter();
+        let (min, max) = iter.size_hint();
+        self.ensure_capacity(max.unwrap_or(min));
+        // Safe because this type guarantees mutability.
+        unsafe {
+            self.inner.try_extend(&mut iter).unwrap();
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        unsafe {
+            self.inner.clear();
+        }
+    }
+
+    pub fn clone_buffer(&self) -> Self
+    where
+        T: Clone,
+    {
+        UniqueVector {
+            inner: self.inner.try_clone_buffer(None).unwrap(),
+        }
+    }
+
+    pub fn clone_buffer_with_capacity(&self, cap: BufferSize) -> Self
+    where
+        T: Clone,
+    {
+        UniqueVector {
+            inner: self.inner.try_clone_buffer(Some(cap)).unwrap(),
+        }
+    }
+
+    fn try_realloc(&mut self, new_cap: usize) -> Result<(), AllocError> {
+        let new_cap = grow_amortized(self.len(), new_cap);
+
+        if new_cap < self.len() {
+            return Err(AllocError::CapacityOverflow);
+        }
+
+        let mut dst = HeaderBuffer::try_with_capacity(new_cap)?;
+
+        unsafe { self.inner.move_data(&mut dst) };
+
+        mem::swap(&mut self.inner, &mut dst);
+
+        Ok(())
+    }
+
+    // Note: Marking this #[inline(never)] is a pretty large regression in the push benchmark.
+    #[cold]
+    fn realloc(&mut self, new_cap: usize) {
+        self.try_realloc(new_cap).unwrap();
+    }
+
+    #[inline]
+    fn ensure_capacity(&mut self, additional: usize) {
+        if self.remaining_capacity() < additional {
+            self.realloc(additional)
+        }
+    }
+}
+
+
+
+
 fn grow_amortized(len: usize, additional: usize) -> usize {
     let required = len.saturating_add(additional);
-    let cap = len.saturating_add(len).max(required);
+    let cap = len.saturating_add(len).max(required).min(8);
 
     const MAX: usize = BufferSize::MAX as usize;
 
@@ -684,24 +940,28 @@ fn basic() {
 
 #[test]
 fn value_oriented() {
-    let a = SharedVector::with_capacity(64).push(num(1)).push(num(2));
+    let mut a = SharedVector::with_capacity(64);
+    a.push(num(1));
+    a.push(num(2));
 
-    let b = a.new_ref().push(num(4));
+    let mut b = a.new_ref();
+    b.push(num(4));
 
-    let a = a.push(num(3));
+    a.push(num(3));
 
     assert_eq!(a.as_slice(), &[num(1), num(2), num(3)]);
     assert_eq!(b.as_slice(), &[num(1), num(2), num(4)]);
 
-    let (a, popped) = a.pop();
+    let popped = a.pop();
     assert_eq!(a.as_slice(), &[num(1), num(2)]);
     assert_eq!(popped, Some(num(3)));
 
-    let (b, popped) = b.new_ref().pop();
-    assert_eq!(b.as_slice(), &[num(1), num(2)]);
+    let mut b2 = b.new_ref();
+    let popped = b2.pop();
+    assert_eq!(b2.as_slice(), &[num(1), num(2)]);
     assert_eq!(popped, Some(num(4)));
 
-    let c = a.concatenate(b);
+    let c = a.concatenate(b2);
     assert_eq!(c.as_slice(), &[num(1), num(2), num(1), num(2)]);
 }
 
@@ -737,7 +997,18 @@ fn grow() {
         &[num(1), num(2), num(3), num(4), num(5), num(6), num(7), num(8), num(9), num(10), num(12), num(12), num(13), num(14), num(15), num(16), num(17), num(18)]
     );
 
-    let b = SharedVector::new().push(num(1)).push(num(2)).push(num(3));
+    let mut b = SharedVector::new();
+    b.push(num(1));
+    b.push(num(2));
+    b.push(num(3));
 
     assert_eq!(b.as_slice(), &[num(1), num(2), num(3)]);
+}
+
+#[test]
+fn unique() {
+    let mut a: UniqueVector<u32> = UniqueVector::with_capacity(64);
+    a.push(1);
+    a.push(2);
+    a.push(3);
 }
