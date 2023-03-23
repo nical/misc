@@ -70,7 +70,7 @@ impl<'l> CustomPatterns<'l> {
         descriptor: &CustomPatternDescriptor,
     ) -> TilePipelines {
 
-        let mut location = 2;
+        let mut location = 3;
         let mut varyings_src = String::new();
         let mut pass_varyings_src = String::new();
         let mut frag_arguments_src = String::new();
@@ -96,7 +96,7 @@ impl<'l> CustomPatterns<'l> {
         let base_src = include_str!("./../shaders/custom_pattern_tile.wgsl");
 
         let opaque_module = self.shaders.create_shader_module(device, descriptor.name, base_src, &[]);
-        let masked_module = self.shaders.create_shader_module(device, descriptor.name, base_src, &["TILED_MASK"]);
+        let masked_module = self.shaders.create_shader_module(device, descriptor.name, base_src, &["TILED_MASK", "FILL_MASK"]);
 
         let opaque_layout = if descriptor.extra_bind_groups.is_empty() {
             &self.opaque_layout

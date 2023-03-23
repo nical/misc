@@ -25,17 +25,7 @@ impl<B: BatchType> BatchStore<B> {
         }
     }
 
-    pub fn add_instance(
-        &mut self,
-        batcher: &mut impl Batcher,
-        key: &B::Key,
-        instance: B::Instance,
-        rect: &Rect
-    ) {
-        self.add_instances(batcher, key, &[instance], rect);
-    }
-
-    pub fn add_instances(
+    pub fn add(
         &mut self,
         batcher: &mut impl Batcher,
         key: &B::Key,
@@ -88,7 +78,7 @@ impl<B: BatchType> BatchStore<B> {
         self.batches.clear();
     }
 
-    pub fn get_instances(&self, index: BatchIndex) -> &[B::Instance] {
+    pub fn get(&self, index: BatchIndex) -> &[B::Instance] {
         &self.batches[index as usize].instances[..]
     }
 

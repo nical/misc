@@ -1,3 +1,26 @@
+#if EDGE_STORE_BINDING {
+    #if EDGE_TEXTURE {
+        #mixin EDGE_STORE_BINDING var edge_texture: texture_2d<f32>;
+        let EDGE_TEXTURE_WIDTH: u32 = 1024u;
+
+        fn read_edge(idx: u32) -> vec4<f32> {
+            let uv = vec2<i32>(
+                i32(idx % EDGE_TEXTURE_WIDTH),
+                i32(idx / EDGE_TEXTURE_WIDTH),
+            );
+            return textureLoad(edge_texture, uv, 0);
+        }
+    } #else {
+        struct Edges { data: array<vec4<f32>> };
+        #mixin EDGE_STORE_BINDING var<storage> edge_buffer: Edges;
+
+        fn read_edge(idx: u32) -> vec4<f32> {
+            return edge_buffer.data[idx];
+        }
+    }
+}
+
+
 fn even_odd(winding_number: f32) -> f32 {
     return 1.0 - abs((abs(winding_number) % 2.0) - 1.0);
 }
@@ -57,3 +80,32 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
     return mask;
 }
 
+fn rasterize_fill_mask(uv: vec2<f32>, edges: vec2<u32>, fill_rule: u32, backdrop: f32) -> f32 {
+    var winding_number = backdrop;
+
+    var edge_idx = edges.x;
+    loop {
+        if (edge_idx >= edges.y) {
+            break;
+        }
+
+        var edge = read_edge(edge_idx);
+        edge_idx = edge_idx + 1u;
+
+        // Position of this pixel's top-left corner (in_uv
+        // points to the pixel's center).
+        // See comment in tiler.rs about the half-pixel
+        // offset.
+        let pixel_offset = uv - vec2<f32>(0.5);
+
+        // Move to coordinates local to the current pixel.
+        var p0 = edge.xy - pixel_offset;
+        var p1 = edge.zw - pixel_offset;
+
+        winding_number = winding_number + rasterize_edge(p0, p1);
+    }
+
+    var mask = resolve_mask(winding_number, fill_rule);
+
+    return mask;
+}

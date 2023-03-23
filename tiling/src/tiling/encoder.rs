@@ -121,7 +121,7 @@ fn alpha_span(
                     pattern_position: position,
                     pattern_data: pattern.tile_data(start_x, y),
                 },
-                mask: [0; 4],
+                mask: [0, 0, 0, 0],
             });
 
             start_x = x;
@@ -217,7 +217,7 @@ fn stretched_prerendered_span(
                     pattern_position: prerendered,
                     pattern_data: 0,
                 },
-                mask: [0; 4],
+                mask: [0, 0, 0, 0],
             });
 
             start_x = x;
@@ -657,6 +657,7 @@ impl TileEncoder {
         pattern: &mut dyn TilerPattern,
         opaque: bool,
         tile_position: TilePosition,
+        //TODO: Pass the mask data instead.
         mask: TilePosition,
     ) {
         // It is always more efficient to render opaque tiles directly.
@@ -700,7 +701,7 @@ impl TileEncoder {
                     pattern_position,
                     pattern_data,
                 },
-                mask: [0; 4],
+                mask: [1, 0, 0, 0],
             });
         }
     }
@@ -1135,3 +1136,4 @@ fn square_distance_to_point(line: &Line<f32>, p: Point) -> f32 {
     let c = line.vector.cross(v);
     (c * c) / line.vector.square_length()
 }
+

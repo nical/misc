@@ -15,6 +15,8 @@ impl OrderIndependentBatcher {
             batches: Vec::new(),
         }
     }
+
+    pub fn batches(&self) -> &[BatchId] { &self.batches }
 }
 
 impl Batcher for OrderIndependentBatcher {

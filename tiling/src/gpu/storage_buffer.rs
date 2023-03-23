@@ -148,12 +148,7 @@ impl StorageBuffer {
                 let rows_per_image = self.allocated_size / BYTES_PER_ROW;
                 let full_rows = offset / w;
                 let split = (full_rows * BYTES_PER_ROW) as usize;
-                println!(
-                    " -- upload {:?} bytes ({:?} pixels) | bytes per row {:?} px per row {:?} | rows {:?} split {:?}",
-                    data.len(), data.len() / self.size_per_element as usize,
-                    BYTES_PER_ROW, w,
-                    full_rows, split,
-                );
+
                 if full_rows > 0 {
                     queue.write_texture(
                         wgpu::ImageCopyTexture {
@@ -226,7 +221,6 @@ impl StorageBuffer {
     pub fn binding_type(&self) -> wgpu::BindingType {
         match &self.handle {
             Storage::Buffer { .. } => {
-                println!(" -- Buffer binding type");
                 wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -234,7 +228,6 @@ impl StorageBuffer {
                 }        
             }
             Storage::Texture { .. } => {
-                println!(" -- Texture binding type");
                 wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     multisampled: false,
@@ -247,11 +240,9 @@ impl StorageBuffer {
     pub fn binding_resource(&self) -> wgpu::BindingResource {
         match &self.handle {
             Storage::Buffer { buffer } => {
-                println!(" -- Buffer binding resource");
                 wgpu::BindingResource::Buffer(buffer.as_entire_buffer_binding())
             }
             Storage::Texture { view, .. } => {
-                println!(" -- Texture binding resource");
                 wgpu::BindingResource::TextureView(view)
             }
         }

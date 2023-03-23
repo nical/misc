@@ -97,7 +97,7 @@ impl From<std::io::Error> for SourceError {
 ///   These currently only support checking whether a symbol is defined.
 pub struct Preprocessor {
     imported: HashSet<String>,
-    defines: HashSet<String>,
+    defines: HashMap<String, Option<Arc<str>>>,
     discarding: i32,
     in_mixin: bool,
 }
@@ -106,7 +106,7 @@ impl Preprocessor {
     pub fn new() -> Self {
         Preprocessor {
             imported: HashSet::default(),
-            defines: HashSet::new(),
+            defines: HashMap::new(),
             discarding: 0,
             in_mixin: false,
         }
@@ -140,11 +140,11 @@ impl Preprocessor {
     }
 
     pub fn define(&mut self, name: &str) {
-        self.defines.insert(name.to_string());
+        self.defines.insert(name.to_string(), None);
     }
 
     pub fn undefine(&mut self, name: &str) -> bool {
-        self.defines.remove(name)
+        self.defines.remove(name).is_some()
     }
 
     fn import_source<'lib>(
@@ -209,7 +209,10 @@ impl Preprocessor {
                         src.parse_error("Nested mixin")?;
                     }
                     let name = self.parse_import(src)?;
-                    let src = loader.load_source(&name)?;
+                    let src = match self.defines.get(&name) {
+                        Some(Some(text)) => text.clone(),
+                        _ => loader.load_source(&name)?
+                    };
                     self.in_mixin = true;
                     self.parse(&mut Tokenizer::new(&name, &src), output, loader)?;
                     self.in_mixin = false;
@@ -229,11 +232,75 @@ impl Preprocessor {
                 Token::CloseBracket if src.bracket_stack == stack_depth => {
                     return Ok(());
                 }
+                Token::Define => {
+                    self.parse_define(src)?;
+                }
                 other => {
                     output.push_str(other.as_str())
                 }
             }
         }
+
+        Ok(())
+    }
+
+    fn parse_define(&mut self, src: &mut Tokenizer) -> Result<(), SourceError> {
+        while src.consume_whitespace()
+        || src.consume_comment()
+        || src.consume_new_line() {}
+
+        let name;
+        match src.current() {
+            Some(Token::Basic(text)) => {
+                name = text.to_string();
+            }
+            Some(other) => {
+                src.parse_error(format!("Unexpected {:?} in static define name", other.as_str()))?;
+                unreachable!();
+            }
+            None => {
+                src.parse_error("Unterminated static define")?;
+                unreachable!();
+            }
+        }
+        src.advance();
+
+        while src.consume_whitespace()
+        || src.consume_comment()
+        || src.consume_new_line() {}
+
+        match src.current() {
+            Some(Token::OpenBracket) => {}
+            Some(other) => {
+                src.parse_error(format!("Expected '{{', got {:?} after static define name", other.as_str()))?;
+            }
+            None => {
+                src.parse_error("Unterminated static define")?;
+            }
+        }
+
+        let mut text = String::new();
+        let stack_depth = src.bracket_stack - 1;
+
+        loop {
+            src.advance();
+
+            match src.current() {
+                Some(Token::CloseBracket) if src.bracket_stack == stack_depth => {
+                    break;
+                }
+                Some(token) => {
+                    text.push_str(token.as_str());
+                }
+                None => {
+                    src.parse_error("Unterminated static define")?;
+                }
+            }
+        }
+
+        self.defines.insert(name, Some(text.into()));
+
+        src.advance();
 
         Ok(())
     }
@@ -324,7 +391,7 @@ impl Preprocessor {
                     name = &name[1..];
                 }
 
-                cond = self.defines.contains(name) != neg;
+                cond = self.defines.contains_key(name) != neg;
             }
             Some(other) => {
                 src.parse_error(format!("Unexpected {:?} in static if condition", other.as_str()))?;
@@ -449,6 +516,7 @@ enum Token<'l> {
     NewLine,
     OpenBracket,
     CloseBracket,
+    Define,
 }
 
 impl<'l> Token<'l> {
@@ -464,6 +532,7 @@ impl<'l> Token<'l> {
             Token::Mixin => &"#mixin",
             Token::StaticIf => &"#if",
             Token::StaticElse => &"#else",
+            Token::Define => &"#define"
         }
     }
 }
@@ -553,6 +622,7 @@ impl<'l> Tokenizer<'l> {
                     "#mixin" => Token::Mixin,
                     "#if" => Token::StaticIf,
                     "#else" => Token::StaticElse,
+                    "#define" => Token::Define,
                     _ => Token::Basic(keyword),
                 });
             }
@@ -693,6 +763,26 @@ fn bar() {
     assert_eq!(output.matches("regular code").count(), 1);
 }
 
+#[test]
+fn define() {
+    let mut preprocessor = Preprocessor::new();
+    let src = &"
+#define FOO {if (a) {b} else {c}}
+#define EMPTY {}
+fn func() {
+    #mixin FOO
+    #mixin EMPTY
+    #if FOO { foo defined } #else { not defined }
+    #if EMPTY { empty defined } #else { not defined }
+}";
+
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    println!("----\n{}", output);
+    assert_eq!(output.matches("if (a) {b} else {c}").count(), 1);
+    assert_eq!(output.matches("foo defined").count(), 1);
+    assert_eq!(output.matches("empty defined").count(), 1);
+    assert_eq!(output.matches("not defined").count(), 0);
+}
 
 #[test]
 fn import() {

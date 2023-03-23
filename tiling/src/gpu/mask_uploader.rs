@@ -3,7 +3,6 @@ use crate::buffer::{Buffer, UniformBufferPool};
 use crate::gpu::ShaderSources;
 use crate::tiling::TilePosition;
 
-
 const STAGING_BUFFER_SIZE: u32 = 65536;
 
 #[repr(C)]
@@ -304,3 +303,101 @@ impl MaskUploader {
     }
 }
 
+pub struct MaskDst {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub texture: u32, // TODO
+}
+
+struct CopyInstance {
+    src_offset: u32,
+    src_stride: u32,
+    dst_x: u16,
+    dst_y: u16,
+    width: u16,
+    height: u16,
+}
+
+pub struct MappedBuffer {
+    ptr: *mut u8,
+    rem: usize,
+    buffer: Option<wgpu::Buffer>,
+}
+
+pub struct SimpleUploader {
+    current: MappedBuffer,
+    used: Vec<wgpu::Buffer>,
+    staging_buffer_size: usize,
+    copy_instances: Vec<CopyInstance>
+}
+
+impl SimpleUploader {
+    pub fn new (staging_buffer_size: usize) -> Self {
+        SimpleUploader {
+            current: MappedBuffer {
+                ptr: std::ptr::null_mut(),
+                rem: 0,
+                buffer: None,
+            },
+            used: Vec::new(),
+            staging_buffer_size,
+            copy_instances: Vec::new(),
+        }
+    }
+
+    pub fn write(
+        &mut self, 
+        device: &wgpu::Device,
+        data: &[u8],
+        dst: MaskDst,
+    ) {
+        let len = data.len();
+        if self.current.rem < len {
+            if data.len() > self.staging_buffer_size as usize {
+                unimplemented!();
+            }
+
+            if let Some(buffer) = self.current.buffer.take() {
+                buffer.unmap();
+                self.used.push(buffer);
+            }
+
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("staging"),
+                size: self.staging_buffer_size as u64,
+                mapped_at_creation: true,
+                usage: wgpu::BufferUsages::COPY_SRC
+            });
+
+            {
+                let slice = buf.slice(..);
+                let mut range = slice.get_mapped_range_mut();
+
+                self.current.ptr = range.as_mut_ptr();
+                self.current.rem = self.staging_buffer_size as usize;
+            }
+
+            self.current.buffer = Some(buf);
+        }
+
+        let offset = self.staging_buffer_size - self.current.rem;
+        self.current.rem -= len;
+
+        unsafe {
+            let dst_ptr = self.current.ptr.offset(offset as isize);
+            let dst = std::slice::from_raw_parts_mut(dst_ptr, len);
+            dst.copy_from_slice(data);
+        }
+
+        self.copy_instances.push(CopyInstance {
+            src_offset: offset as u32,
+            src_stride: dst.w,
+            dst_x: dst.x as u16,
+            dst_y: dst.y as u16,
+            width: dst.w as u16,
+            height: dst.h as u16,
+        });
+    }
+}

@@ -206,22 +206,58 @@ fn simple_batch_store() {
         max_merge_cost: 1000.0,
     };
 
-    let mut batcher = OrderedBatcher::new(&cfg);
+    let mut alpha_batcher = OrderedBatcher::new(&cfg);
+    let mut opaque_batcher = OrderIndependentBatcher::new(&cfg);
 
-    let mut solid_color_batches = BatchStore::new(SolidColor, &cfg, 0);
-    let mut image_batches = BatchStore::new(Image, &cfg, 1);
-    let mut text_batches = BatchStore::new(Text, &cfg, 2);
+    mod systems {
+        use super::SystemId;
+        pub const COLOR: SystemId = 0;
+        pub const IMAGE: SystemId = 1;
+        pub const TEXT: SystemId = 2;
+    }
+
+    let mut solid_color_batches = BatchStore::new(SolidColor, &cfg, systems::COLOR);
+    let mut image_batches = BatchStore::new(Image, &cfg, systems::IMAGE);
+    let mut text_batches = BatchStore::new(Text, &cfg, systems::TEXT);
 
     use crate::types::units::Point;
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { min: Point::new(x, y), max: Point::new(x+ w, y + h) }
     }
 
-    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(0.0, 0.0, 100.0, 100.0));
-    image_batches.add_instance(&mut batcher, &Image::key(0, 0), Instance, &rect(100.0, 0.0, 100.0, 100.0));
-    text_batches.add_instance(&mut batcher, &Text::key(0), Instance, &rect(200.0, 0.0, 100.0, 100.0));
-    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(10.0, 10.0, 10.0, 10.0));
-    solid_color_batches.add_instance(&mut batcher, &SolidColor::key(), Instance, &rect(300.0, 0.0, 10.0, 10.0));
-    text_batches.add_instance(&mut batcher, &Text::key(0), Instance, &rect(320.0, 0.0, 10.0, 10.0));
+    solid_color_batches.add(&mut opaque_batcher, &SolidColor::key(), &[Instance], &rect(0.0, 0.0, 1000.0, 2000.0));
+    solid_color_batches.add(&mut alpha_batcher, &SolidColor::key(), &[Instance], &rect(0.0, 0.0, 100.0, 100.0));
+    image_batches.add(&mut alpha_batcher, &Image::key(0, 0), &[Instance], &rect(100.0, 0.0, 100.0, 100.0));
+    text_batches.add(&mut alpha_batcher, &Text::key(0), &[Instance], &rect(200.0, 0.0, 100.0, 100.0));
+    solid_color_batches.add(&mut alpha_batcher, &SolidColor::key(), &[Instance], &rect(10.0, 10.0, 10.0, 10.0));
+    solid_color_batches.add(&mut alpha_batcher, &SolidColor::key(), &[Instance], &rect(300.0, 0.0, 10.0, 10.0));
+    solid_color_batches.add(&mut opaque_batcher, &SolidColor::key(), &[Instance], &rect(20.0, 40.0, 300.0, 500.0));
+    text_batches.add(&mut alpha_batcher, &Text::key(0), &[Instance], &rect(320.0, 0.0, 10.0, 10.0));
+
+    for batch in opaque_batcher.batches().iter().rev() {
+        println!(" * opaque batch sys {:?} idx {:?}", batch.system, batch.index);
+        match batch.system {
+            systems::COLOR => {
+                let instances = solid_color_batches.get(batch.index);
+                // etc.
+            }
+            systems::IMAGE => {
+                let instances = image_batches.get(batch.index);
+                // etc.
+            }
+            systems::TEXT => {
+                let instances = text_batches.get(batch.index);
+                // etc.
+            }
+            _ => {
+                unreachable!();
+            }
+        }
+    }
+
+    for batch in alpha_batcher.batches() {
+        println!(" * alpha batch sys {:?} idx {:?}", batch.system, batch.index);
+        // etc.
+    }
 }
 

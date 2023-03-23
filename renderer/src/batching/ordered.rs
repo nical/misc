@@ -66,6 +66,8 @@ impl OrderedBatcher {
     pub fn upudate_stats(&self, stats: &mut Stats) {
         stats.hit_lookback_limit += self.hit_lookback_limit;
     }
+
+    pub fn batches(&self) -> &[BatchId] { &self.batches }
 }
 
 impl Batcher for OrderedBatcher {

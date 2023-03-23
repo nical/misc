@@ -60,7 +60,7 @@ fn main() {
     let tile_size = 16;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 64;
-    let mask_atlas_size: u32 = 4096;
+    let mask_atlas_size: u32 = 2048;
     let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
 
@@ -430,7 +430,7 @@ fn update_inputs(
             use winit::event::MouseScrollDelta::*;
             let (dx, dy) = match delta {
                 LineDelta(x, y) => (x * 20.0, -y * 20.0),
-                PixelDelta(v) => (v.x as f32, -v.y as f32),
+                PixelDelta(v) => (-v.x as f32, -v.y as f32),
             };
             let dx = dx / scene.target_zoom;
             let dy = dy / scene.target_zoom;

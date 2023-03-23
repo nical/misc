@@ -210,6 +210,12 @@ impl TileRenderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: edges.binding_type(),
+                    count: None,
+                }
             ],
         });
 
@@ -337,6 +343,10 @@ impl TileRenderer {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&mask_texture_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: edges.binding_resource()
+                }
             ],
         });
 
@@ -535,13 +545,12 @@ impl TileRenderer {
         );
 
         {
-            let bg_color = wgpu::Color { r: 0.8, g: 0.8, b: 0.8, a: 1.0 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Color target"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg_color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: true,
                     },
                     resolve_target: None,
@@ -611,7 +620,7 @@ impl TileRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.src_color_texture_view,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: true,
                     },
                     resolve_target: None,
@@ -641,7 +650,10 @@ impl TileRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.mask_texture_view,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        // TODO: Clear is actually quite expensive if a large portion of the atlas
+                        // is not used. Could decide between Load and Clear or Load depending on how
+                        // much of the atlas we are going to render.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: true,
                     },
                     resolve_target: None,

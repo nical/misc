@@ -7,6 +7,8 @@
 #import rect
 #import render_target
 #import tiling
+
+#define EDGE_STORE_BINDING { @group(0) @binding(1) }
 #import mask::fill
 
 struct VertexOutput {
@@ -39,26 +41,6 @@ struct VertexOutput {
     );
 }
 
-#if EDGE_TEXTURE {
-    @group(0) @binding(1) var edge_texture: texture_2d<f32>;
-    let EDGE_TEXTURE_WIDTH: u32 = 1024u;
-
-    fn read_edge(idx: u32) -> vec4<f32> {
-        let uv = vec2<i32>(
-            i32(idx % EDGE_TEXTURE_WIDTH),
-            i32(idx / EDGE_TEXTURE_WIDTH),
-        );
-        return textureLoad(edge_texture, uv, 0);
-    }
-} #else {
-    struct Edges { data: array<vec4<f32>> };
-    @group(0) @binding(1) var<storage> edge_buffer: Edges;
-
-    fn read_edge(idx: u32) -> vec4<f32> {
-        return edge_buffer.data[idx];
-    }
-}
-
 @fragment fn fs_main(
     @location(0) in_uv: vec2<f32>,
     @location(1) @interpolate(flat) in_edges_range: vec2<u32>,
@@ -66,33 +48,6 @@ struct VertexOutput {
     @location(3) @interpolate(flat) backdrop: f32,
 ) -> @location(0) vec4<f32> {
 
-    var winding_number = backdrop;
-
-    var edge_idx = in_edges_range.x;
-    loop {
-        if (edge_idx >= in_edges_range.y) {
-            break;
-        }
-
-        var edge = read_edge(edge_idx);
-        edge_idx = edge_idx + 1u;
-
-        // Position of this pixel's top-left corner (in_uv
-        // points to the pixel's center).
-        // See comment in tiler.rs about the half-pixel
-        // offset.
-        let pixel_offset = in_uv - vec2<f32>(0.5);
-
-        // Move to coordinates local to the current pixel.
-        var p0 = edge.xy - pixel_offset;
-        var p1 = edge.zw - pixel_offset;
-
-        winding_number = winding_number + rasterize_edge(p0, p1);
-    }
-
-    var mask = resolve_mask(winding_number, in_fill_rule);
-
-    var color = vec4<f32>(mask, mask, mask, mask);
-
-    return color;
+    let mask = rasterize_fill_mask(in_uv, in_edges_range, in_fill_rule, backdrop);
+    return vec4<f32>(mask, mask, mask, mask);
 }
