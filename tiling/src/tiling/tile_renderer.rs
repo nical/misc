@@ -617,7 +617,7 @@ impl TileRenderer {
         src_mask_atlas: &mut u32,
         src_color_atlas: &mut u32,
         tile_encoder: &mut TileEncoder,
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         if tile_encoder.render_passes.is_empty() {
@@ -770,8 +770,7 @@ impl Masks {
 }
 
 fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer) -> Masks {
-    let quad_src = include_str!("../../shaders/mask_fill_quads.wgsl");
-    let lin_src = include_str!("../../shaders/mask_fill.wgsl");
+    let fill_src = include_str!("../../shaders/mask_fill.wgsl");
     let circle_src = include_str!("../../shaders/mask_circle.wgsl");
     let rect_src = include_str!("../../shaders/mask_rect.wgsl");
     let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);
@@ -812,17 +811,14 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
     attributes.push(wgpu::VertexFormat::Uint32x2);
     attributes.push(wgpu::VertexFormat::Uint32);
     attributes.push(wgpu::VertexFormat::Uint32);
-    let lines = true; // TODO: fix or remove quad fill.
-    let fill_module = if lines {
-        let features: &[&str] = if edges.texture().is_some() {
-            &["EDGE_TEXTURE"]
-        } else {
-            &[]
-        };
-        shaders.create_shader_module(device, "Mask fill linear", lin_src, features)
+
+    let features: &[&str] = if edges.texture().is_some() {
+        &["EDGE_TEXTURE"]
     } else {
-        shaders.create_shader_module(device, "Mask fill quad", quad_src, &[])
+        &[]
     };
+    let fill_module = shaders.create_shader_module(device, "Mask fill linear", fill_src, features);
+
     let fill_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Fill mask"),
         layout: Some(&tile_pipeline_layout),

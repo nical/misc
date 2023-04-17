@@ -27,7 +27,6 @@ pub struct DrawParams {
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub inverted: bool,
-    pub use_quads: bool,
     pub encoded_fill_rule: u16,
 }
 
@@ -49,7 +48,7 @@ pub struct Tiler {
     first_row: usize,
     last_row: usize,
 
-    pub edges: EdgeBuffer,
+    pub edges: Vec<LineEdge>,
 
     pub row_decomposition_time_ns: u64,
     pub tile_decomposition_time_ns: u64,
@@ -98,7 +97,6 @@ impl Tiler {
                 fill_rule: FillRule::NonZero,
                 inverted: false,
                 max_edges_per_gpu_tile: 4096,
-                use_quads: false,
                 encoded_fill_rule: 1,
             },
             size,
@@ -116,10 +114,7 @@ impl Tiler {
             active_edges: Vec::with_capacity(64),
             rows: Vec::new(),
 
-            edges: EdgeBuffer {
-                line_edges: Vec::with_capacity(8192),
-                quad_edges: Vec::with_capacity(0),
-            },
+            edges: Vec::with_capacity(8192),
 
             selected_row: None,
 
@@ -514,7 +509,7 @@ impl Tiler {
         coarse_mask: &mut TileMaskRow,
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
-        edge_buffer: &mut EdgeBuffer,
+        edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
     )  {
         //println!("--------- row {}", tile_y);
@@ -638,7 +633,7 @@ impl Tiler {
         coarse_mask: &mut TileMaskRow,
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
-        edge_buffer: &mut EdgeBuffer,
+        edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
     ) {
         let visibility = pattern.tile_visibility(tile.x, tile.y);
@@ -1136,8 +1131,8 @@ impl Tiler {
         }
     }
 
-    pub fn update_stats(&mut self, stats: &mut Stats) {
-        self.edges.update_stats(stats);
+    pub fn update_stats(&self, stats: &mut Stats) {
+        stats.edges += self.edges.len();
     }
 }
 

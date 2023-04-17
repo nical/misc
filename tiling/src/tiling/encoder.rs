@@ -372,43 +372,6 @@ pub struct SourceTiles {
     pub color_tiles: TileAllocator,
 }
 
-pub struct EdgeBuffer {
-    pub line_edges: Vec<LineEdge>,
-    pub quad_edges: Vec<QuadEdge>,
-}
-
-impl Default for EdgeBuffer {
-    fn default() -> Self {
-        EdgeBuffer { line_edges: Vec::new(), quad_edges: Vec::new() }
-    }
-}
-
-impl EdgeBuffer {
-    pub fn upload(&mut self, tile_renderer: &mut TileRenderer, queue: &wgpu::Queue) {
-        let edges = if !self.line_edges.is_empty() {
-            bytemuck::cast_slice(&self.line_edges)
-        } else {
-            bytemuck::cast_slice(&self.quad_edges)
-        };
-
-        // TODO: non-zero offsets.
-        tile_renderer.edges.upload_bytes(0, edges, queue);
-    }
-
-    pub fn update_stats(&self, stats: &mut Stats) {
-        stats.edges += self.line_edges.len() + self.quad_edges.len();
-    }
-
-    pub fn allocate_buffer_ranges(&mut self, tile_renderer: &mut TileRenderer) {
-        tile_renderer.edges.bump_allocator().push(self.line_edges.len());
-    }
-
-    pub fn clear(&mut self) {
-        self.line_edges.clear();
-        self.quad_edges.clear();
-    }
-}
-
 pub struct PatternTiles {
     opaque: Vec<TileInstance>,
     prerendered: Vec<TileInstance>,
@@ -791,14 +754,9 @@ impl TileEncoder {
         self.alpha_tiles_start = alpha_tiles_end;
     }
 
-    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer, device: &wgpu::Device) -> TilePosition {
-        let mask = if draw.use_quads {
-            self.add_quad_gpu_mask(tile, draw, active_edges, edges)
-        } else {
-            self.add_line_gpu_mask(tile, draw, active_edges, edges)
-        };
-
-        mask.unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
+    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>, device: &wgpu::Device) -> TilePosition {
+        self.add_line_gpu_mask(tile, draw, active_edges, edges)
+            .unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
     }
 
     pub fn add_cricle_mask(&mut self, center: Point, radius: f32, inverted: bool) -> TilePosition {
@@ -816,7 +774,7 @@ impl TileEncoder {
     }
 
     pub fn add_rectangle_mask(&mut self, rect: &Box2D<f32>, inverted: bool, tile_size: f32) -> TilePosition {
-        let (mut tile, atlas_index) = self.src.mask_tiles.allocate();
+        let (tile, atlas_index) = self.src.mask_tiles.allocate();
         self.maybe_flush_render_pass();
 
         let zero = point(0.0, 0.0);
@@ -830,37 +788,33 @@ impl TileEncoder {
                 min.x << 16 | min.y,
                 max.x << 16 | max.y,
             ]
-
         });
 
         tile
     }
 
-    pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer) -> Option<TilePosition> {
+    pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>) -> Option<TilePosition> {
         //println!(" * tile ({:?}, {:?}), backdrop: {}, {:?}", tile.x, tile.y, tile.backdrop, active_edges);
 
-        let edges_start = edges.line_edges.len();
-
-        let offset = vector(tile.rect.min.x, tile.rect.min.y);
-
-        // If the number of edges is larger than a certain threshold, we'll fall back to
-        // rasterizing them on the CPU.
-        if (edges.line_edges.len() - edges_start) + active_edges.len() > draw.max_edges_per_gpu_tile {
-            edges.line_edges.resize(edges_start, LineEdge(point(0.0, 0.0), point(0.0, 0.0)));
+        if active_edges.len() > draw.max_edges_per_gpu_tile {
             return None;
         }
+
+        let edges_start = edges.len();
+
+        let offset = vector(tile.rect.min.x, tile.rect.min.y);
 
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
-                edges.line_edges.alloc().init(LineEdge(
+                edges.alloc().init(LineEdge(
                     point(-10.0, tile.rect.max.y),
                     point(-10.0, edge.from.y),
                 ));
             }
 
             if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
-                edges.line_edges.alloc().init(LineEdge(
+                edges.alloc().init(LineEdge(
                     point(-10.0, edge.to.y),
                     point(-10.0, tile.rect.max.y),
                 ));
@@ -868,18 +822,25 @@ impl TileEncoder {
 
             if edge.is_line() {
                 if edge.from.y != edge.to.y {
-                    edges.line_edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
+                    edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
                 }
             } else {
                 let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
                 flatten_quad(&curve, draw.tolerance, &mut |segment| {
-                    edges.line_edges.alloc().init(LineEdge(segment.from, segment.to));
+                    edges.alloc().init(LineEdge(segment.from, segment.to));
                 });
             }
         }
 
+        // If the number of edges is larger than a certain threshold, we'll fall back to
+        // rasterizing them on the CPU.
+        if (edges.len() - edges_start) > draw.max_edges_per_gpu_tile {
+            edges.truncate(edges_start);
+            return None;
+        }
+
         let edges_start = edges_start as u32;
-        let edges_end = edges.line_edges.len() as u32;
+        let edges_end = edges.len() as u32;
         //debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
 
@@ -896,63 +857,6 @@ impl TileEncoder {
                 fill_rule: draw.encoded_fill_rule,
             }
         );
-
-        Some(tile_position)
-    }
-
-    pub fn add_quad_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer) -> Option<TilePosition> {
-        let edges_start = edges.quad_edges.len();
-
-        let offset = vector(tile.rect.min.x, tile.rect.min.y);
-
-        // If the number of edges is larger than a certain threshold, we'll fall back to
-        // rasterizing them on the CPU.
-        if (edges.quad_edges.len() - edges_start) + active_edges.len() > draw.max_edges_per_gpu_tile {
-            edges.quad_edges.resize(edges_start, QuadEdge(point(0.0, 0.0), point(123.0, 456.0), point(0.0, 0.0), 0, 0));
-            return None;
-        }
-
-        for edge in active_edges {
-            // Handle auxiliary edges for edges that cross the tile's left side.
-            if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
-                edges.quad_edges.alloc().init(QuadEdge(
-                    point(-10.0, tile.rect.max.y),
-                    point(123.0, 456.0),
-                    point(-10.0, edge.from.y),
-                    0, 0,
-                ));
-            }
-
-            if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
-                edges.line_edges.alloc().init(LineEdge(
-                    point(-10.0, edge.to.y),
-                    point(-10.0, tile.rect.max.y),
-                ));
-            }
-
-            if edge.is_line() {
-                edges.quad_edges.alloc().init(QuadEdge(edge.from - offset, point(123.0, 456.0), edge.to - offset, 0, 0));
-            } else {
-                let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
-                edges.quad_edges.alloc().init(QuadEdge(curve.from, curve.ctrl, curve.to, 1, 0));
-            }
-        }
-
-        let edges_start = edges_start as u32;
-        let edges_end = edges.quad_edges.len() as u32;
-        assert!(edges_end > edges_start, "{:?}", active_edges);
-
-        let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
-        self.maybe_flush_render_pass();
-
-        unimplemented!();
-        // TODO
-        //self.gpu_masks.push(GpuMask {
-        //    edges: (edges_start, edges_end),
-        //    tile: tile_position,
-        //    backdrop: tile.backdrop + 8192,
-        //    fill_rule: draw.encoded_fill_rule,
-        //});
 
         Some(tile_position)
     }

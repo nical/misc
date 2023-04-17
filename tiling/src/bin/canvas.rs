@@ -28,7 +28,6 @@ fn main() {
     let mut tolerance = 0.25;
 
     let mut trace = None;
-    let mut use_quads = false;
     let mut force_gl = false;
     let mut asap = false;
     let mut read_tolerance = false;
@@ -38,7 +37,6 @@ fn main() {
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
         }
-        if arg == "--quads" { use_quads = true; }
         if arg == "--gl" { force_gl = true; }
         if arg == "--x11" {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
@@ -58,7 +56,7 @@ fn main() {
 
     let tile_size = 16;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 8;
+    let max_edges_per_gpu_tile = 16;
     let mask_atlas_size: u32 = 2048;
     let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
@@ -154,7 +152,6 @@ fn main() {
 
     //frame_builder.tiler.set_scissor(&Box2D { min: point(500.0, 600.0), max: point(1000.0, 800.0) });
     frame_builder.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-    frame_builder.tiler.draw.use_quads = use_quads;
 
     let mut builder = lyon::path::Path::builder();
     builder.begin(point(0.0, 0.0));
@@ -308,14 +305,14 @@ fn main() {
 
         tile_renderer.begin_frame();
 
-        frame_builder.tiler.edges.allocate_buffer_ranges(&mut tile_renderer);
+        tile_renderer.edges.bump_allocator().push(frame_builder.tiler.edges.len());
         for target in &mut frame_builder.targets {
             target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
         }
 
         tile_renderer.allocate(&device);
 
-        frame_builder.tiler.edges.upload(&mut tile_renderer, &queue);
+        tile_renderer.edges.upload_bytes(0, bytemuck::cast_slice(&frame_builder.tiler.edges), &queue);
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &queue);
         }
@@ -366,7 +363,7 @@ fn print_stats(frame_builder: &FrameBuilder, window_size: PhysicalSize<u32>) {
     for target in &frame_builder.targets {
         target.tile_encoder.update_stats(&mut stats);
     }
-    frame_builder.tiler.edges.update_stats(&mut stats);
+    frame_builder.tiler.update_stats(&mut stats);
     println!("{:#?}", stats);
     println!("Data:");
     println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
