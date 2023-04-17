@@ -53,6 +53,7 @@ impl StorageBuffer {
                     usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                     mip_level_count: 1,
                     sample_count: 1,
+                    view_formats: &[wgpu::TextureFormat::Rgba32Float],
                 });
 
                 let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -120,6 +121,7 @@ impl StorageBuffer {
                     usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                     mip_level_count: 1,
                     sample_count: 1,
+                    view_formats: &[wgpu::TextureFormat::Rgba32Float],
                 });
             }
         }

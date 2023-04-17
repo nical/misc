@@ -13,7 +13,6 @@ use crate::tiling::{
     tiler::{Tiler, TilerConfig},
     encoder::TileEncoder,
 };
-use crate::gpu::mask_uploader::MaskUploader;
 
 
 /*
@@ -313,14 +312,14 @@ pub struct FrameBuilder {
 }
 
 impl FrameBuilder {
-    pub fn new(config: &TilerConfig, uploader: MaskUploader) -> Self {
+    pub fn new(config: &TilerConfig) -> Self {
         let size = config.view_box.size().to_u32();
         let tile_size = config.tile_size as u32;
         let tiles_x = (size.width + tile_size - 1) / tile_size;
         let tiles_y = (size.height + tile_size - 1) / tile_size;
         FrameBuilder {
             targets: vec![TargetData {
-                tile_encoder: TileEncoder::new(config, uploader, 3),
+                tile_encoder: TileEncoder::new(config, 3),
                 solid_color_pattern: SolidColorBuilder::new(SolidColor::new(Color::BLACK), 0),
                 gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new(), 1),
                 checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new(), 2),
@@ -332,7 +331,7 @@ impl FrameBuilder {
         }
     }
 
-    pub fn build(&mut self, commands: &Commands, gpu_store: &mut GpuStore) {
+    pub fn build(&mut self, commands: &Commands, gpu_store: &mut GpuStore, device: &wgpu::Device) {
         let t0 = time::precise_time_ns();
 
         self.stats = FrameBuilderStats::new();
@@ -354,7 +353,7 @@ impl FrameBuilder {
         self.tiler.edges.clear();
         self.tile_mask.clear();
 
-        self.process_group(&commands.root, &commands, gpu_store);
+        self.process_group(&commands.root, &commands, gpu_store, device);
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.end_paths();
@@ -364,7 +363,7 @@ impl FrameBuilder {
         self.stats.total_time = Duration::from_ns(time::precise_time_ns() - t0);
     }
 
-    pub fn process_group(&mut self, group: &Group, commands: &Commands, gpu_store: &mut GpuStore) {
+    pub fn process_group(&mut self, group: &Group, commands: &Commands, gpu_store: &mut GpuStore, device: &wgpu::Device) {
         let mut saved_tile_mask = None;
         if let Some(_clip) = &group.clip {
             saved_tile_mask = Some(self.tile_mask.clone());
@@ -419,7 +418,7 @@ impl FrameBuilder {
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance)
                                 .with_inverted(shape.inverted);
-                            self.tiler.fill_path(shape.path.iter(), &options, pattern, &mut self.tile_mask, encoder);
+                            self.tiler.fill_path(shape.path.iter(), &options, pattern, &mut self.tile_mask, encoder, device);
                         }
                         RecordedShape::Circle(circle) => {
                             let options = FillOptions::new()
@@ -427,14 +426,14 @@ impl FrameBuilder {
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance)
                                 .with_inverted(circle.inverted);
-                                self.tiler.fill_circle(circle.center, circle.radius, &options, pattern, &mut self.tile_mask, encoder)
+                                self.tiler.fill_circle(circle.center, circle.radius, &options, pattern, &mut self.tile_mask, encoder, device)
                         }
                         RecordedShape::Rect(rect) => {
                             let options = FillOptions::new()
                                 .with_transform(transform)
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance);
-                            self.tiler.fill_rect(rect, &options, pattern, &mut self.tile_mask, encoder)
+                            self.tiler.fill_rect(rect, &options, pattern, &mut self.tile_mask, encoder, device)
                         }
                         RecordedShape::Canvas => {
                             self.tiler.fill_canvas(pattern, &mut self.tile_mask, encoder);
@@ -446,7 +445,7 @@ impl FrameBuilder {
                     self.stats.tiled_paths += 1;
                 }
                 Command::Group(group) => {
-                    self.process_group(group, commands, gpu_store);
+                    self.process_group(group, commands, gpu_store, device);
                 }
             }
         }

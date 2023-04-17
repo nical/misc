@@ -6,11 +6,11 @@ pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
+use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
 use crate::tiling::tiler::{CircleMaskEncoder, RectangleMaskEncoder, GpuMaskEncoder};
 use crate::tiling::cpu_rasterizer::*;
 use crate::tiling::tile_renderer::{TileRenderer, TileInstance, MaskedTileInstance, Mask as GpuMask, CircleMask};
-use crate::gpu::mask_uploader::MaskUploader;
 
 use copyless::VecHelper;
 
@@ -453,13 +453,13 @@ pub struct TileEncoder {
 
     pub src: SourceTiles,
 
-    pub mask_uploader: MaskUploader,
+    pub mask_uploader: TileAtlasUploader,
 
     pub edge_distributions: [u32; 16],
 }
 
 impl TileEncoder {
-    pub fn new(config: &TilerConfig, mask_uploader: MaskUploader, num_patterns: usize) -> Self {
+    pub fn new(config: &TilerConfig, num_patterns: usize) -> Self {
         let mask_atlas_tiles_x = config.mask_atlas_size.width / config.tile_size;
         let mask_atlas_tiles_y = config.mask_atlas_size.height / config.tile_size;
         let color_atlas_tiles_x = config.color_atlas_size.width / config.tile_size;
@@ -493,7 +493,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
 
-            mask_uploader,
+            mask_uploader: TileAtlasUploader::new(config.staging_buffer_size),
 
             reversed: false,
 
@@ -544,7 +544,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
 
-            mask_uploader: self.mask_uploader.create_similar(),
+            mask_uploader: TileAtlasUploader::new(self.mask_uploader.staging_buffer_size()),
 
             reversed: false,
 
@@ -598,7 +598,7 @@ impl TileEncoder {
     }
 
     pub fn num_cpu_masks(&self) -> usize {
-        self.mask_uploader.copy_instances().len()
+        self.mask_uploader.num_tiles()
     }
 
     pub fn num_mask_atlases(&self) -> u32 {
@@ -767,6 +767,10 @@ impl TileEncoder {
 
         self.masks_texture_index = self.src.mask_tiles.current_atlas;
         self.color_texture_index = self.src.color_tiles.current_atlas;
+
+        if force_flush {
+            self.mask_uploader.flush_batch();
+        }
     }
 
     pub fn end_batch(&mut self) {
@@ -787,14 +791,14 @@ impl TileEncoder {
         self.alpha_tiles_start = alpha_tiles_end;
     }
 
-    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer) -> TilePosition {
+    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut EdgeBuffer, device: &wgpu::Device) -> TilePosition {
         let mask = if draw.use_quads {
             self.add_quad_gpu_mask(tile, draw, active_edges, edges)
         } else {
             self.add_line_gpu_mask(tile, draw, active_edges, edges)
         };
 
-        mask.unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges))
+        mask.unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
     }
 
     pub fn add_cricle_mask(&mut self, center: Point, radius: f32, inverted: bool) -> TilePosition {
@@ -953,7 +957,7 @@ impl TileEncoder {
         Some(tile_position)
     }
 
-    pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> TilePosition {
+    pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], device: &wgpu::Device) -> TilePosition {
         debug_assert!(draw.tile_size <= 32.0);
         debug_assert!(draw.tile_size <= 32.0);
 
@@ -982,24 +986,18 @@ impl TileEncoder {
             }
         }
 
-        let (tile_position, _atlas_index) = self.src.mask_tiles.allocate();
+        let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
+        //println!("cpu mask at position {} {} atlas {:?}", tile_position.x(), tile_position.y(), atlas_index);
         self.maybe_flush_render_pass();
 
-        let mask_buffer_range = self.mask_uploader.new_mask(tile_position);
-        unsafe {
-            self.mask_uploader.current_mask_buffer.set_len(mask_buffer_range.end as usize);
-        }
+        let mask_buffer = self.mask_uploader.add_tile(device, tile_position, atlas_index);
 
         let accumulate = match draw.fill_rule {
             FillRule::EvenOdd => accumulate_even_odd,
             FillRule::NonZero => accumulate_non_zero,
         };
 
-        accumulate(
-            &accum,
-            &backdrops,
-            &mut self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()],
-        );
+        accumulate(&accum, &backdrops, mask_buffer);
 
         //let mask_name = format!("mask-{}.png", mask_id.to_u32());
         //crate::cpu_rasterizer::save_mask_png(16, 16, &self.mask_uploader.current_mask_buffer[mask_buffer_range.clone()], &mask_name);

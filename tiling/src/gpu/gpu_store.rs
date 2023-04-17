@@ -1,4 +1,6 @@
 use core::num::NonZeroU32;
+use std::ops::Range;
+use wgpu::BufferAddress;
 
 const GPU_STORE_WIDTH: u32 = 2048;
 const FLOATS_PER_ROW: usize = GPU_STORE_WIDTH as usize * 4;
@@ -40,6 +42,7 @@ impl GpuStore {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[wgpu::TextureFormat::Rgba32Float],
         });
 
         GpuStore {
@@ -91,6 +94,7 @@ impl GpuStore {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba32Float,
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[wgpu::TextureFormat::Rgba32Float],
             });
     
         }
@@ -118,5 +122,178 @@ impl GpuStore {
 
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+}
+
+struct StagingBuffer {
+    handle: wgpu::Buffer,
+    size: u32,
+    offset: u32,
+}
+
+struct GpuBuffer {
+    handle: wgpu::Buffer,
+    size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct DynBufferRange {
+    pub buffer_index: u32,
+    pub range: Range<u32>, // In bytes.
+}
+
+impl DynBufferRange {
+    pub fn address_range(&self) -> Range<BufferAddress> {
+        self.range.start as BufferAddress .. self.range.end as BufferAddress
+    }
+}
+
+/// GPU buffer memory that is re-built every frame.
+pub struct DynamicStore {
+    vbos: Vec<GpuBuffer>,
+    staging: Vec<StagingBuffer>,
+    buffer_size: u32,
+    usage: wgpu::BufferUsages,
+    label: &'static str,
+}
+
+impl DynamicStore {
+    pub fn new(buffer_size: u32, usage: wgpu::BufferUsages, label: &'static str) -> Self {
+        DynamicStore {
+            vbos: Vec::new(),
+            staging: Vec::new(),
+            buffer_size,
+            usage,
+            label,
+        }
+    }
+
+    pub fn new_vertices(buffer_size: u32) -> Self {
+        Self::new(buffer_size, wgpu::BufferUsages::VERTEX, "Dynamic vertices")
+    }
+
+    pub fn new_storage(buffer_size: u32) -> Self {
+        Self::new(buffer_size, wgpu::BufferUsages::STORAGE, "Dynamic buffer data")
+    }
+
+    pub fn upload(&mut self, device: &wgpu::Device, data: &[u8]) -> DynBufferRange {
+        let len = data.len() as u32;
+        let mut selected_buffer = None;
+        for (idx, buffer) in self.staging.iter().enumerate() {
+            if buffer.size - buffer.offset >= len {
+                selected_buffer = Some(idx);
+                break;
+            }
+        }
+
+        let selected_buffer = match selected_buffer {
+            Some(idx) => idx,
+            None => {
+                self.add_staging_buffer(device, len as BufferAddress)
+            }
+        };
+
+        let staging = &mut self.staging[selected_buffer];
+
+        let start = staging.offset as BufferAddress;
+        let end = start + data.len() as BufferAddress;
+        staging.handle.slice(start..end)
+            .get_mapped_range_mut()
+            .copy_from_slice(data);
+
+        let aligned_end = align(end, 64);
+
+        // Fill the hole with zeroes in case it is write-combined memory.
+        if end > aligned_end {
+            staging.handle.slice(end..aligned_end)
+                .get_mapped_range_mut()
+                .fill(0);
+        }
+
+        staging.offset = aligned_end as u32;
+
+        DynBufferRange {
+            buffer_index: selected_buffer as u32,
+            range: (start as u32) .. (end as u32),
+        }
+    }
+
+    fn add_staging_buffer(&mut self, device: &wgpu::Device, requested_size: BufferAddress) -> usize {
+        // If we are requesting a buffer larger than the default size, dump vbos to force re-creating one.
+        // TODO: that's obviously not great, but is intended to be rare.
+        if requested_size > self.buffer_size as BufferAddress && self.vbos.len() > self.staging.len() {
+            self.vbos.truncate(self.staging.len());
+        }
+
+        let actual_size = align(requested_size.max(self.buffer_size as BufferAddress), 64);
+
+        let idx = self.staging.len();
+
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging"),
+            size: actual_size,
+            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+
+        self.staging.push(StagingBuffer {
+            handle: staging,
+            size: self.buffer_size,
+            offset: 0,
+        });
+
+        if self.vbos.len() <= idx {
+            self.vbos.push(GpuBuffer {
+                handle: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(self.label),
+                    size: actual_size,
+                    usage: self.usage | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                size: actual_size as u32,
+            });
+        }
+
+        idx
+    }
+
+    pub fn unmap(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        for buffer in &mut self.staging {
+            buffer.handle.unmap();
+        }
+
+        for (src, dst) in self.staging.iter().zip(self.vbos.iter()) {
+            encoder.copy_buffer_to_buffer(
+                &src.handle,
+                0,
+                &dst.handle,
+                0,
+                src.offset as BufferAddress,
+            );
+        }
+    }
+
+    pub fn end_frame(&mut self) {
+        // TODO: recycle the staging buffers.
+        self.staging.clear();
+        // Throw away buffers with a special size.
+        self.vbos.retain(|buffer| buffer.size == self.buffer_size);
+    }
+
+    pub fn get_buffer(&self, index: u32) -> &wgpu::Buffer {
+        &self.vbos[index as usize].handle
+    }
+
+    pub fn get_buffer_slice(&self, range: &DynBufferRange) -> wgpu::BufferSlice {
+        self.get_buffer(range.buffer_index).slice(range.address_range())
+    }
+}
+
+fn align(size: BufferAddress, alignment: BufferAddress) -> BufferAddress {
+    let rem = size % alignment;
+    if rem == 0 {
+        size
+    } else {
+        size + alignment - rem
     }
 }

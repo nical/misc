@@ -6,7 +6,7 @@ resolver = "2"
 
 [dependencies]
 lyon = "1.0.0"
-wgpu = "0.14"
+wgpu = "0.15.1"
 winit = "0.27.3"
 futures = "0.3.5"
 bytemuck = "1.2.0"

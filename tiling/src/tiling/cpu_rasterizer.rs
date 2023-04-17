@@ -428,6 +428,7 @@ pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
             let a = acc.abs() % 2.0;
             let a = if a < 1.0 { a } else { 2.0 - a };
             dst[idx] = (a * 255.0) as u8;
+            //if (idx+y) % 2 == 0 { dst[idx] = 255; } // debug
             idx += 1;
         }
     }

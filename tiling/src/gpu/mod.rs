@@ -1,4 +1,4 @@
-pub mod mask_uploader;
+pub mod atlas_uploader;
 pub mod gpu_store;
 pub mod storage_buffer;
 

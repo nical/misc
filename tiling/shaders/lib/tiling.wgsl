@@ -1,5 +1,5 @@
-let TILE_SIZE_U32: u32 = 16u;
-let TILE_SIZE_F32: f32 = 16.0;
+const TILE_SIZE_U32: u32 = 16u;
+const TILE_SIZE_F32: f32 = 16.0;
 
 struct TileInstance {
     position: vec2<f32>,
@@ -8,7 +8,7 @@ struct TileInstance {
     pattern_data: u32,
 };
 
-let TILE_COORD_MASK: u32 = 0x3FFu;
+const TILE_COORD_MASK: u32 = 0x3FFu;
 
 fn tiling_decode_position(encoded: u32, uv: vec2<f32>) -> vec2<f32> {
     var offset = vec2<f32>(

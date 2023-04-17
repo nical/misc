@@ -5,9 +5,9 @@
 #define EDGE_STORE_BINDING { @group(1) @binding(1) }
 #import mask::fill
 
-let MASK_KIND_NONE: u32 = 0u;
-let MASK_KIND_TILED: u32 = 1u;
-let MASK_KIND_FILL: u32 = 2u;
+const MASK_KIND_NONE: u32 = 0u;
+const MASK_KIND_TILED: u32 = 1u;
+const MASK_KIND_FILL: u32 = 2u;
 
 struct Pattern {
 #mixin custom_pattern_struct_src

@@ -12,6 +12,11 @@ pub use tiling::occlusion::*;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 
+pub const TILE_SIZE: u32 = 16;
+pub const BYTES_PER_MASK: usize = (TILE_SIZE * TILE_SIZE) as usize;
+pub const BYTES_PER_RGBA_TILE: usize = (TILE_SIZE * TILE_SIZE) as usize * 4;
+
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {
     pub r: u8,

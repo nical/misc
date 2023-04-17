@@ -12,6 +12,7 @@ use crate::tiling::*;
 
 use crate::tiling::tile_renderer::{Mask as GpuMask, CircleMask, BumpAllocatedBuffer};
 use crate::tiling::encoder::*;
+use crate::tiling::occlusion::TileMask;
 
 use copyless::VecHelper;
 
@@ -66,6 +67,7 @@ pub struct TilerConfig {
     pub flatten: bool,
     pub mask_atlas_size: Size2D<u32>,
     pub color_atlas_size: Size2D<u32>,
+    pub staging_buffer_size: u32,
 }
 
 impl TilerConfig {
@@ -163,6 +165,7 @@ impl Tiler {
         pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         encoder: &mut TileEncoder,
+        device: &wgpu::Device,
     ) {
         profiling::scope!("tile_path");
 
@@ -187,7 +190,7 @@ impl Tiler {
 
         let t1 = time::precise_time_ns();
 
-        self.end_path(encoder, tile_mask, pattern);
+        self.end_path(encoder, tile_mask, pattern, device);
 
         let t2 = time::precise_time_ns();
 
@@ -326,7 +329,7 @@ impl Tiler {
     }
 
     /// Process manually edges and encode them into the output encoder.
-    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &mut dyn TilerPattern) {
+    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &mut dyn TilerPattern, device: &wgpu::Device) {
         if self.draw.inverted {
             self.first_row = 0;
             self.last_row = self.num_tiles_y as usize;
@@ -363,6 +366,7 @@ impl Tiler {
                 pattern,
                 encoder,
                 &mut edge_buffer,
+                device,
             );
         }
 
@@ -511,6 +515,7 @@ impl Tiler {
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
         edge_buffer: &mut EdgeBuffer,
+        device: &wgpu::Device,
     )  {
         //println!("--------- row {}", tile_y);
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
@@ -582,7 +587,7 @@ impl Tiler {
                     let n = tx-tile.x;
                     self.update_tile_rects(&mut tile, n);
                 } else {
-                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer);
+                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer, device);
                 }
             }
 
@@ -607,7 +612,7 @@ impl Tiler {
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
         while tile.x < tiles_end && !active_edges.is_empty() {
-            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer);
+            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer, device);
         }
 
         if self.draw.inverted {
@@ -634,6 +639,7 @@ impl Tiler {
         pattern: &mut dyn TilerPattern,
         encoder: &mut TileEncoder,
         edge_buffer: &mut EdgeBuffer,
+        device: &wgpu::Device,
     ) {
         let visibility = pattern.tile_visibility(tile.x, tile.y);
 
@@ -641,7 +647,7 @@ impl Tiler {
         if visibility != TileVisibility::Empty && coarse_mask.test(tile.x, opaque) {
             let tile_position = TilePosition::new(tile.x, tile.y);
 
-            let mask_tile = encoder.add_fill_mask(tile, &self.draw, active_edges, edge_buffer);
+            let mask_tile = encoder.add_fill_mask(tile, &self.draw, active_edges, edge_buffer, device);
             encoder.add_tile(pattern, opaque, tile_position, mask_tile);
         }
 
@@ -699,6 +705,7 @@ impl Tiler {
         pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         encoder: &mut TileEncoder,
+        device: &wgpu::Device,
     ) {
         let mut transformed_rect = *rect;
         let mut simple = true;
@@ -729,7 +736,7 @@ impl Tiler {
         path.end(true);
         let path = path.build();
 
-        self.fill_path(path.iter(), options, pattern, tile_mask, encoder);    
+        self.fill_path(path.iter(), options, pattern, tile_mask, encoder, device);    
     }
 
     fn fill_axis_aligned_rect(
@@ -917,6 +924,7 @@ impl Tiler {
         pattern: &mut dyn TilerPattern,
         tile_mask: &mut TileMask,
         encoder: &mut TileEncoder,
+        device: &wgpu::Device,
     ) {
         self.set_fill_rule(options.fill_rule, options.inverted);
         encoder.prerender_pattern = options.prerender_pattern;
@@ -952,6 +960,7 @@ impl Tiler {
                 pattern,
                 tile_mask,
                 encoder,
+                device,
             );
         }
     }

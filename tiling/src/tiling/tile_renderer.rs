@@ -1,9 +1,9 @@
 use std::num::NonZeroU32;
 
 use crate::{gpu::{
-    gpu_store::GpuStore,
-    mask_uploader::{MaskUploadCopies},
-    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*
+    gpu_store::{GpuStore, DynamicStore},
+    atlas_uploader::{MaskUploadCopies},
+    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
 }, custom_pattern::TilePipelines};
 use crate::tiling::{
     tiler::{MaskRenderer},
@@ -118,6 +118,8 @@ pub struct TileRenderer {
     mask_params_ubo: wgpu::Buffer,
     main_target_descriptor_ubo: wgpu::Buffer,
     patterns: Vec<TilePipelines>,
+
+    pub vertices: DynamicStore,
 }
 
 impl TileRenderer {
@@ -187,7 +189,7 @@ impl TileRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout);
+        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
         let masks = Masks::new(&device, shaders, &edges);
         let fill_masks = MaskRenderer::new::<Mask>(device, "fill masks", 4096 * 4);
         let circle_masks = MaskRenderer::new::<CircleMask>(device, "circle masks", 4096);
@@ -315,6 +317,7 @@ impl TileRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
             sample_count: 1,
+            view_formats: &[wgpu::TextureFormat::R8Unorm],
         });
 
         let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -331,6 +334,7 @@ impl TileRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
             sample_count: 1,
+            view_formats: &[wgpu::TextureFormat::Bgra8UnormSrgb],
         });
 
         let src_color_texture_view = src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -474,6 +478,8 @@ impl TileRenderer {
             mask_params_ubo,
             main_target_descriptor_ubo,
             patterns: Vec::new(),
+
+            vertices: DynamicStore::new_vertices(4096 * 64),
         }
     }
 
@@ -534,6 +540,11 @@ impl TileRenderer {
     ) {
         let mut src_color_atlas = std::u32::MAX;
         let mut src_mask_atlas = std::u32::MAX;
+
+        tile_encoder.mask_uploader.unmap();
+        tile_encoder.mask_uploader.upload_vertices(device, &mut self.vertices);
+
+        self.vertices.unmap(encoder);
 
         self.render_atlases(
             0,
@@ -596,6 +607,8 @@ impl TileRenderer {
                 )
             }
         }
+    
+        self.vertices.end_frame();
     }
 
     fn render_atlases(
@@ -645,47 +658,51 @@ impl TileRenderer {
         if *src_mask_atlas != render_pass.mask_atlas_index {
             *src_mask_atlas = render_pass.mask_atlas_index;
 
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Mask atlas"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.mask_texture_view,
-                    ops: wgpu::Operations {
-                        // TODO: Clear is actually quite expensive if a large portion of the atlas
-                        // is not used. Could decide between Load and Clear or Load depending on how
-                        // much of the atlas we are going to render.
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
-                    },
-                    resolve_target: None,
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-            pass.set_bind_group(0, &self.masks_bind_group, &[]);
-
-            if self.fill_masks.has_content(*src_mask_atlas) {
-                pass.set_pipeline(&self.masks.fill_pipeline);
-                self.fill_masks.render(*src_mask_atlas, &mut pass);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Mask atlas"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.mask_texture_view,
+                        ops: wgpu::Operations {
+                            // TODO: Clear is actually quite expensive if a large portion of the atlas
+                            // is not used. Could decide between Load and Clear or Load depending on how
+                            // much of the atlas we are going to render.
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: true,
+                        },
+                        resolve_target: None,
+                    })],
+                    depth_stencil_attachment: None,
+                });
+    
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_bind_group(0, &self.masks_bind_group, &[]);
+    
+                if self.fill_masks.has_content(*src_mask_atlas) {
+                    pass.set_pipeline(&self.masks.fill_pipeline);
+                    self.fill_masks.render(*src_mask_atlas, &mut pass);
+                }
+    
+                if self.circle_masks.has_content(*src_mask_atlas) {
+                    pass.set_pipeline(&self.masks.circle_pipeline);
+                    self.circle_masks.render(*src_mask_atlas, &mut pass);
+                }
+    
+                if self.rect_masks.has_content(*src_mask_atlas) {
+                    pass.set_pipeline(&self.masks.rect_pipeline);
+                    self.rect_masks.render(*src_mask_atlas, &mut pass);
+                }    
             }
 
-            if self.circle_masks.has_content(*src_mask_atlas) {
-                pass.set_pipeline(&self.masks.circle_pipeline);
-                self.circle_masks.render(*src_mask_atlas, &mut pass);
-            }
-
-            if self.rect_masks.has_content(*src_mask_atlas) {
-                pass.set_pipeline(&self.masks.rect_pipeline);
-                self.rect_masks.render(*src_mask_atlas, &mut pass);
-            }
-
-            tile_encoder.mask_uploader.upload(
-                &device,
-                &mut pass,
-                &self.mask_atlas_target_and_gpu_store_bind_group,
-                &self.mask_upload_copies.pipeline,
+            // TODO: split this in two so that the copy shader can be in the previous pass.
+            self.mask_upload_copies.update_target(
+                encoder,
                 &self.quad_ibo,
-                pass_idx as u32,
+                &self.vertices,
+                &tile_encoder.mask_uploader,
+                render_pass.mask_atlas_index,
+                &self.mask_texture_view,
+                &self.mask_atlas_target_and_gpu_store_bind_group,
             );
         }
     }

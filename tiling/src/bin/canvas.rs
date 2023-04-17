@@ -9,7 +9,6 @@ use tiling::pattern::{
 };
 use tiling::load_svg::*;
 use tiling::gpu::{ShaderSources, GpuStore};
-use tiling::gpu::mask_uploader::MaskUploader;
 use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
 use tiling::{Color, Size2D, Transform2D};
@@ -59,7 +58,7 @@ fn main() {
 
     let tile_size = 16;
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 64;
+    let max_edges_per_gpu_tile = 8;
     let mask_atlas_size: u32 = 2048;
     let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
@@ -71,6 +70,7 @@ fn main() {
         flatten: false,
         mask_atlas_size: size2(mask_atlas_size, mask_atlas_size),
         color_atlas_size: size2(color_atlas_size, color_atlas_size),
+        staging_buffer_size: tiling::BYTES_PER_MASK as u32 * 2048,
     };
 
     let event_loop = EventLoop::new();
@@ -85,10 +85,13 @@ fn main() {
         wgpu::Backends::all()
     };
     // create an instance
-    let instance = wgpu::Instance::new(backends);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        .. wgpu::InstanceDescriptor::default()
+    });
 
     // create an surface
-    let surface = unsafe { instance.create_surface(&window) };
+    let surface = unsafe { instance.create_surface(&window).unwrap() };
 
     // create an adapter
     let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -147,10 +150,7 @@ fn main() {
     tile_renderer.register_pattern(SimpleGradient::create_pipelines(&device, &mut pattern_builder));
     tile_renderer.register_pattern(CheckerboardPattern::create_pipelines(&device, &mut pattern_builder));
 
-    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
-    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, mask_atlas_size);
-
-    let mut frame_builder = FrameBuilder::new(&tiler_config, mask_uploader);
+    let mut frame_builder = FrameBuilder::new(&tiler_config);
 
     //frame_builder.tiler.set_scissor(&Box2D { min: point(500.0, 600.0), max: point(1000.0, 800.0) });
     frame_builder.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -216,7 +216,7 @@ fn main() {
 
     let mut commands = canvas.finish();
 
-    frame_builder.build(&commands, &mut gpu_store);
+    frame_builder.build(&commands, &mut gpu_store, &device);
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -225,6 +225,7 @@ fn main() {
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: vec![wgpu::TextureFormat::Bgra8UnormSrgb],
     };
 
     surface.configure(&device, &surface_desc);
@@ -298,7 +299,7 @@ fn main() {
         gpu_store.push(&[0.0]);
 
         let frame_build_start = time::precise_time_ns();
-        frame_builder.build(&commands, &mut gpu_store);
+        frame_builder.build(&commands, &mut gpu_store, &device);
         frame_build_time += Duration::from_ns(time::precise_time_ns() - frame_build_start);
         row_time += frame_builder.stats().row_time;
         tile_time += frame_builder.stats().tile_time;

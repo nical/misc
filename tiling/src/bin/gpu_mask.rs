@@ -116,7 +116,6 @@ fn main() {
     let tiles_y = (size.height + ts - 1) / ts;
     let mut tile_mask = TileMask::new(tiles_x, tiles_y);
 
-    use tiling::gpu::mask_uploader::MaskUploader;
     let mut shaders = ShaderSources::new();
 
     let mut gpu_store = GpuStore::new(1024, &device);
@@ -129,11 +128,8 @@ fn main() {
         &mut gpu_store,
     );
 
-    let mask_upload_copies = tiling::gpu::mask_uploader::MaskUploadCopies::new(&device, &mut shaders, &tile_renderer.target_and_gpu_store_layout);
-    let mask_uploader = MaskUploader::new(&device, &mask_upload_copies.bind_group_layout, tile_atlas_size);
-
     // Main builder.
-    let mut builder = TileEncoder::new(&tiler_config, mask_uploader, 1);
+    let mut builder = TileEncoder::new(&tiler_config, 1);
 
     tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
     tiler.draw.use_quads = use_quads;
