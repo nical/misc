@@ -1375,42 +1375,12 @@ pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
     ))
 }
 
-pub struct MaskRenderer {
-    render_passes: Vec<Range<u32>>,
-    buffer_range: Option<DynBufferRange>,
-}
-
-impl MaskRenderer {
-    pub fn new() -> Self {
-        MaskRenderer {
-            render_passes: Vec::with_capacity(16),
-            buffer_range: None,
-        }
-    }
-
-    pub fn begin_frame(&mut self) {
-        self.buffer_range = None;
-    }
-
-    pub fn has_content(&self, atlas_index: AtlasIndex) -> bool {
-        let idx = atlas_index as usize;
-        self.render_passes.len() > idx && !self.render_passes[idx].is_empty()
-    }
-
-    pub fn render<'a, 'b: 'a>(&'b self, vertices: &'a DynamicStore, atlas_index: AtlasIndex, pass: &mut wgpu::RenderPass<'a>) {
-        if let Some(buffer_range) = &self.buffer_range {
-            let range = self.render_passes[atlas_index as usize].clone();
-            pass.set_vertex_buffer(0, vertices.get_buffer_slice(buffer_range));
-            pass.draw_indexed(0..6, 0, range);    
-        }
-    }
-}
-
 pub struct MaskEncoder<T> {
     pub masks: Vec<T>,
     masks_start: u32,
-    render_passes: Vec<Range<u32>>,
+    pub render_passes: Vec<Range<u32>>,
     current_atlas: u32,
+    pub buffer_range: Option<DynBufferRange>,
 }
 
 impl<T> MaskEncoder<T> {
@@ -1420,6 +1390,7 @@ impl<T> MaskEncoder<T> {
             render_passes: Vec::with_capacity(16),
             masks_start: 0,
             current_atlas: 0,
+            buffer_range: None,
         }
     }
 
@@ -1428,6 +1399,7 @@ impl<T> MaskEncoder<T> {
         self.render_passes.clear();
         self.masks_start = 0;
         self.current_atlas = 0;
+        self.buffer_range = None;
     }
 
     pub fn end_render_pass(&mut self) {
@@ -1453,11 +1425,23 @@ impl<T> MaskEncoder<T> {
         self.masks.push(mask);
     }
 
-    pub fn upload(&mut self, renderer: &mut MaskRenderer, vertices: &mut DynamicStore, device: &wgpu::Device) where T: bytemuck::Pod {
-        renderer.buffer_range = vertices.upload(device, bytemuck::cast_slice(&self.masks));
+    pub fn upload(&mut self, vertices: &mut DynamicStore, device: &wgpu::Device) where T: bytemuck::Pod {
+        self.buffer_range = vertices.upload(device, bytemuck::cast_slice(&self.masks));
+    }
 
-        std::mem::swap(&mut self.render_passes, &mut renderer.render_passes);
-        self.render_passes.clear();
+    pub fn has_content(&self, atlas_index: AtlasIndex) -> bool {
+        let idx = atlas_index as usize;
+        self.render_passes.len() > idx && !self.render_passes[idx].is_empty()
+    }
+
+    pub fn buffer_and_instance_ranges(&self, atlas_index: AtlasIndex) -> Option<(&DynBufferRange, Range<u32>)> {
+        if !self.has_content(atlas_index) {
+            return None;
+        }
+        let buffer_range = self.buffer_range.as_ref().unwrap();
+        let range = self.render_passes[atlas_index as usize].clone();
+
+        Some((buffer_range, range))
     }
 }
 

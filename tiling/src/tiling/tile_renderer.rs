@@ -6,7 +6,6 @@ use crate::{gpu::{
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
 }, custom_pattern::TilePipelines};
 use crate::tiling::{
-    tiler::{MaskRenderer},
     encoder::{TileEncoder, LineEdge},
     TilePosition, PatternData
 };
@@ -107,10 +106,6 @@ pub struct TileRenderer {
     color_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
 
     quad_ibo: wgpu::Buffer,
-    // TODO: These belong to some place where we store per-encoder data.
-    pub fill_masks: MaskRenderer,
-    pub circle_masks: MaskRenderer,
-    pub rect_masks: MaskRenderer,
     // TODO: some way to account for a per-TileEncoder offset or range.
     pub edges: StorageBuffer,
     mask_params_ubo: wgpu::Buffer,
@@ -189,9 +184,6 @@ impl TileRenderer {
 
         let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
         let masks = Masks::new(&device, shaders, &edges);
-        let fill_masks = MaskRenderer::new();
-        let circle_masks = MaskRenderer::new();
-        let rect_masks = MaskRenderer::new();
 
         let src = include_str!("./../../shaders/tile.wgsl");
         let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
@@ -454,9 +446,6 @@ impl TileRenderer {
             mask_atlas_target_and_gpu_store_bind_group,
             color_atlas_target_and_gpu_store_bind_group,
             edges,
-            fill_masks,
-            circle_masks,
-            rect_masks,
             mask_params_ubo,
             main_target_descriptor_ubo,
             patterns: Vec::new(),
@@ -480,9 +469,6 @@ impl TileRenderer {
     }
 
     pub fn begin_frame(&mut self) {
-        self.fill_masks.begin_frame();
-        self.circle_masks.begin_frame();
-        self.rect_masks.begin_frame();
         self.edges.begin_frame();
     }
 
@@ -652,20 +638,24 @@ impl TileRenderer {
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_bind_group(0, &self.masks_bind_group, &[]);
     
-                if self.fill_masks.has_content(*src_mask_atlas) {
+                // TODO: Make it possible to register more mask types without hard-coding them.
+                if let Some((buffer_range, instances)) = tile_encoder.fill_masks.buffer_and_instance_ranges(*src_mask_atlas) {
                     pass.set_pipeline(&self.masks.fill_pipeline);
-                    self.fill_masks.render(&self.vertices, *src_mask_atlas, &mut pass);
+                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
+                    pass.draw_indexed(0..6, 0, instances);
                 }
-    
-                if self.circle_masks.has_content(*src_mask_atlas) {
+
+                if let Some((buffer_range, instances)) = tile_encoder.circle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
                     pass.set_pipeline(&self.masks.circle_pipeline);
-                    self.circle_masks.render(&self.vertices, *src_mask_atlas, &mut pass);
+                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
+                    pass.draw_indexed(0..6, 0, instances);
                 }
-    
-                if self.rect_masks.has_content(*src_mask_atlas) {
+
+                if let Some((buffer_range, instances)) = tile_encoder.rect_masks.buffer_and_instance_ranges(*src_mask_atlas) {
                     pass.set_pipeline(&self.masks.rect_pipeline);
-                    self.rect_masks.render(&self.vertices, *src_mask_atlas, &mut pass);
-                }    
+                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
+                    pass.draw_indexed(0..6, 0, instances);
+                }
             }
 
             // TODO: split this in two so that the copy shader can be in the previous pass.

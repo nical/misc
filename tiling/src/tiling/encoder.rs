@@ -932,9 +932,9 @@ impl TileEncoder {
     pub fn upload(&mut self, tile_renderer: &mut TileRenderer, device: &wgpu::Device) {
         let vertices = &mut tile_renderer.vertices;
 
-        self.fill_masks.upload(&mut tile_renderer.fill_masks, vertices, device);
-        self.circle_masks.upload(&mut tile_renderer.circle_masks, vertices, device);
-        self.rect_masks.upload(&mut tile_renderer.rect_masks, vertices, device);
+        self.fill_masks.upload(vertices, device);
+        self.circle_masks.upload(vertices, device);
+        self.rect_masks.upload(vertices, device);
 
         self.ranges.opaque_image_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_image_tiles));
         self.ranges.alpha_tiles = vertices.upload(device, bytemuck::cast_slice(&self.alpha_tiles));
