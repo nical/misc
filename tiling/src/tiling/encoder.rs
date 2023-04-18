@@ -6,6 +6,7 @@ pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
+use crate::gpu::DynBufferRange;
 use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
 use crate::tiling::tiler::{CircleMaskEncoder, RectangleMaskEncoder, GpuMaskEncoder};
@@ -352,18 +353,14 @@ pub struct Batch {
 
 #[derive(Default, Debug)]
 pub struct BufferRanges {
-    pub opaque_image_tiles: BufferRange,
-    pub alpha_tiles: BufferRange,
-    pub masks: BufferRange,
-    pub circles: BufferRange,
+    pub opaque_image_tiles: Option<DynBufferRange>,
+    pub alpha_tiles: Option<DynBufferRange>,
 }
 
 impl BufferRanges {
     pub fn reset(&mut self) {
-        self.opaque_image_tiles = BufferRange(0, 0);
-        self.alpha_tiles = BufferRange(0, 0);
-        self.masks = BufferRange(0, 0);
-        self.circles = BufferRange(0, 0);
+        self.opaque_image_tiles = None;
+        self.alpha_tiles = None;
     }
 }
 
@@ -376,8 +373,8 @@ pub struct PatternTiles {
     opaque: Vec<TileInstance>,
     prerendered: Vec<TileInstance>,
     render_pass_start: u32,
-    pub prerendered_vbo_range: BufferRange,
-    pub opaque_vbo_range: BufferRange,
+    pub prerendered_vbo_range: Option<DynBufferRange>,
+    pub opaque_vbo_range: Option<DynBufferRange>,
 }
 
 pub struct TileEncoder {
@@ -433,8 +430,8 @@ impl TileEncoder {
                 opaque: Vec::with_capacity(2048),
                 prerendered: Vec::with_capacity(1024),
                 render_pass_start: 0,
-                opaque_vbo_range: BufferRange(0, 0),
-                prerendered_vbo_range: BufferRange(0, 0),
+                opaque_vbo_range: None,
+                prerendered_vbo_range: None,
             });
         }
         TileEncoder {
@@ -472,8 +469,9 @@ impl TileEncoder {
         }
     }
 
-    pub fn get_opaque_batch(&self, pattern_idx: usize) -> Range<u32> {
-        self.patterns[pattern_idx].opaque_vbo_range.to_u32()
+    pub fn get_opaque_batch_vertices(&self, pattern_idx: usize) -> (Option<&DynBufferRange>, u32) {
+        let pattern = &self.patterns[pattern_idx];
+        (pattern.opaque_vbo_range.as_ref(), pattern.opaque.len() as u32)
     }
 
     pub fn create_similar(&self) -> Self {
@@ -484,8 +482,8 @@ impl TileEncoder {
                 opaque: Vec::with_capacity(2048),
                 prerendered: Vec::with_capacity(1024),
                 render_pass_start: 0,
-                opaque_vbo_range: BufferRange(0, 0),
-                prerendered_vbo_range: BufferRange(0, 0),
+                opaque_vbo_range: None,
+                prerendered_vbo_range: None,
             });
         }
         TileEncoder {
@@ -931,50 +929,19 @@ impl TileEncoder {
         }
     }
 
-    pub fn allocate_buffer_ranges(&mut self, tile_renderer: &mut TileRenderer) {
-        self.fill_masks.allocate_buffer_ranges(&mut tile_renderer.fill_masks);
-        self.circle_masks.allocate_buffer_ranges(&mut tile_renderer.circle_masks);
-        self.rect_masks.allocate_buffer_ranges(&mut tile_renderer.rect_masks);
-        self.ranges.opaque_image_tiles = tile_renderer.tiles_vbo.allocator.push(self.opaque_image_tiles.len());
-        self.ranges.alpha_tiles = tile_renderer.alpha_tiles_vbo.allocator.push(self.alpha_tiles.len());
+    pub fn upload(&mut self, tile_renderer: &mut TileRenderer, device: &wgpu::Device) {
+        let vertices = &mut tile_renderer.vertices;
+
+        self.fill_masks.upload(&mut tile_renderer.fill_masks, vertices, device);
+        self.circle_masks.upload(&mut tile_renderer.circle_masks, vertices, device);
+        self.rect_masks.upload(&mut tile_renderer.rect_masks, vertices, device);
+
+        self.ranges.opaque_image_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_image_tiles));
+        self.ranges.alpha_tiles = vertices.upload(device, bytemuck::cast_slice(&self.alpha_tiles));
+
         for pattern in &mut self.patterns {
-            pattern.opaque_vbo_range = tile_renderer.tiles_vbo.allocator.push(pattern.opaque.len());
-            pattern.prerendered_vbo_range = tile_renderer.tiles_vbo.allocator.push(pattern.prerendered.len());
-        }
-    }
-
-    pub fn upload(&mut self, tile_renderer: &mut TileRenderer, queue: &wgpu::Queue) {
-        self.fill_masks.upload(&mut tile_renderer.fill_masks, queue);
-        self.circle_masks.upload(&mut tile_renderer.circle_masks, queue);
-        self.rect_masks.upload(&mut tile_renderer.rect_masks, queue);
-
-        queue.write_buffer(
-            &tile_renderer.tiles_vbo.buffer,
-            self.ranges.opaque_image_tiles.byte_offset::<TileInstance>(),
-            bytemuck::cast_slice(&self.opaque_image_tiles),
-        );
-
-        queue.write_buffer(
-            &tile_renderer.alpha_tiles_vbo.buffer,
-            self.ranges.alpha_tiles.byte_offset::<TileInstance>(),
-            bytemuck::cast_slice(&self.alpha_tiles),
-        );
-
-        for pattern in &self.patterns {
-            if !pattern.opaque_vbo_range.is_empty() {
-                queue.write_buffer(
-                    &tile_renderer.tiles_vbo.buffer,
-                    pattern.opaque_vbo_range.byte_offset::<TileInstance>(),
-                    bytemuck::cast_slice(&pattern.opaque),
-                );
-            }
-            if !pattern.prerendered_vbo_range.is_empty() {
-                queue.write_buffer(
-                    &tile_renderer.tiles_vbo.buffer,
-                    pattern.prerendered_vbo_range.byte_offset::<TileInstance>(),
-                    bytemuck::cast_slice(&pattern.prerendered),
-                );
-            }
+            pattern.opaque_vbo_range = vertices.upload(device, bytemuck::cast_slice(&pattern.opaque));
+            pattern.prerendered_vbo_range = vertices.upload(device, bytemuck::cast_slice(&pattern.prerendered));
         }
     }
 

@@ -306,15 +306,12 @@ fn main() {
         tile_renderer.begin_frame();
 
         tile_renderer.edges.bump_allocator().push(frame_builder.tiler.edges.len());
-        for target in &mut frame_builder.targets {
-            target.tile_encoder.allocate_buffer_ranges(&mut tile_renderer);
-        }
 
         tile_renderer.allocate(&device);
 
         tile_renderer.edges.upload_bytes(0, bytemuck::cast_slice(&frame_builder.tiler.edges), &queue);
         for target in &mut frame_builder.targets {
-            target.tile_encoder.upload(&mut tile_renderer, &queue);
+            target.tile_encoder.upload(&mut tile_renderer, &device);
         }
         gpu_store.upload(&device, &queue);
 

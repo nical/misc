@@ -174,10 +174,7 @@ impl TileAtlasUploader {
     }
 
     pub fn upload_vertices(&mut self, device: &wgpu::Device, vertices: &mut DynamicStore) {
-        if self.copy_instances.is_empty() {
-            return;
-        }
-        self.uploaded_copy_instances_range = Some(vertices.upload(device, bytemuck::cast_slice(&self.copy_instances)));
+        self.uploaded_copy_instances_range = vertices.upload(device, bytemuck::cast_slice(&self.copy_instances));
     }
 
     pub fn reset(&mut self) {

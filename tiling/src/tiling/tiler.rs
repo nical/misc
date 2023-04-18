@@ -8,9 +8,10 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::{geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment}, path::Winding};
 
+use crate::gpu::{DynBufferRange, DynamicStore};
 use crate::tiling::*;
 
-use crate::tiling::tile_renderer::{Mask as GpuMask, CircleMask, BumpAllocatedBuffer};
+use crate::tiling::tile_renderer::{Mask as GpuMask, CircleMask};
 use crate::tiling::encoder::*;
 use crate::tiling::occlusion::TileMask;
 
@@ -1375,29 +1376,20 @@ pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
 }
 
 pub struct MaskRenderer {
-    masks: BumpAllocatedBuffer,
     render_passes: Vec<Range<u32>>,
+    buffer_range: Option<DynBufferRange>,
 }
 
 impl MaskRenderer {
-    pub fn new<T>(device: &wgpu::Device, label: &'static str, default_size: u32) -> Self {
+    pub fn new() -> Self {
         MaskRenderer {
-            masks: BumpAllocatedBuffer::new::<T>(
-                device,
-                label,
-                default_size,
-                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
-            ),
             render_passes: Vec::with_capacity(16),
+            buffer_range: None,
         }
     }
 
     pub fn begin_frame(&mut self) {
-        self.masks.begin_frame();
-    }
-
-    pub fn ensure_allocated(&mut self, device: &wgpu::Device) {
-        self.masks.ensure_allocated(device);
+        self.buffer_range = None;
     }
 
     pub fn has_content(&self, atlas_index: AtlasIndex) -> bool {
@@ -1405,10 +1397,12 @@ impl MaskRenderer {
         self.render_passes.len() > idx && !self.render_passes[idx].is_empty()
     }
 
-    pub fn render<'a, 'b: 'a>(&'b self, atlas_index: AtlasIndex, pass: &mut wgpu::RenderPass<'a>) {
-        let range = self.render_passes[atlas_index as usize].clone();
-        pass.set_vertex_buffer(0, self.masks.buffer.slice(..));
-        pass.draw_indexed(0..6, 0, range);
+    pub fn render<'a, 'b: 'a>(&'b self, vertices: &'a DynamicStore, atlas_index: AtlasIndex, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(buffer_range) = &self.buffer_range {
+            let range = self.render_passes[atlas_index as usize].clone();
+            pass.set_vertex_buffer(0, vertices.get_buffer_slice(buffer_range));
+            pass.draw_indexed(0..6, 0, range);    
+        }
     }
 }
 
@@ -1417,7 +1411,6 @@ pub struct MaskEncoder<T> {
     masks_start: u32,
     render_passes: Vec<Range<u32>>,
     current_atlas: u32,
-    buffer_range: BufferRange,
 }
 
 impl<T> MaskEncoder<T> {
@@ -1427,7 +1420,6 @@ impl<T> MaskEncoder<T> {
             render_passes: Vec::with_capacity(16),
             masks_start: 0,
             current_atlas: 0,
-            buffer_range: BufferRange(0, 0),
         }
     }
 
@@ -1461,16 +1453,9 @@ impl<T> MaskEncoder<T> {
         self.masks.push(mask);
     }
 
-    pub fn allocate_buffer_ranges(&mut self, renderer: &mut MaskRenderer) {
-        self.buffer_range = renderer.masks.allocator.push(self.masks.len());
-    }
+    pub fn upload(&mut self, renderer: &mut MaskRenderer, vertices: &mut DynamicStore, device: &wgpu::Device) where T: bytemuck::Pod {
+        renderer.buffer_range = vertices.upload(device, bytemuck::cast_slice(&self.masks));
 
-    pub fn upload(&mut self, renderer: &mut MaskRenderer, queue: &wgpu::Queue) where T: bytemuck::Pod {
-        queue.write_buffer(
-            &renderer.masks.buffer,
-            self.buffer_range.byte_offset::<GpuMask>(),
-            bytemuck::cast_slice(&self.masks),
-        );
         std::mem::swap(&mut self.render_passes, &mut renderer.render_passes);
         self.render_passes.clear();
     }

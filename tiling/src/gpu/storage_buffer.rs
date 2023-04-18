@@ -1,6 +1,5 @@
 use std::num::NonZeroU32;
-
-use crate::tiling::tile_renderer::BufferBumpAllocator;
+use std::ops::Range;
 
 const FLOAT_TEXTURE_WIDTH: u32 = 1024;
 const BYTES_PER_ROW: u32 = FLOAT_TEXTURE_WIDTH * 16;
@@ -248,5 +247,45 @@ impl StorageBuffer {
                 wgpu::BindingResource::TextureView(view)
             }
         }
+    }
+}
+
+pub struct BufferBumpAllocator {
+    cursor: u32,
+}
+
+impl BufferBumpAllocator {
+    pub fn new() -> Self {
+        BufferBumpAllocator { cursor: 0 }
+    }
+
+    pub fn push(&mut self, n: usize) -> BufferRange {
+        let range = BufferRange(self.cursor, self.cursor + n as u32);
+        self.cursor = range.1;
+
+        range
+    }
+
+    pub fn len(&self) -> u32 {
+        self.cursor
+    }
+
+    pub fn clear(&mut self) {
+        self.cursor = 0;
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct BufferRange(pub u32, pub u32);
+impl BufferRange {
+    pub fn start(&self) -> u32 { self.0 }
+    pub fn is_empty(&self) -> bool { self.0 >= self.1 }
+    pub fn to_u32(&self) -> Range<u32> { self.0 .. self.1 }
+    pub fn byte_range<Ty>(&self) -> Range<u64> {
+        let s = std::mem::size_of::<Ty>() as u64;
+        self.0 as u64 * s .. self.1 as u64 * s
+    }
+    pub fn byte_offset<Ty>(&self) -> u64 {
+        self.0 as u64 * std::mem::size_of::<Ty>() as u64
     }
 }

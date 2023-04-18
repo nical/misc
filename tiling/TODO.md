@@ -15,7 +15,6 @@
  - [x] Support storing gpu data without SSBO
  - [x] inverted fill
  - [ ] Rasterize fill masks directly in the color pass
- - [ ] Try a sweep line algorithm for row decomposition
  - [ ] Try pathfinder's binning algorithm
  - [ ] Image patterns.
  - [ ] Custom masks

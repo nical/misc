@@ -9,8 +9,6 @@ pub use tiler::*;
 pub use tile_renderer::*;
 pub use occlusion::*;
 
-use std::ops::Range;
-
 use lyon::geom::euclid::default::{Transform2D, Size2D};
 use lyon::path::FillRule;
 
@@ -149,21 +147,6 @@ impl TileAllocator {
 
     pub fn is_nearly_full(&self) -> bool {
         (self.next_id * 100) / self.tiles_per_atlas > 70
-    }
-}
-
-#[derive(Copy, Clone, Debug, Default)]
-pub struct BufferRange(pub u32, pub u32);
-impl BufferRange {
-    pub fn start(&self) -> u32 { self.0 }
-    pub fn is_empty(&self) -> bool { self.0 >= self.1 }
-    pub fn to_u32(&self) -> Range<u32> { self.0 .. self.1 }
-    pub fn byte_range<Ty>(&self) -> Range<u64> {
-        let s = std::mem::size_of::<Ty>() as u64;
-        self.0 as u64 * s .. self.1 as u64 * s
-    }
-    pub fn byte_offset<Ty>(&self) -> u64 {
-        self.0 as u64 * std::mem::size_of::<Ty>() as u64
     }
 }
 

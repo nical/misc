@@ -148,7 +148,16 @@ impl DynBufferRange {
     }
 }
 
+// TODO: Dynamic store uses a few large-ish fixed size vertex buffers. Another way would be to use a single very large
+// one, however we'd more easily hit limits. Or we could use some hybrid of the two: a single vertex buffer of the
+// required size up to a limit and spill into another variably sized one.
+// TODO: This manages its own staging buffer but we could probably centralize staging buffer management into a separate
+// thing.
+// TODO: recycle the staging buffers!
+
 /// GPU buffer memory that is re-built every frame.
+///
+/// Typically useful for dynamic vertices.
 pub struct DynamicStore {
     vbos: Vec<GpuBuffer>,
     staging: Vec<StagingBuffer>,
@@ -172,15 +181,20 @@ impl DynamicStore {
         Self::new(buffer_size, wgpu::BufferUsages::VERTEX, "Dynamic vertices")
     }
 
+    // Note: Using GPU-store for float-only data is better since it can fall back to textures.
     pub fn new_storage(buffer_size: u32) -> Self {
-        Self::new(buffer_size, wgpu::BufferUsages::STORAGE, "Dynamic buffer data")
+        Self::new(buffer_size, wgpu::BufferUsages::STORAGE, "Dynamic storage buffer")
     }
 
-    pub fn upload(&mut self, device: &wgpu::Device, data: &[u8]) -> DynBufferRange {
+    pub fn upload(&mut self, device: &wgpu::Device, data: &[u8]) -> Option<DynBufferRange> {
+        if data.is_empty() {
+            return None;
+        }
+
         let len = data.len() as u32;
         let mut selected_buffer = None;
         for (idx, buffer) in self.staging.iter().enumerate() {
-            if buffer.size - buffer.offset >= len {
+            if buffer.size >= buffer.offset + len {
                 selected_buffer = Some(idx);
                 break;
             }
@@ -212,10 +226,10 @@ impl DynamicStore {
 
         staging.offset = aligned_end as u32;
 
-        DynBufferRange {
+        Some(DynBufferRange {
             buffer_index: selected_buffer as u32,
             range: (start as u32) .. (end as u32),
-        }
+        })
     }
 
     fn add_staging_buffer(&mut self, device: &wgpu::Device, requested_size: BufferAddress) -> usize {
