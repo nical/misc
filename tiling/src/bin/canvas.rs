@@ -312,6 +312,8 @@ fn main() {
         tile_renderer.edges.upload_bytes(0, bytemuck::cast_slice(&frame_builder.tiler.edges), &queue);
         for target in &mut frame_builder.targets {
             target.tile_encoder.upload(&mut tile_renderer, &device);
+            target.circle_masks.upload(&mut tile_renderer.vertices, &device);
+            target.rectangle_masks.upload(&mut tile_renderer.vertices, &device);
         }
         gpu_store.upload(&device, &queue);
 
@@ -322,6 +324,8 @@ fn main() {
         let target = &mut frame_builder.targets[0];
         tile_renderer.render(
             &mut target.tile_encoder,
+            &mut target.circle_masks,
+            &mut target.rectangle_masks,
             &device,
             &frame_view,
             &mut encoder,
@@ -359,6 +363,8 @@ fn print_stats(frame_builder: &FrameBuilder, window_size: PhysicalSize<u32>) {
     let mut stats = Stats::new();
     for target in &frame_builder.targets {
         target.tile_encoder.update_stats(&mut stats);
+        target.circle_masks.update_stats(&mut stats);
+        target.rectangle_masks.update_stats(&mut stats);
     }
     frame_builder.tiler.update_stats(&mut stats);
     println!("{:#?}", stats);

@@ -14,7 +14,7 @@ use lyon::geom::euclid::default::Size2D;
 use wgpu::TextureAspect;
 use wgpu::util::DeviceExt;
 
-use super::PatternIndex;
+use super::{PatternIndex, mask::{circle::CircleMaskEncoder, rect::RectangleMaskEncoder}};
 
 /*
 
@@ -60,27 +60,6 @@ pub struct Mask {
 unsafe impl bytemuck::Pod for Mask {}
 unsafe impl bytemuck::Zeroable for Mask {}
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct CircleMask {
-    pub tile: TilePosition,
-    pub radius: f32,
-    pub center: [f32; 2],
-}
-
-unsafe impl bytemuck::Pod for CircleMask {}
-unsafe impl bytemuck::Zeroable for CircleMask {}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct RectangleMask {
-    pub tile: TilePosition,
-    pub invert: u32,
-    pub rect: [u32; 2],
-}
-
-unsafe impl bytemuck::Pod for RectangleMask {}
-unsafe impl bytemuck::Zeroable for RectangleMask {}
 
 pub struct TileRenderer {
     mask_upload_copies: MaskUploadCopies,
@@ -495,6 +474,8 @@ impl TileRenderer {
     pub fn render(
         &mut self,
         tile_encoder: &mut TileEncoder,
+        circle_masks: &mut CircleMaskEncoder,
+        rectangle_masks: &mut RectangleMaskEncoder,
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
@@ -512,6 +493,8 @@ impl TileRenderer {
             &mut src_mask_atlas,
             &mut src_color_atlas,
             tile_encoder,
+            circle_masks,
+            rectangle_masks,
             device,
             encoder,
         );
@@ -544,6 +527,8 @@ impl TileRenderer {
                     &mut src_mask_atlas,
                     &mut src_color_atlas,
                     tile_encoder,
+                    circle_masks,
+                    rectangle_masks,
                     device,
                     encoder,
                 );
@@ -578,6 +563,8 @@ impl TileRenderer {
         src_mask_atlas: &mut u32,
         src_color_atlas: &mut u32,
         tile_encoder: &mut TileEncoder,
+        circle_masks: &mut CircleMaskEncoder,
+        rectangle_masks: &mut RectangleMaskEncoder,
         _device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -645,13 +632,13 @@ impl TileRenderer {
                     pass.draw_indexed(0..6, 0, instances);
                 }
 
-                if let Some((buffer_range, instances)) = tile_encoder.circle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
+                if let Some((buffer_range, instances)) = circle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
                     pass.set_pipeline(&self.masks.circle_pipeline);
                     pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
                     pass.draw_indexed(0..6, 0, instances);
                 }
 
-                if let Some((buffer_range, instances)) = tile_encoder.rect_masks.buffer_and_instance_ranges(*src_mask_atlas) {
+                if let Some((buffer_range, instances)) = rectangle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
                     pass.set_pipeline(&self.masks.rect_pipeline);
                     pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
                     pass.draw_indexed(0..6, 0, instances);

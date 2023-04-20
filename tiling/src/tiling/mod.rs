@@ -1,3 +1,4 @@
+pub mod mask;
 pub mod tiler;
 //pub mod tiler2;
 pub mod encoder;

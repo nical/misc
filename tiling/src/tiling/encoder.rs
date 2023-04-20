@@ -9,9 +9,9 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment};
 use crate::gpu::DynBufferRange;
 use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
-use crate::tiling::tiler::{CircleMaskEncoder, RectangleMaskEncoder, GpuMaskEncoder};
+use crate::tiling::mask::FillMaskEncoder;
 use crate::tiling::cpu_rasterizer::*;
-use crate::tiling::tile_renderer::{TileRenderer, TileInstance, MaskedTileInstance, Mask as GpuMask, CircleMask};
+use crate::tiling::tile_renderer::{TileRenderer, TileInstance, MaskedTileInstance, Mask as GpuMask};
 
 use copyless::VecHelper;
 
@@ -381,9 +381,7 @@ pub struct TileEncoder {
     // State and output associated with the current group/layer:
 
     // These should move into dedicated things.
-    pub fill_masks: GpuMaskEncoder,
-    pub circle_masks: CircleMaskEncoder,
-    pub rect_masks: RectangleMaskEncoder,
+    pub fill_masks: FillMaskEncoder,
 
     pub render_passes: Vec<RenderPass>,
     pub alpha_batches: Vec<Batch>,
@@ -437,9 +435,7 @@ impl TileEncoder {
         TileEncoder {
             opaque_image_tiles: Vec::with_capacity(2048),
             alpha_tiles: Vec::with_capacity(8192),
-            fill_masks: GpuMaskEncoder::new(),
-            circle_masks: CircleMaskEncoder::new(),
-            rect_masks: RectangleMaskEncoder::new(),
+            fill_masks: FillMaskEncoder::new(),
             render_passes: Vec::with_capacity(16),
             alpha_batches: Vec::with_capacity(64),
             atlas_pattern_batches: Vec::with_capacity(64),
@@ -489,9 +485,7 @@ impl TileEncoder {
         TileEncoder {
             opaque_image_tiles: Vec::with_capacity(2000),
             alpha_tiles: Vec::with_capacity(6000),
-            fill_masks: GpuMaskEncoder::new(),
-            circle_masks: CircleMaskEncoder::new(),
-            rect_masks: RectangleMaskEncoder::new(),
+            fill_masks: FillMaskEncoder::new(),
             render_passes: Vec::with_capacity(16),
             alpha_batches: Vec::with_capacity(64),
             atlas_pattern_batches: Vec::with_capacity(64),
@@ -525,8 +519,6 @@ impl TileEncoder {
         self.opaque_image_tiles.clear();
         self.alpha_tiles.clear();
         self.fill_masks.reset();
-        self.circle_masks.reset();
-        self.rect_masks.reset();
         self.render_passes.clear();
         self.alpha_batches.clear();
         self.opaque_batches.clear();
@@ -553,8 +545,6 @@ impl TileEncoder {
 
     pub fn end_paths(&mut self) {
         self.fill_masks.end_render_pass();
-        self.circle_masks.end_render_pass();
-        self.rect_masks.end_render_pass();
         self.flush_render_pass(true);
     }
 
@@ -667,13 +657,6 @@ impl TileEncoder {
         }
     }
 
-    pub fn allocate_mask_tile(&mut self) -> TilePosition {
-        let (tile, _) = self.src.mask_tiles.allocate();
-        self.maybe_flush_render_pass();
-
-        tile
-    }
-
     pub fn allocate_color_tile(&mut self) -> TilePosition {
         let (tile, _) = self.src.color_tiles.allocate();
         self.maybe_flush_render_pass();
@@ -757,38 +740,11 @@ impl TileEncoder {
             .unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
     }
 
-    pub fn add_cricle_mask(&mut self, center: Point, radius: f32, inverted: bool) -> TilePosition {
-        let (mut tile, atlas_index) = self.src.mask_tiles.allocate();
-        self.maybe_flush_render_pass();
-        if inverted {
-            tile.add_flag();
-        }
-        self.circle_masks.prerender_mask(atlas_index, CircleMask {
-            tile, radius,
-            center: center.to_array()
-        });
-
-        tile
-    }
-
-    pub fn add_rectangle_mask(&mut self, rect: &Box2D<f32>, inverted: bool, tile_size: f32) -> TilePosition {
+    pub fn allocate_mask_tile(&mut self) -> (TilePosition, AtlasIndex) {
         let (tile, atlas_index) = self.src.mask_tiles.allocate();
         self.maybe_flush_render_pass();
 
-        let zero = point(0.0, 0.0);
-        let one = point(1.0, 1.0);
-        let min = ((rect.min / tile_size).clamp(zero, one) * std::u16::MAX as f32).to_u32();
-        let max = ((rect.max / tile_size).clamp(zero, one) * std::u16::MAX as f32).to_u32();
-        self.rect_masks.prerender_mask(atlas_index, RectangleMask {
-            tile,
-            invert: if inverted { 1 } else { 0 },
-            rect: [
-                min.x << 16 | min.y,
-                max.x << 16 | max.y,
-            ]
-        });
-
-        tile
+        (tile, atlas_index)
     }
 
     pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>) -> Option<TilePosition> {
@@ -933,8 +889,6 @@ impl TileEncoder {
         let vertices = &mut tile_renderer.vertices;
 
         self.fill_masks.upload(vertices, device);
-        self.circle_masks.upload(vertices, device);
-        self.rect_masks.upload(vertices, device);
 
         self.ranges.opaque_image_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_image_tiles));
         self.ranges.alpha_tiles = vertices.upload(device, bytemuck::cast_slice(&self.alpha_tiles));
@@ -952,9 +906,7 @@ impl TileEncoder {
         }
         stats.opaque_tiles += self.opaque_image_tiles.len();
         stats.alpha_tiles += self.alpha_tiles.len();
-        stats.gpu_mask_tiles += self.fill_masks.masks.len()
-            + self.circle_masks.masks.len()
-            + self.rect_masks.masks.len();
+        stats.gpu_mask_tiles += self.fill_masks.masks.len();
         stats.cpu_mask_tiles += self.num_cpu_masks();
         stats.render_passes += self.render_passes.len();
         stats.batches += self.alpha_batches.len() + self.opaque_batches.len();

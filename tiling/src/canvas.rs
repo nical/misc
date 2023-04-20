@@ -7,6 +7,8 @@ use crate::pattern::simple_gradient::*;
 use crate::pattern::solid_color::{SolidColorBuilder, SolidColor};
 use crate::gpu::GpuStore;
 use crate::Color;
+use crate::tiling::mask::circle::CircleMaskEncoder;
+use crate::tiling::mask::rect::RectangleMaskEncoder;
 use crate::tiling::{
     TilerPattern, FillOptions,
     occlusion::TileMask,
@@ -298,6 +300,8 @@ impl Canvas {
 
 pub struct TargetData {
     pub tile_encoder: TileEncoder,
+    pub circle_masks: CircleMaskEncoder,
+    pub rectangle_masks: RectangleMaskEncoder,
     pub solid_color_pattern: SolidColorBuilder,
     pub checkerboard_pattern: CheckerboardPatternBuilder,
     pub gradient_pattern: SimpleGradientBuilder,
@@ -320,6 +324,8 @@ impl FrameBuilder {
         FrameBuilder {
             targets: vec![TargetData {
                 tile_encoder: TileEncoder::new(config, 3),
+                circle_masks: CircleMaskEncoder::new(),
+                rectangle_masks: RectangleMaskEncoder::new(),
                 solid_color_pattern: SolidColorBuilder::new(SolidColor::new(Color::BLACK), 0),
                 gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new(), 1),
                 checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new(), 2),
@@ -341,6 +347,8 @@ impl FrameBuilder {
             let tile_encoder = self.targets[0].tile_encoder.create_similar();
             self.targets.push(TargetData {
                 tile_encoder,
+                circle_masks: CircleMaskEncoder::new(),
+                rectangle_masks: RectangleMaskEncoder::new(),
                 solid_color_pattern: SolidColorBuilder::new(SolidColor::new(Color::BLACK), 1),
                 checkerboard_pattern: CheckerboardPatternBuilder::new(CheckerboardPattern::new(), 2),
                 gradient_pattern: SimpleGradientBuilder::new(SimpleGradient::new(), 3),
@@ -349,6 +357,8 @@ impl FrameBuilder {
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.reset();
+            target.circle_masks.reset();
+            target.rectangle_masks.reset();
         }
         self.tiler.edges.clear();
         self.tile_mask.clear();
@@ -357,6 +367,8 @@ impl FrameBuilder {
 
         for target in &mut self.targets[0..group_stack_depth] {
             target.tile_encoder.end_paths();
+            target.circle_masks.end_render_pass();
+            target.rectangle_masks.end_render_pass();
             target.tile_encoder.reverse_alpha_tiles();
         }
 
@@ -426,14 +438,33 @@ impl FrameBuilder {
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance)
                                 .with_inverted(circle.inverted);
-                                self.tiler.fill_circle(circle.center, circle.radius, &options, pattern, &mut self.tile_mask, encoder, device)
+                                crate::tiling::mask::circle::fill_circle(
+                                    circle.center,
+                                    circle.radius,
+                                    &options,
+                                    pattern,
+                                    &mut self.tile_mask,
+                                    &mut self.tiler,
+                                    encoder,
+                                    &mut target.circle_masks,
+                                    device,
+                                )
                         }
                         RecordedShape::Rect(rect) => {
                             let options = FillOptions::new()
                                 .with_transform(transform)
                                 .with_prerendered_pattern(prerender)
                                 .with_tolerance(self.tolerance);
-                            self.tiler.fill_rect(rect, &options, pattern, &mut self.tile_mask, encoder, device)
+                            crate::tiling::mask::rect::fill_rect(
+                                rect,
+                                &options,
+                                pattern,
+                                &mut self.tile_mask,
+                                &mut self.tiler,
+                                encoder,
+                                &mut target.rectangle_masks,
+                                device,
+                            )
                         }
                         RecordedShape::Canvas => {
                             self.tiler.fill_canvas(pattern, &mut self.tile_mask, encoder);
