@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::ops::Range;
 
 const FLOAT_TEXTURE_WIDTH: u32 = 1024;
@@ -62,8 +61,8 @@ impl StorageBuffer {
                     aspect: wgpu::TextureAspect::All,
                     base_mip_level: 0,
                     base_array_layer: 0,
-                    mip_level_count: NonZeroU32::new(1),
-                    array_layer_count: NonZeroU32::new(1),
+                    mip_level_count: Some(1),
+                    array_layer_count: Some(1),
                 });
         
                 Storage::Texture { texture, view }
@@ -161,8 +160,8 @@ impl StorageBuffer {
                         bytemuck::cast_slice(&data[..split]),
                         wgpu::ImageDataLayout {
                             offset: 0,
-                            bytes_per_row: NonZeroU32::new(BYTES_PER_ROW),
-                            rows_per_image: NonZeroU32::new(rows_per_image),
+                            bytes_per_row: Some(BYTES_PER_ROW),
+                            rows_per_image: Some(rows_per_image),
                         },
                         wgpu::Extent3d {
                             width: FLOAT_TEXTURE_WIDTH,
@@ -187,8 +186,8 @@ impl StorageBuffer {
                         bytemuck::cast_slice(&data[split..]),
                         wgpu::ImageDataLayout {
                             offset: 0,
-                            bytes_per_row: NonZeroU32::new(BYTES_PER_ROW),
-                            rows_per_image: NonZeroU32::new(rows_per_image),
+                            bytes_per_row: Some(BYTES_PER_ROW),
+                            rows_per_image: Some(rows_per_image),
                         },
                         wgpu::Extent3d {
                             width: rem as u32 / self.size_per_element,

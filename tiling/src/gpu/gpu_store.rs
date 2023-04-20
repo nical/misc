@@ -1,4 +1,3 @@
-use core::num::NonZeroU32;
 use std::ops::Range;
 use wgpu::BufferAddress;
 
@@ -109,8 +108,8 @@ impl GpuStore {
             bytemuck::cast_slice(&self.data[..(rows * w)]),
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: NonZeroU32::new(GPU_STORE_WIDTH * 16),
-                rows_per_image: NonZeroU32::new(rows as u32),
+                bytes_per_row: Some(GPU_STORE_WIDTH * 16),
+                rows_per_image: Some(rows as u32),
             },
             wgpu::Extent3d {
                 width: GPU_STORE_WIDTH,

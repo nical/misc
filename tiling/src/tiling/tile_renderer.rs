@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use crate::{gpu::{
     gpu_store::{GpuStore, DynamicStore},
     atlas_uploader::{MaskUploadCopies},
@@ -341,8 +339,8 @@ impl TileRenderer {
             aspect: TextureAspect::All,
             base_mip_level: 0,
             base_array_layer: 0,
-            mip_level_count: NonZeroU32::new(1),
-            array_layer_count: NonZeroU32::new(1),
+            mip_level_count: Some(1),
+            array_layer_count: Some(1),
         });
 
         let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
