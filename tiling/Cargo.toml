@@ -14,10 +14,8 @@ svg_fmt = "0.4.1"
 usvg = "0.4"
 time = "0.1.42"
 ordered-float = "1.0.2"
-crossbeam-channel = "0.5"
 profiling = "1.0.4"
 copyless = "0.1.5"
-parasol = { path = "../../parasol" }
 wgslp = { path = "../wgslp/lib" }
 
 [dependencies.image]
@@ -29,5 +27,5 @@ features = ["png"]
 debug=true
 
 [features]
-tracy_profiling = ["profiling/profile-with-tracy", "parasol/tracy"]
+tracy_profiling = ["profiling/profile-with-tracy"]
 trace = ["wgpu/trace"]

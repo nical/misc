@@ -15,8 +15,6 @@ pub struct RectangleMask {
 unsafe impl bytemuck::Pod for RectangleMask {}
 unsafe impl bytemuck::Zeroable for RectangleMask {}
 
-pub type RectangleMaskEncoder = MaskEncoder<RectangleMask>;
-
 pub fn fill_rect(
     rect: &Box2D<f32>,
     options: &FillOptions,
@@ -24,7 +22,7 @@ pub fn fill_rect(
     tile_mask: &mut TileMask,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
-    rect_encoder: &mut RectangleMaskEncoder,
+    rect_encoder: &mut MaskEncoder,
     device: &wgpu::Device,
 ) {
     let mut transformed_rect = *rect;
@@ -69,7 +67,7 @@ pub fn fill_axis_aligned_rect(
     pattern: &mut dyn TilerPattern,
     tile_mask: &mut TileMask,
     encoder: &mut TileEncoder,
-    rect_encoder: &mut RectangleMaskEncoder,
+    rect_encoder: &mut MaskEncoder,
 ) {
     // TODO: Lots of common code for the top/middle/bottom rows that could be shared.
     // TODO: This probably doesn't work with inverted fills.
@@ -239,7 +237,7 @@ pub fn fill_axis_aligned_rect(
     }
 }
 
-pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut RectangleMaskEncoder, rect: &Box2D<f32>, inverted: bool, tile_size: f32) -> TilePosition {
+pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut MaskEncoder, rect: &Box2D<f32>, inverted: bool, tile_size: f32) -> TilePosition {
     let (tile, atlas_index) = tile_encoder.allocate_mask_tile();
 
     // TODO: handle inverted?

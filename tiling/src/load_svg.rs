@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{Point, point};
 use lyon::path::Path;
@@ -16,7 +18,7 @@ pub enum SvgPattern {
     Gradient { color0: Color, color1: Color, from: Point, to: Point },
 }
 
-pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, SvgPattern)>) {
+pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path>, SvgPattern)>) {
     let opt = usvg::Options::default();
     let rtree = usvg::Tree::from_file(filename, &opt).unwrap();
     let mut paths = Vec::new();
@@ -77,7 +79,7 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, Sv
                         continue;
                     }
                 };
-    
+
                 let mut builder = Path::builder().with_svg();
                 for segment in &usvg_path.segments {
                     match *segment {
@@ -100,8 +102,8 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, Sv
                     }
                 }
                 let path = builder.build();
-    
-                paths.push((path, pattern));    
+
+                paths.push((Arc::new(path), pattern));
             }
             _ => {}
         }

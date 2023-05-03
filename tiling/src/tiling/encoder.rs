@@ -11,7 +11,7 @@ use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
 use crate::tiling::mask::FillMaskEncoder;
 use crate::tiling::cpu_rasterizer::*;
-use crate::tiling::tile_renderer::{TileRenderer, TileInstance, MaskedTileInstance, Mask as GpuMask};
+use crate::tiling::resources::{TilingGpuResources, TileInstance, MaskedTileInstance, Mask as GpuMask};
 
 use copyless::VecHelper;
 
@@ -323,13 +323,6 @@ pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct QuadEdge(pub Point, pub Point, pub Point, u32, u32);
-
-unsafe impl bytemuck::Pod for QuadEdge {}
-unsafe impl bytemuck::Zeroable for QuadEdge {}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LineEdge(pub Point, pub Point);
 
 unsafe impl bytemuck::Pod for LineEdge {}
@@ -343,6 +336,9 @@ pub struct RenderPass {
     pub alpha_batches: Range<usize>,
     pub mask_atlas_index: AtlasIndex,
     pub color_atlas_index: AtlasIndex,
+    pub z_index: u32,
+    pub mask_pre_pass: bool,
+    pub color_pre_pass: bool,
 }
 
 pub struct Batch {
@@ -402,6 +398,7 @@ pub struct TileEncoder {
     // mask atlas, which is the primary reason for starting a new mask pass).
     masks_texture_index: AtlasIndex,
     color_texture_index: AtlasIndex,
+    pub current_z_index: u32,
 
     reversed: bool,
 
@@ -448,6 +445,7 @@ impl TileEncoder {
             alpha_tiles_start: 0,
             masks_texture_index: 0,
             color_texture_index: 0,
+            current_z_index: 0,
 
             mask_uploader: TileAtlasUploader::new(config.staging_buffer_size),
 
@@ -498,6 +496,7 @@ impl TileEncoder {
             alpha_tiles_start: 0,
             masks_texture_index: 0,
             color_texture_index: 0,
+            current_z_index: 0,
 
             mask_uploader: TileAtlasUploader::new(self.mask_uploader.staging_buffer_size()),
 
@@ -543,9 +542,41 @@ impl TileEncoder {
         }
     }
 
-    pub fn end_paths(&mut self) {
+    pub fn end_paths(&mut self, reversed: bool) {
         self.fill_masks.end_render_pass();
         self.flush_render_pass(true);
+
+        assert!(!self.reversed);
+        if reversed {
+            self.alpha_tiles.reverse();
+
+            self.alpha_batches.reverse();
+            let num_alpha_tiles = self.alpha_tiles.len() as u32;
+            for batch in &mut self.alpha_batches {
+                batch.tiles = (num_alpha_tiles - batch.tiles.end) .. (num_alpha_tiles - batch.tiles.start);
+            }
+
+            self.render_passes.reverse();
+        }
+
+        let num_alpha_batches = self.alpha_batches.len();
+        let mut current_color_atlas = u32::MAX;
+        let mut current_mask_atlas = u32::MAX;
+        for pass in &mut self.render_passes {
+            if reversed {
+                pass.alpha_batches = (num_alpha_batches - pass.alpha_batches.end) .. (num_alpha_batches - pass.alpha_batches.start);
+            }
+
+            if current_color_atlas != pass.color_atlas_index {
+                current_color_atlas = pass.color_atlas_index;
+                pass.color_pre_pass = true;
+            }
+
+            if current_mask_atlas != pass.mask_atlas_index {
+                current_mask_atlas = pass.mask_atlas_index;
+                pass.mask_pre_pass = true;
+            }
+        }
     }
 
     pub fn num_cpu_masks(&self) -> usize {
@@ -685,6 +716,9 @@ impl TileEncoder {
                 alpha_batches: self.alpha_batches_start..alpha_batches_end,
                 mask_atlas_index: self.masks_texture_index,
                 color_atlas_index: self.color_texture_index,
+                z_index: self.current_z_index,
+                mask_pre_pass: false,
+                color_pre_pass: false,
             });
             self.alpha_batches_start = alpha_batches_end;
             self.opaque_image_tiles_start = opaque_image_tiles_end;
@@ -717,7 +751,7 @@ impl TileEncoder {
         }
     }
 
-    pub fn end_batch(&mut self) {
+    fn end_batch(&mut self) {
         let pattern_index = if let Some(index) = self.current_pattern_index {
             index
         } else {
@@ -869,23 +903,7 @@ impl TileEncoder {
         &self.atlas_pattern_batches[batch_range]
     }
 
-    pub fn reverse_alpha_tiles(&mut self) {
-        assert!(!self.reversed);
-        self.alpha_tiles.reverse();
-
-        self.alpha_batches.reverse();
-        let num_alpha_tiles = self.alpha_tiles.len() as u32;
-        for batch in &mut self.alpha_batches {
-            batch.tiles = (num_alpha_tiles - batch.tiles.end) .. (num_alpha_tiles - batch.tiles.start);
-        }
-        let num_alpha_batches = self.alpha_batches.len();
-        self.render_passes.reverse();
-        for mask_pass in &mut self.render_passes {
-            mask_pass.alpha_batches = (num_alpha_batches - mask_pass.alpha_batches.end) .. (num_alpha_batches - mask_pass.alpha_batches.start);
-        }
-    }
-
-    pub fn upload(&mut self, tile_renderer: &mut TileRenderer, device: &wgpu::Device) {
+    pub fn upload(&mut self, tile_renderer: &mut TilingGpuResources, device: &wgpu::Device) {
         let vertices = &mut tile_renderer.vertices;
 
         self.fill_masks.upload(vertices, device);
@@ -912,6 +930,76 @@ impl TileEncoder {
         stats.batches += self.alpha_batches.len() + self.opaque_batches.len();
     }
 }
+
+pub struct TileAllocator {
+    pub next_id: u32,
+    pub current_atlas: AtlasIndex,
+    pub tiles_per_row: u32,
+    pub tiles_per_atlas: u32,
+}
+
+impl TileAllocator {
+    pub fn new(w: u32, h: u32) -> Self {
+        TileAllocator {
+            next_id: 1,
+            current_atlas: 0,
+            tiles_per_row: w,
+            tiles_per_atlas: w * h,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.next_id = 1;
+        self.current_atlas = 0;
+    }
+
+    pub fn allocate(&mut self) -> (TilePosition, AtlasIndex) {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let mut id2 = id % self.tiles_per_atlas;
+
+        if id2 == id {
+            // Common path.
+            let pos = TilePosition::new(
+                id % self.tiles_per_row,
+                id / self.tiles_per_row,
+            );
+            return (pos, self.current_atlas)
+        }
+
+        if id2 == 0 {
+            // Tile zero is reserved.
+            id2 += 1;
+        }
+
+        self.next_id = id2 + 1;
+
+        self.current_atlas += 1;
+        let pos = TilePosition::new(
+            id2 % self.tiles_per_row,
+            id2 / self.tiles_per_row,
+        );
+
+        (pos, self.current_atlas)
+    }
+
+    pub fn finish_atlas(&mut self) {
+        self.current_atlas += 1;
+        self.next_id = 1;
+    }
+
+    pub fn width(&self) -> u32 { self.tiles_per_row }
+
+    pub fn height(&self) -> u32 { self.tiles_per_atlas / self.tiles_per_row }
+
+    pub fn current_atlas(&self) -> u32 { self.current_atlas }
+
+    pub fn is_nearly_full(&self) -> bool {
+        (self.next_id * 100) / self.tiles_per_atlas > 70
+    }
+}
+
 
 pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
     let sq_error = square_distance_to_point(&curve.baseline().to_line(), curve.ctrl) * 0.25;

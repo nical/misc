@@ -1,26 +1,31 @@
 use crate::gpu::{DynBufferRange, DynamicStore};
 use std::ops::Range;
-use crate::tiling::tile_renderer::Mask as FillMask;
 
 use super::{AtlasIndex, Stats};
 
 pub mod circle;
 pub mod rect;
 
-pub struct MaskEncoder<T> {
-    pub masks: Vec<T>,
+pub struct MaskEncoder {
+    pub masks: Vec<u8>,
     masks_start: u32,
-    pub render_passes: Vec<Range<u32>>,
+    masks_end: u32,
+    render_passes: Vec<Range<u32>>,
     current_atlas: u32,
-    pub buffer_range: Option<DynBufferRange>,
+    buffer_range: Option<DynBufferRange>,
 }
 
-impl<T> MaskEncoder<T> {
+impl MaskEncoder {
     pub fn new() -> Self {
+        MaskEncoder::with_size(2048)
+    }
+
+    pub fn with_size(bytes: usize) -> Self {
         MaskEncoder {
-            masks: Vec::with_capacity(8192),
+            masks: Vec::with_capacity(bytes),
             render_passes: Vec::with_capacity(16),
             masks_start: 0,
+            masks_end: 0,
             current_atlas: 0,
             buffer_range: None,
         }
@@ -30,34 +35,35 @@ impl<T> MaskEncoder<T> {
         self.masks.clear();
         self.render_passes.clear();
         self.masks_start = 0;
+        self.masks_end = 0;
         self.current_atlas = 0;
         self.buffer_range = None;
     }
 
     pub fn end_render_pass(&mut self) {
-        let masks_end = self.masks.len() as u32;
-        if self.masks_start == masks_end {
+        if self.masks_start == self.masks_end {
             return;
         }
 
         if self.render_passes.len() <= self.current_atlas as usize {
             self.render_passes.resize(self.current_atlas as usize + 1, 0..0);
         }
-        self.render_passes[self.current_atlas as usize] = self.masks_start..masks_end;
-        self.masks_start = masks_end;
+        self.render_passes[self.current_atlas as usize] = self.masks_start..self.masks_end;
+        self.masks_start = self.masks_end;
         self.current_atlas += 1;
     }
 
-    pub fn prerender_mask(&mut self, atlas_index: AtlasIndex, mask: T) {
+    pub fn prerender_mask<T>(&mut self, atlas_index: AtlasIndex, mask: T) where T: bytemuck::Pod {
         if atlas_index != self.current_atlas {
             self.end_render_pass();
             self.current_atlas = atlas_index;
         }
 
-        self.masks.push(mask);
+        self.masks_end += 1;
+        self.masks.extend_from_slice(bytemuck::bytes_of(&mask));
     }
 
-    pub fn upload(&mut self, vertices: &mut DynamicStore, device: &wgpu::Device) where T: bytemuck::Pod {
+    pub fn upload(&mut self, vertices: &mut DynamicStore, device: &wgpu::Device) {
         self.buffer_range = vertices.upload(device, bytemuck::cast_slice(&self.masks));
     }
 
@@ -77,8 +83,8 @@ impl<T> MaskEncoder<T> {
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
-        stats.gpu_mask_tiles += self.masks.len();
+        stats.gpu_mask_tiles += self.masks_end as usize;
     }
 }
 
-pub type FillMaskEncoder = MaskEncoder<FillMask>;
+pub type FillMaskEncoder = MaskEncoder;

@@ -5,9 +5,6 @@ use crate::tiling::tiler::affected_range;
 
 use super::MaskEncoder;
 
-pub type CircleMaskEncoder = MaskEncoder<CircleMask>;
-
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct CircleMask {
@@ -21,7 +18,7 @@ unsafe impl bytemuck::Zeroable for CircleMask {}
 
 const TILE_SIZE: f32 = crate::TILE_SIZE as f32;
 
-pub fn add_cricle_mask(tile_encoder: &mut TileEncoder, circle_masks: &mut CircleMaskEncoder, center: Point, radius: f32, inverted: bool) -> TilePosition {
+pub fn add_cricle_mask(tile_encoder: &mut TileEncoder, circle_masks: &mut MaskEncoder, center: Point, radius: f32, inverted: bool) -> TilePosition {
     let (mut tile, atlas_index) = tile_encoder.allocate_mask_tile();
     if inverted {
         tile.add_flag();
@@ -42,7 +39,7 @@ pub fn fill_circle(
     tile_mask: &mut TileMask,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
-    circle_masks: &mut CircleMaskEncoder,
+    circle_masks: &mut MaskEncoder,
     device: &wgpu::Device,
 ) {
     //tiler.set_fill_rule(options.fill_rule, options.inverted);
@@ -95,7 +92,7 @@ fn fill_transformed_circle(
     pattern: &mut dyn TilerPattern,
     tile_mask: &mut TileMask,
     encoder: &mut TileEncoder,
-    circle_masks: &mut CircleMaskEncoder,
+    circle_masks: &mut MaskEncoder,
 ) {
     let mut y_min = center.y - radius;
     let mut y_max = center.y + radius;

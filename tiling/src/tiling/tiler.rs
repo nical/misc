@@ -720,6 +720,8 @@ impl Tiler {
 
     pub fn update_stats(&self, stats: &mut Stats) {
         stats.edges += self.edges.len();
+        stats.row_time += Duration::from_nanos(self.row_decomposition_time_ns);
+        stats.tile_time += Duration::from_nanos(self.tile_decomposition_time_ns);
     }
 }
 

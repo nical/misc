@@ -4,25 +4,16 @@ use crate::{gpu::{
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
 }, custom_pattern::TilePipelines};
 use crate::tiling::{
-    encoder::{TileEncoder, LineEdge},
+    encoder::{LineEdge},
     TilePosition, PatternData
 };
+use crate::canvas::RendererResources;
 
 use lyon::geom::euclid::default::Size2D;
 use wgpu::TextureAspect;
 use wgpu::util::DeviceExt;
 
-use super::{PatternIndex, mask::{circle::CircleMaskEncoder, rect::RectangleMaskEncoder}};
-
-/*
-
-When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Graphics 620 (KBL GT2):
- - rasterizing the masks takes ~2ms
- - rendering into the color target takes ~0.8ms
-  - ~0.28ms opaque tiles
-  - ~0.48ms alpha tiles
-
-*/
+use super::{PatternIndex};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -59,9 +50,9 @@ unsafe impl bytemuck::Pod for Mask {}
 unsafe impl bytemuck::Zeroable for Mask {}
 
 
-pub struct TileRenderer {
-    mask_upload_copies: MaskUploadCopies,
-    masks: Masks,
+pub struct TilingGpuResources {
+    pub mask_upload_copies: MaskUploadCopies,
+    pub masks: Masks,
 
     // TODO: masked/opaque tiled images are similar to other patterns, maybe they
     // could be implemented as patterns.
@@ -71,28 +62,28 @@ pub struct TileRenderer {
     pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
 
     //mask_texture: wgpu::Texture,
-    mask_texture_view: wgpu::TextureView,
+    pub mask_texture_view: wgpu::TextureView,
     //src_color_texture: wgpu::Texture,
-    src_color_texture_view: wgpu::TextureView,
+    pub src_color_texture_view: wgpu::TextureView,
 
-    mask_texture_bind_group: wgpu::BindGroup,
-    src_color_bind_group: wgpu::BindGroup,
-    masks_bind_group: wgpu::BindGroup,
-    main_target_and_gpu_store_bind_group: wgpu::BindGroup,
-    mask_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
-    color_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    pub mask_texture_bind_group: wgpu::BindGroup,
+    pub src_color_bind_group: wgpu::BindGroup,
+    pub masks_bind_group: wgpu::BindGroup,
+    pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    pub mask_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    pub color_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
 
-    quad_ibo: wgpu::Buffer,
+    pub quad_ibo: wgpu::Buffer,
     // TODO: some way to account for a per-TileEncoder offset or range.
     pub edges: StorageBuffer,
-    mask_params_ubo: wgpu::Buffer,
-    main_target_descriptor_ubo: wgpu::Buffer,
-    patterns: Vec<TilePipelines>,
+    pub mask_params_ubo: wgpu::Buffer,
+    pub main_target_descriptor_ubo: wgpu::Buffer,
+    pub patterns: Vec<TilePipelines>,
 
     pub vertices: DynamicStore,
 }
 
-impl TileRenderer {
+impl TilingGpuResources {
     pub fn new(
         device: &wgpu::Device,
         shaders: &mut ShaderSources,
@@ -403,7 +394,7 @@ impl TileRenderer {
             ],
         });
 
-        TileRenderer {
+        TilingGpuResources {
             mask_upload_copies,
             masks,
 
@@ -449,6 +440,10 @@ impl TileRenderer {
         self.edges.begin_frame();
     }
 
+    pub fn end_frame(&mut self) {
+        self.vertices.end_frame();
+    }
+
     pub fn allocate(&mut self, device: &wgpu::Device) {
         if self.edges.ensure_allocated(device) {
             // reallocated the buffer, need to re-create the bind group.
@@ -468,243 +463,17 @@ impl TileRenderer {
             });
         }
     }
+}
 
-    pub fn render(
-        &mut self,
-        tile_encoder: &mut TileEncoder,
-        circle_masks: &mut CircleMaskEncoder,
-        rectangle_masks: &mut RectangleMaskEncoder,
-        device: &wgpu::Device,
-        target: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let mut src_color_atlas = std::u32::MAX;
-        let mut src_mask_atlas = std::u32::MAX;
+impl RendererResources for TilingGpuResources {
+    fn name(&self) -> &'static str { "TilingGpuResources" }
 
-        tile_encoder.mask_uploader.unmap();
-        tile_encoder.mask_uploader.upload_vertices(device, &mut self.vertices);
-
-        self.vertices.unmap(encoder);
-
-        self.render_atlases(
-            0,
-            &mut src_mask_atlas,
-            &mut src_color_atlas,
-            tile_encoder,
-            circle_masks,
-            rectangle_masks,
-            device,
-            encoder,
-        );
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Color target"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
-                    },
-                    resolve_target: None,
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            self.render_pass(
-                0,
-                tile_encoder,
-                &mut pass,
-            )
-        }
-
-        if tile_encoder.render_passes.len() > 1 {
-            for pass_idx in 1..tile_encoder.render_passes.len() {
-                self.render_atlases(
-                    pass_idx,
-                    &mut src_mask_atlas,
-                    &mut src_color_atlas,
-                    tile_encoder,
-                    circle_masks,
-                    rectangle_masks,
-                    device,
-                    encoder,
-                );
-
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Color target"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: true,
-                        },
-                        resolve_target: None,
-                    })],
-                    depth_stencil_attachment: None,
-                });
-
-                self.render_pass(
-                    pass_idx,
-                    tile_encoder,
-                    &mut pass,
-                )
-            }
-        }
-    
-        self.vertices.end_frame();
+    fn begin_frame(&mut self) {
+        TilingGpuResources::begin_frame(self)
     }
 
-    fn render_atlases(
-        &mut self,
-        pass_idx: usize,
-        src_mask_atlas: &mut u32,
-        src_color_atlas: &mut u32,
-        tile_encoder: &mut TileEncoder,
-        circle_masks: &mut CircleMaskEncoder,
-        rectangle_masks: &mut RectangleMaskEncoder,
-        _device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        if tile_encoder.render_passes.is_empty() {
-            return;
-        }
-
-        let render_pass = &tile_encoder.render_passes[pass_idx];
-
-        if *src_color_atlas != render_pass.color_atlas_index {
-            *src_color_atlas = render_pass.color_atlas_index;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Color tile atlas"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.src_color_texture_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
-                    },
-                    resolve_target: None,
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-            pass.set_bind_group(0, &self.color_atlas_target_and_gpu_store_bind_group, &[]);
-
-            for batch in tile_encoder.get_color_atlas_batches(render_pass.color_atlas_index) {
-                let pattern = &tile_encoder.patterns[batch.pattern];
-                if let Some(buffer_range) = &pattern.prerendered_vbo_range {
-                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
-                    pass.set_pipeline(&self.patterns[batch.pattern].opaque);
-                    pass.draw_indexed(0..6, 0, batch.tiles.clone());    
-                }
-            }
-        }
-
-        if *src_mask_atlas != render_pass.mask_atlas_index {
-            *src_mask_atlas = render_pass.mask_atlas_index;
-
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Mask atlas"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.mask_texture_view,
-                        ops: wgpu::Operations {
-                            // TODO: Clear is actually quite expensive if a large portion of the atlas
-                            // is not used. Could decide between Load and Clear or Load depending on how
-                            // much of the atlas we are going to render.
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                        resolve_target: None,
-                    })],
-                    depth_stencil_attachment: None,
-                });
-    
-                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                pass.set_bind_group(0, &self.masks_bind_group, &[]);
-    
-                // TODO: Make it possible to register more mask types without hard-coding them.
-                if let Some((buffer_range, instances)) = tile_encoder.fill_masks.buffer_and_instance_ranges(*src_mask_atlas) {
-                    pass.set_pipeline(&self.masks.fill_pipeline);
-                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
-                    pass.draw_indexed(0..6, 0, instances);
-                }
-
-                if let Some((buffer_range, instances)) = circle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
-                    pass.set_pipeline(&self.masks.circle_pipeline);
-                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
-                    pass.draw_indexed(0..6, 0, instances);
-                }
-
-                if let Some((buffer_range, instances)) = rectangle_masks.buffer_and_instance_ranges(*src_mask_atlas) {
-                    pass.set_pipeline(&self.masks.rect_pipeline);
-                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(buffer_range));
-                    pass.draw_indexed(0..6, 0, instances);
-                }
-            }
-
-            // TODO: split this in two so that the copy shader can be in the previous pass.
-            self.mask_upload_copies.update_target(
-                encoder,
-                &self.quad_ibo,
-                &self.vertices,
-                &tile_encoder.mask_uploader,
-                render_pass.mask_atlas_index,
-                &self.mask_texture_view,
-                &self.mask_atlas_target_and_gpu_store_bind_group,
-            );
-        }
-    }
-
-    fn render_pass<'a, 'b: 'a>(
-        &'b mut self,
-        pass_idx: usize,
-        tile_encoder: &mut TileEncoder,
-        pass: &mut wgpu::RenderPass<'a>,
-    ) {
-        let render_pass = &tile_encoder.render_passes[pass_idx];
-
-        pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-        pass.set_bind_group(0, &self.main_target_and_gpu_store_bind_group, &[]);
-
-        if pass_idx == 0 {
-            for pattern_idx in 0..self.patterns.len() {
-                if let (Some(range), count) = &tile_encoder.get_opaque_batch_vertices(pattern_idx) {
-                    pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(range));
-                    // TODO: optional hook to bind extra data
-                    pass.set_pipeline(&self.patterns[pattern_idx].opaque);
-                    pass.draw_indexed(0..6, 0, 0..*count);
-                }
-            }
-        }
-
-        if !render_pass.opaque_image_tiles.is_empty() {
-            let range = &tile_encoder.ranges.opaque_image_tiles.as_ref().unwrap();
-            pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(range));
-
-            pass.set_pipeline(&self.opaque_image_pipeline);
-            pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
-            pass.set_bind_group(2, &self.src_color_bind_group, &[]);
-            pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
-        }
-
-        if let Some(range) = &tile_encoder.ranges.alpha_tiles {
-            pass.set_vertex_buffer(0, self.vertices.get_buffer_slice(range));
-            pass.set_bind_group(1, &self.mask_texture_bind_group, &[]);
-    
-            for batch in &tile_encoder.alpha_batches[render_pass.alpha_batches.clone()] {
-                match batch.pattern {
-                    crate::tiling::TILED_IMAGE_PATTERN => {
-                        pass.set_pipeline(&self.masked_image_pipeline);
-                        pass.set_bind_group(2, &self.src_color_bind_group, &[]);
-                    }
-                    _ => {
-                        pass.set_pipeline(&self.patterns[batch.pattern].masked);
-                    }
-                }
-                pass.draw_indexed(0..6, 0, batch.tiles.clone());
-            }
-        }
+    fn end_frame(&mut self) {
+        TilingGpuResources::end_frame(self);
     }
 }
 
