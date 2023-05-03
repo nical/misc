@@ -104,7 +104,8 @@ pub fn fill_axis_aligned_rect(
     let need_top_row = rect.min.y > 0.0;
     let need_bottom_row = row_start + 1 < row_end;
 
-    fn local_tile_rect(rect: &Box2D<f32>, tx: u32, ty: u32, ts: f32) -> Box2D<f32> {
+    fn local_tile_rect(rect: &Box2D<f32>, tx: u32, ty: u32) -> Box2D<f32> {
+        let ts = TILE_SIZE_F32;
         let offset = -vector(tx as f32 * ts, ty as f32 * ts);
         rect.translate(offset)
     }
@@ -125,15 +126,15 @@ pub fn fill_axis_aligned_rect(
         }
 
         if need_left_masks && tile_mask.test(rect_start_tile, false) {
-            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y, TILE_SIZE_F32);
-            let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
+            let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             let opaque = false;
             encoder.add_tile(pattern, opaque, TilePosition::new(rect_start_tile, tile_y), tl_mask_tile);
         }
 
         if rect_end_tile > rect_start_tile + 1 {
-            let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y, TILE_SIZE_F32);
-            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y);
+            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
 
             for x in rect_start_tile + 1 .. rect_end_tile {
                 if tile_mask.test(x, false) {
@@ -143,8 +144,8 @@ pub fn fill_axis_aligned_rect(
         }
 
         if need_right_masks {
-            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y, TILE_SIZE_F32);
-            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
+            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             encoder.add_tile(pattern, false, TilePosition::new(rect_end_tile, tile_y), tr_mask_tile);
         }
 
@@ -157,12 +158,12 @@ pub fn fill_axis_aligned_rect(
         let mut tile_mask = tile_mask.row(tile_y);
 
         if need_left_masks && left_mask.is_none() {
-            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y, TILE_SIZE_F32);
-            left_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32));
+            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
+            left_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted));
         }
         if need_right_masks && right_mask.is_none() {
-            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y, TILE_SIZE_F32);
-            right_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32));
+            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
+            right_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted));
         }
 
         if inverted && column_start < rect_start_tile {
@@ -205,15 +206,15 @@ pub fn fill_axis_aligned_rect(
         }
 
         if need_left_masks && tile_mask.test(rect_start_tile, false) {
-            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y, TILE_SIZE_F32);
-            let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
+            let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             let opaque = false;
             encoder.add_tile(pattern, opaque, TilePosition::new(rect_start_tile, tile_y), tl_mask_tile);
         }
 
         if rect_end_tile > rect_start_tile + 1 {
-            let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y, TILE_SIZE_F32);
-            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y);
+            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
 
             for x in rect_start_tile + 1 .. rect_end_tile {
                 if tile_mask.test(x, false) {
@@ -223,8 +224,8 @@ pub fn fill_axis_aligned_rect(
         }
 
         if need_right_masks {
-            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y, TILE_SIZE_F32);
-            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted, TILE_SIZE_F32);
+            let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
+            let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             encoder.add_tile(pattern, false, TilePosition::new(rect_end_tile, tile_y), tr_mask_tile);
         }
 
@@ -237,15 +238,15 @@ pub fn fill_axis_aligned_rect(
     }
 }
 
-pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut MaskEncoder, rect: &Box2D<f32>, inverted: bool, tile_size: f32) -> TilePosition {
+pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut MaskEncoder, rect: &Box2D<f32>, inverted: bool) -> TilePosition {
     let (tile, atlas_index) = tile_encoder.allocate_mask_tile();
 
     // TODO: handle inverted?
 
     let zero = point(0.0, 0.0);
     let one = point(1.0, 1.0);
-    let min = ((rect.min / tile_size).clamp(zero, one) * std::u16::MAX as f32).to_u32();
-    let max = ((rect.max / tile_size).clamp(zero, one) * std::u16::MAX as f32).to_u32();
+    let min = ((rect.min / crate::TILE_SIZE_F32).clamp(zero, one) * std::u16::MAX as f32).to_u32();
+    let max = ((rect.max / crate::TILE_SIZE_F32).clamp(zero, one) * std::u16::MAX as f32).to_u32();
     rect_encoder.prerender_mask(atlas_index, RectangleMask {
         tile,
         invert: if inverted { 1 } else { 0 },

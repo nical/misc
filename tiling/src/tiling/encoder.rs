@@ -12,6 +12,7 @@ use crate::tiling::*;
 use crate::tiling::mask::FillMaskEncoder;
 use crate::tiling::cpu_rasterizer::*;
 use crate::tiling::resources::{TilingGpuResources, TileInstance, MaskedTileInstance, Mask as GpuMask};
+use crate::TILE_SIZE;
 
 use copyless::VecHelper;
 
@@ -415,10 +416,11 @@ pub struct TileEncoder {
 
 impl TileEncoder {
     pub fn new(config: &TilerConfig, num_patterns: usize) -> Self {
-        let mask_atlas_tiles_x = config.mask_atlas_size.width / config.tile_size;
-        let mask_atlas_tiles_y = config.mask_atlas_size.height / config.tile_size;
-        let color_atlas_tiles_x = config.color_atlas_size.width / config.tile_size;
-        let color_atlas_tiles_y = config.color_atlas_size.height / config.tile_size;
+        // TODO: should round up?
+        let mask_atlas_tiles_x = config.mask_atlas_size.width / TILE_SIZE;
+        let mask_atlas_tiles_y = config.mask_atlas_size.height / TILE_SIZE;
+        let color_atlas_tiles_x = config.color_atlas_size.width / TILE_SIZE;
+        let color_atlas_tiles_y = config.color_atlas_size.height / TILE_SIZE;
         let mut patterns = Vec::with_capacity(num_patterns);
         for _ in 0..num_patterns {
             patterns.alloc().init(PatternTiles {
@@ -850,9 +852,6 @@ impl TileEncoder {
     }
 
     pub fn add_cpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], device: &wgpu::Device) -> TilePosition {
-        debug_assert!(draw.tile_size <= 32.0);
-        debug_assert!(draw.tile_size <= 32.0);
-
         let mut accum = [0.0; 32 * 32];
         let mut backdrops = [tile.backdrop as f32; 32];
 
@@ -860,11 +859,11 @@ impl TileEncoder {
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
-                add_backdrop(edge.from.y, -1.0, &mut backdrops[0..draw.tile_size as usize]);
+                add_backdrop(edge.from.y, -1.0, &mut backdrops[0..TILE_SIZE as usize]);
             }
 
             if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
-                add_backdrop(edge.to.y, 1.0, &mut backdrops[0..draw.tile_size as usize]);
+                add_backdrop(edge.to.y, 1.0, &mut backdrops[0..TILE_SIZE as usize]);
             }
 
             let from = edge.from - tile_offset;

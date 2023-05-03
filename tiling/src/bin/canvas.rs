@@ -57,7 +57,6 @@ fn main() {
         }
     }
 
-    let tile_size = 16;
     let scale_factor = 2.0;
     let max_edges_per_gpu_tile = 16;
     let mask_atlas_size: u32 = 2048;
@@ -66,7 +65,6 @@ fn main() {
 
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(inital_window_size.to_f32()),
-        tile_size,
         tolerance,
         flatten: false,
         mask_atlas_size: size2(mask_atlas_size, mask_atlas_size),

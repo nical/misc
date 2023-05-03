@@ -6,7 +6,7 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::{geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment}};
 
-use crate::tiling::*;
+use crate::{tiling::*, TILE_SIZE_F32};
 
 use crate::tiling::encoder::*;
 use crate::tiling::occlusion::TileMask;
@@ -20,7 +20,6 @@ struct Row {
 
 pub struct DrawParams {
     pub tolerance: f32,
-    pub tile_size: f32,
     pub fill_rule: FillRule,
     pub max_edges_per_gpu_tile: usize,
     pub inverted: bool,
@@ -58,7 +57,6 @@ pub struct Tiler {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TilerConfig {
     pub view_box: Box2D<f32>,
-    pub tile_size: u32,
     pub tolerance: f32,
     pub flatten: bool,
     pub mask_atlas_size: Size2D<u32>,
@@ -70,11 +68,10 @@ impl TilerConfig {
     pub fn num_tiles(&self) -> Size2D<u32> {
         let w = self.view_box.size().to_u32().width;
         let h = self.view_box.size().to_u32().height;
-        let tw = self.tile_size;
-        let th = self.tile_size;
+        let ts = crate::TILE_SIZE;
         Size2D::new(
-            (w + tw - 1) / tw,
-            (h + th - 1) / th,
+            (w + ts - 1) / ts,
+            (h + ts - 1) / ts,
         )
     }
 }
@@ -84,13 +81,11 @@ unsafe impl Sync for Tiler {}
 impl Tiler {
     /// Constructor.
     pub fn new(config: &TilerConfig) -> Self {
-        let tile_size = config.tile_size as f32;
         let size = config.view_box.size();
-        let num_tiles_y = f32::ceil(size.height / tile_size);
+        let num_tiles_y = f32::ceil(size.height / crate::TILE_SIZE_F32);
         Tiler {
             draw: DrawParams {
                 tolerance: config.tolerance,
-                tile_size,
                 fill_rule: FillRule::NonZero,
                 inverted: false,
                 max_edges_per_gpu_tile: 4096,
@@ -98,7 +93,7 @@ impl Tiler {
             },
             size,
             scissor: Box2D::from_size(size),
-            num_tiles_x: f32::ceil(size.width / tile_size) as u32,
+            num_tiles_x: f32::ceil(size.width / crate::TILE_SIZE_F32) as u32,
             num_tiles_y,
             flatten: config.flatten,
 
@@ -123,12 +118,10 @@ impl Tiler {
     /// a previous tiling run.
     pub fn init(&mut self, config: &TilerConfig) {
         let size = config.view_box.size();
-        let tile_size = config.tile_size as f32;
         self.size = size;
         self.scissor = Box2D::from_size(size);
-        self.draw.tile_size = tile_size;
-        self.num_tiles_x = f32::ceil(size.width / tile_size) as u32;
-        self.num_tiles_y = f32::ceil(size.height / tile_size);
+        self.num_tiles_x = f32::ceil(size.width / TILE_SIZE_F32) as u32;
+        self.num_tiles_y = f32::ceil(size.height / TILE_SIZE_F32);
         self.draw.tolerance = config.tolerance;
         self.flatten = config.flatten;
         self.edges.clear();
@@ -206,12 +199,11 @@ impl Tiler {
             y_min, y_max,
             self.scissor.min.y,
             self.scissor.max.y,
-            self.draw.tile_size
         )
     }
 
-    fn affected_range(&self, min: f32, max: f32, scissor_min: f32, scissor_max: f32, tile_size: f32) -> (usize, usize) {
-        let inv_tile_size = 1.0 / tile_size;
+    fn affected_range(&self, min: f32, max: f32, scissor_min: f32, scissor_max: f32) -> (usize, usize) {
+        let inv_tile_size = 1.0 / TILE_SIZE_F32;
         let first_row_y = (scissor_min * inv_tile_size).floor();
         let last_row_y = (scissor_max * inv_tile_size).ceil();
 
@@ -230,7 +222,7 @@ impl Tiler {
     pub fn add_monotonic_edge(&mut self, edge: &MonotonicEdge) {
         debug_assert!(edge.from.y <= edge.to.y);
 
-        let max = self.num_tiles_y * self.draw.tile_size;
+        let max = self.num_tiles_y * TILE_SIZE_F32;
 
         if edge.from.y > max || edge.to.y < 0.0 {
             return;
@@ -242,11 +234,11 @@ impl Tiler {
         self.last_row = self.last_row.max(end_idx);
 
         let offset_min = 0.0;
-        let offset_max = self.draw.tile_size;
+        let offset_max = TILE_SIZE_F32;
         let mut row_idx = start_idx as u32;
         if edge.is_line() {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = row_idx as f32 * self.draw.tile_size;
+                let y_offset = row_idx as f32 * TILE_SIZE_F32;
 
                 let mut segment = LineSegment { from: edge.from, to: edge.to };
                 segment.from.y -= y_offset;
@@ -280,7 +272,7 @@ impl Tiler {
             }
         } else {
             for row in &mut self.rows[start_idx .. end_idx] {
-                let y_offset = row_idx as f32 * self.draw.tile_size;
+                let y_offset = row_idx as f32 * TILE_SIZE_F32;
 
                 let mut segment = QuadraticBezierSegment { from: edge.from, ctrl: edge.ctrl, to: edge.to };
                 segment.from.y -= y_offset;
@@ -518,22 +510,22 @@ impl Tiler {
 
         active_edges.clear();
 
-        let inv_tw = 1.0 / self.draw.tile_size;
+        let inv_tw = 1.0 / TILE_SIZE_F32;
         let tiles_start = (self.scissor.min.x * inv_tw).floor();
         let tiles_end = self.num_tiles_x.min((self.scissor.max.x * inv_tw).ceil() as u32);
 
-        let tx = tiles_start * self.draw.tile_size;
-        let ty = tile_y as f32 * self.draw.tile_size;
+        let tx = tiles_start * TILE_SIZE_F32;
+        let ty = tile_y as f32 * TILE_SIZE_F32;
         let output_rect = Box2D {
             min: point(tx, ty),
-            max: point(tx + self.draw.tile_size, ty + self.draw.tile_size)
+            max: point(tx + TILE_SIZE_F32, ty + TILE_SIZE_F32)
         };
 
         // The inner rect is equivalent to the output rect with an y offset so that
         // its upper side is at y=0.
         let rect = Box2D {
             min: point(output_rect.min.x, 0.0),
-            max: point(output_rect.max.x, self.draw.tile_size),
+            max: point(output_rect.max.x, TILE_SIZE_F32),
         };
 
         let x = tiles_start as u32;
@@ -575,7 +567,7 @@ impl Tiler {
         for edge in &row[current_edge..] {
             while edge.min_x.0 > tile.rect.max.x && tile.x < tiles_end {
                 if active_edges.is_empty() {
-                    let tx = ((edge.min_x.0 / self.draw.tile_size) as u32).min(tiles_end);
+                    let tx = ((edge.min_x.0 / TILE_SIZE_F32) as u32).min(tiles_end);
                     assert!(tx > tile.x, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.rect.min.x);
                     if self.draw.fill_rule.is_in(tile.backdrop) ^ self.draw.inverted {
                         encoder.span(tile.x..tx, tile.y, coarse_mask, pattern);
@@ -619,7 +611,7 @@ impl Tiler {
     pub fn update_tile_rects(&self, tile: &mut TileInfo, num_tiles: u32) {
         // TODO: pass the target tile instead of difference.
         let nt = num_tiles as f32;
-        let d = self.draw.tile_size * nt;
+        let d = TILE_SIZE_F32 * nt;
         // Note: this is accumulating precision errors, but haven't seen
         // issues in practice.
         tile.rect.min.x += d;
@@ -707,7 +699,6 @@ impl Tiler {
             self.scissor.max.x,
             self.scissor.min.x,
             self.scissor.max.x,
-            self.draw.tile_size,
         );
 
         for tile_y in 0..self.rows.len() as u32 {

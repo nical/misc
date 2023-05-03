@@ -96,21 +96,19 @@ pub fn rasterize_tile(
     edges: &[QuadraticBezierSegment<f32>],
     backdrop: i16,
     fill_rule: FillRule,
-    tile_size: usize,
     tolerance: f32,
     output: &mut[u8]
 ) {
-    debug_assert!(tile_size <= 32);
-    let mut accum = [0.0; 32 * 32];
+    let mut accum = [0.0; crate::BYTES_PER_MASK];
     let mut backdrops = [backdrop as f32; 32];
 
     for edge in edges {
         if edge.from.x < -0.5 && edge.from.y != -0.5 {
-            add_backdrop(edge.from.y, 1.0, &mut backdrops[0..tile_size]);
+            add_backdrop(edge.from.y, 1.0, &mut backdrops[0..TILE_SIZE as usize]);
         }
 
         if edge.to.x < -0.5 && edge.to.y != -0.5 {
-            add_backdrop(edge.to.y, -1.0, &mut backdrops[0..tile_size]);
+            add_backdrop(edge.to.y, -1.0, &mut backdrops[0..TILE_SIZE as usize]);
         }
 
         let is_line = edge.ctrl.x.is_nan();
@@ -138,7 +136,6 @@ pub struct TileRasterJob {
     pub num_edges: u32,
     pub tiles: *const TileRasterJobTile,
     pub num_tiles: u32,
-    pub tile_size: u16,
     pub tolerance: f32,
     pub output: *mut u8,
 }
@@ -154,21 +151,18 @@ pub struct TileRasterJobTile {
 pub unsafe fn exec_tile_job(this: *const TileRasterJob) {
     let tiles = std::slice::from_raw_parts((*this).tiles, (*this).num_tiles as usize);
     let edges = std::slice::from_raw_parts((*this).edges, (*this).num_edges as usize);
-    let tile_size = (*this).tile_size as usize;
-    let pixels_per_tile = tile_size * tile_size;
     for tile in tiles {
         let edge_range = tile.edges.start as usize .. tile.edges.end as usize;
-        let offset = tile.output as usize * pixels_per_tile;
+        let offset = tile.output as usize * BYTES_PER_MASK;
         let output = std::slice::from_raw_parts_mut(
             (*this).output.offset(offset as isize),
-            pixels_per_tile,
+            BYTES_PER_MASK,
         );
 
         rasterize_tile(
             &edges[edge_range],
             tile.backdrop,
             tile.fill_rule,
-            tile_size,
             (*this).tolerance,
             output
         );

@@ -12,6 +12,8 @@ pub use tiling::occlusion::*;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 
+// To experiment with other tile sizes, also change the corresponding
+// constants in shaders/lib/tiling.wgsl.
 pub const TILE_SIZE: u32 = 16;
 pub const TILE_SIZE_F32: f32 = TILE_SIZE as f32;
 pub const BYTES_PER_MASK: usize = (TILE_SIZE * TILE_SIZE) as usize;
