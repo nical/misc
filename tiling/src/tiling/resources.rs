@@ -2,7 +2,7 @@ use crate::{gpu::{
     gpu_store::{GpuStore, DynamicStore},
     atlas_uploader::{MaskUploadCopies},
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
-}, custom_pattern::TilePipelines};
+}, custom_pattern::TilePipelines, canvas::CommonGpuResources};
 use crate::tiling::{
     encoder::{LineEdge},
     TilePosition, PatternData
@@ -10,7 +10,7 @@ use crate::tiling::{
 use crate::canvas::RendererResources;
 
 use lyon::geom::euclid::default::Size2D;
-use wgpu::TextureAspect;
+use wgpu::{TextureAspect, Instance};
 use wgpu::util::DeviceExt;
 
 use super::{PatternIndex};
@@ -59,38 +59,27 @@ pub struct TilingGpuResources {
     pub masked_image_pipeline: wgpu::RenderPipeline,
     pub opaque_image_pipeline: wgpu::RenderPipeline,
     pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
-    pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
-
-    //mask_texture: wgpu::Texture,
     pub mask_texture_view: wgpu::TextureView,
-    //src_color_texture: wgpu::Texture,
     pub src_color_texture_view: wgpu::TextureView,
 
     pub mask_texture_bind_group: wgpu::BindGroup,
     pub src_color_bind_group: wgpu::BindGroup,
     pub masks_bind_group: wgpu::BindGroup,
-    pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
     pub mask_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
     pub color_atlas_target_and_gpu_store_bind_group: wgpu::BindGroup,
 
-    pub quad_ibo: wgpu::Buffer,
-    // TODO: some way to account for a per-TileEncoder offset or range.
     pub edges: StorageBuffer,
     pub mask_params_ubo: wgpu::Buffer,
-    pub main_target_descriptor_ubo: wgpu::Buffer,
     pub patterns: Vec<TilePipelines>,
-
-    pub vertices: DynamicStore,
 }
 
 impl TilingGpuResources {
     pub fn new(
+        common: &CommonGpuResources,
         device: &wgpu::Device,
         shaders: &mut ShaderSources,
-        target_size: Size2D<u32>,
         mask_atlas_size: u32,
         color_atlas_size: u32,
-        gpu_store: &GpuStore,
     ) -> Self {
         let edges = StorageBuffer::new::<LineEdge>(
             device,
@@ -98,35 +87,6 @@ impl TilingGpuResources {
             4096 * 256,
             StorageKind::Buffer,
         );
-
-        let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
-        let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Target and gpu store"),
-            entries: &[
-                // target descriptor
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
-                    },
-                    count: None,
-                },
-                // GPU store
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                }
-            ],
-        });
 
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
@@ -142,15 +102,8 @@ impl TilingGpuResources {
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mask params"),
-            contents: bytemuck::cast_slice(&[
-                GpuTargetDescriptor::new(target_size.width, target_size.height)
-            ]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
 
-        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
+        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &common.target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
         let masks = Masks::new(&device, shaders, &edges);
 
         let src = include_str!("./../../shaders/tile.wgsl");
@@ -196,16 +149,19 @@ impl TilingGpuResources {
         });
 
         let defaults = PipelineDefaults::new();
-        let opaque_attributes = VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]);
-        let masked_attributes = VertexBuilder::from_slice(&[
-            wgpu::VertexFormat::Uint32x4,
-            wgpu::VertexFormat::Uint32x4,
-        ]);
+        let opaque_attributes = VertexBuilder::from_slice(wgpu::VertexStepMode::Instance, &[wgpu::VertexFormat::Uint32x4]);
+        let masked_attributes = VertexBuilder::from_slice(
+            wgpu::VertexStepMode::Instance,
+            &[
+                wgpu::VertexFormat::Uint32x4,
+                wgpu::VertexFormat::Uint32x4,
+            ],
+        );
 
         let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Masked image tiles"),
             bind_group_layouts: &[
-                &target_and_gpu_store_layout,
+                &common.target_and_gpu_store_layout,
                 &mask_texture_bind_group_layout,
                 &src_color_bind_group_layout,
             ],
@@ -255,13 +211,6 @@ impl TilingGpuResources {
 
         let masked_image_pipeline = device.create_render_pipeline(&masked_image_tile_pipeline_descriptor);
         let opaque_image_pipeline = device.create_render_pipeline(&opaque_image_tile_pipeline_descriptor);
-
-        let quad_indices = [0u16, 1, 2, 0, 2, 3];
-        let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Quad indices"),
-            contents: bytemuck::cast_slice(&quad_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
 
         let mask_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Mask atlas"),
@@ -323,35 +272,9 @@ impl TilingGpuResources {
             ],
         });
 
-        let gpu_store_view = gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
-            label: Some("gpu store"),
-            format: Some(wgpu::TextureFormat::Rgba32Float),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: TextureAspect::All,
-            base_mip_level: 0,
-            base_array_layer: 0,
-            mip_level_count: Some(1),
-            array_layer_count: Some(1),
-        });
-
-        let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Main target & gpu store"),
-            layout: &target_and_gpu_store_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(main_target_descriptor_ubo.as_entire_buffer_binding())
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gpu_store_view),
-                }
-            ],
-        });
-
         let mask_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Atlas target & gpu store"),
-            layout: &target_and_gpu_store_layout,
+            layout: &common.target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -359,14 +282,14 @@ impl TilingGpuResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gpu_store_view)
+                    resource: wgpu::BindingResource::TextureView(&common.gpu_store_view)
                 }
             ],
         });
 
         let color_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Atlas target & gpu store"),
-            layout: &target_and_gpu_store_layout,
+            layout: &common.target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -374,7 +297,7 @@ impl TilingGpuResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gpu_store_view)
+                    resource: wgpu::BindingResource::TextureView(&common.gpu_store_view)
                 }
             ],
         });
@@ -402,23 +325,16 @@ impl TilingGpuResources {
             masked_image_pipeline,
             mask_texture_bind_group_layout,
 
-            target_and_gpu_store_layout,
-            quad_ibo,
-            //mask_texture,
             mask_texture_view,
             src_color_texture_view,
             mask_texture_bind_group,
             src_color_bind_group,
             masks_bind_group,
-            main_target_and_gpu_store_bind_group,
             mask_atlas_target_and_gpu_store_bind_group,
             color_atlas_target_and_gpu_store_bind_group,
             edges,
             mask_params_ubo,
-            main_target_descriptor_ubo,
             patterns: Vec::new(),
-
-            vertices: DynamicStore::new_vertices(4096 * 32),
         }
     }
 
@@ -428,20 +344,11 @@ impl TilingGpuResources {
         idx
     }
 
-    pub fn resize(&mut self, size: Size2D<u32>, queue: &wgpu::Queue) {
-        queue.write_buffer(
-            &self.main_target_descriptor_ubo,
-            0,
-            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width, size.height)]),
-        );
-    }
-
     pub fn begin_frame(&mut self) {
         self.edges.begin_frame();
     }
 
     pub fn end_frame(&mut self) {
-        self.vertices.end_frame();
     }
 
     pub fn allocate(&mut self, device: &wgpu::Device) {
@@ -528,7 +435,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
     });
 
     let defaults = PipelineDefaults::new();
-    let mut attributes = VertexBuilder::new();
+    let mut attributes = VertexBuilder::new(wgpu::VertexStepMode::Instance);
     attributes.push(wgpu::VertexFormat::Uint32x2);
     attributes.push(wgpu::VertexFormat::Uint32);
     attributes.push(wgpu::VertexFormat::Uint32);
@@ -561,7 +468,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
 
     let fill_pipeline = device.create_render_pipeline(&fill_pipeline_descriptor);
 
-    let mut attributes = VertexBuilder::new();
+    let mut attributes = VertexBuilder::new(wgpu::VertexStepMode::Instance);
     attributes.push(wgpu::VertexFormat::Uint32);
     attributes.push(wgpu::VertexFormat::Float32);
     attributes.push(wgpu::VertexFormat::Float32x2);
@@ -587,7 +494,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
 
     let circle_pipeline = device.create_render_pipeline(&circle_pipeline_descriptor);
 
-    let mut attributes = VertexBuilder::new();
+    let mut attributes = VertexBuilder::new(wgpu::VertexStepMode::Instance);
     attributes.push(wgpu::VertexFormat::Uint32x4);
 
     let rect_pipeline_descriptor = wgpu::RenderPipelineDescriptor {

@@ -6,6 +6,7 @@ pub mod buffer;
 pub mod pattern;
 pub mod custom_pattern;
 pub mod tiling;
+pub mod tess;
 
 pub use tiling::tiler::*;
 pub use tiling::occlusion::*;

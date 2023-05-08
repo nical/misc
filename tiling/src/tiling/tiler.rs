@@ -116,14 +116,12 @@ impl Tiler {
 
     /// Using init instead of creating a new tiler allows recycling allocations from
     /// a previous tiling run.
-    pub fn init(&mut self, config: &TilerConfig) {
-        let size = config.view_box.size();
+    pub fn init(&mut self, view_box: &Box2D<f32>) {
+        let size = view_box.size();
         self.size = size;
         self.scissor = Box2D::from_size(size);
         self.num_tiles_x = f32::ceil(size.width / TILE_SIZE_F32) as u32;
         self.num_tiles_y = f32::ceil(size.height / TILE_SIZE_F32);
-        self.draw.tolerance = config.tolerance;
-        self.flatten = config.flatten;
         self.edges.clear();
     }
 
@@ -158,8 +156,8 @@ impl Tiler {
     ) {
         profiling::scope!("tile_path");
 
-        assert!(tile_mask.width() >= self.num_tiles_x);
-        assert!(tile_mask.height() >= self.num_tiles_y as u32);
+        assert!(tile_mask.width() >= self.num_tiles_x, "{} >= {}", tile_mask.width(), self.num_tiles_x);
+        assert!(tile_mask.height() >= self.num_tiles_y as u32, "{} >= {}", tile_mask.height(), self.num_tiles_y,);
 
         let t0 = time::precise_time_ns();
 

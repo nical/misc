@@ -12,6 +12,7 @@ use tiling::pattern::{
 use tiling::canvas::*;
 use tiling::load_svg::*;
 use tiling::gpu::{ShaderSources, GpuStore};
+use tiling::tess::{MeshGpuResources, MeshRenderer};
 use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
 use tiling::{Color, Size2D, Transform2D};
@@ -123,28 +124,33 @@ fn main() {
 
     tiler_config.view_box = view_box;
 
-    let tiling_handle = ResourcesHandle::new(0);
+    let common_handle = ResourcesHandle::new(0);
+    let tiling_handle = ResourcesHandle::new(1);
+    let mesh_handle = ResourcesHandle::new(2);
+
     let mut canvas = Canvas::new();
-    let mut tiling = TileRenderer::new(0, tiling_handle, &tiler_config);
-    let mut dummy = DummyRenderer::new(1);
+    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config);
+    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
+    let mut dummy = DummyRenderer::new(2);
 
     let mut shaders = ShaderSources::new();
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
+    let common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store);
+
     let mut tiling_resources = TilingGpuResources::new(
+        &common_resources,
         &device,
         &mut shaders,
-        Size2D::new(window_size.width, window_size.height),
         mask_atlas_size,
         color_atlas_size,
-        &gpu_store,
     );
 
     let mut pattern_builder = CustomPatterns::new(
         &device,
         &mut shaders,
-        &tiling_resources.target_and_gpu_store_layout,
+        &common_resources.target_and_gpu_store_layout,
         &tiling_resources.mask_texture_bind_group_layout,
     );
 
@@ -152,15 +158,15 @@ fn main() {
     tiling_resources.register_pattern(SimpleGradient::create_pipelines(&device, &mut pattern_builder));
     tiling_resources.register_pattern(CheckerboardPattern::create_pipelines(&device, &mut pattern_builder));
 
-    let mut gpu_resources = GpuResources::new(vec![Box::new(tiling_resources)]);
+    let mesh_resources = MeshGpuResources::new(&common_resources, &device, &mut shaders);
+
+    let mut gpu_resources = GpuResources::new(vec![
+        Box::new(common_resources),
+        Box::new(tiling_resources),
+        Box::new(mesh_resources),
+    ]);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-
-    paint_scene(&paths, &mut canvas, &mut tiling, &Transform2D::translation(10.0, 1.0));
-
-    tiling.prepare(&canvas, &mut gpu_store, &device);
-    canvas.build_render_passes(&mut[&mut tiling]);
-
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -205,12 +211,7 @@ fn main() {
             surface_desc.width = physical.width;
             surface_desc.height = physical.height;
             surface.configure(&device, &surface_desc);
-            tiler_config.view_box = Box2D::from_size(size2(physical.width, physical.height).to_f32());
-            tiling.tiler.init(&tiler_config);
-            let tiles = tiler_config.num_tiles();
-            tiling.occlusion_mask.init(tiles.width, tiles.height);
-
-            gpu_resources[tiling_handle].resize(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue)
+            gpu_resources[common_handle].resize_target(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue)
         }
 
         if !scene.render {
@@ -227,10 +228,13 @@ fn main() {
         };
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        tiling.begin_frame();
-        canvas.begin_frame();
+        canvas.begin_frame(SurfaceState::new(size));
+        tiling.begin_frame(&canvas);
+        meshes.begin_frame(&canvas);
+
         gpu_resources.begin_frame();
 
         let tx = scene.pan[0];
@@ -243,14 +247,16 @@ fn main() {
             .then_translate(vector(ww, wh));
 
         dummy.command(&mut canvas);
-        paint_scene(&paths, &mut canvas, &mut tiling, &transform);
+        paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &transform);
         dummy.command(&mut canvas);
 
         let frame_build_start = time::precise_time_ns();
 
         tiling.prepare(&canvas, &mut gpu_store, &device);
+        meshes.prepare(&canvas, &mut gpu_store);
         dummy.prepare(&canvas);
-        canvas.build_render_passes(&mut[&mut tiling, &mut dummy]);
+
+        canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut dummy]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
@@ -260,10 +266,13 @@ fn main() {
             label: Some("Canvas"),
         });
 
-        tiling.upload(&mut gpu_resources, &device, &queue, &mut encoder);
+        tiling.upload(&mut gpu_resources, &device, &queue);
+        meshes.upload(&mut gpu_resources, &device, &queue);
         gpu_store.upload(&device, &queue);
+        
+        gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &dummy], &gpu_resources, &frame_view, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, &frame_view, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -299,7 +308,7 @@ fn main() {
     });
 }
 
-fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &mut TileRenderer, transform: &Transform2D<f32>) {
+fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &mut TileRenderer, meshes: &mut MeshRenderer, transform: &Transform2D<f32>) {
     let mut builder = lyon::path::Path::builder();
     builder.begin(point(0.0, 0.0));
     builder.line_to(point(50.0, 400.0));
@@ -329,6 +338,7 @@ fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &
     for (path, pattern) in paths {
         match pattern {
             &SvgPattern::Color(color) => {
+                //meshes.fill(canvas, path.clone(), color);
                 tiling.fill(canvas, path.clone(), color);
             }
             &SvgPattern::Gradient { color0, color1, from, to } => {

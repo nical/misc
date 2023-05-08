@@ -4,12 +4,13 @@
 use std::sync::Arc;
 use lyon::math::{Point};
 use lyon::path::{Path, FillRule};
-use lyon::geom::euclid::default::{Transform2D, Box2D};
+use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
+use wgpu::util::DeviceExt;
 use crate::Color;
 use crate::pattern::checkerboard::*;
 use crate::pattern::simple_gradient::*;
 use std::{ops::Range};
-use crate::gpu::DynamicStore;
+use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
 use std::{any::Any, marker::PhantomData};
 
 pub type TransformId = u32;
@@ -218,14 +219,50 @@ impl RenderPasses {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SurfaceState {
+    size: Size2D<u32>,
+    opaque_pass: bool,
+}
+
+impl SurfaceState {
+    #[inline]
+    pub fn new(size: Size2D<u32>) -> Self {
+        SurfaceState { size, opaque_pass: false }
+    }
+
+    #[inline]
+    pub fn with_opaque_pass(mut self) -> Self {
+        self.opaque_pass = true;
+        self
+    }
+
+    #[inline]
+    pub fn size(&self) -> Size2D<u32> {
+        self.size
+    }
+
+    #[inline]
+    pub fn msaa(&self) -> Option<u8> {
+        None
+    }
+
+    #[inline]
+    pub fn opaque_pass(&self) -> bool {
+        self.opaque_pass
+    }
+}
+
 // TODO: canvas isn't a great name for this.
 #[derive(Default)]
 pub struct Canvas {
+    // TODO: maybe split off the push/pop transforms builder thing so that this remains more compatible
+    // with a retained scene model as well.
     pub transforms: Transforms,
     pub z_indices: ZIndices,
     pub commands: Commands,
+    pub surface: SurfaceState,
     render_passes: RenderPasses,
-    // TODO: track target surface configuration (size, msaa)
 }
 
 impl Canvas {
@@ -233,11 +270,12 @@ impl Canvas {
         Self::default()
     }
 
-    pub fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self, surface: SurfaceState) {
         self.transforms.clear();
         self.z_indices.clear();
         self.commands.clear();
         self.render_passes.clear();
+        self.surface = surface;
     }
 
     pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) {
@@ -370,19 +408,130 @@ impl CanvasRenderer for DummyRenderer {
 
 
 
-// TODO: these are still in the tiling code.
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
+    // TODO: right now there can be only one target per instance of this struct
+    pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
+    pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
+    pub main_target_descriptor_ubo: wgpu::Buffer,
+    pub gpu_store_view: wgpu::TextureView,
+}
+
+impl CommonGpuResources {
+    pub fn new(device: &wgpu::Device, target_size: Size2D<u32>, gpu_store: &GpuStore) -> Self {
+
+        let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
+        let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Target and gpu store"),
+            entries: &[
+                // target descriptor
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
+                    },
+                    count: None,
+                },
+                // GPU store
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }
+            ],
+        });
+
+        let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mask params"),
+            contents: bytemuck::cast_slice(&[
+                GpuTargetDescriptor::new(target_size.width, target_size.height)
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let quad_indices = [0u16, 1, 2, 0, 2, 3];
+        let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad indices"),
+            contents: bytemuck::cast_slice(&quad_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let gpu_store_view = gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gpu store"),
+            format: Some(wgpu::TextureFormat::Rgba32Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            mip_level_count: Some(1),
+            array_layer_count: Some(1),
+        });
+
+        let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Main target & gpu store"),
+            layout: &target_and_gpu_store_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(main_target_descriptor_ubo.as_entire_buffer_binding())
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gpu_store_view),
+                }
+            ],
+        });
+
+        let vertices = DynamicStore::new_vertices(4096 * 32);
+
+        CommonGpuResources {
+            quad_ibo,
+            vertices,
+            target_and_gpu_store_layout,
+            main_target_and_gpu_store_bind_group,
+            main_target_descriptor_ubo,
+            gpu_store_view,
+        }
+    }
+
+    pub fn resize_target(&self, size: Size2D<u32>, queue: &wgpu::Queue) {
+        queue.write_buffer(
+            &self.main_target_descriptor_ubo,
+            0,
+            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width, size.height)]),
+        );
+    }
 }
 
 impl RendererResources for CommonGpuResources {
     fn name(&self) -> &'static str { "CommonGpuResources" }
+
+    fn begin_frame(&mut self) {
+    }
+
+    fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        self.vertices.unmap(encoder);
+    }
+
+    fn end_frame(&mut self) {
+        self.vertices.end_frame();
+    }
+
 }
 
 pub trait RendererResources: AsAny {
     fn name(&self) -> &'static str;
     fn begin_frame(&mut self) {}
+    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
     fn end_frame(&mut self) {}
 }
 
@@ -449,6 +598,12 @@ impl GpuResources {
     pub fn begin_frame(&mut self) {
         for sys in &mut self.systems {
             sys.begin_frame();
+        }
+    }
+
+    pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        for sys in &mut self.systems {
+            sys.begin_rendering(encoder);
         }
     }
 
@@ -608,6 +763,17 @@ pub enum RecordedPattern {
     Gradient(Gradient),
     Image(u32),
     Checkerboard(Checkerboard),
+}
+
+impl RecordedPattern {
+    pub fn is_opaque(&self) -> bool {
+        match self {
+            Self::Color(color) => color.is_opaque(),
+            Self::Gradient(g) => g.color0.is_opaque() && g.color1.is_opaque(),
+            Self::Checkerboard(c) => c.color0.is_opaque() && c.color1.is_opaque(),
+            Self::Image(_) => false, // TODO
+        }
+    }
 }
 
 // TODO: the enum prevents other types of shapes from being added externally.

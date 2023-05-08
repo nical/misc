@@ -6,12 +6,12 @@ pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
-use crate::gpu::DynBufferRange;
+use crate::gpu::{DynBufferRange, DynamicStore};
 use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
 use crate::tiling::mask::FillMaskEncoder;
 use crate::tiling::cpu_rasterizer::*;
-use crate::tiling::resources::{TilingGpuResources, TileInstance, MaskedTileInstance, Mask as GpuMask};
+use crate::tiling::resources::{TileInstance, MaskedTileInstance, Mask as GpuMask};
 use crate::TILE_SIZE;
 
 use copyless::VecHelper;
@@ -544,6 +544,11 @@ impl TileEncoder {
         }
     }
 
+    pub fn end_render_pass(&mut self) {
+        self.fill_masks.end_render_pass();
+        self.flush_render_pass(false);
+    }
+
     pub fn end_paths(&mut self, reversed: bool) {
         self.fill_masks.end_render_pass();
         self.flush_render_pass(true);
@@ -902,9 +907,7 @@ impl TileEncoder {
         &self.atlas_pattern_batches[batch_range]
     }
 
-    pub fn upload(&mut self, tile_renderer: &mut TilingGpuResources, device: &wgpu::Device) {
-        let vertices = &mut tile_renderer.vertices;
-
+    pub fn upload(&mut self, vertices: &mut DynamicStore, device: &wgpu::Device) {
         self.fill_masks.upload(vertices, device);
 
         self.ranges.opaque_image_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_image_tiles));

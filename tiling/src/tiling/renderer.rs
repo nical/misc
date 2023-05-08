@@ -1,5 +1,5 @@
-use lyon::math::vector;
-use crate::{Tiler, canvas::{Fill, ResourcesHandle, Shape, Pattern, RendererCommandIndex, Canvas, RecordedPattern, RecordedShape, GpuResources, RenderPasses, SystemRenderPass, CanvasRenderer, RendererId}, TileMask, pattern::{solid_color::{SolidColorBuilder, SolidColor}, simple_gradient::{SimpleGradientBuilder, SimpleGradient}, checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard}}, gpu::GpuStore, Color, TilerConfig};
+use lyon::{math::vector, geom::euclid::Size2D};
+use crate::{Tiler, canvas::{Fill, ResourcesHandle, Shape, Pattern, RendererCommandIndex, Canvas, RecordedPattern, RecordedShape, GpuResources, RenderPasses, SystemRenderPass, CanvasRenderer, RendererId, CommonGpuResources}, TileMask, pattern::{solid_color::{SolidColorBuilder, SolidColor}, simple_gradient::{SimpleGradientBuilder, SimpleGradient}, checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard}}, gpu::GpuStore, Color, TilerConfig, TILE_SIZE};
 use super::{encoder::TileEncoder, TilingGpuResources, mask::MaskEncoder, TilerPattern, FillOptions, Stats};
 
 pub struct TileRenderer {
@@ -7,8 +7,9 @@ pub struct TileRenderer {
     pub tiler: Tiler,
     pub occlusion_mask: TileMask,
     commands: Vec<Fill>,
-    system_id: RendererId,
-    resources_id: ResourcesHandle<TilingGpuResources>,
+    renderer_id: RendererId,
+    common_resources: ResourcesHandle<CommonGpuResources>,
+    resources: ResourcesHandle<TilingGpuResources>,
     tolerance: f32,
     patterns: TilingPatterns,
     masks: TilingMasks,
@@ -26,14 +27,20 @@ struct TilingMasks {
 }
 
 impl TileRenderer {
-    pub fn new(system_id: RendererId, resources_id: ResourcesHandle<TilingGpuResources>, config: &TilerConfig) -> Self {
+    pub fn new(
+        renderer_id: RendererId,
+        common_resources_id: ResourcesHandle<CommonGpuResources>,
+        resources_id: ResourcesHandle<TilingGpuResources>,
+        config: &TilerConfig,
+    ) -> Self {
         let size = config.view_box.size().to_u32();
         let tiles_x = (size.width + crate::TILE_SIZE - 1) / crate::TILE_SIZE;
         let tiles_y = (size.height + crate::TILE_SIZE - 1) / crate::TILE_SIZE;
         TileRenderer {
             commands: Vec::new(),
-            system_id,
-            resources_id,
+            renderer_id,
+            common_resources: common_resources_id,
+            resources: resources_id,
             encoder: TileEncoder::new(config, 3),
             tiler: Tiler::new(config),
             tolerance: config.tolerance,
@@ -50,8 +57,17 @@ impl TileRenderer {
         }
     }
 
-    pub fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self, canvas: &Canvas) {
+        let size = canvas.surface.size();
+        self.tiler.init(&size.to_f32().into());
+        let tiles = (size + Size2D::new(TILE_SIZE-1, TILE_SIZE-1)) / TILE_SIZE;
+        self.occlusion_mask.init(tiles.width, tiles.height);
+
         self.commands.clear();
+        self.encoder.reset();
+        self.masks.circle_masks.reset();
+        self.masks.rectangle_masks.reset();
+        self.occlusion_mask.clear();
     }
 
     pub fn fill<S: Shape, P: Pattern>(&mut self, canvas: &mut Canvas, shape: S, pattern: P) {
@@ -64,28 +80,26 @@ impl TileRenderer {
             transform,
             z_index,
         });
-        canvas.commands.push(self.system_id, index);
+        canvas.commands.push(self.renderer_id, index);
     }
 
     pub fn prepare(&mut self, canvas: &Canvas, gpu_store: &mut GpuStore, device: &wgpu::Device) {
-        self.tiler.edges.clear();
-        self.encoder.reset();
-        self.masks.circle_masks.reset();
-        self.masks.rectangle_masks.reset();
-        self.tiler.edges.clear();
-        self.occlusion_mask.clear();
-
         let commands = std::mem::take(&mut self.commands);
-        for range in canvas.commands.with_renderer_rev(self.system_id) {
+        for range in canvas.commands.with_renderer_rev(self.renderer_id) {
             let range = range.start as usize .. range.end as usize;
             for fill in commands[range].iter().rev() {
                 self.prepare_fill(fill, canvas, gpu_store, device);
             }
+
+            self.masks.circle_masks.end_render_pass();
+            self.masks.rectangle_masks.end_render_pass();
+            self.masks.circle_masks.end_render_pass();
+            self.masks.rectangle_masks.end_render_pass();
+            self.encoder.end_render_pass();
         }
 
-        self.masks.circle_masks.end_render_pass();
-        self.masks.rectangle_masks.end_render_pass();
-        self.encoder.end_paths(true);
+        let reversed = true;
+        self.encoder.end_paths(reversed);
 
         self.commands = commands;
     }
@@ -180,9 +194,8 @@ impl TileRenderer {
         resources: &mut GpuResources,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
     ) {
-        let tile_resources = &mut resources[self.resources_id];
+        let tile_resources = &mut resources[self.resources];
 
         tile_resources.edges.bump_allocator().push(self.tiler.edges.len());
         // TODO: this should come after reserving the memory from potentially multiple tilers
@@ -191,14 +204,14 @@ impl TileRenderer {
         // TODO: hard coded offset implies a single tiler can use the edge buffer
         tile_resources.edges.upload_bytes(0, bytemuck::cast_slice(&self.tiler.edges), &queue);
 
-        self.encoder.upload(tile_resources, &device);
-        self.masks.circle_masks.upload(&mut tile_resources.vertices, &device);
-        self.masks.rectangle_masks.upload(&mut tile_resources.vertices, &device);
+        let common_resources = &mut resources[self.common_resources];
+
+        self.encoder.upload(&mut common_resources.vertices, &device);
+        self.masks.circle_masks.upload(&mut common_resources.vertices, &device);
+        self.masks.rectangle_masks.upload(&mut common_resources.vertices, &device);
 
         self.encoder.mask_uploader.unmap();
-        self.encoder.mask_uploader.upload_vertices(device, &mut tile_resources.vertices);
-
-        tile_resources.vertices.unmap(encoder);
+        self.encoder.mask_uploader.upload_vertices(device, &mut common_resources.vertices);
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
@@ -211,6 +224,7 @@ impl TileRenderer {
     pub fn render_color_atlas(
         &self,
         color_atlas_index: u32,
+        common_resources: &CommonGpuResources,
         resources: &TilingGpuResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -227,13 +241,13 @@ impl TileRenderer {
             depth_stencil_attachment: None,
         });
 
-        pass.set_index_buffer(resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
         pass.set_bind_group(0, &resources.color_atlas_target_and_gpu_store_bind_group, &[]);
 
         for batch in self.encoder.get_color_atlas_batches(color_atlas_index) {
             let pattern = &self.encoder.patterns[batch.pattern];
             if let Some(buffer_range) = &pattern.prerendered_vbo_range {
-                pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(buffer_range));
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.set_pipeline(&resources.patterns[batch.pattern].opaque);
                 pass.draw_indexed(0..6, 0, batch.tiles.clone());    
             }
@@ -243,6 +257,7 @@ impl TileRenderer {
     pub fn render_mask_atlas(
         &self,
         mask_atlas_index: u32,
+        common_resources: &CommonGpuResources,
         resources: &TilingGpuResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -263,25 +278,25 @@ impl TileRenderer {
                 depth_stencil_attachment: None,
             });
 
-            pass.set_index_buffer(resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_bind_group(0, &resources.masks_bind_group, &[]);
 
             // TODO: Make it possible to register more mask types without hard-coding them.
             if let Some((buffer_range, instances)) = self.encoder.fill_masks.buffer_and_instance_ranges(mask_atlas_index) {
                 pass.set_pipeline(&resources.masks.fill_pipeline);
-                pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(buffer_range));
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
 
             if let Some((buffer_range, instances)) = self.masks.circle_masks.buffer_and_instance_ranges(mask_atlas_index) {
                 pass.set_pipeline(&resources.masks.circle_pipeline);
-                pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(buffer_range));
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
 
             if let Some((buffer_range, instances)) = self.masks.rectangle_masks.buffer_and_instance_ranges(mask_atlas_index) {
                 pass.set_pipeline(&resources.masks.rect_pipeline);
-                pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(buffer_range));
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
         }
@@ -289,8 +304,8 @@ impl TileRenderer {
         // TODO: split this in two so that the copy shader can be in the previous pass.
         resources.mask_upload_copies.update_target(
             encoder,
-            &resources.quad_ibo,
-            &resources.vertices,
+            &common_resources.quad_ibo,
+            &common_resources.vertices,
             &self.encoder.mask_uploader,
             mask_atlas_index,
             &resources.mask_texture_view,
@@ -301,18 +316,20 @@ impl TileRenderer {
     pub fn render_pass<'pass, 'resources: 'pass>(
         &self,
         pass_idx: usize,
+        common_resources: &'resources CommonGpuResources,
         resources: &'resources TilingGpuResources,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let render_pass = &self.encoder.render_passes[pass_idx];
 
-        pass.set_index_buffer(resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-        pass.set_bind_group(0, &resources.main_target_and_gpu_store_bind_group, &[]);
+        pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
         if pass_idx == 0 {
+            // TODO: stop hard-coding this to be run in pass zero.
             for pattern_idx in 0..resources.patterns.len() {
                 if let (Some(range), count) = &self.encoder.get_opaque_batch_vertices(pattern_idx) {
-                    pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(range));
+                    pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
                     // TODO: optional hook to bind extra data
                     pass.set_pipeline(&resources.patterns[pattern_idx].opaque);
                     pass.draw_indexed(0..6, 0, 0..*count);
@@ -322,7 +339,7 @@ impl TileRenderer {
 
         if !render_pass.opaque_image_tiles.is_empty() {
             let range = &self.encoder.ranges.opaque_image_tiles.as_ref().unwrap();
-            pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(range));
+            pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
 
             pass.set_pipeline(&resources.opaque_image_pipeline);
             pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
@@ -331,7 +348,7 @@ impl TileRenderer {
         }
 
         if let Some(range) = &self.encoder.ranges.alpha_tiles {
-            pass.set_vertex_buffer(0, resources.vertices.get_buffer_slice(range));
+            pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
             pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
     
             for batch in &self.encoder.alpha_batches[render_pass.alpha_batches.clone()] {
@@ -354,7 +371,7 @@ impl CanvasRenderer for TileRenderer {
     fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
         for (idx, pass) in self.encoder.render_passes.iter().enumerate() {
             render_passes.push(SystemRenderPass {
-                renderer_id: self.system_id,
+                renderer_id: self.renderer_id,
                 internal_index: idx as u32,
                 require_pre_pass: pass.color_pre_pass || pass.mask_pre_pass,
                 z_index: pass.z_index,
@@ -370,10 +387,10 @@ impl CanvasRenderer for TileRenderer {
     ) {
         let pass = &self.encoder.render_passes[index as usize];
         if pass.color_pre_pass {
-            self.render_color_atlas(pass.color_atlas_index, &resources[self.resources_id], encoder)
+            self.render_color_atlas(pass.color_atlas_index, &resources[self.common_resources], &resources[self.resources], encoder)
         }
         if pass.mask_pre_pass {
-            self.render_mask_atlas(pass.mask_atlas_index, &resources[self.resources_id], encoder)
+            self.render_mask_atlas(pass.mask_atlas_index, &resources[self.common_resources], &resources[self.resources], encoder)
         }
     }
 
@@ -383,6 +400,6 @@ impl CanvasRenderer for TileRenderer {
         resources: &'resources GpuResources,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.render_pass(index as usize, &resources[self.resources_id], render_pass);
+        self.render_pass(index as usize, &resources[self.common_resources], &resources[self.resources], render_pass);
     }
 }

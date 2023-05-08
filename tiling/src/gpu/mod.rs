@@ -106,15 +106,16 @@ pub struct VertexBuilder {
     location: u32,
     offset: u64,
     attributes: Vec<wgpu::VertexAttribute>,
+    step_mode: wgpu::VertexStepMode,
 }
 
 impl VertexBuilder {
-    pub fn new() -> Self {
-        VertexBuilder { location: 0, offset: 0, attributes: Vec::with_capacity(16) }
+    pub fn new(step_mode: wgpu::VertexStepMode) -> Self {
+        VertexBuilder { location: 0, offset: 0, attributes: Vec::with_capacity(16), step_mode }
     }
 
-    pub fn from_slice(formats: &[wgpu::VertexFormat]) -> Self {
-        let mut attributes = VertexBuilder::new();
+    pub fn from_slice(step_mode: wgpu::VertexStepMode, formats: &[wgpu::VertexFormat]) -> Self {
+        let mut attributes = VertexBuilder::new(step_mode);
         for format in formats {
             attributes.push(*format);
         }
@@ -145,7 +146,7 @@ impl VertexBuilder {
     pub fn buffer_layout(&self) -> wgpu::VertexBufferLayout {
         wgpu::VertexBufferLayout {
             array_stride: self.offset,
-            step_mode: wgpu::VertexStepMode::Instance,
+            step_mode: self.step_mode,
             attributes: &self.attributes,
         }
     }
@@ -203,5 +204,9 @@ impl PipelineDefaults {
     pub fn alpha_target_state(&self) -> &[Option<wgpu::ColorTargetState>] {
         let idx = 2;
         &self.target_states[idx..idx+1]
+    }
+
+    pub fn depth_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Depth32Float
     }
 }

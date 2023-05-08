@@ -38,11 +38,12 @@ impl<'l> CustomPatterns<'l> {
         tile_atlas_desc_layout: &wgpu::BindGroupLayout,
         mask_src_layout: &wgpu::BindGroupLayout,
     ) -> Self {
+        let step_mode = wgpu::VertexStepMode::Instance;
         CustomPatterns {
             shaders,
             defaults: PipelineDefaults::new(),
-            masked_attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4, wgpu::VertexFormat::Uint32x4]),
-            opaque_attributes: VertexBuilder::from_slice(&[wgpu::VertexFormat::Uint32x4]),
+            masked_attributes: VertexBuilder::from_slice(step_mode, &[wgpu::VertexFormat::Uint32x4, wgpu::VertexFormat::Uint32x4]),
+            opaque_attributes: VertexBuilder::from_slice(step_mode, &[wgpu::VertexFormat::Uint32x4]),
             opaque_layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("opaque pattern"),
                 bind_group_layouts: &[tile_atlas_desc_layout],
