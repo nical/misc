@@ -6,7 +6,7 @@ use lyon::math::{Point};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
 use wgpu::util::DeviceExt;
-use crate::Color;
+use crate::{Color, u32_range, usize_range};
 use crate::pattern::checkerboard::*;
 use crate::pattern::simple_gradient::*;
 use std::{ops::Range};
@@ -150,7 +150,7 @@ impl Commands {
     }
 
     pub fn with_renderer_rev(&self, id: RendererId) -> impl Iterator<Item = &Range<RendererCommandIndex>> {
-        self.commands.iter().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
+        self.commands.iter().rev().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
     }
 }
 
@@ -162,15 +162,33 @@ impl Default for Commands {
 
 pub type RenderPassId = u32;
 
+#[derive(Debug)]
+struct RenderPass {
+    pre_passes: Range<u32>,
+    sub_passes: Range<u32>,
+    depth: bool,
+    msaa: bool,
+    msaa_resolve: bool,
+}
+
+#[derive(Debug)]
+struct RenderPassSlice<'a> {
+    pre_passes: &'a [PrePass],
+    sub_passes: &'a [SubPass],
+    depth: bool,
+    msaa: bool,
+    msaa_resolve: bool,
+}
+
 #[derive(Default)]
 pub struct RenderPasses {
-    sub_passes: Vec<SystemRenderPass>,
-    pre_passes: Vec<SystemPrePass>,
-    passes: Vec<(Range<usize>, Range<usize>)>,
+    sub_passes: Vec<SubPass>,
+    pre_passes: Vec<PrePass>,
+    passes: Vec<RenderPass>,
 }
 
 impl RenderPasses {
-    pub fn push(&mut self, pass: SystemRenderPass) {
+    pub fn push(&mut self, pass: SubPass) {
         self.sub_passes.push(pass);
     }
 
@@ -181,6 +199,10 @@ impl RenderPasses {
     }
 
     pub fn build(&mut self) {
+        if self.sub_passes.is_empty() {
+            return;
+        }
+
         self.sub_passes.sort_by_key(|pass| pass.z_index);
 
         // A bit per system specifying whether they have been used in the current
@@ -190,50 +212,124 @@ impl RenderPasses {
         let mut start = 0;
         let mut pre_start = 0;
 
+        let (mut use_depth, mut use_msaa) = {
+            let first = self.sub_passes.first().unwrap();
+            (first.use_depth, first.use_msaa)
+        };
+
         for (idx, pass) in self.sub_passes.iter().enumerate() {
             let req_bit: u64 = 1 << pass.renderer_id;
-            if pass.require_pre_pass {
-                if req & req_bit != 0 {
-                    self.passes.push((start..idx, pre_start..self.pre_passes.len()));
-                    start = idx;
-                    pre_start = self.pre_passes.len();
-                    req = 0;
-                }
+            let depth_changed = pass.use_depth != use_depth;
+            let msaa_changed = pass.use_msaa != use_msaa;
+            let flush_pass = depth_changed || msaa_changed || (pass.require_pre_pass && req & req_bit != 0);
 
-                self.pre_passes.push(SystemPrePass {
+            if flush_pass {
+                self.passes.push(RenderPass {
+                    pre_passes: u32_range(pre_start..self.pre_passes.len()),
+                    sub_passes: u32_range(start..idx),
+                    depth: use_depth,
+                    msaa: use_msaa,
+                    msaa_resolve: false,
+                });
+                start = idx;
+                pre_start = self.pre_passes.len();
+                use_depth = pass.use_depth;
+                use_msaa = pass.use_msaa;
+                req = 0;
+                let len = self.passes.len();
+                if len > 1 && use_msaa != self.passes[len - 1].msaa {
+                    if !use_msaa {
+                        // When transitioning from msaa to non-msaa targets, resolve the msaa
+                        // target into the non msaa one.
+                        self.passes[len - 1].msaa_resolve = true;
+                    } else {
+                        //  When transitioning from non-msaa to msaa, blit the non-msaa target
+                        // into the msaa one.
+                        todo!();
+                    }
+                }
+            }
+
+            if pass.require_pre_pass {
+                self.pre_passes.push(PrePass {
                     renderer_id: pass.renderer_id,
                     internal_index: pass.internal_index,
                 });
-            }
 
-            req |= req_bit;
+                req |= req_bit;
+            }
         }
 
         if start < self.sub_passes.len() {
-            self.passes.push((start .. self.sub_passes.len(), pre_start..self.pre_passes.len()));
+            self.passes.push(RenderPass {
+                pre_passes: u32_range(pre_start..self.pre_passes.len()),
+                sub_passes: u32_range(start..self.sub_passes.len()),
+                depth: use_depth,
+                msaa: use_msaa,
+                msaa_resolve: use_msaa,
+            });
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&[SystemPrePass], &[SystemRenderPass])> {
-        self.passes.iter().map(|(sub, pre)| (&self.pre_passes[pre.clone()], &self.sub_passes[sub.clone()]))
+    fn iter(&self) -> impl Iterator<Item = RenderPassSlice> {
+        self.passes.iter().map(|pass|
+            RenderPassSlice {
+                pre_passes: &self.pre_passes[usize_range(pass.pre_passes.clone())],
+                sub_passes: &self.sub_passes[usize_range(pass.sub_passes.clone())],
+                depth: pass.depth,
+                msaa: pass.msaa,
+                msaa_resolve: pass.msaa_resolve,
+            }
+        )
     }
 }
 
-#[derive(Clone, Debug, Default)]
+// TODO: transition between surface states
+//  - when would be the right moment to decide?
+//    - maybe explicitly in between drawing commands: "canvas.set_surface_state(new_state);"
+//  - when switching between msaa and non-msaa:
+//    - no msaa to msaa: composite non-msaa content into the msaa target
+//    - msaa to no msaa: use the non-msaa target as a resolve target of the previous msaa render pass
+//  - for the depth buffer
+//    - can't have a pipeline that does not know about the depth buffer in a render pass with a depth buffer.
+//      - as a result switching between depth and no-depth sub passes creates a new render pass. That prevents
+//        ordering issues between depth aware and non-depth aware content at the cost of more render passes.
+//      - One way to solve this could be to decide at initialization time whether we want to have a depth buffer
+//        and always add it to the pipeline descriptions even if they don't use it (or add yet another permutation
+//        of every pipeline).
+//        - that would allow mixing depth/non-depth-aware draws in a render pass but then we'd have to watch out for
+//          ordering issues.
+//        - have a separate opaque pass every time we transition from depth-buffer to no-depth buffer.
+//          This way top-most opaque content is not overwitten by prior non-depth-aware content.
+//        - If depth-aware and non-depth-aware draws can be mixed in a render pass, maybe the possibility of using a depth
+//          buffer should be global (as opposed to msaa transitions) and renderers simply decide whether or not to use it.
+//  - Allow changing the surface dimensions?
+//    - this should probably be part of a filter system.
+
+pub type SurfaceStateId = u16;
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct SurfaceState {
     size: Size2D<u32>,
     opaque_pass: bool,
+    msaa: bool,
 }
 
 impl SurfaceState {
     #[inline]
     pub fn new(size: Size2D<u32>) -> Self {
-        SurfaceState { size, opaque_pass: false }
+        SurfaceState { size, opaque_pass: false, msaa: false }
     }
 
     #[inline]
-    pub fn with_opaque_pass(mut self) -> Self {
-        self.opaque_pass = true;
+    pub fn with_opaque_pass(mut self, enabled: bool) -> Self {
+        self.opaque_pass = enabled;
+        self
+    }
+
+    #[inline]
+    pub fn with_msaa(mut self, enabled: bool) -> Self {
+        self.msaa = enabled;
         self
     }
 
@@ -243,8 +339,8 @@ impl SurfaceState {
     }
 
     #[inline]
-    pub fn msaa(&self) -> Option<u8> {
-        None
+    pub fn msaa(&self) -> bool {
+        self.msaa
     }
 
     #[inline]
@@ -289,29 +385,45 @@ impl Canvas {
         &self,
         renderers: &[&dyn CanvasRenderer],
         resources: &GpuResources,
-        target: &wgpu::TextureView,
+        target: &SurfaceResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        for (pre_passes, sub_passes) in self.render_passes.iter() {
-            for pre_pass in pre_passes {
+        for pass in self.render_passes.iter() {
+            //println!("{pass:#?}");
+
+            for pre_pass in pass.pre_passes {
                 renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, resources, encoder);
             }
 
-            // TODO: avoid hard-coding this.
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Color target"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: if pass.msaa { target.msaa_color.unwrap() } else { &target.main },
+                    resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        store: true,
+                        store: !pass.msaa_resolve,
                     },
-                    resolve_target: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: if pass.depth {
+                    Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: if pass.msaa {
+                            target.msaa_depth
+                        } else {
+                            target.depth
+                        }.unwrap(),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: false,
+                        }),
+                        stencil_ops: None,
+                    })
+                } else {
+                    None
+                }
             });
 
-            for sub_pass in sub_passes {
+            for sub_pass in pass.sub_passes {
                 renderers[sub_pass.renderer_id as usize].render(sub_pass.internal_index, resources, &mut render_pass);
             }
         }
@@ -334,15 +446,18 @@ pub trait CanvasRenderer: AsAny {
     ) {}
 }
 
-pub struct SystemRenderPass {
+#[derive(Debug)]
+pub struct SubPass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
     pub z_index: ZIndex,
     pub require_pre_pass: bool,
-    // TODO: add support for optional order-independent pass.
+    pub use_depth: bool,
+    pub use_msaa: bool,
 }
 
-pub struct SystemPrePass {
+#[derive(Debug)]
+pub struct PrePass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
 }
@@ -382,11 +497,13 @@ impl DummyRenderer {
 impl CanvasRenderer for DummyRenderer {
     fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
         for (idx, z_index) in self.passes.iter().enumerate() {
-            render_passes.push(SystemRenderPass {
+            render_passes.push(SubPass {
                 renderer_id: self.system_id,
                 internal_index: idx as u32,
                 z_index: *z_index,
                 require_pre_pass: false,
+                use_depth: false,
+                use_msaa: false,
             });
         }
     }
@@ -437,16 +554,7 @@ impl CommonGpuResources {
                     count: None,
                 },
                 // GPU store
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                }
+                gpu_store.bind_group_layout_entry(1, wgpu::ShaderStages::VERTEX),
             ],
         });
 
@@ -465,16 +573,7 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let gpu_store_view = gpu_store.texture().create_view(&wgpu::TextureViewDescriptor {
-            label: Some("gpu store"),
-            format: Some(wgpu::TextureFormat::Rgba32Float),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            base_array_layer: 0,
-            mip_level_count: Some(1),
-            array_layer_count: Some(1),
-        });
+        let gpu_store_view = gpu_store.create_texture_view();
 
         let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Main target & gpu store"),
@@ -510,6 +609,13 @@ impl CommonGpuResources {
             bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width, size.height)]),
         );
     }
+}
+
+pub struct SurfaceResources<'a> {
+    pub main: &'a wgpu::TextureView,
+    pub depth: Option<&'a wgpu::TextureView>,
+    pub msaa_color: Option<&'a wgpu::TextureView>,
+    pub msaa_depth: Option<&'a wgpu::TextureView>,
 }
 
 impl RendererResources for CommonGpuResources {

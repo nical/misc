@@ -78,3 +78,14 @@ impl Color {
         Color { r, g, b, a }
     }
 }
+
+use std::ops::Range;
+#[inline]
+pub(crate) fn u32_range(r: Range<usize>) -> Range<u32> {
+    r.start as u32 .. r.end as u32
+}
+
+#[inline]
+pub(crate) fn usize_range(r: Range<u32>) -> Range<usize> {
+    r.start as usize .. r.end as usize
+}

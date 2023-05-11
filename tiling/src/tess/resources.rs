@@ -43,10 +43,10 @@ impl MeshGpuResources {
         });
 
         let primitive = defaults.primitive_state();
-        let multisample = wgpu::MultisampleState::default();
+        let no_multisample = wgpu::MultisampleState::default();
 
-        let opaque_color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("tess: opque color"),
+        let descriptor = wgpu::RenderPipelineDescriptor {
+            label: None,
             layout: Some(&color_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &color_module,
@@ -59,95 +59,121 @@ impl MeshGpuResources {
                 targets: defaults.color_target_state_no_blend()
             }),
             primitive,
-            depth_stencil: Some(wgpu::DepthStencilState {
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-                format: defaults.depth_format(),
-            }),
+            depth_stencil: None,
             multiview: None,
-            multisample,
+            multisample: no_multisample,
         };
 
-        let alpha_color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("tess: alpha color with depth"),
-            layout: Some(&color_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &color_module,
-                entry_point: "vs_main",
-                buffers: &[vertex_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state()
-            }),
-            primitive,
-            depth_stencil: Some(wgpu::DepthStencilState {
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-                format: defaults.depth_format(),
-            }),
-            multiview: None,
-            multisample,
+        let depth_read = wgpu::DepthStencilState {
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+            format: PipelineDefaults::depth_format(),
         };
 
-        let depth_pipelines = Some(Pipelines {
-            opaque_color: device.create_render_pipeline(&opaque_color_pipeline_descriptor),
-            alpha_color: device.create_render_pipeline(&alpha_color_pipeline_descriptor),
+        let depth_read_write = wgpu::DepthStencilState {
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+            format: PipelineDefaults::depth_format(),
+        };
+
+        let fragment_no_blend = Some(wgpu::FragmentState {
+            module: &color_module,
+            entry_point: "fs_main",
+            targets: defaults.color_target_state_no_blend()
         });
 
-        let opaque_color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("tess: opaque color no depth"),
-            layout: Some(&color_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &color_module,
-                entry_point: "vs_main",
-                buffers: &[vertex_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state_no_blend()
-            }),
-            primitive,
-            depth_stencil: None,
-            multiview: None,
-            multisample,
+        let fragment_blend = Some(wgpu::FragmentState {
+            module: &color_module,
+            entry_point: "fs_main",
+            targets: defaults.color_target_state_no_blend()
+        });
+
+        let msaa_state = wgpu::MultisampleState {
+            count: PipelineDefaults::msaa_sample_count(),
+            .. wgpu::MultisampleState::default()
         };
 
-        let alpha_color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("tess: alpha color no depth"),
-            layout: Some(&color_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &color_module,
-                entry_point: "vs_main",
-                buffers: &[vertex_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state()
-            }),
-            primitive,
+        let opaque_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: opaque color"),
+            multisample: no_multisample.clone(),
             depth_stencil: None,
-            multiview: None,
-            multisample,
-        };
+            fragment: fragment_no_blend.clone(),
+            .. descriptor.clone()
+        });
+        let alpha_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: alpha color"),
+            multisample: no_multisample.clone(),
+            depth_stencil: None,
+            fragment: fragment_blend.clone(),
+            .. descriptor.clone()
+        });
 
-        let nodepth_pipelines = Some(Pipelines {
-            opaque_color: device.create_render_pipeline(&opaque_color_pipeline_descriptor),
-            alpha_color: device.create_render_pipeline(&alpha_color_pipeline_descriptor),
+        let msaa_opaque_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: msaa opaque color"),
+            multisample: msaa_state.clone(),
+            depth_stencil: None,
+            fragment: fragment_no_blend.clone(),
+            .. descriptor.clone()
+        });
+        let msaa_alpha_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: msaa alpha color"),
+            multisample: msaa_state.clone(),
+            depth_stencil: None,
+            fragment: fragment_blend.clone(),
+            .. descriptor.clone()
+        });
+
+        let depth_opaque_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: depth opaque color"),
+            multisample: no_multisample.clone(),
+            depth_stencil: Some(depth_read_write.clone()),
+            fragment: fragment_no_blend.clone(),
+            .. descriptor.clone()
+        });
+        let depth_alpha_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: depth alpha color"),
+            multisample: no_multisample,
+            depth_stencil: Some(depth_read.clone()),
+            fragment: fragment_blend.clone(),
+            .. descriptor.clone()
+        });
+
+        let depth_msaa_opaque_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: depth msaa opaque color"),
+            multisample: msaa_state.clone(),
+            depth_stencil: Some(depth_read_write.clone()),
+            fragment: fragment_no_blend.clone(),
+            .. descriptor.clone()
+        });
+        let depth_msaa_alpha_color = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tess: depth msaa alpha color"),
+            multisample: msaa_state.clone(),
+            depth_stencil: Some(depth_read.clone()),
+            fragment: fragment_blend.clone(),
+            .. descriptor.clone()
         });
 
         MeshGpuResources {
-            depth_pipelines,
-            depth_msaa_pipelines: None,
-            nodepth_pipelines,
-            nodepth_msaa_pipelines: None,
+            depth_pipelines: Some(Pipelines {
+                opaque_color: depth_opaque_color,
+                alpha_color: depth_alpha_color,
+            }),
+            depth_msaa_pipelines: Some(Pipelines {
+                opaque_color: depth_msaa_opaque_color,
+                alpha_color: depth_msaa_alpha_color,
+            }),
+            nodepth_pipelines: Some(Pipelines {
+                opaque_color: opaque_color,
+                alpha_color: alpha_color,
+            }),
+            nodepth_msaa_pipelines: Some(Pipelines {
+                opaque_color: msaa_opaque_color,
+                alpha_color: msaa_alpha_color,
+            }),
             indices: DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Mesh:Index"),
         }
     }

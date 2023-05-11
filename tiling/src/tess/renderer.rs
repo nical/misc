@@ -1,5 +1,5 @@
 use lyon::{tessellation::{FillTessellator, FillOptions}, lyon_tessellation::{VertexBuffers, FillVertexConstructor, BuffersBuilder}, path::traits::PathIterator};
-use crate::{canvas::{ResourcesHandle, RendererId, Fill, Shape, RendererCommandIndex, Canvas, Pattern, RecordedShape, RecordedPattern, GpuResources, CanvasRenderer, RenderPasses, SystemRenderPass, ZIndex, CommonGpuResources}, gpu::{gpu_store::GpuStore, DynBufferRange}};
+use crate::{canvas::{ResourcesHandle, RendererId, Fill, Shape, RendererCommandIndex, Canvas, Pattern, RecordedShape, RecordedPattern, GpuResources, CanvasRenderer, RenderPasses, SubPass, ZIndex, CommonGpuResources}, gpu::{gpu_store::GpuStore, DynBufferRange}};
 use std::ops::Range;
 
 use super::MeshGpuResources;
@@ -30,7 +30,7 @@ impl FillVertexConstructor<Vertex> for VertexCtor {
     }
 }
 
-struct MeshRenderPass {
+struct MeshSubPass {
     opaque_geometry: Range<u32>,
     blended_geometry: Range<u32>,
     z_index: ZIndex,
@@ -47,7 +47,7 @@ pub struct MeshRenderer {
     enable_msaa: bool,
 
     commands: Vec<Fill>,
-    render_passes: Vec<MeshRenderPass>,
+    render_passes: Vec<MeshSubPass>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
 }
@@ -77,7 +77,7 @@ impl MeshRenderer {
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
         self.enable_opaque_pass = canvas.surface.opaque_pass();
-        self.enable_msaa = canvas.surface.msaa().is_some();
+        self.enable_msaa = canvas.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
@@ -121,7 +121,7 @@ impl MeshRenderer {
             let blended_geometry = opaque_geometry.end..self.geometry.indices.len() as u32;
 
             if !opaque_geometry.is_empty() || !blended_geometry.is_empty() {
-                self.render_passes.push(MeshRenderPass {
+                self.render_passes.push(MeshSubPass {
                     opaque_geometry,
                     blended_geometry,
                     z_index,
@@ -149,6 +149,8 @@ impl MeshRenderer {
                 let options = FillOptions::tolerance(self.tolerenace)
                     .with_fill_rule(shape.fill_rule);
 
+                // TODO: some way to simplify/discard offscreen geometry, would probably be best
+                // done in the tessellator itself.
                 self.tessellator.tessellate(
                     shape.path.iter().transformed(transform),
                     &options,
@@ -170,7 +172,7 @@ impl MeshRenderer {
     pub fn upload(&mut self,
         resources: &mut GpuResources,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
     ) {
         self.vbo_range = resources[self.common_resources].vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
         self.ibo_range = resources[self.resources].indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
@@ -180,11 +182,13 @@ impl MeshRenderer {
 impl CanvasRenderer for MeshRenderer {
     fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
         for (idx, pass) in self.render_passes.iter().enumerate() {
-            render_passes.push(SystemRenderPass {
+            render_passes.push(SubPass {
                 renderer_id: self.renderer_id,
                 internal_index: idx as u32,
                 require_pre_pass: false,
                 z_index: pass.z_index,
+                use_depth: self.enable_opaque_pass,
+                use_msaa: self.enable_msaa,
             });
         }
     }

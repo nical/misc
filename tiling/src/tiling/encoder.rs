@@ -9,7 +9,6 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment};
 use crate::gpu::{DynBufferRange, DynamicStore};
 use crate::gpu::atlas_uploader::TileAtlasUploader;
 use crate::tiling::*;
-use crate::tiling::mask::FillMaskEncoder;
 use crate::tiling::cpu_rasterizer::*;
 use crate::tiling::resources::{TileInstance, MaskedTileInstance, Mask as GpuMask};
 use crate::TILE_SIZE;
@@ -31,7 +30,6 @@ fn opaque_span(
     let mut is_last = false;
 
     let tiles = &mut patterns[pattern.index()].opaque;
-
     // Loop over x indices including 1 index past the range so that we
     // don't need to flush after the loop.
     'outer: loop {
@@ -42,6 +40,7 @@ fn opaque_span(
 
             let position = TilePosition::extended(start_x, y, ext);
             let pattern_data = pattern.tile_data(start_x, y);
+
             tiles.alloc().init(TileInstance {
                 position,
                 mask: TilePosition::ZERO,
@@ -335,6 +334,7 @@ unsafe impl bytemuck::Zeroable for LineEdge {}
 pub struct RenderPass {
     pub opaque_image_tiles: Range<u32>,
     pub alpha_batches: Range<usize>,
+    pub opaque_batches: Range<usize>,
     pub mask_atlas_index: AtlasIndex,
     pub color_atlas_index: AtlasIndex,
     pub z_index: u32,
@@ -342,6 +342,7 @@ pub struct RenderPass {
     pub color_pre_pass: bool,
 }
 
+#[derive(Debug)]
 pub struct Batch {
     pub tiles: Range<u32>,
     pub pattern: PatternIndex,
@@ -369,7 +370,8 @@ pub struct SourceTiles {
 pub struct PatternTiles {
     opaque: Vec<TileInstance>,
     prerendered: Vec<TileInstance>,
-    render_pass_start: u32,
+    prerendered_start: u32, // offset of the first prerendered tile for the current render pass
+    opaque_start: u32,
     pub prerendered_vbo_range: Option<DynBufferRange>,
     pub opaque_vbo_range: Option<DynBufferRange>,
 }
@@ -378,7 +380,7 @@ pub struct TileEncoder {
     // State and output associated with the current group/layer:
 
     // These should move into dedicated things.
-    pub fill_masks: FillMaskEncoder,
+    pub fill_masks: MaskEncoder,
 
     pub render_passes: Vec<RenderPass>,
     pub alpha_batches: Vec<Batch>,
@@ -392,6 +394,7 @@ pub struct TileEncoder {
     current_pattern_index: Option<PatternIndex>,
     // First mask index of the current mask pass.
     alpha_batches_start: usize,
+    opaque_batches_start: usize,
     opaque_image_tiles_start: u32,
     // First masked color tile of the current mask pass.
     alpha_tiles_start: u32,
@@ -426,7 +429,8 @@ impl TileEncoder {
             patterns.alloc().init(PatternTiles {
                 opaque: Vec::with_capacity(2048),
                 prerendered: Vec::with_capacity(1024),
-                render_pass_start: 0,
+                prerendered_start: 0,
+                opaque_start: 0,
                 opaque_vbo_range: None,
                 prerendered_vbo_range: None,
             });
@@ -434,7 +438,7 @@ impl TileEncoder {
         TileEncoder {
             opaque_image_tiles: Vec::with_capacity(2048),
             alpha_tiles: Vec::with_capacity(8192),
-            fill_masks: FillMaskEncoder::new(),
+            fill_masks: MaskEncoder::new(),
             render_passes: Vec::with_capacity(16),
             alpha_batches: Vec::with_capacity(64),
             atlas_pattern_batches: Vec::with_capacity(64),
@@ -443,6 +447,7 @@ impl TileEncoder {
             patterns,
             current_pattern_index: None,
             alpha_batches_start: 0,
+            opaque_batches_start: 0,
             opaque_image_tiles_start: 0,
             alpha_tiles_start: 0,
             masks_texture_index: 0,
@@ -465,9 +470,9 @@ impl TileEncoder {
         }
     }
 
-    pub fn get_opaque_batch_vertices(&self, pattern_idx: usize) -> (Option<&DynBufferRange>, u32) {
+    pub fn get_opaque_batch_vertices(&self, pattern_idx: usize) -> Option<&DynBufferRange> {
         let pattern = &self.patterns[pattern_idx];
-        (pattern.opaque_vbo_range.as_ref(), pattern.opaque.len() as u32)
+        pattern.opaque_vbo_range.as_ref()
     }
 
     pub fn create_similar(&self) -> Self {
@@ -477,7 +482,8 @@ impl TileEncoder {
             patterns.alloc().init(PatternTiles {
                 opaque: Vec::with_capacity(2048),
                 prerendered: Vec::with_capacity(1024),
-                render_pass_start: 0,
+                prerendered_start: 0,
+                opaque_start: 0,
                 opaque_vbo_range: None,
                 prerendered_vbo_range: None,
             });
@@ -485,7 +491,7 @@ impl TileEncoder {
         TileEncoder {
             opaque_image_tiles: Vec::with_capacity(2000),
             alpha_tiles: Vec::with_capacity(6000),
-            fill_masks: FillMaskEncoder::new(),
+            fill_masks: MaskEncoder::new(),
             render_passes: Vec::with_capacity(16),
             alpha_batches: Vec::with_capacity(64),
             atlas_pattern_batches: Vec::with_capacity(64),
@@ -494,6 +500,7 @@ impl TileEncoder {
             patterns,
             current_pattern_index: None,
             alpha_batches_start: 0,
+            opaque_batches_start: 0,
             opaque_image_tiles_start: 0,
             alpha_tiles_start: 0,
             masks_texture_index: 0,
@@ -527,6 +534,7 @@ impl TileEncoder {
         self.current_pattern_index = None;
         self.edge_distributions = [0; 16];
         self.alpha_batches_start = 0;
+        self.opaque_batches_start = 0;
         self.opaque_image_tiles_start = 0;
         self.alpha_tiles_start = 0;
         self.masks_texture_index = 0;
@@ -540,17 +548,21 @@ impl TileEncoder {
         for pattern in &mut self.patterns {
             pattern.opaque.clear();
             pattern.prerendered.clear();
-            pattern.render_pass_start = 0;
+            pattern.prerendered_start = 0;
+            pattern.opaque_start = 0;
         }
     }
 
-    pub fn end_render_pass(&mut self) {
-        self.fill_masks.end_render_pass();
+    // Call this to ensure tiles before and after are on separate sub-passes.
+    // This is useful, for example to allow interleaving with other types of
+    // rendering primitives.
+    pub fn split_sub_pass(&mut self) {
         self.flush_render_pass(false);
     }
 
-    pub fn end_paths(&mut self, reversed: bool) {
-        self.fill_masks.end_render_pass();
+    // Call this once after tiling and before uploading.
+    pub fn finish(&mut self, reversed: bool) {
+        self.fill_masks.finish();
         self.flush_render_pass(true);
 
         assert!(!self.reversed);
@@ -604,7 +616,7 @@ impl TileEncoder {
         };
 
         if self.current_pattern_index != Some(index) {
-            self.end_batch();
+            self.end_alpha_batch();
             self.current_pattern_index = Some(index);
         }
     }
@@ -712,15 +724,20 @@ impl TileEncoder {
     // TODO: first allocate the mask and color tiles and then flush if either is
     // in a new texture (right now we only flush the mask atlas correctly).
     fn flush_render_pass(&mut self, force_flush: bool) {
-        self.end_batch();
+        self.end_alpha_batch();
+        self.end_opaque_batches();
 
         let alpha_batches_end = self.alpha_batches.len();
+        let opaque_batches_end = self.opaque_batches.len();
         let opaque_image_tiles_end = self.opaque_image_tiles.len() as u32;
 
-        if alpha_batches_end != self.alpha_batches_start {
+        if alpha_batches_end != self.alpha_batches_start
+        || opaque_batches_end != self.opaque_batches_start
+        || opaque_image_tiles_end != self.opaque_image_tiles_start {
             self.render_passes.alloc().init(RenderPass {
                 opaque_image_tiles: self.opaque_image_tiles_start..opaque_image_tiles_end,
                 alpha_batches: self.alpha_batches_start..alpha_batches_end,
+                opaque_batches: self.opaque_batches_start..opaque_batches_end,
                 mask_atlas_index: self.masks_texture_index,
                 color_atlas_index: self.color_texture_index,
                 z_index: self.current_z_index,
@@ -728,6 +745,7 @@ impl TileEncoder {
                 color_pre_pass: false,
             });
             self.alpha_batches_start = alpha_batches_end;
+            self.opaque_batches_start = opaque_batches_end;
             self.opaque_image_tiles_start = opaque_image_tiles_end;
         }
 
@@ -735,11 +753,11 @@ impl TileEncoder {
             let atlas_batches_start = self.atlas_pattern_batches.len();
             for (idx, pattern) in self.patterns.iter_mut().enumerate() {
                 let len = pattern.prerendered.len() as u32;
-                if len <= pattern.render_pass_start {
+                if len <= pattern.prerendered_start {
                     continue;
                 }
-                let tiles = pattern.render_pass_start .. len;
-                pattern.render_pass_start = len;
+                let tiles = pattern.prerendered_start .. len;
+                pattern.prerendered_start = len;
                 self.atlas_pattern_batches.push(Batch { pattern: idx, tiles });
             }
             let atlas_batches_end = self.atlas_pattern_batches.len();
@@ -758,7 +776,7 @@ impl TileEncoder {
         }
     }
 
-    fn end_batch(&mut self) {
+    fn end_alpha_batch(&mut self) {
         let pattern_index = if let Some(index) = self.current_pattern_index {
             index
         } else {
@@ -766,14 +784,29 @@ impl TileEncoder {
         };
 
         let alpha_tiles_end = self.alpha_tiles.len() as u32;
-        if self.alpha_tiles_start == alpha_tiles_end {
-            return;
+        if self.alpha_tiles_start != alpha_tiles_end {
+            self.alpha_batches.alloc().init(Batch {
+                tiles: self.alpha_tiles_start..alpha_tiles_end,
+                pattern: pattern_index,
+            });
+            self.alpha_tiles_start = alpha_tiles_end;
         }
-        self.alpha_batches.alloc().init(Batch {
-            tiles: self.alpha_tiles_start..alpha_tiles_end,
-            pattern: pattern_index,
-        });
-        self.alpha_tiles_start = alpha_tiles_end;
+    }
+
+    fn end_opaque_batches(&mut self) {
+        for (pattern_idx, pattern) in self.patterns.iter_mut().enumerate() {
+            let opaque_end = pattern.opaque.len() as u32;
+            if pattern.opaque_start == opaque_end {
+                continue;
+            }
+
+            self.opaque_batches.push(Batch {
+                tiles: pattern.opaque_start..opaque_end,
+                pattern: pattern_idx,
+            });
+
+            pattern.opaque_start = opaque_end;
+        }
     }
 
     pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>, device: &wgpu::Device) -> TilePosition {
@@ -1040,6 +1073,8 @@ pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mu
 }
 
 use lyon::geom::Line;
+
+use super::mask::MaskEncoder;
 
 #[inline]
 fn square_distance_to_point(line: &Line<f32>, p: Point) -> f32 {

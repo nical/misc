@@ -1,5 +1,4 @@
 use crate::{gpu::{
-    gpu_store::{GpuStore, DynamicStore},
     atlas_uploader::{MaskUploadCopies},
     ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
 }, custom_pattern::TilePipelines, canvas::CommonGpuResources};
@@ -9,8 +8,6 @@ use crate::tiling::{
 };
 use crate::canvas::RendererResources;
 
-use lyon::geom::euclid::default::Size2D;
-use wgpu::{TextureAspect, Instance};
 use wgpu::util::DeviceExt;
 
 use super::{PatternIndex};
@@ -237,11 +234,11 @@ impl TilingGpuResources {
                 height: color_atlas_size,
                 depth_or_array_layers: 1,
             },
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            format: PipelineDefaults::color_format(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
             sample_count: 1,
-            view_formats: &[wgpu::TextureFormat::Bgra8UnormSrgb],
+            view_formats: &[PipelineDefaults::color_format()],
         });
 
         let src_color_texture_view = src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());

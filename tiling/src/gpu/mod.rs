@@ -161,17 +161,17 @@ impl PipelineDefaults {
         PipelineDefaults {
             target_states: [
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: Self::color_format(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: Self::color_format(),
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
+                    format: Self::mask_format(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
@@ -206,7 +206,23 @@ impl PipelineDefaults {
         &self.target_states[idx..idx+1]
     }
 
-    pub fn depth_format(&self) -> wgpu::TextureFormat {
+    pub fn depth_format() -> wgpu::TextureFormat {
         wgpu::TextureFormat::Depth32Float
+    }
+
+    pub fn color_format() -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Bgra8UnormSrgb
+    }
+
+    pub fn mask_format() -> wgpu::TextureFormat {
+        wgpu::TextureFormat::R8Unorm
+    }
+
+    pub fn msaa_format() -> wgpu::TextureFormat {
+        Self::color_format()
+    }
+
+    pub fn msaa_sample_count() -> u32 {
+        4
     }
 }

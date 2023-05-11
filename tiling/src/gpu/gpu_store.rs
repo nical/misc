@@ -95,7 +95,6 @@ impl GpuStore {
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[wgpu::TextureFormat::Rgba32Float],
             });
-    
         }
 
         queue.write_texture(
@@ -121,6 +120,32 @@ impl GpuStore {
 
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    pub fn bind_group_layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+        wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        }
+    }
+
+    pub fn create_texture_view(&self) -> wgpu::TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gpu store"),
+            format: Some(wgpu::TextureFormat::Rgba32Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            mip_level_count: Some(1),
+            array_layer_count: Some(1),
+        })
     }
 }
 

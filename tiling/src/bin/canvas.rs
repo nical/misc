@@ -11,7 +11,7 @@ use tiling::pattern::{
 };
 use tiling::canvas::*;
 use tiling::load_svg::*;
-use tiling::gpu::{ShaderSources, GpuStore};
+use tiling::gpu::{ShaderSources, GpuStore, PipelineDefaults};
 use tiling::tess::{MeshGpuResources, MeshRenderer};
 use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
@@ -170,12 +170,12 @@ fn main() {
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        format: PipelineDefaults::color_format(),
         width: window_size.width,
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-        view_formats: vec![wgpu::TextureFormat::Bgra8UnormSrgb],
+        view_formats: vec![PipelineDefaults::color_format()],
     };
 
     surface.configure(&device, &surface_desc);
@@ -193,6 +193,10 @@ fn main() {
         render: true,
     };
 
+    let mut depth_texture = None;
+    let mut msaa_texture = None;
+    let mut msaa_depth_texture = None;
+
     let mut frame_build_time = Duration::ZERO;
     let mut render_time = Duration::ZERO;
     let mut row_time = Duration::ZERO;
@@ -205,13 +209,62 @@ fn main() {
             return;
         }
 
-        if scene.size_changed {
+        if scene.size_changed || depth_texture.is_none() {
             scene.size_changed = false;
             let physical = scene.window_size;
             surface_desc.width = physical.width;
             surface_desc.height = physical.height;
             surface.configure(&device, &surface_desc);
-            gpu_resources[common_handle].resize_target(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue)
+            gpu_resources[common_handle].resize_target(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue);
+
+            let depth = device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d {
+                    width: physical.width,
+                    height: physical.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: PipelineDefaults::depth_format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("depth"),
+                view_formats: &[],
+            });
+
+            let msaa = device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d {
+                    width: physical.width,
+                    height: physical.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: PipelineDefaults::msaa_sample_count(),
+                dimension: wgpu::TextureDimension::D2,
+                format: PipelineDefaults::msaa_format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("msaa"),
+                view_formats: &[],
+            });
+
+            let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d {
+                    width: physical.width,
+                    height: physical.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: PipelineDefaults::msaa_sample_count(),
+                dimension: wgpu::TextureDimension::D2,
+                format: PipelineDefaults::depth_format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("depth"),
+                view_formats: &[],
+            });
+
+            depth_texture = Some(depth.create_view(&wgpu::TextureViewDescriptor::default()));
+            msaa_texture = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
+            msaa_depth_texture = Some(msaa_depth.create_view(&wgpu::TextureViewDescriptor::default()));
         }
 
         if !scene.render {
@@ -227,11 +280,13 @@ fn main() {
             }
         };
 
+        //println!("\n\n\n ----- \n\n");
+
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceState::new(size));
+        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(false).with_msaa(false));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
 
@@ -246,9 +301,7 @@ fn main() {
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(ww, wh));
 
-        dummy.command(&mut canvas);
         paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &transform);
-        dummy.command(&mut canvas);
 
         let frame_build_start = time::precise_time_ns();
 
@@ -263,16 +316,23 @@ fn main() {
         let render_start = time::precise_time_ns();
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Canvas"),
+            label: None,
         });
 
         tiling.upload(&mut gpu_resources, &device, &queue);
         meshes.upload(&mut gpu_resources, &device, &queue);
         gpu_store.upload(&device, &queue);
-        
+
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, &frame_view, &mut encoder);
+        let target = SurfaceResources {
+            main: &frame_view,
+            depth: depth_texture.as_ref(),
+            msaa_color: msaa_texture.as_ref(),
+            msaa_depth: msaa_depth_texture.as_ref(),
+        };
+
+        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -338,8 +398,8 @@ fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &
     for (path, pattern) in paths {
         match pattern {
             &SvgPattern::Color(color) => {
-                //meshes.fill(canvas, path.clone(), color);
-                tiling.fill(canvas, path.clone(), color);
+                meshes.fill(canvas, path.clone(), color);
+                //tiling.fill(canvas, path.clone(), color);
             }
             &SvgPattern::Gradient { color0, color1, from, to } => {
                 tiling.fill(canvas, path.clone(), Gradient { color0, color1, from, to });

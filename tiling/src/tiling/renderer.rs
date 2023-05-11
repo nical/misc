@@ -1,5 +1,5 @@
 use lyon::{math::vector, geom::euclid::Size2D};
-use crate::{Tiler, canvas::{Fill, ResourcesHandle, Shape, Pattern, RendererCommandIndex, Canvas, RecordedPattern, RecordedShape, GpuResources, RenderPasses, SystemRenderPass, CanvasRenderer, RendererId, CommonGpuResources}, TileMask, pattern::{solid_color::{SolidColorBuilder, SolidColor}, simple_gradient::{SimpleGradientBuilder, SimpleGradient}, checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard}}, gpu::GpuStore, Color, TilerConfig, TILE_SIZE};
+use crate::{Tiler, canvas::{Fill, ResourcesHandle, Shape, Pattern, RendererCommandIndex, Canvas, RecordedPattern, RecordedShape, GpuResources, RenderPasses, SubPass, CanvasRenderer, RendererId, CommonGpuResources}, TileMask, pattern::{solid_color::{SolidColorBuilder, SolidColor}, simple_gradient::{SimpleGradientBuilder, SimpleGradient}, checkerboard::{CheckerboardPatternBuilder, CheckerboardPattern, add_checkerboard}}, gpu::GpuStore, Color, TilerConfig, TILE_SIZE};
 use super::{encoder::TileEncoder, TilingGpuResources, mask::MaskEncoder, TilerPattern, FillOptions, Stats};
 
 pub struct TileRenderer {
@@ -85,21 +85,21 @@ impl TileRenderer {
 
     pub fn prepare(&mut self, canvas: &Canvas, gpu_store: &mut GpuStore, device: &wgpu::Device) {
         let commands = std::mem::take(&mut self.commands);
+        // Process paths back to front in order to let the occlusion culling logic do its magic.
         for range in canvas.commands.with_renderer_rev(self.renderer_id) {
             let range = range.start as usize .. range.end as usize;
             for fill in commands[range].iter().rev() {
                 self.prepare_fill(fill, canvas, gpu_store, device);
             }
 
-            self.masks.circle_masks.end_render_pass();
-            self.masks.rectangle_masks.end_render_pass();
-            self.masks.circle_masks.end_render_pass();
-            self.masks.rectangle_masks.end_render_pass();
-            self.encoder.end_render_pass();
+            self.encoder.split_sub_pass();
         }
 
+        self.masks.circle_masks.finish();
+        self.masks.rectangle_masks.finish();
+
         let reversed = true;
-        self.encoder.end_paths(reversed);
+        self.encoder.finish(reversed);
 
         self.commands = commands;
     }
@@ -140,7 +140,8 @@ impl TileRenderer {
             _ => { unimplemented!() }
         };
 
-        match &fill.shape {
+        self.encoder.current_z_index = fill.z_index;
+         match &fill.shape {
             RecordedShape::Path(shape) => {
                 let options = FillOptions::new()
                     .with_transform(transform)
@@ -268,7 +269,7 @@ impl TileRenderer {
                     view: &resources.mask_texture_view,
                     ops: wgpu::Operations {
                         // TODO: Clear is actually quite expensive if a large portion of the atlas
-                        // is not used. Could decide between Load and Clear or Load depending on how
+                        // is not used. Could decide between Clear or Load depending on how
                         // much of the atlas we are going to render.
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: true,
@@ -325,14 +326,13 @@ impl TileRenderer {
         pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
         pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
-        if pass_idx == 0 {
-            // TODO: stop hard-coding this to be run in pass zero.
-            for pattern_idx in 0..resources.patterns.len() {
-                if let (Some(range), count) = &self.encoder.get_opaque_batch_vertices(pattern_idx) {
+        if !render_pass.opaque_batches.is_empty() {
+            for batch in &self.encoder.opaque_batches[render_pass.opaque_batches.clone()] {
+                if let Some(range) = &self.encoder.get_opaque_batch_vertices(batch.pattern) {
                     pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
                     // TODO: optional hook to bind extra data
-                    pass.set_pipeline(&resources.patterns[pattern_idx].opaque);
-                    pass.draw_indexed(0..6, 0, 0..*count);
+                    pass.set_pipeline(&resources.patterns[batch.pattern].opaque);
+                    pass.draw_indexed(0..6, 0, batch.tiles.clone());
                 }
             }
         }
@@ -370,11 +370,13 @@ impl TileRenderer {
 impl CanvasRenderer for TileRenderer {
     fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
         for (idx, pass) in self.encoder.render_passes.iter().enumerate() {
-            render_passes.push(SystemRenderPass {
+            render_passes.push(SubPass {
                 renderer_id: self.renderer_id,
                 internal_index: idx as u32,
                 require_pre_pass: pass.color_pre_pass || pass.mask_pre_pass,
                 z_index: pass.z_index,
+                use_depth: false,
+                use_msaa: false,
             });
         }
     }
