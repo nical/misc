@@ -137,7 +137,7 @@ fn main() {
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
-    let common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store);
+    let common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store, &mut shaders);
 
     let mut tiling_resources = TilingGpuResources::new(
         &common_resources,
@@ -196,6 +196,7 @@ fn main() {
     let mut depth_texture = None;
     let mut msaa_texture = None;
     let mut msaa_depth_texture = None;
+    let mut temporary_texture = None;
 
     let mut frame_build_time = Duration::ZERO;
     let mut render_time = Duration::ZERO;
@@ -217,54 +218,10 @@ fn main() {
             surface.configure(&device, &surface_desc);
             gpu_resources[common_handle].resize_target(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue);
 
-            let depth = device.create_texture(&wgpu::TextureDescriptor {
-                size: wgpu::Extent3d {
-                    width: physical.width,
-                    height: physical.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: PipelineDefaults::depth_format(),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                label: Some("depth"),
-                view_formats: &[],
-            });
-
-            let msaa = device.create_texture(&wgpu::TextureDescriptor {
-                size: wgpu::Extent3d {
-                    width: physical.width,
-                    height: physical.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: PipelineDefaults::msaa_sample_count(),
-                dimension: wgpu::TextureDimension::D2,
-                format: PipelineDefaults::msaa_format(),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                label: Some("msaa"),
-                view_formats: &[],
-            });
-
-            let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
-                size: wgpu::Extent3d {
-                    width: physical.width,
-                    height: physical.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: PipelineDefaults::msaa_sample_count(),
-                dimension: wgpu::TextureDimension::D2,
-                format: PipelineDefaults::depth_format(),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                label: Some("depth"),
-                view_formats: &[],
-            });
-
-            depth_texture = Some(depth.create_view(&wgpu::TextureViewDescriptor::default()));
-            msaa_texture = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
-            msaa_depth_texture = Some(msaa_depth.create_view(&wgpu::TextureViewDescriptor::default()));
+            depth_texture = None;
+            msaa_texture = None;
+            msaa_depth_texture = None;
+            temporary_texture = None;
         }
 
         if !scene.render {
@@ -286,7 +243,7 @@ fn main() {
         let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(false).with_msaa(false));
+        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(false).with_msaa(true));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
 
@@ -294,12 +251,12 @@ fn main() {
 
         let tx = scene.pan[0];
         let ty = scene.pan[1];
-        let ww = (scene.window_size.width as f32) * 0.5;
-        let wh = (scene.window_size.height as f32) * 0.5;
+        let hw = (size.width as f32) * 0.5;
+        let hh = (size.height as f32) * 0.5;
         let transform = Transform2D::translation(tx, ty)
-            .then_translate(-vector(ww, wh))
+            .then_translate(-vector(hw, hh))
             .then_scale(scene.zoom, scene.zoom)
-            .then_translate(vector(ww, wh));
+            .then_translate(vector(hw, hh));
 
         paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &transform);
 
@@ -309,9 +266,27 @@ fn main() {
         meshes.prepare(&canvas, &mut gpu_store);
         dummy.prepare(&canvas);
 
-        canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut dummy]);
+        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut dummy]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
+
+        create_render_targets(&device, &requirements, size, &mut depth_texture, &mut msaa_texture, &mut msaa_depth_texture, &mut temporary_texture);
+        let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(tex),
+            }]
+        }));
+        let target = SurfaceResources {
+            main: &frame_view,
+            depth: depth_texture.as_ref(),
+            msaa_color: msaa_texture.as_ref(),
+            msaa_depth: msaa_depth_texture.as_ref(),
+            temporary_color: temporary_texture.as_ref(),
+            temporary_src_bind_group: temporary_src_bind_group.as_ref(),
+        };
 
         let render_start = time::precise_time_ns();
 
@@ -325,14 +300,7 @@ fn main() {
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        let target = SurfaceResources {
-            main: &frame_view,
-            depth: depth_texture.as_ref(),
-            msaa_color: msaa_texture.as_ref(),
-            msaa_depth: msaa_depth_texture.as_ref(),
-        };
-
-        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -398,8 +366,8 @@ fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &
     for (path, pattern) in paths {
         match pattern {
             &SvgPattern::Color(color) => {
-                meshes.fill(canvas, path.clone(), color);
-                //tiling.fill(canvas, path.clone(), color);
+                //meshes.fill(canvas, path.clone(), color);
+                tiling.fill(canvas, path.clone(), color);
             }
             &SvgPattern::Gradient { color0, color1, from, to } => {
                 tiling.fill(canvas, path.clone(), Gradient { color0, color1, from, to });
@@ -452,6 +420,83 @@ fn print_stats(tiling: &TileRenderer, window_size: PhysicalSize<u32>) {
     println!("\n");
 
 }
+
+fn create_render_targets(
+    device: &wgpu::Device,
+    requirements: &RenderPassesRequirements,
+    size: Size2D<u32>,
+    depth_texture: &mut Option<wgpu::TextureView>,
+    msaa_texture: &mut Option<wgpu::TextureView>,
+    msaa_depth_texture: &mut Option<wgpu::TextureView>,
+    temporary_texture: &mut Option<wgpu::TextureView>,
+) {
+    let size = wgpu::Extent3d {
+        width: size.width,
+        height: size.height,
+        depth_or_array_layers: 1,
+    };
+
+    if requirements.depth && depth_texture.is_none() {
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PipelineDefaults::depth_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: Some("depth"),
+            view_formats: &[],
+        });
+
+        *depth_texture = Some(depth.create_view(&wgpu::TextureViewDescriptor::default()));
+    }
+
+    if requirements.msaa && msaa_texture.is_none() {
+        let msaa = device.create_texture(&wgpu::TextureDescriptor {
+            size,
+            mip_level_count: 1,
+            sample_count: PipelineDefaults::msaa_sample_count(),
+            dimension: wgpu::TextureDimension::D2,
+            format: PipelineDefaults::msaa_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: Some("msaa"),
+            view_formats: &[],
+        });
+
+        *msaa_texture = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
+    }
+
+    if requirements.msaa_depth && msaa_depth_texture.is_none() {
+        let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
+            size,
+            mip_level_count: 1,
+            sample_count: PipelineDefaults::msaa_sample_count(),
+            dimension: wgpu::TextureDimension::D2,
+            format: PipelineDefaults::depth_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: Some("depth+msaa"),
+            view_formats: &[],
+        });
+
+        *msaa_depth_texture = Some(msaa_depth.create_view(&wgpu::TextureViewDescriptor::default()));
+    }
+
+    if requirements.temporary && temporary_texture.is_none() {
+        let temporary = device.create_texture(&wgpu::TextureDescriptor {
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PipelineDefaults::color_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            label: Some("Temporary color"),
+            view_formats: &[],
+        });
+
+        *temporary_texture = Some(temporary.create_view(&wgpu::TextureViewDescriptor::default()))
+    }
+}
+
 
 // Default scene has all values set to zero
 #[derive(Copy, Clone, Debug)]

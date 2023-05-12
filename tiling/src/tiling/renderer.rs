@@ -250,7 +250,7 @@ impl TileRenderer {
             if let Some(buffer_range) = &pattern.prerendered_vbo_range {
                 pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.set_pipeline(&resources.patterns[batch.pattern].opaque);
-                pass.draw_indexed(0..6, 0, batch.tiles.clone());    
+                pass.draw_indexed(0..6, 0, batch.tiles.clone());
             }
         }
     }

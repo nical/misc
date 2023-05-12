@@ -10,7 +10,7 @@ use crate::{Color, u32_range, usize_range};
 use crate::pattern::checkerboard::*;
 use crate::pattern::simple_gradient::*;
 use std::{ops::Range};
-use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
+use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor, PipelineDefaults};
 use std::{any::Any, marker::PhantomData};
 
 pub type TransformId = u32;
@@ -169,6 +169,8 @@ struct RenderPass {
     depth: bool,
     msaa: bool,
     msaa_resolve: bool,
+    msaa_blit: bool,
+    temporary: bool,
 }
 
 #[derive(Debug)]
@@ -178,6 +180,17 @@ struct RenderPassSlice<'a> {
     depth: bool,
     msaa: bool,
     msaa_resolve: bool,
+    msaa_blit: bool,
+    temporary: bool,
+}
+
+pub struct RenderPassesRequirements {
+    pub msaa: bool,
+    pub depth: bool,
+    pub msaa_depth: bool,
+    // Temporary color target used in place of the main target if we need
+    // to read from it but can't.
+    pub temporary: bool,
 }
 
 #[derive(Default)]
@@ -198,9 +211,20 @@ impl RenderPasses {
         self.pre_passes.clear();
     }
 
-    pub fn build(&mut self) {
+    pub fn build(&mut self) -> RenderPassesRequirements {
+        let mut requirements = RenderPassesRequirements {
+            msaa: false,
+            depth: false,
+            msaa_depth: false,
+            temporary: false,
+        };
+
+        // Assume we can't read from the main target and therefore not blit it
+        // into an msaa arget.
+        let disable_msaa_blit_from_main_target = true;
+
         if self.sub_passes.is_empty() {
-            return;
+            return requirements;
         }
 
         self.sub_passes.sort_by_key(|pass| pass.z_index);
@@ -212,40 +236,54 @@ impl RenderPasses {
         let mut start = 0;
         let mut pre_start = 0;
 
-        let (mut use_depth, mut use_msaa) = {
+        let (mut prev_use_depth, mut prev_use_msaa) = {
             let first = self.sub_passes.first().unwrap();
             (first.use_depth, first.use_msaa)
         };
+        let mut msaa_blit = false;
 
         for (idx, pass) in self.sub_passes.iter().enumerate() {
             let req_bit: u64 = 1 << pass.renderer_id;
-            let depth_changed = pass.use_depth != use_depth;
-            let msaa_changed = pass.use_msaa != use_msaa;
+            let depth_changed = pass.use_depth != prev_use_depth;
+            let msaa_changed = pass.use_msaa != prev_use_msaa;
             let flush_pass = depth_changed || msaa_changed || (pass.require_pre_pass && req & req_bit != 0);
-
+            //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
+                //  When transitioning from non-msaa to msaa, blit the non-msaa target
+                // into the msaa one.
+                let msaa_resolve = msaa_changed && !pass.use_msaa;
+                //println!("   -> flush msaa resolve {msaa_resolve} blit {msaa_blit}");
                 self.passes.push(RenderPass {
                     pre_passes: u32_range(pre_start..self.pre_passes.len()),
                     sub_passes: u32_range(start..idx),
-                    depth: use_depth,
-                    msaa: use_msaa,
-                    msaa_resolve: false,
+                    depth: prev_use_depth,
+                    msaa: prev_use_msaa,
+                    msaa_resolve,
+                    msaa_blit,
+                    temporary: false,
                 });
+                requirements.msaa |= prev_use_msaa && !prev_use_depth;
+                requirements.msaa_depth |= prev_use_msaa && prev_use_depth;
+                requirements.depth = prev_use_depth && !prev_use_msaa;
+                requirements.temporary |= disable_msaa_blit_from_main_target && msaa_blit;
+
+                // When transitioning from msaa to non-msaa targets, resolve the msaa
+                // target into the non msaa one.
+                msaa_blit = msaa_changed && pass.use_msaa;
+
                 start = idx;
                 pre_start = self.pre_passes.len();
-                use_depth = pass.use_depth;
-                use_msaa = pass.use_msaa;
+                prev_use_depth = pass.use_depth;
+                prev_use_msaa = pass.use_msaa;
+
                 req = 0;
-                let len = self.passes.len();
-                if len > 1 && use_msaa != self.passes[len - 1].msaa {
-                    if !use_msaa {
-                        // When transitioning from msaa to non-msaa targets, resolve the msaa
-                        // target into the non msaa one.
-                        self.passes[len - 1].msaa_resolve = true;
-                    } else {
-                        //  When transitioning from non-msaa to msaa, blit the non-msaa target
-                        // into the msaa one.
-                        todo!();
+
+                if msaa_blit && disable_msaa_blit_from_main_target {
+                    for pass in self.passes.iter_mut().rev() {
+                        if pass.msaa {
+                            break
+                        }
+                        pass.temporary = true;
                     }
                 }
             }
@@ -264,11 +302,20 @@ impl RenderPasses {
             self.passes.push(RenderPass {
                 pre_passes: u32_range(pre_start..self.pre_passes.len()),
                 sub_passes: u32_range(start..self.sub_passes.len()),
-                depth: use_depth,
-                msaa: use_msaa,
-                msaa_resolve: use_msaa,
+                depth: prev_use_depth,
+                msaa: prev_use_msaa,
+                msaa_resolve: prev_use_msaa,
+                msaa_blit,
+                temporary: false,
             });
+
+            requirements.msaa |= prev_use_msaa && !prev_use_depth;
+            requirements.msaa_depth |= prev_use_msaa && prev_use_depth;
+            requirements.depth = prev_use_depth && !prev_use_msaa;
+            requirements.temporary |= msaa_blit;
         }
+
+        requirements
     }
 
     fn iter(&self) -> impl Iterator<Item = RenderPassSlice> {
@@ -279,6 +326,8 @@ impl RenderPasses {
                 depth: pass.depth,
                 msaa: pass.msaa,
                 msaa_resolve: pass.msaa_resolve,
+                msaa_blit: pass.msaa_blit,
+                temporary: pass.temporary,
             }
         )
     }
@@ -374,31 +423,40 @@ impl Canvas {
         self.surface = surface;
     }
 
-    pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) {
+    pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) -> RenderPassesRequirements {
         for renderer in renderers {
             renderer.add_render_passes(&mut self.render_passes);
         }
-        self.render_passes.build();
+        self.render_passes.build()
     }
 
     pub fn render(
         &self,
         renderers: &[&dyn CanvasRenderer],
         resources: &GpuResources,
+        common_resources: ResourcesHandle<CommonGpuResources>,
         target: &SurfaceResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         for pass in self.render_passes.iter() {
-            //println!("{pass:#?}");
-
             for pre_pass in pass.pre_passes {
                 renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, resources, encoder);
             }
 
+            let (view, label) = if pass.msaa {
+                (target.msaa_color.unwrap(), "MSAA color target")
+            } else if pass.temporary {
+                (target.temporary_color.unwrap(), "Temporary color target")
+            } else {
+                (target.main, "Color target")
+            };
+
+            //println!("{label}: {pass:#?}");
+
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Color target"),
+                label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: if pass.msaa { target.msaa_color.unwrap() } else { &target.main },
+                    view,
                     resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -422,6 +480,18 @@ impl Canvas {
                     None
                 }
             });
+
+            if pass.msaa_blit {
+                let common = &resources[common_resources];
+                render_pass.set_bind_group(0, target.temporary_src_bind_group.unwrap(), &[]);
+                render_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.set_pipeline(if pass.depth {
+                    &common.msaa_blit_with_depth_pipeline
+                } else {
+                    &common.msaa_blit_pipeline
+                });
+                render_pass.draw_indexed(0..6, 0, 0..1);
+            }
 
             for sub_pass in pass.sub_passes {
                 renderers[sub_pass.renderer_id as usize].render(sub_pass.internal_index, resources, &mut render_pass);
@@ -533,10 +603,20 @@ pub struct CommonGpuResources {
     pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
     pub main_target_descriptor_ubo: wgpu::Buffer,
     pub gpu_store_view: wgpu::TextureView,
+
+    pub msaa_blit_layout: wgpu::PipelineLayout,
+    pub msaa_blit_pipeline: wgpu::RenderPipeline,
+    pub msaa_blit_with_depth_pipeline: wgpu::RenderPipeline,
+    pub msaa_blit_src_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl CommonGpuResources {
-    pub fn new(device: &wgpu::Device, target_size: Size2D<u32>, gpu_store: &GpuStore) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        target_size: Size2D<u32>,
+        gpu_store: &GpuStore,
+        shaders: &mut crate::gpu::ShaderSources,
+    ) -> Self {
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
         let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -559,7 +639,7 @@ impl CommonGpuResources {
         });
 
         let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mask params"),
+            label: Some("Target info"),
             contents: bytemuck::cast_slice(&[
                 GpuTargetDescriptor::new(target_size.width, target_size.height)
             ]),
@@ -592,6 +672,70 @@ impl CommonGpuResources {
 
         let vertices = DynamicStore::new_vertices(4096 * 32);
 
+        let defaults = PipelineDefaults::new();
+
+        let msaa_blit_src_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Msaa blit source"),
+            entries: &[
+                // target descriptor
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let src = include_str!("./../shaders/msaa_blit.wgsl");
+        let color_module = shaders.create_shader_module(device, "msaa-blit", src, &[]);
+
+        let msaa_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("color-to-msaa"),
+            bind_group_layouts: &[
+                &msaa_blit_src_bind_group_layout,
+            ],
+            push_constant_ranges: &[],
+        });
+
+        let mut descriptor = wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&msaa_blit_layout),
+            vertex: wgpu::VertexState {
+                module: &color_module,
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &color_module,
+                entry_point: "fs_main",
+                targets: defaults.color_target_state_no_blend()
+            }),
+            primitive: defaults.primitive_state(),
+            depth_stencil: None,
+            multiview: None,
+            multisample: wgpu::MultisampleState {
+                count: crate::gpu::PipelineDefaults::msaa_sample_count(),
+                .. wgpu::MultisampleState::default()
+            },
+        };
+
+        let msaa_blit = device.create_render_pipeline(&descriptor);
+
+        descriptor.depth_stencil = Some(wgpu::DepthStencilState {
+            format: PipelineDefaults::depth_format(),
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            bias: wgpu::DepthBiasState::default(),
+            stencil: wgpu::StencilState::default(),
+        });
+
+        let msaa_blit_depth = device.create_render_pipeline(&descriptor);
+
         CommonGpuResources {
             quad_ibo,
             vertices,
@@ -599,6 +743,10 @@ impl CommonGpuResources {
             main_target_and_gpu_store_bind_group,
             main_target_descriptor_ubo,
             gpu_store_view,
+            msaa_blit_pipeline: msaa_blit,
+            msaa_blit_with_depth_pipeline: msaa_blit_depth,
+            msaa_blit_layout,
+            msaa_blit_src_bind_group_layout
         }
     }
 
@@ -613,6 +761,8 @@ impl CommonGpuResources {
 
 pub struct SurfaceResources<'a> {
     pub main: &'a wgpu::TextureView,
+    pub temporary_color: Option<&'a wgpu::TextureView>,
+    pub temporary_src_bind_group: Option<&'a wgpu::BindGroup>,
     pub depth: Option<&'a wgpu::TextureView>,
     pub msaa_color: Option<&'a wgpu::TextureView>,
     pub msaa_depth: Option<&'a wgpu::TextureView>,
