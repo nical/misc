@@ -36,24 +36,33 @@ impl Color {
     pub const BLACK: Self = Color { r: 0, g: 0, b: 0, a: 255 };
     pub const WHITE: Self = Color { r: 255, g: 255, b: 255, a: 255 };
 
-    pub fn is_opaque(&self) -> bool {
+    pub fn is_opaque(self) -> bool {
         self.a == 255
     }
 
-    pub fn to_u32(&self) -> u32 {
+    pub fn to_u32(self) -> u32 {
         (self.r as u32) << 24
         | (self.g as u32) << 16
         | (self.b as u32) << 8
         | self.a as u32
     }
 
-    pub fn to_f32(&self) -> [f32; 4] {
+    pub fn to_f32(self) -> [f32; 4] {
         [
             self.r as f32 / 255.0,
             self.g as f32 / 255.0,
             self.b as f32 / 255.0,
             self.a as f32 / 255.0,
         ]
+    }
+
+    pub fn to_wgpu(self) -> wgpu::Color {
+        wgpu::Color {
+            r: self.r as f64 / 255.0,
+            g: self.g as f64 / 255.0,
+            b: self.b as f64 / 255.0,
+            a: self.a as f64 / 255.0,
+        }
     }
 
     pub fn linear_to_srgb(r: u8, g: u8, b: u8, a:u8) -> Self {

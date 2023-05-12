@@ -211,7 +211,11 @@ impl RenderPasses {
         self.pre_passes.clear();
     }
 
-    pub fn build(&mut self) -> RenderPassesRequirements {
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    pub fn build(&mut self, surface: &SurfaceState) -> RenderPassesRequirements {
         let mut requirements = RenderPassesRequirements {
             msaa: false,
             depth: false,
@@ -221,7 +225,7 @@ impl RenderPasses {
 
         // Assume we can't read from the main target and therefore not blit it
         // into an msaa arget.
-        let disable_msaa_blit_from_main_target = true;
+        let disable_msaa_blit_from_main_target = surface.write_only_target;
 
         if self.sub_passes.is_empty() {
             return requirements;
@@ -333,41 +337,26 @@ impl RenderPasses {
     }
 }
 
-// TODO: transition between surface states
-//  - when would be the right moment to decide?
-//    - maybe explicitly in between drawing commands: "canvas.set_surface_state(new_state);"
-//  - when switching between msaa and non-msaa:
-//    - no msaa to msaa: composite non-msaa content into the msaa target
-//    - msaa to no msaa: use the non-msaa target as a resolve target of the previous msaa render pass
-//  - for the depth buffer
-//    - can't have a pipeline that does not know about the depth buffer in a render pass with a depth buffer.
-//      - as a result switching between depth and no-depth sub passes creates a new render pass. That prevents
-//        ordering issues between depth aware and non-depth aware content at the cost of more render passes.
-//      - One way to solve this could be to decide at initialization time whether we want to have a depth buffer
-//        and always add it to the pipeline descriptions even if they don't use it (or add yet another permutation
-//        of every pipeline).
-//        - that would allow mixing depth/non-depth-aware draws in a render pass but then we'd have to watch out for
-//          ordering issues.
-//        - have a separate opaque pass every time we transition from depth-buffer to no-depth buffer.
-//          This way top-most opaque content is not overwitten by prior non-depth-aware content.
-//        - If depth-aware and non-depth-aware draws can be mixed in a render pass, maybe the possibility of using a depth
-//          buffer should be global (as opposed to msaa transitions) and renderers simply decide whether or not to use it.
-//  - Allow changing the surface dimensions?
-//    - this should probably be part of a filter system.
-
-pub type SurfaceStateId = u16;
-
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SurfaceState {
     size: Size2D<u32>,
     opaque_pass: bool,
     msaa: bool,
+    clear: Option<Color>,
+    // If true, the main target cannot be sampled (for example a swapchain's target).
+    write_only_target: bool,
 }
 
 impl SurfaceState {
     #[inline]
     pub fn new(size: Size2D<u32>) -> Self {
-        SurfaceState { size, opaque_pass: false, msaa: false }
+        SurfaceState {
+            size,
+            opaque_pass: false,
+            msaa: false,
+            clear: Some(Color::BLACK),
+            write_only_target: true,
+        }
     }
 
     #[inline]
@@ -379,6 +368,12 @@ impl SurfaceState {
     #[inline]
     pub fn with_msaa(mut self, enabled: bool) -> Self {
         self.msaa = enabled;
+        self
+    }
+
+    #[inline]
+    pub fn with_clear(mut self, clear: Option<Color>) -> Self {
+        self.clear = clear;
         self
     }
 
@@ -427,7 +422,7 @@ impl Canvas {
         for renderer in renderers {
             renderer.add_render_passes(&mut self.render_passes);
         }
-        self.render_passes.build()
+        self.render_passes.build(&self.surface)
     }
 
     pub fn render(
@@ -438,6 +433,15 @@ impl Canvas {
         target: &SurfaceResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        let mut need_clear = self.surface.clear.is_some();
+        #[cfg(debug_assertions)]
+        if self.surface.clear.is_none() && self.surface.write_only_target && !self.render_passes.is_empty() {
+            let first = self.render_passes.iter().next().unwrap();
+            if first.msaa || first.temporary {
+                println!("Can't load content if the first pass is a temporary or msaa target");
+            }
+        }
+
         for pass in self.render_passes.iter() {
             for pre_pass in pass.pre_passes {
                 renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, resources, encoder);
@@ -451,6 +455,31 @@ impl Canvas {
                 (target.main, "Color target")
             };
 
+            // If the first thing we do is a full-target blit, no nead to load the
+            // contents of the target.
+            let mut clear = pass.msaa_blit;
+            // After resolving the msaa target, we don't want to clear the contents of the
+            // main target
+            if pass.msaa_resolve {
+                need_clear = false;
+            }
+
+            if need_clear {
+                need_clear = false;
+                clear = true;
+            }
+
+            let ops = wgpu::Operations {
+                load: if clear {
+                    wgpu::LoadOp::Clear(
+                        self.surface.clear.map(Color::to_wgpu).unwrap_or(wgpu::Color::BLACK)
+                    )
+                } else {
+                    wgpu::LoadOp::Load
+                },
+                store: !pass.msaa_resolve,
+            };
+
             //println!("{label}: {pass:#?}");
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -458,10 +487,7 @@ impl Canvas {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: !pass.msaa_resolve,
-                    },
+                    ops,
                 })],
                 depth_stencil_attachment: if pass.depth {
                     Some(wgpu::RenderPassDepthStencilAttachment {

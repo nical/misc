@@ -210,7 +210,7 @@ fn main() {
             return;
         }
 
-        if scene.size_changed || depth_texture.is_none() {
+        if scene.size_changed {
             scene.size_changed = false;
             let physical = scene.window_size;
             surface_desc.width = physical.width;
@@ -437,6 +437,7 @@ fn create_render_targets(
     };
 
     if requirements.depth && depth_texture.is_none() {
+        println!("create depth texture");
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
@@ -452,6 +453,7 @@ fn create_render_targets(
     }
 
     if requirements.msaa && msaa_texture.is_none() {
+        println!("create msaa texture");
         let msaa = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
@@ -467,6 +469,7 @@ fn create_render_targets(
     }
 
     if requirements.msaa_depth && msaa_depth_texture.is_none() {
+        println!("create msaa depth texture");
         let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
@@ -482,6 +485,7 @@ fn create_render_targets(
     }
 
     if requirements.temporary && temporary_texture.is_none() {
+        println!("create temp texture");
         let temporary = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
@@ -538,8 +542,10 @@ fn update_inputs(
             event: WindowEvent::Resized(size),
             ..
         } => {
-            scene.window_size = size;
-            scene.size_changed = true
+            if scene.window_size != size {
+                scene.window_size = size;
+                scene.size_changed = true
+            }
         }
         Event::WindowEvent { event: WindowEvent::MouseWheel { delta , .. }, ..} => {
             use winit::event::MouseScrollDelta::*;
