@@ -13,6 +13,7 @@ use tiling::canvas::*;
 use tiling::load_svg::*;
 use tiling::gpu::{ShaderSources, GpuStore, PipelineDefaults};
 use tiling::tess::{MeshGpuResources, MeshRenderer};
+use tiling::stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tiling::tiling::*;
 use lyon::path::geom::euclid::size2;
 use tiling::{Color, Size2D, Transform2D};
@@ -127,11 +128,13 @@ fn main() {
     let common_handle = ResourcesHandle::new(0);
     let tiling_handle = ResourcesHandle::new(1);
     let mesh_handle = ResourcesHandle::new(2);
+    let stencil_handle = ResourcesHandle::new(3);
 
     let mut canvas = Canvas::new();
     let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config);
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
-    let mut dummy = DummyRenderer::new(2);
+    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
+    let mut dummy = DummyRenderer::new(3);
 
     let mut shaders = ShaderSources::new();
 
@@ -160,10 +163,13 @@ fn main() {
 
     let mesh_resources = MeshGpuResources::new(&common_resources, &device, &mut shaders);
 
+    let stencil_resources = StencilAndCoverResources::new(&common_resources, &device, &mut shaders);
+
     let mut gpu_resources = GpuResources::new(vec![
         Box::new(common_resources),
         Box::new(tiling_resources),
         Box::new(mesh_resources),
+        Box::new(stencil_resources),
     ]);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -246,6 +252,7 @@ fn main() {
         canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(false).with_msaa(true));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
+        stencil.begin_frame(&canvas);
 
         gpu_resources.begin_frame();
 
@@ -258,15 +265,16 @@ fn main() {
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(hw, hh));
 
-        paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &transform);
+        paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &transform);
 
         let frame_build_start = time::precise_time_ns();
 
         tiling.prepare(&canvas, &mut gpu_store, &device);
         meshes.prepare(&canvas, &mut gpu_store);
+        stencil.prepare(&canvas);
         dummy.prepare(&canvas);
 
-        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut dummy]);
+        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil, &mut dummy]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
@@ -296,11 +304,12 @@ fn main() {
 
         tiling.upload(&mut gpu_resources, &device, &queue);
         meshes.upload(&mut gpu_resources, &device, &queue);
+        stencil.upload(&mut gpu_resources, &device);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &dummy], &gpu_resources, common_handle, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -336,7 +345,14 @@ fn main() {
     });
 }
 
-fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &mut TileRenderer, meshes: &mut MeshRenderer, transform: &Transform2D<f32>) {
+fn paint_scene(
+    paths: &[(Arc<Path>, SvgPattern)],
+    canvas: &mut Canvas,
+    tiling: &mut TileRenderer,
+    meshes: &mut MeshRenderer,
+    stencil: &mut StencilAndCoverRenderer,
+    transform: &Transform2D<f32>,
+) {
     let mut builder = lyon::path::Path::builder();
     builder.begin(point(0.0, 0.0));
     builder.line_to(point(50.0, 400.0));
@@ -366,8 +382,9 @@ fn paint_scene(paths: &[(Arc<Path>, SvgPattern)], canvas: &mut Canvas, tiling: &
     for (path, pattern) in paths {
         match pattern {
             &SvgPattern::Color(color) => {
-                //meshes.fill(canvas, path.clone(), color);
                 tiling.fill(canvas, path.clone(), color);
+                //meshes.fill(canvas, path.clone(), color);
+                //stencil.fill(canvas, path.clone(), color);
             }
             &SvgPattern::Gradient { color0, color1, from, to } => {
                 tiling.fill(canvas, path.clone(), Gradient { color0, color1, from, to });

@@ -7,6 +7,8 @@ pub use gpu_store::*;
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 use std::{collections::HashMap};
 
+use crate::stencil;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct GpuTargetDescriptor {
@@ -46,6 +48,156 @@ impl GpuTargetDescriptor {
                 },
             ],
         })
+    }
+}
+
+pub struct PipelineSet {
+    pipelines: [Option<wgpu::RenderPipeline>; 8],
+    params: Box<PipelineParams>,
+}
+
+pub struct PipelineKey {
+    pub msaa: bool,
+    pub depth: bool,
+    pub stencil: bool,
+}
+
+impl PipelineKey {
+    fn idx(&self) -> usize {
+        return if self.msaa { 1 } else { 0 }
+            + if self.depth { 2 } else { 0 }
+            + if self.stencil { 4 } else { 0 }
+    }
+}
+
+pub struct PipelineParams {
+    label: &'static str,
+    shader_module: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    vertex_layout: VertexBuilder,
+    output_format: wgpu::TextureFormat,
+    alpha_blend: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum StencilMode {
+    EvenOdd,
+    NonZero,
+    None,
+}
+
+impl PipelineSet {
+    pub fn new(
+        label: &'static str,
+        layout_descriptor: &wgpu::PipelineLayoutDescriptor,
+        shader_module: wgpu::ShaderModule,
+        vertex_layout: VertexBuilder,
+        output_format: wgpu::TextureFormat,
+        device: &wgpu::Device,
+        alpha_blend: bool,
+    ) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(layout_descriptor);
+
+        PipelineSet {
+            params: Box::new(PipelineParams {
+                label,
+                shader_module,
+                pipeline_layout,
+                vertex_layout,
+                output_format,
+                alpha_blend,
+            }),
+            pipelines: [None, None, None, None, None, None, None, None],
+        }
+    }
+
+    pub fn build(&mut self, device: &wgpu::Device, key: &PipelineKey) {
+        if self.pipelines[key.idx()].is_some() {
+            return;
+        }
+
+        let defaults = PipelineDefaults::new();
+
+        let targets = if self.params.alpha_blend {
+            defaults.color_target_state()
+        } else {
+            defaults.color_target_state_no_blend()
+        };
+
+        let multisample = if key.msaa {
+            wgpu::MultisampleState {
+                count: PipelineDefaults::msaa_sample_count(),
+                .. wgpu::MultisampleState::default()
+            }
+        } else {
+            wgpu::MultisampleState::default()
+        };
+
+        let depth_stencil = if key.depth || key.stencil {
+            Some(wgpu::DepthStencilState {
+                depth_write_enabled: !self.params.alpha_blend,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                stencil: if key.stencil {
+                    let face_state = wgpu::StencilFaceState {
+                        compare: wgpu::CompareFunction::NotEqual,
+                        fail_op: wgpu::StencilOperation::Keep,
+                        depth_fail_op: wgpu::StencilOperation::Keep,
+                        pass_op: wgpu::StencilOperation::Keep,
+                    };
+                    wgpu::StencilState {
+                        front: face_state,
+                        back: face_state,
+                        read_mask: !1, // even-odd
+                        write_mask: 0xFFFFFFFF,
+                    }
+                } else {
+                    wgpu::StencilState::default()
+                },
+                bias: wgpu::DepthBiasState::default(),
+                format: PipelineDefaults::depth_format(),
+            })
+        } else {
+            None
+        };
+
+        let label = format!("{}{}{}{})",
+            self.params.label,
+            if key.msaa { "|msaa" } else { "" },
+            if key.depth { "|depth" } else { "" },
+            if key.stencil { "|stencil" } else { "" }
+        );
+
+        let descriptor = wgpu::RenderPipelineDescriptor {
+            label: Some(&label),
+            layout: Some(&self.params.pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &self.params.shader_module,
+                entry_point: "vs_main",
+                buffers: &[self.params.vertex_layout.buffer_layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &self.params.shader_module,
+                entry_point: "fs_main",
+                targets,
+            }),
+            primitive: PipelineDefaults::primitive_state(),
+            depth_stencil,
+            multiview: None,
+            multisample,
+        };
+
+        let pipeline = device.create_render_pipeline(&descriptor);
+
+        self.pipelines[key.idx()] = Some(pipeline);
+    }
+
+    pub fn try_get(&self, key: &PipelineKey) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines[key.idx()].as_ref()
+    }
+
+    pub fn get(&mut self, device: &wgpu::Device, key: &PipelineKey) -> &wgpu::RenderPipeline {
+        self.build(device, key);
+        self.try_get(key).unwrap()
     }
 }
 
@@ -179,7 +331,7 @@ impl PipelineDefaults {
         }
     }
 
-    pub fn primitive_state(&self) -> wgpu::PrimitiveState {
+    pub fn primitive_state() -> wgpu::PrimitiveState {
         wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             polygon_mode: wgpu::PolygonMode::Fill,
@@ -207,7 +359,7 @@ impl PipelineDefaults {
     }
 
     pub fn depth_format() -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Depth32Float
+        wgpu::TextureFormat::Depth24PlusStencil8
     }
 
     pub fn color_format() -> wgpu::TextureFormat {

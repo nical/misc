@@ -174,8 +174,9 @@ impl MeshRenderer {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        self.vbo_range = resources[self.common_resources].vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
-        self.ibo_range = resources[self.resources].indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
+        let res = &mut resources[self.common_resources];
+        self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
+        self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
     }
 }
 
@@ -188,6 +189,7 @@ impl CanvasRenderer for MeshRenderer {
                 require_pre_pass: false,
                 z_index: pass.z_index,
                 use_depth: self.enable_opaque_pass,
+                use_stencil: false,
                 use_msaa: self.enable_msaa,
             });
         }
@@ -206,7 +208,7 @@ impl CanvasRenderer for MeshRenderer {
 
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
-        render_pass.set_index_buffer(mesh_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
+        render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
 
         let pipelines = mesh_resources.pipelines(self.enable_opaque_pass, self.enable_msaa);

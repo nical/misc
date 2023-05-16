@@ -165,7 +165,7 @@ impl TilingGpuResources {
             push_constant_ranges: &[],
         });
 
-        let primitive = defaults.primitive_state();
+        let primitive = PipelineDefaults::primitive_state();
         let multisample = wgpu::MultisampleState::default();
 
         let masked_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
@@ -457,7 +457,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
             entry_point: "fs_main",
             targets: defaults.alpha_target_state(),
         }),
-        primitive: defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -483,7 +483,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
             entry_point: "fs_main",
             targets: defaults.alpha_target_state(),
         }),
-        primitive: defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -507,7 +507,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
             entry_point: "fs_main",
             targets: defaults.alpha_target_state(),
         }),
-        primitive: defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),

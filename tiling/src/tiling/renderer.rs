@@ -376,6 +376,7 @@ impl CanvasRenderer for TileRenderer {
                 require_pre_pass: pass.color_pre_pass || pass.mask_pre_pass,
                 z_index: pass.z_index,
                 use_depth: false,
+                use_stencil: false,
                 use_msaa: false,
             });
         }

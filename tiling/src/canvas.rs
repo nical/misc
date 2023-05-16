@@ -167,6 +167,7 @@ struct RenderPass {
     pre_passes: Range<u32>,
     sub_passes: Range<u32>,
     depth: bool,
+    stencil: bool,
     msaa: bool,
     msaa_resolve: bool,
     msaa_blit: bool,
@@ -178,6 +179,7 @@ struct RenderPassSlice<'a> {
     pre_passes: &'a [PrePass],
     sub_passes: &'a [SubPass],
     depth: bool,
+    stencil: bool,
     msaa: bool,
     msaa_resolve: bool,
     msaa_blit: bool,
@@ -240,17 +242,20 @@ impl RenderPasses {
         let mut start = 0;
         let mut pre_start = 0;
 
-        let (mut prev_use_depth, mut prev_use_msaa) = {
+        let (mut prev_use_depth, mut prev_use_stencil, mut prev_use_msaa) = {
             let first = self.sub_passes.first().unwrap();
-            (first.use_depth, first.use_msaa)
+            (first.use_depth, first.use_stencil, first.use_msaa)
         };
         let mut msaa_blit = false;
 
         for (idx, pass) in self.sub_passes.iter().enumerate() {
             let req_bit: u64 = 1 << pass.renderer_id;
-            let depth_changed = pass.use_depth != prev_use_depth;
+            let depth_stencil_changed = pass.use_depth != prev_use_depth
+                || pass.use_stencil != prev_use_stencil;
             let msaa_changed = pass.use_msaa != prev_use_msaa;
-            let flush_pass = depth_changed || msaa_changed || (pass.require_pre_pass && req & req_bit != 0);
+            let flush_pass = depth_stencil_changed
+                || msaa_changed
+                || (pass.require_pre_pass && req & req_bit != 0);
             //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
                 //  When transitioning from non-msaa to msaa, blit the non-msaa target
@@ -261,14 +266,15 @@ impl RenderPasses {
                     pre_passes: u32_range(pre_start..self.pre_passes.len()),
                     sub_passes: u32_range(start..idx),
                     depth: prev_use_depth,
+                    stencil: prev_use_stencil,
                     msaa: prev_use_msaa,
                     msaa_resolve,
                     msaa_blit,
                     temporary: false,
                 });
                 requirements.msaa |= prev_use_msaa && !prev_use_depth;
-                requirements.msaa_depth |= prev_use_msaa && prev_use_depth;
-                requirements.depth = prev_use_depth && !prev_use_msaa;
+                requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
+                requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
                 requirements.temporary |= disable_msaa_blit_from_main_target && msaa_blit;
 
                 // When transitioning from msaa to non-msaa targets, resolve the msaa
@@ -278,6 +284,7 @@ impl RenderPasses {
                 start = idx;
                 pre_start = self.pre_passes.len();
                 prev_use_depth = pass.use_depth;
+                prev_use_stencil = pass.use_stencil;
                 prev_use_msaa = pass.use_msaa;
 
                 req = 0;
@@ -307,6 +314,7 @@ impl RenderPasses {
                 pre_passes: u32_range(pre_start..self.pre_passes.len()),
                 sub_passes: u32_range(start..self.sub_passes.len()),
                 depth: prev_use_depth,
+                stencil: prev_use_stencil,
                 msaa: prev_use_msaa,
                 msaa_resolve: prev_use_msaa,
                 msaa_blit,
@@ -314,8 +322,8 @@ impl RenderPasses {
             });
 
             requirements.msaa |= prev_use_msaa && !prev_use_depth;
-            requirements.msaa_depth |= prev_use_msaa && prev_use_depth;
-            requirements.depth = prev_use_depth && !prev_use_msaa;
+            requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
+            requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
             requirements.temporary |= msaa_blit;
         }
 
@@ -328,6 +336,7 @@ impl RenderPasses {
                 pre_passes: &self.pre_passes[usize_range(pass.pre_passes.clone())],
                 sub_passes: &self.sub_passes[usize_range(pass.sub_passes.clone())],
                 depth: pass.depth,
+                stencil: pass.stencil,
                 msaa: pass.msaa,
                 msaa_resolve: pass.msaa_resolve,
                 msaa_blit: pass.msaa_blit,
@@ -393,6 +402,16 @@ impl SurfaceState {
     }
 }
 
+pub struct CanvasParams {
+    pub tolerance: f32,
+}
+
+impl Default for CanvasParams {
+    fn default() -> Self {
+        CanvasParams { tolerance: 0.25 }
+    }
+}
+
 // TODO: canvas isn't a great name for this.
 #[derive(Default)]
 pub struct Canvas {
@@ -403,6 +422,7 @@ pub struct Canvas {
     pub commands: Commands,
     pub surface: SurfaceState,
     render_passes: RenderPasses,
+    pub params: CanvasParams,
 }
 
 impl Canvas {
@@ -455,6 +475,8 @@ impl Canvas {
                 (target.main, "Color target")
             };
 
+            //println!("{}: {:#?}", label, pass);
+
             // If the first thing we do is a full-target blit, no nead to load the
             // contents of the target.
             let mut clear = pass.msaa_blit;
@@ -489,18 +511,29 @@ impl Canvas {
                     resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
                     ops,
                 })],
-                depth_stencil_attachment: if pass.depth {
+                depth_stencil_attachment: if pass.depth || pass.stencil {
                     Some(wgpu::RenderPassDepthStencilAttachment {
                         view: if pass.msaa {
                             target.msaa_depth
                         } else {
                             target.depth
                         }.unwrap(),
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0.0),
-                            store: false,
-                        }),
-                        stencil_ops: None,
+                        depth_ops: if pass.depth {
+                            Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0.0),
+                                store: false,
+                            })
+                        } else {
+                            None
+                        },
+                        stencil_ops: if pass.stencil {
+                            Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(128),
+                                store: false,
+                            })
+                        } else {
+                            None
+                        },
                     })
                 } else {
                     None
@@ -511,7 +544,7 @@ impl Canvas {
                 let common = &resources[common_resources];
                 render_pass.set_bind_group(0, target.temporary_src_bind_group.unwrap(), &[]);
                 render_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.set_pipeline(if pass.depth {
+                render_pass.set_pipeline(if pass.depth || pass.stencil {
                     &common.msaa_blit_with_depth_pipeline
                 } else {
                     &common.msaa_blit_pipeline
@@ -549,6 +582,7 @@ pub struct SubPass {
     pub z_index: ZIndex,
     pub require_pre_pass: bool,
     pub use_depth: bool,
+    pub use_stencil: bool,
     pub use_msaa: bool,
 }
 
@@ -599,6 +633,7 @@ impl CanvasRenderer for DummyRenderer {
                 z_index: *z_index,
                 require_pre_pass: false,
                 use_depth: false,
+                use_stencil: false,
                 use_msaa: false,
             });
         }
@@ -624,6 +659,7 @@ impl CanvasRenderer for DummyRenderer {
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
+    pub indices: DynamicStore,
     // TODO: right now there can be only one target per instance of this struct
     pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
     pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
@@ -697,6 +733,7 @@ impl CommonGpuResources {
         });
 
         let vertices = DynamicStore::new_vertices(4096 * 32);
+        let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
 
         let defaults = PipelineDefaults::new();
 
@@ -741,7 +778,7 @@ impl CommonGpuResources {
                 entry_point: "fs_main",
                 targets: defaults.color_target_state_no_blend()
             }),
-            primitive: defaults.primitive_state(),
+            primitive: PipelineDefaults::primitive_state(),
             depth_stencil: None,
             multiview: None,
             multisample: wgpu::MultisampleState {
@@ -765,6 +802,7 @@ impl CommonGpuResources {
         CommonGpuResources {
             quad_ibo,
             vertices,
+            indices,
             target_and_gpu_store_layout,
             main_target_and_gpu_store_bind_group,
             main_target_descriptor_ubo,
@@ -802,10 +840,12 @@ impl RendererResources for CommonGpuResources {
 
     fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.vertices.unmap(encoder);
+        self.indices.unmap(encoder);
     }
 
     fn end_frame(&mut self) {
         self.vertices.end_frame();
+        self.indices.end_frame();
     }
 
 }

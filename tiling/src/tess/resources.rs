@@ -12,7 +12,6 @@ pub struct MeshGpuResources {
     pub depth_msaa_pipelines: Option<Pipelines>,
     pub nodepth_pipelines: Option<Pipelines>,
     pub nodepth_msaa_pipelines: Option<Pipelines>,
-    pub indices: DynamicStore,
 }
 
 impl MeshGpuResources {
@@ -42,7 +41,7 @@ impl MeshGpuResources {
             push_constant_ranges: &[],
         });
 
-        let primitive = defaults.primitive_state();
+        let primitive = PipelineDefaults::primitive_state();
         let no_multisample = wgpu::MultisampleState::default();
 
         let descriptor = wgpu::RenderPipelineDescriptor {
@@ -174,7 +173,6 @@ impl MeshGpuResources {
                 opaque_color: msaa_opaque_color,
                 alpha_color: msaa_alpha_color,
             }),
-            indices: DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Mesh:Index"),
         }
     }
 
@@ -195,10 +193,8 @@ impl RendererResources for MeshGpuResources {
     }
 
     fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        self.indices.unmap(encoder);
     }
 
     fn end_frame(&mut self) {
-        self.indices.end_frame();
     }
 }
