@@ -197,6 +197,7 @@ fn main() {
         wireframe: false,
         size_changed: true,
         render: true,
+        selected_renderer: 0,
     };
 
     let mut depth_texture = None;
@@ -265,7 +266,7 @@ fn main() {
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(hw, hh));
 
-        paint_scene(&paths, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &transform);
+        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &transform);
 
         let frame_build_start = time::precise_time_ns();
 
@@ -347,6 +348,7 @@ fn main() {
 
 fn paint_scene(
     paths: &[(Arc<Path>, SvgPattern)],
+    selected_renderer: usize,
     canvas: &mut Canvas,
     tiling: &mut TileRenderer,
     meshes: &mut MeshRenderer,
@@ -382,9 +384,12 @@ fn paint_scene(
     for (path, pattern) in paths {
         match pattern {
             &SvgPattern::Color(color) => {
-                tiling.fill(canvas, path.clone(), color);
-                //meshes.fill(canvas, path.clone(), color);
-                //stencil.fill(canvas, path.clone(), color);
+                let renderer: &mut dyn Fill = &mut *[
+                    tiling as &mut dyn Fill,
+                    meshes as &mut dyn Fill,
+                    stencil as &mut dyn Fill,
+                ][selected_renderer];
+                renderer.fill_color(canvas, path.clone(), color);
             }
             &SvgPattern::Gradient { color0, color1, from, to } => {
                 tiling.fill(canvas, path.clone(), Gradient { color0, color1, from, to });
@@ -530,6 +535,7 @@ pub struct SceneGlobals {
     pub wireframe: bool,
     pub size_changed: bool,
     pub render: bool,
+    pub selected_renderer: usize,
 }
 
 fn update_inputs(
@@ -540,6 +546,7 @@ fn update_inputs(
 ) -> bool {
     let p = scene.pan;
     let z = scene.zoom;
+    let r = scene.selected_renderer;
     match event {
         Event::RedrawRequested(_) => {
             scene.render = true;
@@ -617,6 +624,17 @@ fn update_inputs(
             VirtualKeyCode::W => {
                 scene.wireframe = !scene.wireframe;
             }
+            VirtualKeyCode::J => {
+                if scene.selected_renderer == 0 {
+                    scene.selected_renderer = 2;
+                } else {
+                    scene.selected_renderer -= 1;
+                }
+            }
+            VirtualKeyCode::K => {
+                scene.selected_renderer = (scene.selected_renderer + 1) % 3;
+            }
+
             _key => {}
         },
         _evt => {
@@ -624,14 +642,40 @@ fn update_inputs(
         }
     }
 
+    if r != scene.selected_renderer {
+        println!("{}", &["tiling", "tessellation", "stencil and cover"][scene.selected_renderer])
+    }
+
     scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
     scene.pan[0] += (scene.target_pan[0] - scene.pan[0]) * 0.15;
     scene.pan[1] += (scene.target_pan[1] - scene.pan[1]) * 0.15;
-    if p != scene.pan || z != scene.zoom {
+    if p != scene.pan || z != scene.zoom || r != scene.selected_renderer {
         window.request_redraw();
     }
 
     *control_flow = ControlFlow::Poll;
 
     true
+}
+
+trait Fill {
+    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color);
+}
+
+impl Fill for TileRenderer {
+    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
+        self.fill(canvas, shape, color)
+    }
+}
+
+impl Fill for MeshRenderer {
+    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
+        self.fill(canvas, shape, color)
+    }
+}
+
+impl Fill for StencilAndCoverRenderer {
+    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
+        self.fill(canvas, shape, color)
+    }
 }
