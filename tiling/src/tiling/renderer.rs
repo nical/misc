@@ -53,7 +53,7 @@ impl TileRenderer {
             masks: TilingMasks {
                 circle_masks: MaskEncoder::new(),
                 rectangle_masks: MaskEncoder::new(),
-            }
+            },
         }
     }
 

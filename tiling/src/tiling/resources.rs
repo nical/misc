@@ -77,6 +77,7 @@ impl TilingGpuResources {
         shaders: &mut ShaderSources,
         mask_atlas_size: u32,
         color_atlas_size: u32,
+        use_ssaa4: bool,
     ) -> Self {
         let edges = StorageBuffer::new::<LineEdge>(
             device,
@@ -101,7 +102,7 @@ impl TilingGpuResources {
         });
 
         let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &common.target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
-        let masks = Masks::new(&device, shaders, &edges);
+        let masks = Masks::new(&device, shaders, &edges, use_ssaa4);
 
         let src = include_str!("./../../shaders/tile.wgsl");
         let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
@@ -389,12 +390,12 @@ pub struct Masks {
 }
 
 impl Masks {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer) -> Self {
-        create_mask_pipeline(device, shaders, edges)
+    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer, use_ssaa: bool) -> Self {
+        create_mask_pipeline(device, shaders, edges, use_ssaa)
     }
 }
 
-fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer) -> Masks {
+fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer, use_ssaa4: bool) -> Masks {
     let fill_src = include_str!("../../shaders/mask_fill.wgsl");
     let circle_src = include_str!("../../shaders/mask_circle.wgsl");
     let rect_src = include_str!("../../shaders/mask_rect.wgsl");
@@ -437,12 +438,15 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edge
     attributes.push(wgpu::VertexFormat::Uint32);
     attributes.push(wgpu::VertexFormat::Uint32);
 
-    let features: &[&str] = if edges.texture().is_some() {
-        &["EDGE_TEXTURE"]
-    } else {
-        &[]
-    };
-    let fill_module = shaders.create_shader_module(device, "Mask fill linear", fill_src, features);
+    let mut fill_features = Vec::new();
+    if edges.texture().is_some() {
+        fill_features.push("EDGE_TEXTURE");
+    }
+    if use_ssaa4 {
+        fill_features.push("FILL_SSAA4");
+    }
+
+    let fill_module = shaders.create_shader_module(device, "Mask fill", fill_src, &fill_features);
 
     let fill_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Fill mask"),

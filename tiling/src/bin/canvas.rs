@@ -36,12 +36,14 @@ fn main() {
     let mut force_gl = false;
     let mut asap = false;
     let mut read_tolerance = false;
+    let mut use_ssaa4 = false;
     for arg in &args {
         if read_tolerance {
             read_tolerance = false;
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
         }
+        if arg == "--ssaa" { use_ssaa4 = true; }
         if arg == "--gl" { force_gl = true; }
         if arg == "--x11" {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
@@ -141,13 +143,13 @@ fn main() {
     let mut gpu_store = GpuStore::new(2048, &device);
 
     let common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store, &mut shaders);
-
     let mut tiling_resources = TilingGpuResources::new(
         &common_resources,
         &device,
         &mut shaders,
         mask_atlas_size,
         color_atlas_size,
+        use_ssaa4,
     );
 
     let mut pattern_builder = CustomPatterns::new(
