@@ -6,11 +6,14 @@ pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
+use crate::gpu::shader::ShaderPatternId;
 use crate::gpu::{DynBufferRange, DynamicStore};
 use crate::gpu::atlas_uploader::TileAtlasUploader;
+use crate::pattern::BuiltPattern;
+use crate::pattern::texture_load::TextureLoadRenderer;
 use crate::tiling::*;
 use crate::tiling::cpu_rasterizer::*;
-use crate::tiling::resources::{TileInstance, MaskedTileInstance, Mask as GpuMask};
+use crate::tiling::resources::{TileInstance, Mask as GpuMask};
 use crate::TILE_SIZE;
 
 use copyless::VecHelper;
@@ -21,7 +24,7 @@ fn opaque_span(
     num_tiles: u32,
     tile_mask: &mut TileMaskRow,
     patterns: &mut Vec<PatternTiles>,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
 ) {
     let mut start_x = x;
     let last_x = x + num_tiles;
@@ -29,7 +32,7 @@ fn opaque_span(
     let mut occluded = !tile_mask.test(x, true);
     let mut is_last = false;
 
-    let tiles = &mut patterns[pattern.index()].opaque;
+    let tiles = &mut patterns[pattern.shader.index()].opaque;
     // Loop over x indices including 1 index past the range so that we
     // don't need to flush after the loop.
     'outer: loop {
@@ -39,7 +42,7 @@ fn opaque_span(
             let ext = x - start_x - 1;
 
             let position = TilePosition::extended(start_x, y, ext);
-            let pattern_data = pattern.tile_data(start_x, y);
+            let pattern_data = pattern.data;
 
             tiles.alloc().init(TileInstance {
                 position,
@@ -96,7 +99,7 @@ fn alpha_span(
     y: u32,
     num_tiles: u32,
     tile_mask: &mut TileMaskRow,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
     let mut start_x = x;
@@ -115,14 +118,11 @@ fn alpha_span(
             let ext = x - start_x - 1;
 
             let position = TilePosition::extended(start_x, y, ext);
-            encoder.alpha_tiles.alloc().init(MaskedTileInstance {
-                tile: TileInstance {
-                    position: position,
-                    mask: TilePosition::ZERO,
-                    pattern_position: position,
-                    pattern_data: pattern.tile_data(start_x, y),
-                },
-                mask: [0, 0, 0, 0],
+            encoder.alpha_tiles.alloc().init(TileInstance {
+                position: position,
+                mask: TilePosition::ZERO,
+                pattern_position: position,
+                pattern_data: pattern.data,
             });
 
             start_x = x;
@@ -173,7 +173,7 @@ fn stretched_prerendered_span(
     y: u32,
     num_tiles: u32,
     tile_mask: &mut TileMaskRow,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
     let mut start_x = x;
@@ -197,13 +197,13 @@ fn stretched_prerendered_span(
                 None => {
                     let atlas_position = encoder.allocate_color_tile();
 
-                    let tiles = &mut encoder.patterns[pattern.index()].prerendered;
+                    let tiles = &mut encoder.patterns[pattern.shader.index()].prerendered;
 
                     tiles.alloc().init(TileInstance {
                         position: atlas_position,
                         mask: TilePosition::ZERO,
                         pattern_position: position,
-                        pattern_data: pattern.tile_data(start_x, y),
+                        pattern_data: pattern.data,
                     });
 
                     prerendered_tile = Some(atlas_position);
@@ -211,14 +211,11 @@ fn stretched_prerendered_span(
                 }
             };
 
-            encoder.alpha_tiles.alloc().init(MaskedTileInstance {
-                tile: TileInstance {
-                    position: position,
-                    mask: TilePosition::ZERO,
-                    pattern_position: prerendered,
-                    pattern_data: 0,
-                },
-                mask: [0, 0, 0, 0],
+            encoder.alpha_tiles.alloc().init(TileInstance {
+                position: position,
+                mask: TilePosition::ZERO,
+                pattern_position: prerendered,
+                pattern_data: 0,
             });
 
             start_x = x;
@@ -269,7 +266,7 @@ fn slow_span(
     y: u32,
     num_tiles: u32,
     tile_mask: &mut TileMaskRow,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
     for x in x .. x + num_tiles {
@@ -345,7 +342,7 @@ pub struct RenderPass {
 #[derive(Debug)]
 pub struct Batch {
     pub tiles: Range<u32>,
-    pub pattern: PatternIndex,
+    pub pattern: ShaderPatternId,
 }
 
 
@@ -387,11 +384,11 @@ pub struct TileEncoder {
     pub opaque_batches: Vec<Batch>,
     pub atlas_pattern_batches: Vec<Batch>,
     pub color_atlas_passes: Vec<Range<usize>>,
-    pub alpha_tiles: Vec<MaskedTileInstance>,
+    pub alpha_tiles: Vec<TileInstance>,
     pub opaque_image_tiles: Vec<TileInstance>,
     pub patterns: Vec<PatternTiles>,
 
-    current_pattern_index: Option<PatternIndex>,
+    current_pattern_index: Option<ShaderPatternId>,
     // First mask index of the current mask pass.
     alpha_batches_start: usize,
     opaque_batches_start: usize,
@@ -403,6 +400,7 @@ pub struct TileEncoder {
     masks_texture_index: AtlasIndex,
     color_texture_index: AtlasIndex,
     pub current_z_index: u32,
+    tile_atlas_pattern: ShaderPatternId,
 
     reversed: bool,
 
@@ -418,7 +416,7 @@ pub struct TileEncoder {
 }
 
 impl TileEncoder {
-    pub fn new(config: &TilerConfig, num_patterns: usize) -> Self {
+    pub fn new(config: &TilerConfig, atlas_shader: &TextureLoadRenderer, num_patterns: usize) -> Self {
         // TODO: should round up?
         let mask_atlas_tiles_x = config.mask_atlas_size.width / TILE_SIZE;
         let mask_atlas_tiles_y = config.mask_atlas_size.height / TILE_SIZE;
@@ -453,6 +451,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
             current_z_index: 0,
+            tile_atlas_pattern: atlas_shader.pattern_id(),
 
             mask_uploader: TileAtlasUploader::new(config.staging_buffer_size),
 
@@ -475,6 +474,7 @@ impl TileEncoder {
         pattern.opaque_vbo_range.as_ref()
     }
 
+    // TODO: can remove this?
     pub fn create_similar(&self) -> Self {
         let num_patterns = self.patterns.len();
         let mut patterns = Vec::with_capacity(num_patterns);
@@ -506,6 +506,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
             current_z_index: 0,
+            tile_atlas_pattern: self.tile_atlas_pattern.clone(),
 
             mask_uploader: TileAtlasUploader::new(self.mask_uploader.staging_buffer_size()),
 
@@ -608,11 +609,11 @@ impl TileEncoder {
         self.src.mask_tiles.current_atlas + 1
     }
 
-    pub fn begin_path(&mut self, pattern: &mut dyn TilerPattern) {
+    pub fn begin_path(&mut self, pattern: &BuiltPattern) {
         let index = if self.prerender_pattern {
-            TILED_IMAGE_PATTERN
+            self.tile_atlas_pattern
         } else{
-            pattern.index()
+            pattern.shader
         };
 
         if self.current_pattern_index != Some(index) {
@@ -625,7 +626,7 @@ impl TileEncoder {
         &mut self,
         rows: Range<u32>,
         columns: Range<u32>,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         tile_mask: &mut TileMask,
     ) {
         for tile_y in rows {
@@ -639,14 +640,14 @@ impl TileEncoder {
         x: Range<u32>,
         y: u32,
         tile_mask: &mut TileMaskRow,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
     ) {
         let num_tiles = x.end - x.start;
-        if pattern.is_entirely_opaque() {
+        if pattern.is_opaque {
             opaque_span(x.start, y, num_tiles, tile_mask, &mut self.patterns, pattern);
         } else if !self.prerender_pattern {
             alpha_span(x.start, y, num_tiles, tile_mask, pattern, self);
-        } else if self.prerender_pattern && pattern.can_stretch_horizontally() {
+        } else if self.prerender_pattern && pattern.can_stretch_horizontally {
             stretched_prerendered_span(x.start, y, num_tiles, tile_mask, pattern, self);
         } else {
             slow_span(x.start, y, num_tiles, tile_mask, pattern, self);
@@ -655,7 +656,7 @@ impl TileEncoder {
 
     pub fn add_tile(
         &mut self,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         opaque: bool,
         tile_position: TilePosition,
         //TODO: Pass the mask data instead.
@@ -666,8 +667,8 @@ impl TileEncoder {
 
         let (pattern_position, pattern_data) = if prerender {
             let atlas_position = self.allocate_color_tile();
-            let pattern_data = pattern.tile_data(tile_position.x(), tile_position.y());
-            let tiles = &mut self.patterns[pattern.index()].prerendered;
+            let pattern_data = pattern.data;
+            let tiles = &mut self.patterns[pattern.shader.index()].prerendered;
             tiles.alloc().init(TileInstance {
                 position: atlas_position,
                 mask: TilePosition::ZERO,
@@ -677,7 +678,7 @@ impl TileEncoder {
 
             (atlas_position, 0)
         } else {
-            (tile_position, pattern.tile_data(tile_position.x(), tile_position.y()))
+            (tile_position, pattern.data)
         };
 
         // Add the tile that will be rendered into the main pass.
@@ -685,7 +686,7 @@ impl TileEncoder {
             let tiles = if prerender {
                 &mut self.opaque_image_tiles
             } else {
-                &mut self.patterns[pattern.index()].opaque
+                &mut self.patterns[pattern.shader.index()].opaque
             };
 
             tiles.alloc().init(TileInstance {
@@ -695,14 +696,11 @@ impl TileEncoder {
                 pattern_data,
             });
         } else {
-            self.alpha_tiles.alloc().init(MaskedTileInstance {
-                tile: TileInstance {
-                    position: tile_position,
-                    mask,
-                    pattern_position,
-                    pattern_data,
-                },
-                mask: [1, 0, 0, 0],
+            self.alpha_tiles.alloc().init(TileInstance {
+                position: tile_position,
+                mask,
+                pattern_position,
+                pattern_data,
             });
         }
     }
@@ -758,7 +756,7 @@ impl TileEncoder {
                 }
                 let tiles = pattern.prerendered_start .. len;
                 pattern.prerendered_start = len;
-                self.atlas_pattern_batches.push(Batch { pattern: idx, tiles });
+                self.atlas_pattern_batches.push(Batch { pattern: ShaderPatternId::from_index(idx), tiles });
             }
             let atlas_batches_end = self.atlas_pattern_batches.len();
             while self.color_atlas_passes.len() <= self.color_texture_index as usize {
@@ -802,7 +800,7 @@ impl TileEncoder {
 
             self.opaque_batches.push(Batch {
                 tiles: pattern.opaque_start..opaque_end,
-                pattern: pattern_idx,
+                pattern: ShaderPatternId::from_index(pattern_idx),
             });
 
             pattern.opaque_start = opaque_end;

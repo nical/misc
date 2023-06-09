@@ -1,11 +1,28 @@
-use lyon::{tessellation::{FillTessellator, FillOptions}, lyon_tessellation::{VertexBuffers, FillVertexConstructor, BuffersBuilder}, path::traits::PathIterator};
-use crate::{canvas::{ResourcesHandle, RendererId, Fill, Shape, RendererCommandIndex, Canvas, Pattern, RecordedShape, RecordedPattern, GpuResources, CanvasRenderer, RenderPasses, SubPass, ZIndex, CommonGpuResources}, gpu::{gpu_store::GpuStore, DynBufferRange}};
+use lyon::{
+    tessellation::{FillTessellator, FillOptions, VertexBuffers, FillVertexConstructor, BuffersBuilder},
+    path::traits::PathIterator
+};
+use crate::{
+    canvas::{ResourcesHandle, RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, GpuResources, CanvasRenderer, RenderPasses, SubPass, ZIndex, CommonGpuResources, RenderPassState, TransformId},
+    gpu::{
+        shader::{StencilMode, SurfaceConfig, DepthMode, ShaderPatternId},
+        DynBufferRange, Shaders
+    },
+    pattern::BuiltPattern, usize_range
+};
 use std::ops::Range;
 
 use super::MeshGpuResources;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
+
+pub struct Fill {
+    pub shape: RecordedShape,
+    pub pattern: BuiltPattern,
+    pub transform: TransformId,
+    pub z_index: ZIndex,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -31,9 +48,15 @@ impl FillVertexConstructor<Vertex> for VertexCtor {
 }
 
 struct MeshSubPass {
-    opaque_geometry: Range<u32>,
-    blended_geometry: Range<u32>,
+    draws: Range<u32>,
     z_index: ZIndex,
+}
+
+struct Draw {
+    indices: Range<u32>,
+    pattern: ShaderPatternId,
+    // TODO: blend mode.
+    opaque: bool,
 }
 
 pub struct MeshRenderer {
@@ -47,6 +70,7 @@ pub struct MeshRenderer {
     enable_msaa: bool,
 
     commands: Vec<Fill>,
+    draws: Vec<Draw>,
     render_passes: Vec<MeshSubPass>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
@@ -65,6 +89,7 @@ impl MeshRenderer {
             enable_msaa: false,
 
             commands: Vec::new(),
+            draws: Vec::new(),
             render_passes: Vec::new(),
             vbo_range: None,
             ibo_range: None,
@@ -73,6 +98,7 @@ impl MeshRenderer {
 
     pub fn begin_frame(&mut self, canvas: &Canvas) {
         self.commands.clear();
+        self.draws.clear();
         self.render_passes.clear();
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
@@ -82,67 +108,102 @@ impl MeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill<S: Shape, P: Pattern>(&mut self, canvas: &mut Canvas, shape: S, pattern: P) {
+    pub fn fill<S: Shape>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
         let transform = canvas.transforms.current();
         let z_index = canvas.z_indices.push();
         let index = self.commands.len() as RendererCommandIndex;
         self.commands.push(Fill {
             shape: shape.to_command(),
-            pattern: pattern.to_command(),
+            pattern,
             transform,
             z_index,
         });
         canvas.commands.push(self.renderer_id, index);
     }
 
-    pub fn prepare(&mut self, canvas: &Canvas, gpu_store: &mut GpuStore) {
+    pub fn prepare(&mut self, canvas: &Canvas) {
+        if self.commands.is_empty() {
+            return;
+        }
+
         let commands = std::mem::take(&mut self.commands);
         for range in canvas.commands.with_renderer(self.renderer_id) {
             let range = range.start as usize .. range.end as usize;
             let z_index = commands[range.start].z_index;
 
+            let draw_start = self.draws.len() as u32;
+            let mut current_shader = commands.first().as_ref().unwrap().pattern.shader;
+
             // Opaque pass.
-            let opaque_start = self.geometry.indices.len() as u32;
+            let mut geom_start = self.geometry.indices.len() as u32;
             if self.enable_opaque_pass {
-                for fill in commands[range.clone()].iter().rev() {
-                    if fill.pattern.is_opaque() {
-                        self.prepare_fill(fill, canvas, gpu_store);
+                for fill in commands[range.clone()].iter().rev().filter(|fill| fill.pattern.is_opaque) {
+                    if current_shader != fill.pattern.shader{
+                        let end = self.geometry.indices.len() as u32;
+                        if end > geom_start {
+                            self.draws.push(Draw {
+                                indices: geom_start..end,
+                                pattern: current_shader,
+                                opaque: true,
+                            });
+                        }
+                        geom_start = end;
+                        current_shader = fill.pattern.shader;
                     }
+                    self.prepare_fill(fill, canvas);
                 }
             }
-            let opaque_geometry = opaque_start..self.geometry.indices.len() as u32;
+
+            let end = self.geometry.indices.len() as u32;
+            if end > geom_start {
+                self.draws.push(Draw {
+                    indices: geom_start..end,
+                    pattern: current_shader,
+                    opaque: true,
+                });
+            }
+            geom_start = end;
 
             // Blended pass.
-            for fill in commands[range.clone()].iter() {
-                if !self.enable_opaque_pass || !fill.pattern.is_opaque() {
-                    self.prepare_fill(fill, canvas, gpu_store);
+            let enable_opaque_pass = self.enable_opaque_pass;
+            for fill in commands[range.clone()].iter().filter(|fill| !enable_opaque_pass || !fill.pattern.is_opaque) {
+                if current_shader != fill.pattern.shader {
+                    let end = self.geometry.indices.len() as u32;
+                    if end > geom_start {
+                        self.draws.push(Draw {
+                            indices: geom_start..end,
+                            pattern: current_shader,
+                            opaque: false,
+                        });
+                    }
+                    geom_start = end;
+                    current_shader = fill.pattern.shader;
                 }
+                self.prepare_fill(fill, canvas);
             }
-            let blended_geometry = opaque_geometry.end..self.geometry.indices.len() as u32;
 
-            if !opaque_geometry.is_empty() || !blended_geometry.is_empty() {
-                self.render_passes.push(MeshSubPass {
-                    opaque_geometry,
-                    blended_geometry,
-                    z_index,
-                })
+            let end = self.geometry.indices.len() as u32;
+            if end > geom_start {
+                self.draws.push(Draw {
+                    indices: geom_start..end,
+                    pattern: current_shader,
+                    opaque: false,
+                });
+            }
+
+            let draws = draw_start .. self.draws.len() as u32;
+
+            if !draws.is_empty() {
+                // TODO: emmit draws per pattern.
+                self.render_passes.push(MeshSubPass { draws, z_index });
             }
         }
 
         self.commands = commands;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas, _gpu_store: &mut GpuStore) {
+    fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas) {
         let transform = canvas.transforms.get(fill.transform);
-
-        let pattern = match fill.pattern {
-            RecordedPattern::Color(color) => {
-                color.to_u32()
-            }
-            _ => {
-                todo!();
-            }
-        };
 
         match &fill.shape {
             RecordedShape::Path(shape) => {
@@ -158,7 +219,7 @@ impl MeshRenderer {
                         &mut self.geometry,
                         VertexCtor {
                             z_index: fill.z_index,
-                            pattern,
+                            pattern: fill.pattern.data,
                         },
                     )
                 ).unwrap();
@@ -171,12 +232,33 @@ impl MeshRenderer {
 
     pub fn upload(&mut self,
         resources: &mut GpuResources,
+        shaders: &mut Shaders,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
+        let res = &resources[self.resources];
+        let opaque_pipeline = res.opaque_pipeline;
+        let alpha_pipeline = res.alpha_pipeline;
+
         let res = &mut resources[self.common_resources];
         self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
         self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
+
+        let surface = SurfaceConfig {
+            msaa: self.enable_msaa,
+            depth: if self.enable_opaque_pass { DepthMode::Enabled } else { DepthMode::None },
+            stencil: StencilMode::None,
+        };
+
+        let mut prev_pattern = None;
+        for draw in &self.draws {
+            if Some(draw.pattern) == prev_pattern {
+                return;
+            }
+            shaders.prepare_pipeline(device, opaque_pipeline, draw.pattern, surface);
+            shaders.prepare_pipeline(device, alpha_pipeline, draw.pattern, surface);
+            prev_pattern = Some(draw.pattern);
+        }
     }
 }
 
@@ -198,6 +280,8 @@ impl CanvasRenderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         index: u32,
+        surface_info: &RenderPassState,
+        shaders: &'resources Shaders,
         resources: &'resources GpuResources,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
@@ -211,18 +295,17 @@ impl CanvasRenderer for MeshRenderer {
         render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
 
-        let pipelines = mesh_resources.pipelines(self.enable_opaque_pass, self.enable_msaa);
+        let surface = surface_info.surface_config(self.enable_opaque_pass, None);
 
-        // TODO: loop over batches.
+        for draw in &self.draws[usize_range(pass.draws.clone())] {
+            let pipeline = shaders.try_get(
+                if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
+                draw.pattern,
+                surface
+            ).unwrap();
 
-        if !pass.opaque_geometry.is_empty() {
-            render_pass.set_pipeline(&pipelines.opaque_color);
-            render_pass.draw_indexed(pass.opaque_geometry.clone(), 0, 0..1);
-        }
-
-        if !pass.blended_geometry.is_empty() {
-            render_pass.set_pipeline(&pipelines.alpha_color);
-            render_pass.draw_indexed(pass.blended_geometry.clone(), 0, 0..1);
+            render_pass.set_pipeline(pipeline);
+            render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);
         }
     }
 }

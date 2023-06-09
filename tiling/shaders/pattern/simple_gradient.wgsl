@@ -19,7 +19,7 @@ fn fetch_gradient(address: u32) -> Gradient {
     return gradient;
 }
 
-fn pattern_vertex(pattern_pos: vec2<f32>, uv: vec2<f32>, pattern_handle: u32) -> Pattern {
+fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     var gradient = fetch_gradient(pattern_handle);
 
     var dir = gradient.p1 - gradient.p0;

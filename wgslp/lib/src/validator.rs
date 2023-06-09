@@ -21,14 +21,14 @@ impl Error {
 }
 
 pub struct  Validator {
-    parser: wgsl::Parser,
+    parser: wgsl::Frontend,
     validator: naga::valid::Validator,
 }
 
 impl Validator {
     pub fn new() -> Self {
         Validator {
-            parser: wgsl::Parser::new(),
+            parser: wgsl::Frontend::new(),
             validator: naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
                 naga::valid::Capabilities::all(),

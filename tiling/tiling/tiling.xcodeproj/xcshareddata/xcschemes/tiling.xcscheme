@@ -43,7 +43,7 @@
       allowLocationSimulation = "YES">
       <PathRunnable
          runnableDebuggingMode = "0"
-         FilePath = "/Users/nical/dev/rust/misc/tiling/target/debug/canvas">
+         FilePath = "/Users/nical/dev/rust/misc/tiling/target/debug/demo">
       </PathRunnable>
       <CommandLineArguments>
          <CommandLineArgument

@@ -1,6 +1,6 @@
 use lyon::{math::{Point, point, vector}, geom::Box2D, path::Winding};
 
-use crate::{tiling::{TilePosition, encoder::{TileEncoder, as_scale_offset}, TilerPattern, TileVisibility, FillOptions}, TileMask, Tiler};
+use crate::{tiling::{TilePosition, encoder::{TileEncoder, as_scale_offset}, TileVisibility, FillOptions}, TileMask, Tiler, pattern::BuiltPattern};
 use crate::tiling::tiler::affected_range;
 
 use super::MaskEncoder;
@@ -35,7 +35,7 @@ pub fn fill_circle(
     mut center: Point,
     mut radius: f32,
     options: &FillOptions,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     tile_mask: &mut TileMask,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
@@ -89,7 +89,7 @@ fn fill_transformed_circle(
     radius: f32,
     scissor: &Box2D<f32>,
     inverted: bool,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     tile_mask: &mut TileMask,
     encoder: &mut TileEncoder,
     circle_masks: &mut MaskEncoder,

@@ -6,6 +6,7 @@ pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::{geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment}};
 
+use crate::pattern::BuiltPattern;
 use crate::{tiling::*, TILE_SIZE_F32};
 
 use crate::tiling::encoder::*;
@@ -149,7 +150,7 @@ impl Tiler {
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         options: &FillOptions,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         tile_mask: &mut TileMask,
         encoder: &mut TileEncoder,
         device: &wgpu::Device,
@@ -315,7 +316,7 @@ impl Tiler {
     }
 
     /// Process manually edges and encode them into the output encoder.
-    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &mut dyn TilerPattern, device: &wgpu::Device) {
+    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &BuiltPattern, device: &wgpu::Device) {
         if self.draw.inverted {
             self.first_row = 0;
             self.last_row = self.num_tiles_y as usize;
@@ -498,7 +499,7 @@ impl Tiler {
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
         coarse_mask: &mut TileMaskRow,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
         edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
@@ -622,7 +623,7 @@ impl Tiler {
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
         coarse_mask: &mut TileMaskRow,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
         edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
@@ -686,7 +687,7 @@ impl Tiler {
 
     pub fn fill_canvas(
         &mut self,
-        pattern: &mut dyn TilerPattern,
+        pattern: &BuiltPattern,
         tile_mask: &mut TileMask,
         encoder: &mut TileEncoder,
     ) {

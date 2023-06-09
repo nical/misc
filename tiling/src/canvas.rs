@@ -6,11 +6,11 @@ use lyon::math::{Point};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
 use wgpu::util::DeviceExt;
+use crate::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId, OutputType, SurfaceConfig, DepthMode, StencilMode};
 use crate::{Color, u32_range, usize_range};
-use crate::pattern::checkerboard::*;
-use crate::pattern::simple_gradient::*;
+use crate::pattern::{BuiltPattern};
 use std::{ops::Range};
-use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor, PipelineDefaults};
+use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor, PipelineDefaults, Shaders};
 use std::{any::Any, marker::PhantomData};
 
 pub type TransformId = u32;
@@ -67,6 +67,10 @@ impl Transforms {
 
     pub fn get(&self, id: TransformId) -> &Transform2D<f32> {
         &self.transforms[id as usize].transform
+    }
+
+    pub fn get_current(&self) -> &Transform2D<f32> {
+        self.get(self.current())
     }
 
     pub fn clear(&mut self) {
@@ -258,7 +262,7 @@ impl RenderPasses {
                 || (pass.require_pre_pass && req & req_bit != 0);
             //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
-                //  When transitioning from non-msaa to msaa, blit the non-msaa target
+                // When transitioning from non-msaa to msaa, blit the non-msaa target
                 // into the msaa one.
                 let msaa_resolve = msaa_changed && !pass.use_msaa;
                 //println!("   -> flush msaa resolve {msaa_resolve} blit {msaa_blit}");
@@ -272,7 +276,7 @@ impl RenderPasses {
                     msaa_blit,
                     temporary: false,
                 });
-                requirements.msaa |= prev_use_msaa && !prev_use_depth;
+                requirements.msaa |= prev_use_msaa;
                 requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
                 requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
                 requirements.temporary |= disable_msaa_blit_from_main_target && msaa_blit;
@@ -321,7 +325,7 @@ impl RenderPasses {
                 temporary: false,
             });
 
-            requirements.msaa |= prev_use_msaa && !prev_use_depth;
+            requirements.msaa |= prev_use_msaa;
             requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
             requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
             requirements.temporary |= msaa_blit;
@@ -346,13 +350,18 @@ impl RenderPasses {
     }
 }
 
+// TODO: when building render passes we support transitioning between different surface states. At the moment
+// renderers make a best effort to match the initial surface state read at the beginning of the frame, but it
+// would make more sense to explicitly allow transitioning the surface state or allow renderers to express
+// constraints. The problem with resolving constraints while building the render passes is that the renderers
+// need to know about the presence of an opaque pass earlier.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SurfaceState {
     size: Size2D<u32>,
     opaque_pass: bool,
     msaa: bool,
     clear: Option<Color>,
-    // If true, the main target cannot be sampled (for example a swapchain's target).
+    /// If true, the main target cannot be sampled (for example a swapchain's target).
     write_only_target: bool,
 }
 
@@ -399,6 +408,34 @@ impl SurfaceState {
     #[inline]
     pub fn opaque_pass(&self) -> bool {
         self.opaque_pass
+    }
+}
+
+pub struct RenderPassState {
+    pub output_type: OutputType,
+    pub depth_buffer: bool,
+    pub stencil_buffer: bool,
+    pub msaa: bool,
+}
+
+impl RenderPassState {
+    pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
+        SurfaceConfig {
+            msaa: self.msaa,
+            depth: match (use_depth, self.depth_buffer) {
+                (true, true) => DepthMode::Enabled,
+                (false, true) => DepthMode::Ignore,
+                (false, false) => DepthMode::None,
+                (true, false) => panic!("Attempting to use the depth buffer on a surface that does not have one"),
+            },
+            stencil: match (stencil, self.stencil_buffer) {
+                (None, false) => StencilMode::None,
+                (None, true) => StencilMode::Ignore,
+                (Some(FillRule::EvenOdd), true) => StencilMode::EvenOdd,
+                (Some(FillRule::NonZero), true) => StencilMode::NonZero,
+                (Some(_), false) => panic!("Attempting to use the stencil buffer on a surface that does not have one"),
+            },
+        }
     }
 }
 
@@ -449,6 +486,8 @@ impl Canvas {
         &self,
         renderers: &[&dyn CanvasRenderer],
         resources: &GpuResources,
+        shaders: &mut Shaders,
+        _device: &wgpu::Device,
         common_resources: ResourcesHandle<CommonGpuResources>,
         target: &SurfaceResources,
         encoder: &mut wgpu::CommandEncoder,
@@ -464,7 +503,7 @@ impl Canvas {
 
         for pass in self.render_passes.iter() {
             for pre_pass in pass.pre_passes {
-                renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, resources, encoder);
+                renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, shaders, resources, encoder);
             }
 
             let (view, label) = if pass.msaa {
@@ -552,8 +591,21 @@ impl Canvas {
                 render_pass.draw_indexed(0..6, 0, 0..1);
             }
 
+            let pass_info = RenderPassState {
+                output_type: OutputType::Color,
+                stencil_buffer: pass.stencil,
+                depth_buffer: pass.depth,
+                msaa: pass.msaa,
+            };
+
             for sub_pass in pass.sub_passes {
-                renderers[sub_pass.renderer_id as usize].render(sub_pass.internal_index, resources, &mut render_pass);
+                renderers[sub_pass.renderer_id as usize].render(
+                    sub_pass.internal_index,
+                    &pass_info,
+                    shaders,
+                    resources,
+                    &mut render_pass,
+                );
             }
         }
     }
@@ -564,12 +616,15 @@ pub trait CanvasRenderer: AsAny {
     fn render_pre_pass(
         &self,
         _index: u32,
+        _shaders: &Shaders,
         _renderers: &GpuResources,
         _encoder: &mut wgpu::CommandEncoder,
     ) {}
     fn render<'pass, 'resources: 'pass>(
         &self,
         _index: u32,
+        _pass_info: &RenderPassState,
+        _shaders: &'resources Shaders,
         _renderers: &'resources GpuResources,
         _render_pass: &mut wgpu::RenderPass<'pass>,
     ) {}
@@ -642,6 +697,7 @@ impl CanvasRenderer for DummyRenderer {
     fn render_pre_pass(
         &self,
         _index: u32,
+        _shaders: &Shaders,
         _renderers: &GpuResources,
         _encoder: &mut wgpu::CommandEncoder,
     ) {}
@@ -649,6 +705,8 @@ impl CanvasRenderer for DummyRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         _index: u32,
+        _info: &RenderPassState,
+        _shaders: &Shaders,
         _renderers: &'resources GpuResources,
         _render_pass: &mut wgpu::RenderPass<'pass>,
     ) {}
@@ -660,8 +718,11 @@ pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
     pub indices: DynamicStore,
+
+    //pub generated_pipelines: PipelineTable,
+
     // TODO: right now there can be only one target per instance of this struct
-    pub target_and_gpu_store_layout: wgpu::BindGroupLayout,
+    pub target_and_gpu_store_layout: BindGroupLayoutId,
     pub main_target_and_gpu_store_bind_group: wgpu::BindGroup,
     pub main_target_descriptor_ubo: wgpu::Buffer,
     pub gpu_store_view: wgpu::TextureView,
@@ -677,28 +738,32 @@ impl CommonGpuResources {
         device: &wgpu::Device,
         target_size: Size2D<u32>,
         gpu_store: &GpuStore,
-        shaders: &mut crate::gpu::ShaderSources,
+        shaders: &mut crate::gpu::Shaders,
     ) -> Self {
 
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
-        let target_and_gpu_store_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Target and gpu store"),
-            entries: &[
-                // target descriptor
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
-                    },
-                    count: None,
-                },
-                // GPU store
-                gpu_store.bind_group_layout_entry(1, wgpu::ShaderStages::VERTEX),
-            ],
-        });
+        let target_and_gpu_store_layout = BindGroupLayout::new(device, "target and gpu store".into(), vec![
+            Binding {
+                name: "render_target".into(),
+                struct_type: "RenderTarget".into(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
+                }
+            },
+            Binding {
+                name: "gpu_store_texture".into(),
+                struct_type: "f32".into(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                }
+            }
+        ]);
 
         let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Target info"),
@@ -719,7 +784,7 @@ impl CommonGpuResources {
 
         let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Main target & gpu store"),
-            layout: &target_and_gpu_store_layout,
+            layout: &target_and_gpu_store_layout.handle,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -799,10 +864,15 @@ impl CommonGpuResources {
 
         let msaa_blit_depth = device.create_render_pipeline(&descriptor);
 
+        let target_and_gpu_store_layout = shaders.register_bind_group_layout(target_and_gpu_store_layout);
+
+        shaders.set_base_bindings(target_and_gpu_store_layout);
+
         CommonGpuResources {
             quad_ibo,
             vertices,
             indices,
+            //generated_pipelines: PipelineTable::new(),
             target_and_gpu_store_layout,
             main_target_and_gpu_store_bind_group,
             main_target_descriptor_ubo,
@@ -982,10 +1052,6 @@ pub trait Shape {
     fn to_command(self) -> RecordedShape;
 }
 
-pub trait Pattern {
-    fn to_command(self) -> RecordedPattern;
-}
-
 pub struct PathShape {
     pub path: Arc<Path>,
     pub fill_rule: FillRule,
@@ -1062,42 +1128,6 @@ impl Shape for All {
     }
 }
 
-impl Pattern for Color {
-    fn to_command(self) -> RecordedPattern {
-        RecordedPattern::Color(self)
-    }
-}
-
-impl Pattern for Gradient {
-    fn to_command(self) -> RecordedPattern {
-        RecordedPattern::Gradient(self)
-    }
-}
-
-impl Pattern for Checkerboard {
-    fn to_command(self) -> RecordedPattern {
-        RecordedPattern::Checkerboard(self)
-    }
-}
-
-pub enum RecordedPattern {
-    Color(Color),
-    Gradient(Gradient),
-    Image(u32),
-    Checkerboard(Checkerboard),
-}
-
-impl RecordedPattern {
-    pub fn is_opaque(&self) -> bool {
-        match self {
-            Self::Color(color) => color.is_opaque(),
-            Self::Gradient(g) => g.color0.is_opaque() && g.color1.is_opaque(),
-            Self::Checkerboard(c) => c.color0.is_opaque() && c.color1.is_opaque(),
-            Self::Image(_) => false, // TODO
-        }
-    }
-}
-
 // TODO: the enum prevents other types of shapes from being added externally.
 pub enum RecordedShape {
     Path(PathShape),
@@ -1108,7 +1138,7 @@ pub enum RecordedShape {
 
 pub struct Fill {
     pub shape: RecordedShape,
-    pub pattern: RecordedPattern,
+    pub pattern: BuiltPattern,
     pub transform: TransformId,
     pub z_index: ZIndex,
 }

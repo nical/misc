@@ -1,6 +1,6 @@
 use lyon::{geom::Box2D, math::{vector, point}};
 
-use crate::{tiling::{TilePosition, TilerPattern, encoder::{TileEncoder, as_scale_offset}, FillOptions}, TileMask, affected_range, TILE_SIZE_F32, Tiler};
+use crate::{tiling::{TilePosition, encoder::{TileEncoder, as_scale_offset}, FillOptions}, TileMask, affected_range, TILE_SIZE_F32, Tiler, pattern::BuiltPattern};
 
 use super::MaskEncoder;
 
@@ -18,7 +18,7 @@ unsafe impl bytemuck::Zeroable for RectangleMask {}
 pub fn fill_rect(
     rect: &Box2D<f32>,
     options: &FillOptions,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     tile_mask: &mut TileMask,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
@@ -64,7 +64,7 @@ pub fn fill_axis_aligned_rect(
     rect: &Box2D<f32>,
     inverted: bool,
     scissor: &Box2D<f32>,
-    pattern: &mut dyn TilerPattern,
+    pattern: &BuiltPattern,
     tile_mask: &mut TileMask,
     encoder: &mut TileEncoder,
     rect_encoder: &mut MaskEncoder,

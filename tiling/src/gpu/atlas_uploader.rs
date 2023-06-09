@@ -3,7 +3,7 @@ use wgpu::{BufferAddress, BindGroupEntry};
 use crate::tiling::TilePosition;
 use std::ops::Range;
 
-use super::{ShaderSources, gpu_store::{DynamicStore, DynBufferRange}};
+use super::{Shaders, gpu_store::{DynamicStore, DynBufferRange}};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -198,11 +198,10 @@ pub struct MaskUploadCopies {
 impl MaskUploadCopies {
     pub fn new(
         device: &wgpu::Device,
-        shaders: &mut ShaderSources,
-        globals_bg_layout: &wgpu::BindGroupLayout,
+        shaders: &mut Shaders,
         staging_buffer_size: u32,
     ) -> MaskUploadCopies {
-        create_mask_upload_pipeline(device, shaders, globals_bg_layout, staging_buffer_size)
+        create_mask_upload_pipeline(device, shaders, staging_buffer_size)
     }
 
     pub fn update_target(
@@ -273,12 +272,13 @@ impl MaskUploadCopies {
 
 fn create_mask_upload_pipeline(
     device: &wgpu::Device,
-    shaders: &mut ShaderSources,
-    globals_bg_layout: &wgpu::BindGroupLayout,
+    shaders: &mut Shaders,
     staging_buffer_size: u32,
 ) -> MaskUploadCopies {
     let src = include_str!("./../../shaders/mask_upload_copy.wgsl");
     let module = shaders.create_shader_module(device, "mask upload copy", src, &[]);
+
+    let target_and_gpu_store_layout = &shaders.get_base_bind_group_layout().handle;
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask upload copy"),
@@ -298,7 +298,7 @@ fn create_mask_upload_pipeline(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Mask upload copy"),
-        bind_group_layouts: &[&globals_bg_layout, &bind_group_layout],
+        bind_group_layouts: &[&target_and_gpu_store_layout, &bind_group_layout],
         push_constant_ranges: &[],
     });
 

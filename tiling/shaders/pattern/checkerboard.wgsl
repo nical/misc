@@ -1,6 +1,6 @@
 #import gpu_store
 
-fn pattern_vertex(pattern_pos: vec2<f32>, uv: vec2<f32>, pattern_handle: u32) -> Pattern {
+fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     var pattern = gpu_store_fetch_3(pattern_handle);
     var offset = pattern.data2.xy;
     var scale = pattern.data2.z;

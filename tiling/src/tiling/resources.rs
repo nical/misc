@@ -1,7 +1,7 @@
 use crate::{gpu::{
     atlas_uploader::{MaskUploadCopies},
-    ShaderSources, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*,
-}, custom_pattern::TilePipelines, canvas::CommonGpuResources};
+    Shaders, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId},
+}, canvas::CommonGpuResources, pattern::texture_load::TextureLoadRenderer};
 use crate::tiling::{
     encoder::{LineEdge},
     TilePosition, PatternData
@@ -9,8 +9,6 @@ use crate::tiling::{
 use crate::canvas::RendererResources;
 
 use wgpu::util::DeviceExt;
-
-use super::{PatternIndex};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -23,16 +21,6 @@ pub struct TileInstance {
 
 unsafe impl bytemuck::Pod for TileInstance {}
 unsafe impl bytemuck::Zeroable for TileInstance {}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct MaskedTileInstance {
-    pub tile: TileInstance,
-    pub mask: [u32; 4],
-}
-
-unsafe impl bytemuck::Pod for MaskedTileInstance {}
-unsafe impl bytemuck::Zeroable for MaskedTileInstance {}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -51,11 +39,7 @@ pub struct TilingGpuResources {
     pub mask_upload_copies: MaskUploadCopies,
     pub masks: Masks,
 
-    // TODO: masked/opaque tiled images are similar to other patterns, maybe they
-    // could be implemented as patterns.
-    pub masked_image_pipeline: wgpu::RenderPipeline,
-    pub opaque_image_pipeline: wgpu::RenderPipeline,
-    pub mask_texture_bind_group_layout: wgpu::BindGroupLayout,
+    pub mask_texture_bind_group_layout: BindGroupLayoutId,
     pub mask_texture_view: wgpu::TextureView,
     pub src_color_texture_view: wgpu::TextureView,
 
@@ -67,18 +51,90 @@ pub struct TilingGpuResources {
 
     pub edges: StorageBuffer,
     pub mask_params_ubo: wgpu::Buffer,
-    pub patterns: Vec<TilePipelines>,
+
+    pub opaque_pipeline: GeneratedPipelineId,
+    pub masked_pipeline: GeneratedPipelineId,
+    pub texture_load: TextureLoadRenderer,
 }
+
+const MASK_ATLAS_SRC: &'static str = " 
+fn mask_vertex(mask_pos: vec2<f32>, mask_handle: u32) -> Mask {
+    return Mask(mask_pos);
+}
+
+fn mask_fragment(mask: Mask) -> f32 {
+    var uv = vec2<i32>(i32(mask.uv.x), i32(mask.uv.y));
+    return textureLoad(mask_atlas_texture, uv, 0).r;
+}
+";
 
 impl TilingGpuResources {
     pub fn new(
-        common: &CommonGpuResources,
+        common: &mut CommonGpuResources,
         device: &wgpu::Device,
-        shaders: &mut ShaderSources,
+        shaders: &mut Shaders,
+        texture_load: &TextureLoadRenderer,
         mask_atlas_size: u32,
         color_atlas_size: u32,
         use_ssaa4: bool,
     ) -> Self {
+
+        let tile_geom_id = shaders.register_geometry(GeometryDescriptor {
+            name: "geometry::tile".into(),
+            source: include_str!("../../shaders/renderers/geometry/tile.wgsl").into(),
+            vertex_attributes: Vec::new(),
+            instance_attributes: vec![VertexAtribute::uint32x4("instance")],
+            bindings: None,
+        });
+
+        let mask_atlas_bind_group_layout = shaders.register_bind_group_layout(BindGroupLayout::new(
+            device,
+            "tile_mask_atlas".into(),
+            vec![Binding {
+                name: "mask_atlas_texture".into(),
+                struct_type: "f32".into(),
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                }
+            }], 
+        ));
+
+        let fill_mask_id = shaders.register_mask(MaskDescriptor {
+            name: "mask::tile_atlas".into(),
+            source: MASK_ATLAS_SRC.into(),
+            varyings: vec![Varying::float32x2("uv").interpolated()],
+            bindings: Some(mask_atlas_bind_group_layout),
+        });
+
+        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
+            label: "tile(opaque)",
+            geometry: tile_geom_id,
+            mask: ShaderMaskId::NONE,
+            user_flags: 0,
+            output: OutputType::Color,
+            blend: BlendMode::None,
+        });
+
+        let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
+            label: "tile(alpha)",
+            geometry: tile_geom_id,
+            mask: fill_mask_id,
+            user_flags: 0,
+            output: OutputType::Color,
+            blend: BlendMode::PremultipliedAlpha,
+        });
+
+        // TODO: build the pipelines lazily
+        let surface = SurfaceConfig::default();
+        for idx in 0..shaders.num_patterns() {
+            let pat = ShaderPatternId::from_index(idx);
+            shaders.prepare_pipeline(device, opaque_pipeline, pat, surface);
+            shaders.prepare_pipeline(device, masked_pipeline, pat, surface);    
+        }
+
         let edges = StorageBuffer::new::<LineEdge>(
             device,
             "edges",
@@ -101,114 +157,10 @@ impl TilingGpuResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, &common.target_and_gpu_store_layout, crate::BYTES_PER_MASK as u32 * 2048);
+        let mask_upload_copies = MaskUploadCopies::new(&device, shaders, crate::BYTES_PER_MASK as u32 * 2048);
         let masks = Masks::new(&device, shaders, &edges, use_ssaa4);
 
-        let src = include_str!("./../../shaders/tile.wgsl");
-        let masked_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_MASK", "TILED_IMAGE_PATTERN",]);
-        let opaque_img_module = shaders.create_shader_module(device, "masked_tile_image", src, &["TILED_IMAGE_PATTERN",]);
-
-        let mask_texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Tile mask atlas"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: edges.binding_type(),
-                    count: None,
-                }
-            ],
-        });
-
-        let src_color_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Tile src color atlas"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let defaults = PipelineDefaults::new();
-        let opaque_attributes = VertexBuilder::from_slice(wgpu::VertexStepMode::Instance, &[wgpu::VertexFormat::Uint32x4]);
-        let masked_attributes = VertexBuilder::from_slice(
-            wgpu::VertexStepMode::Instance,
-            &[
-                wgpu::VertexFormat::Uint32x4,
-                wgpu::VertexFormat::Uint32x4,
-            ],
-        );
-
-        let masked_img_tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Masked image tiles"),
-            bind_group_layouts: &[
-                &common.target_and_gpu_store_layout,
-                &mask_texture_bind_group_layout,
-                &src_color_bind_group_layout,
-            ],
-            push_constant_ranges: &[],
-        });
-
-        let primitive = PipelineDefaults::primitive_state();
-        let multisample = wgpu::MultisampleState::default();
-
-        let masked_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("Masked image tiles"),
-            layout: Some(&masked_img_tile_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &masked_img_module,
-                entry_point: "vs_main",
-                buffers: &[masked_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &masked_img_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state()
-            }),
-            primitive,
-            depth_stencil: None,
-            multiview: None,
-            multisample,
-        };
-
-        let opaque_image_tile_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some("Opaque image tiles"),
-            layout: Some(&masked_img_tile_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &opaque_img_module,
-                entry_point: "vs_main",
-                buffers: &[opaque_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &opaque_img_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state_no_blend(),
-            }),
-            primitive,
-            depth_stencil: None,
-            multiview: None,
-            multisample,
-        };
-
-        let masked_image_pipeline = device.create_render_pipeline(&masked_image_tile_pipeline_descriptor);
-        let opaque_image_pipeline = device.create_render_pipeline(&opaque_image_tile_pipeline_descriptor);
+        let target_and_gpu_store_layout = &shaders.get_base_bind_group_layout().handle;
 
         let mask_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Mask atlas"),
@@ -246,22 +198,18 @@ impl TilingGpuResources {
 
         let mask_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("alpha tiles"),
-            layout: &mask_texture_bind_group_layout,
+            layout: &shaders.get_bind_group_layout(mask_atlas_bind_group_layout).handle,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&mask_texture_view),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: edges.binding_resource()
-                }
             ],
         });
 
         let src_color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Color tiles"),
-            layout: &&src_color_bind_group_layout,
+            layout: &shaders.get_bind_group_layout(texture_load.bind_group_layout()).handle,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -272,7 +220,7 @@ impl TilingGpuResources {
 
         let mask_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Atlas target & gpu store"),
-            layout: &common.target_and_gpu_store_layout,
+            layout: target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -287,7 +235,7 @@ impl TilingGpuResources {
 
         let color_atlas_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Atlas target & gpu store"),
-            layout: &common.target_and_gpu_store_layout,
+            layout: target_and_gpu_store_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -319,9 +267,7 @@ impl TilingGpuResources {
             mask_upload_copies,
             masks,
 
-            opaque_image_pipeline,
-            masked_image_pipeline,
-            mask_texture_bind_group_layout,
+            mask_texture_bind_group_layout: mask_atlas_bind_group_layout,
 
             mask_texture_view,
             src_color_texture_view,
@@ -332,14 +278,11 @@ impl TilingGpuResources {
             color_atlas_target_and_gpu_store_bind_group,
             edges,
             mask_params_ubo,
-            patterns: Vec::new(),
-        }
-    }
 
-    pub fn register_pattern(&mut self, pipelines: TilePipelines) -> PatternIndex {
-        let idx = self.patterns.len() as PatternIndex;
-        self.patterns.push(pipelines);
-        idx
+            opaque_pipeline,
+            masked_pipeline,
+            texture_load: texture_load.clone(),
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -390,12 +333,12 @@ pub struct Masks {
 }
 
 impl Masks {
-    pub fn new(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer, use_ssaa: bool) -> Self {
+    pub fn new(device: &wgpu::Device, shaders: &mut Shaders, edges: &StorageBuffer, use_ssaa: bool) -> Self {
         create_mask_pipeline(device, shaders, edges, use_ssaa)
     }
 }
 
-fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut ShaderSources, edges: &StorageBuffer, use_ssaa4: bool) -> Masks {
+fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &StorageBuffer, use_ssaa4: bool) -> Masks {
     let fill_src = include_str!("../../shaders/mask_fill.wgsl");
     let circle_src = include_str!("../../shaders/mask_circle.wgsl");
     let rect_src = include_str!("../../shaders/mask_rect.wgsl");

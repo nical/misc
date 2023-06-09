@@ -1,17 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 use lyon::path::Path;
-//use lyon::path::Path;
-//use tiling::canvas::*;
-use tiling::custom_pattern::CustomPatterns;
+use tiling::gpu::shader::{PatternDescriptor, Varying, WgslType};
+use tiling::pattern::checkerboard::CheckerboardRenderer;
+use tiling::pattern::color::SolidColorRenderer;
+use tiling::pattern::linear_gradient::{LinearGradientRenderer, LinearGradient};
+use tiling::pattern::texture_load::TextureLoadRenderer;
 use tiling::pattern::{
-    checkerboard::{Checkerboard, CheckerboardPattern},
-    simple_gradient::{Gradient, SimpleGradient},
-    solid_color::SolidColor,
+    checkerboard::{Checkerboard},
 };
 use tiling::canvas::*;
 use tiling::load_svg::*;
-use tiling::gpu::{ShaderSources, GpuStore, PipelineDefaults};
+use tiling::gpu::{Shaders, GpuStore, PipelineDefaults};
 use tiling::tess::{MeshGpuResources, MeshRenderer};
 use tiling::stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tiling::tiling::*;
@@ -127,45 +127,50 @@ fn main() {
 
     tiler_config.view_box = view_box;
 
+    let mut shaders = Shaders::new();
+
+    let patterns = Patterns {
+        colors: SolidColorRenderer::register(&mut shaders),
+        gradients: LinearGradientRenderer::register(&mut shaders),
+        checkerboards: CheckerboardRenderer::register(&mut shaders),
+        texture_load: TextureLoadRenderer::register(&device, &mut shaders),
+    };
+
     let common_handle = ResourcesHandle::new(0);
     let tiling_handle = ResourcesHandle::new(1);
     let mesh_handle = ResourcesHandle::new(2);
     let stencil_handle = ResourcesHandle::new(3);
 
     let mut canvas = Canvas::new();
-    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config);
+    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.texture_load);
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
     let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
     let mut dummy = DummyRenderer::new(3);
 
-    let mut shaders = ShaderSources::new();
+    shaders.register_pattern(PatternDescriptor {
+        name: "pattern::solid_color".into(),
+        source: include_str!("../../shaders/pattern/solid_color.wgsl").into(),
+        bindings: None,
+        varyings: vec![Varying{ name: "color".into(), kind: WgslType::Float32x4, interpolated: false }],
+    });
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
-    let common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store, &mut shaders);
-    let mut tiling_resources = TilingGpuResources::new(
-        &common_resources,
+    let mut common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store, &mut shaders);
+
+    let tiling_resources = TilingGpuResources::new(
+        &mut common_resources,
         &device,
         &mut shaders,
+        &patterns.texture_load,
         mask_atlas_size,
         color_atlas_size,
         use_ssaa4,
     );
 
-    let mut pattern_builder = CustomPatterns::new(
-        &device,
-        &mut shaders,
-        &common_resources.target_and_gpu_store_layout,
-        &tiling_resources.mask_texture_bind_group_layout,
-    );
+    let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
 
-    tiling_resources.register_pattern(SolidColor::create_pipelines(&device, &mut pattern_builder));
-    tiling_resources.register_pattern(SimpleGradient::create_pipelines(&device, &mut pattern_builder));
-    tiling_resources.register_pattern(CheckerboardPattern::create_pipelines(&device, &mut pattern_builder));
-
-    let mesh_resources = MeshGpuResources::new(&common_resources, &device, &mut shaders);
-
-    let stencil_resources = StencilAndCoverResources::new(&common_resources, &device, &mut shaders);
+    let stencil_resources = StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
 
     let mut gpu_resources = GpuResources::new(vec![
         Box::new(common_resources),
@@ -252,7 +257,7 @@ fn main() {
         let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(false).with_msaa(true));
+        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(true).with_msaa(true));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
@@ -268,12 +273,12 @@ fn main() {
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(hw, hh));
 
-        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &transform);
+        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &patterns, &mut gpu_store, &transform);
 
         let frame_build_start = time::precise_time_ns();
 
-        tiling.prepare(&canvas, &mut gpu_store, &device);
-        meshes.prepare(&canvas, &mut gpu_store);
+        tiling.prepare(&canvas, &device);
+        meshes.prepare(&canvas);
         stencil.prepare(&canvas);
         dummy.prepare(&canvas);
 
@@ -306,13 +311,13 @@ fn main() {
         });
 
         tiling.upload(&mut gpu_resources, &device, &queue);
-        meshes.upload(&mut gpu_resources, &device, &queue);
-        stencil.upload(&mut gpu_resources, &device);
+        meshes.upload(&mut gpu_resources, &mut shaders, &device, &queue);
+        stencil.upload(&mut gpu_resources, &mut shaders, &device);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, common_handle, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, &mut shaders, &device, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -355,6 +360,8 @@ fn paint_scene(
     tiling: &mut TileRenderer,
     meshes: &mut MeshRenderer,
     stencil: &mut StencilAndCoverRenderer,
+    patterns: &Patterns,
+    gpu_store: &mut GpuStore,
     transform: &Transform2D<f32>,
 ) {
     let mut builder = lyon::path::Path::builder();
@@ -366,10 +373,11 @@ fn paint_scene(
 
     tiling.fill(
         canvas,
-        All, Gradient {
+        All,
+        patterns.gradients.add(gpu_store, LinearGradient {
             from: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
             to: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
-        }
+        }.transformed(canvas.transforms.get_current())),
     );
 
     canvas.transforms.push(transform);
@@ -377,48 +385,58 @@ fn paint_scene(
     tiling.fill(
         canvas,
         Circle::new(point(500.0, 500.0), 800.0),
-        Gradient {
+        patterns.gradients.add(gpu_store, LinearGradient {
             from: point(100.0, 100.0), color0: Color { r: 200, g: 150, b: 0, a: 255},
             to: point(100.0, 1000.0), color1: Color { r: 250, g: 50, b: 10, a: 255},
-        }
+        }.transformed(canvas.transforms.get_current())),
     );
 
     for (path, pattern) in paths {
-        match pattern {
-            &SvgPattern::Color(color) => {
-                let renderer: &mut dyn Fill = &mut *[
-                    tiling as &mut dyn Fill,
-                    meshes as &mut dyn Fill,
-                    stencil as &mut dyn Fill,
-                ][selected_renderer];
-                renderer.fill_color(canvas, path.clone(), color);
-            }
+        let pattern = match pattern {
+            &SvgPattern::Color(color) => patterns.colors.add(color),
             &SvgPattern::Gradient { color0, color1, from, to } => {
-                tiling.fill(canvas, path.clone(), Gradient { color0, color1, from, to });
+                patterns.gradients.add(
+                    gpu_store,
+                    LinearGradient { color0, color1, from, to }.transformed(canvas.transforms.get_current())
+                )
             }
+        };
+
+        match selected_renderer {
+            0 => { tiling.fill(canvas, path.clone(), pattern); }
+            1 => { meshes.fill(canvas, path.clone(), pattern); }
+            2 => { stencil.fill(canvas, path.clone(), pattern); }
+            _ => unimplemented!()
         }
     }
 
     tiling.fill(
         canvas,
         Circle::new(point(500.0, 300.0), 200.0),
-        Gradient {
+        patterns.gradients.add(gpu_store, LinearGradient {
             from: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 255},
             to: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
-        }
+        }.transformed(canvas.transforms.get_current())),
     );
 
     tiling.fill(
         canvas,
         Arc::new(builder.build()),
-        Checkerboard { color0: Color { r: 10, g: 100, b: 250, a: 255 }, color1: Color::WHITE, scale: 25.0, offset: point(0.0, 0.0) }
+        patterns.checkerboards.add(
+            gpu_store,
+            &Checkerboard {
+                color0: Color { r: 10, g: 100, b: 250, a: 255 },
+                color1: Color::WHITE,
+                scale: 25.0, offset: point(0.0, 0.0)
+            }.transformed(canvas.transforms.get_current())
+        )
     );
 
     canvas.transforms.pop();
 
-    //tiling.fill(canvas, Circle::new(point(600.0, 400.0,), 100.0), Color { r: 200, g: 100, b: 120, a: 180});
-    tiling.fill(canvas, Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) }, Color::BLACK);
-    tiling.fill(canvas, Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) }, Color::BLACK);
+    let black = patterns.colors.add(Color::BLACK);
+    tiling.fill(canvas, Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) }, black);
+    tiling.fill(canvas, Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) }, black);
 
     canvas.transforms.push(&Transform2D::translation(10.0, 1.0));
     canvas.transforms.pop();
@@ -660,24 +678,9 @@ fn update_inputs(
     true
 }
 
-trait Fill {
-    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color);
-}
-
-impl Fill for TileRenderer {
-    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
-        self.fill(canvas, shape, color)
-    }
-}
-
-impl Fill for MeshRenderer {
-    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
-        self.fill(canvas, shape, color)
-    }
-}
-
-impl Fill for StencilAndCoverRenderer {
-    fn fill_color(&mut self, canvas: &mut Canvas, shape: Arc<Path>, color: Color) {
-        self.fill(canvas, shape, color)
-    }
+struct Patterns {
+    colors: SolidColorRenderer,
+    gradients: LinearGradientRenderer,
+    checkerboards: CheckerboardRenderer,
+    texture_load: TextureLoadRenderer,
 }

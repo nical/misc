@@ -5,7 +5,6 @@ pub mod encoder;
 pub mod occlusion;
 pub mod resources;
 pub mod cpu_rasterizer;
-pub mod tiled_output;
 pub mod renderer;
 
 use std::time::Duration;
@@ -20,8 +19,6 @@ use lyon::path::FillRule;
 
 pub type PatternData = u32;
 pub type AtlasIndex = u32;
-pub type PatternIndex = usize;
-pub const TILED_IMAGE_PATTERN: PatternIndex = 10000; // TODO
 
 /*
 
@@ -109,18 +106,6 @@ impl TileVisibility {
     pub fn is_opaque(self) -> bool { self == TileVisibility::Opaque }
 }
 
-// Note: the statefullness with set_tile(x, y) followed by tile-specific getters
-// is unfortunate, the reason for it at the moment is the need to query whether
-// a tile is empty or fully opaque before culling, while we want to only request
-// tile if we really need to, that is after culling.
-pub trait TilerPattern {
-    fn index(&self) -> PatternIndex;
-
-    fn is_entirely_opaque(&self) -> bool { false }
-    fn tile_data(&mut self, x: u32, y: u32) -> PatternData;
-    fn tile_visibility(&self, _x: u32, _y: u32) -> TileVisibility { TileVisibility::Alpha }
-    fn can_stretch_horizontally(&self) -> bool { false }
-}
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Stats {
@@ -148,7 +133,7 @@ impl Stats {
 
     pub fn tiles_bytes(&self) -> usize {
         (self.opaque_tiles + self.gpu_mask_tiles) * std::mem::size_of::<TileInstance>()
-            + (self.alpha_tiles + self.prerendered_tiles) * std::mem::size_of::<MaskedTileInstance>()
+            + (self.alpha_tiles + self.prerendered_tiles) * std::mem::size_of::<TileInstance>()
     }
 
     pub fn edges_bytes(&self) -> usize {

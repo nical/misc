@@ -26,9 +26,7 @@ fn tiling_decode_position(encoded: u32, uv: vec2<f32>) -> vec2<f32> {
 fn tiling_decode_instance(encoded: vec4<u32>, uv: vec2<f32>) -> TileInstance {
     var instance: TileInstance;
     instance.position = tiling_decode_position(encoded.x, uv);
-    #if TILED_MASK {
-        instance.mask_position = tiling_decode_position(encoded.y, uv);
-    }
+    instance.mask_position = tiling_decode_position(encoded.y, uv);
     instance.pattern_position = tiling_decode_position(encoded.z, uv);
     instance.pattern_data = encoded.w;
 

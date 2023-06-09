@@ -4,13 +4,12 @@ pub mod gpu;
 pub mod buffer;
 //pub mod flatten_simd;
 pub mod pattern;
-pub mod custom_pattern;
 pub mod tiling;
 pub mod tess;
 pub mod stencil;
 
-pub use tiling::tiler::*;
-pub use tiling::occlusion::*;
+pub use crate::tiling::tiler::*;
+pub use crate::tiling::occlusion::*;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 

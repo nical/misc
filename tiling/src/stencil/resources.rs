@@ -1,26 +1,23 @@
-use crate::{canvas::{RendererResources, CommonGpuResources}, gpu::{PipelineDefaults, VertexBuilder, ShaderSources}};
+use crate::{canvas::{RendererResources, CommonGpuResources}, gpu::{PipelineDefaults, VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
 
 
 pub struct StencilAndCoverResources {
     pub stencil_pipeline: wgpu::RenderPipeline,
-    pub evenodd_color_pipeline: wgpu::RenderPipeline,
     pub msaa_stencil_pipeline: wgpu::RenderPipeline,
-    pub msaa_evenodd_color_pipeline: wgpu::RenderPipeline,
+    pub opaque_cover_pipeline: GeneratedPipelineId,
+    pub alpha_cover_pipeline: GeneratedPipelineId,
 }
 
 impl StencilAndCoverResources {
     pub fn new(
-        common: &CommonGpuResources,
+        common: &mut CommonGpuResources,
         device: &wgpu::Device,
-        shaders: &mut ShaderSources,
+        shaders: &mut Shaders,
     ) -> Self {
         let stencil_src = include_str!("./../../shaders/stencil/stencil.wgsl");
-        let cover_color_src = include_str!("./../../shaders/stencil/cover_color.wgsl");
 
         let stencil_module = shaders.create_shader_module(device, "stencil", stencil_src, &[]);
-        let cover_module = shaders.create_shader_module(device, "stencil", cover_color_src, &[]);
 
-        let defaults = PipelineDefaults::new();
         let vertex_attributes = VertexBuilder::from_slice(
             wgpu::VertexStepMode::Vertex,
             &[wgpu::VertexFormat::Float32x2],
@@ -29,7 +26,7 @@ impl StencilAndCoverResources {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stencil"),
             bind_group_layouts: &[
-                &common.target_and_gpu_store_layout,
+                &shaders.get_bind_group_layout(common.target_and_gpu_store_layout).handle,
             ],
             push_constant_ranges: &[],
         });
@@ -87,67 +84,32 @@ impl StencilAndCoverResources {
         };
         let msaa_stencil_pipeline = device.create_render_pipeline(&descriptor);
 
+        // TODO: this crates an implicit dependency to the mesh renderer.
+        let cover_geom = shaders.find_geometry("geometry::simple_mesh").unwrap();
 
-        let vertex_attributes = VertexBuilder::from_slice(
-            wgpu::VertexStepMode::Vertex,
-            &[
-                wgpu::VertexFormat::Float32x2,
-                wgpu::VertexFormat::Uint32,
-                wgpu::VertexFormat::Uint32,
-            ]
-        );
-
-        let face_state = wgpu::StencilFaceState {
-            compare: wgpu::CompareFunction::NotEqual,
-            // reset the stencil buffer.
-            fail_op: wgpu::StencilOperation::Replace,
-            depth_fail_op: wgpu::StencilOperation::Replace,
-            pass_op: wgpu::StencilOperation::Replace,
-        };
-
-        let mut descriptor = wgpu::RenderPipelineDescriptor {
-            label: Some(&"stencil: color even-odd"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &cover_module,
-                entry_point: "vs_main",
-                buffers: &[vertex_attributes.buffer_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &cover_module,
-                entry_point: "fs_main",
-                targets: defaults.color_target_state(),
-            }),
-            primitive: PipelineDefaults::primitive_state(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState {
-                    front: face_state,
-                    back: face_state,
-                    read_mask: 1,
-                    write_mask: 0xFFFFFFFF,
-                },
-                bias: wgpu::DepthBiasState::default(),
-                format: PipelineDefaults::depth_format(),
-            }),
-            multiview: None,
-            multisample: wgpu::MultisampleState::default(),
-        };
-
-        let evenodd_color_pipeline = device.create_render_pipeline(&descriptor);
-
-        descriptor.multisample = wgpu::MultisampleState {
-            count: PipelineDefaults::msaa_sample_count(),
-            .. wgpu::MultisampleState::default()
-        };
-        let msaa_evenodd_color_pipeline = device.create_render_pipeline(&descriptor);
+        // TODO: these pipelines happen to be identical to the mesh renderer's.
+        let opaque_cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
+            label: "cover(opaque)",
+            geometry: cover_geom,
+            mask: ShaderMaskId::NONE,
+            user_flags: 0,
+            output: OutputType::Color,
+            blend: BlendMode::None,
+        });
+        let alpha_cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
+            label: "cover(alpha)",
+            geometry: cover_geom,
+            mask: ShaderMaskId::NONE,
+            user_flags: 0,
+            output: OutputType::Color,
+            blend: BlendMode::PremultipliedAlpha,
+        });
 
         StencilAndCoverResources {
             stencil_pipeline,
-            evenodd_color_pipeline,
             msaa_stencil_pipeline,
-            msaa_evenodd_color_pipeline,
+            opaque_cover_pipeline,
+            alpha_cover_pipeline,
         }
     }
 }

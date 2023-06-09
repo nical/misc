@@ -12,7 +12,7 @@ struct VertexOutput {
 @vertex fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     @location(0) instance_data: vec4<u32>,
-    #if TILED_MASK { @location(1) mask_data: vec4<u32>, }
+    //#if TILED_MASK { @location(1) mask_data: vec4<u32>, }
 ) -> VertexOutput {
     var uv = rect_get_uv(vertex_index);
     var tile = tiling_decode_instance(instance_data, uv);
