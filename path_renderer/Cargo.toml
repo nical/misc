@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "core",
+    "tess",
+    "stencil",
+    "tiling",
+    "patterns/color",
+    "patterns/linear_gradient",
+    "patterns/checkerboard",
+    "patterns/texture",
+    "demo"
+]
+
+
+resolver = "2"
+
+# Uncomment this when profiling.
+#[profile.release]
+#debug = true

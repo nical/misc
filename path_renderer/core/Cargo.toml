@@ -1,0 +1,23 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+workspace = ".."
+
+[dependencies]
+lyon = "1.0.0"
+wgpu = "0.16.0"
+winit = "0.27.3"
+futures = "0.3.5"
+bytemuck = "1.2.0"
+svg_fmt = "0.4.1"
+profiling = "1.0.4"
+wgslp = { path = "../../wgslp/lib" }
+
+[profile.release]
+debug=true
+
+[features]
+tracy_profiling = ["profiling/profile-with-tracy"]
+trace = ["wgpu/trace"]

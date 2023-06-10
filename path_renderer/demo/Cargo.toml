@@ -1,0 +1,33 @@
+[package]
+name = "demo"
+version = "0.1.0"
+authors = ["Nicolas Silva <nical@fastmail.com>"]
+edition = "2018"
+workspace = "../"
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+[dependencies]
+core = { path = "../core" }
+
+tess = { path = "../tess" }
+tiling = { path = "../tiling" }
+stencil = { path = "../stencil" }
+
+pattern_color = { path = "../patterns/color" }
+pattern_linear_gradient = { path = "../patterns/linear_gradient" }
+pattern_checkerboard = { path = "../patterns/checkerboard" }
+pattern_texture = { path = "../patterns/texture" }
+
+lyon = "1.0.0"
+winit = "0.27.3"
+usvg = "0.4"
+profiling = "1.0.4"
+time = "0.1.42"
+futures = "0.3.5"
+
+[features]
+tracy_profiling = ["core/tracy_profiling"]
+trace = ["core/trace"]
