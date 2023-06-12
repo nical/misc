@@ -409,7 +409,7 @@ fn paint_scene(
         canvas,
         Circle::new(point(500.0, 300.0), 200.0),
         patterns.gradients.add(gpu_store, LinearGradient {
-            from: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 255},
+            from: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 100},
             to: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
         }.transformed(canvas.transforms.get_current())),
     );

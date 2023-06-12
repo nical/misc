@@ -1,9 +1,9 @@
 [workspace]
 members = [
     "core",
-    "tess",
-    "stencil",
-    "tiling",
+    "renderers/tess",
+    "renderers/stencil",
+    "renderers/tiling",
     "patterns/color",
     "patterns/linear_gradient",
     "patterns/checkerboard",

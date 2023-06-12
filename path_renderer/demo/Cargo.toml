@@ -12,9 +12,9 @@ path = "src/main.rs"
 [dependencies]
 core = { path = "../core" }
 
-tess = { path = "../tess" }
-tiling = { path = "../tiling" }
-stencil = { path = "../stencil" }
+tess = { path = "../renderers/tess" }
+tiling = { path = "../renderers/tiling" }
+stencil = { path = "../renderers/stencil" }
 
 pattern_color = { path = "../patterns/color" }
 pattern_linear_gradient = { path = "../patterns/linear_gradient" }

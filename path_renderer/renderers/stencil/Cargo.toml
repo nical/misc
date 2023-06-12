@@ -1,0 +1,11 @@
+[package]
+name = "stencil"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+workspace = "../.."
+
+[dependencies]
+core = { path = "../../core" }
+lyon = "1.0.0"
+profiling = "1.0.4"
