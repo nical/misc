@@ -1,12 +1,13 @@
 use lyon::{geom::euclid::Size2D};
 use core::{
-    canvas::{Fill, ResourcesHandle, Shape, RendererCommandIndex, Canvas, RecordedShape, GpuResources, RenderPasses, SubPass, CanvasRenderer, RendererId, CommonGpuResources, RenderPassState},
+    canvas::{Fill, Shape, RendererCommandIndex, Canvas, RecordedShape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper},
+    resources::{GpuResources, ResourcesHandle, CommonGpuResources},
     pattern::{BuiltPattern},
-    gpu::{shader::SurfaceConfig, Shaders},
+    gpu::{shader::SurfaceConfig, Shaders}, BindingResolver,
 };
-use crate::{Tiler, TilerConfig, TILE_SIZE, TileMask};
+use crate::{Tiler, TilerConfig, TILE_SIZE, TileMask, encoder::SRC_COLOR_ATLAS_BINDING};
 use super::{encoder::TileEncoder, TilingGpuResources, mask::MaskEncoder, FillOptions, Stats};
-use pattern_texture::TextureLoadRenderer;
+use pattern_texture::TextureRenderer;
 use core::wgpu;
 use core::bytemuck;
 
@@ -34,7 +35,7 @@ impl TileRenderer {
         common_resources_id: ResourcesHandle<CommonGpuResources>,
         resources_id: ResourcesHandle<TilingGpuResources>,
         config: &TilerConfig,
-        texture_load: &TextureLoadRenderer,
+        texture_load: &TextureRenderer,
     ) -> Self {
         let size = config.view_box.size().to_u32();
         let tiles_x = (size.width + crate::TILE_SIZE - 1) / crate::TILE_SIZE;
@@ -199,6 +200,7 @@ impl TileRenderer {
         shaders: &Shaders,
         common_resources: &CommonGpuResources,
         resources: &TilingGpuResources,
+        bindings: &dyn BindingResolver,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -226,6 +228,13 @@ impl TileRenderer {
                     SurfaceConfig::default(),
                 ).unwrap();
     
+                // We could try to avoid redundant bindings.
+                if batch.pattern_inputs.is_some() {
+                    if let Some(group) = bindings.resolve(batch.pattern_inputs) {
+                        pass.set_bind_group(1, group, &[]);
+                    }
+                }
+
                 pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.set_pipeline(pipeline);
                 pass.draw_indexed(0..6, 0, batch.tiles.clone());
@@ -238,6 +247,7 @@ impl TileRenderer {
         mask_atlas_index: u32,
         common_resources: &CommonGpuResources,
         resources: &TilingGpuResources,
+        _bindings: &dyn BindingResolver,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         {
@@ -300,12 +310,15 @@ impl TileRenderer {
         shaders: &'resources Shaders,
         common_resources: &'resources CommonGpuResources,
         resources: &'resources TilingGpuResources,
+        bindings: &'resources dyn BindingResolver,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let render_pass = &self.encoder.render_passes[pass_idx];
 
         pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
         pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
+
+        let mut helper = DrawHelper::new();
 
         if !render_pass.opaque_batches.is_empty() {
             for batch in &self.encoder.opaque_batches[render_pass.opaque_batches.clone()] {
@@ -315,7 +328,9 @@ impl TileRenderer {
                         batch.pattern,
                         SurfaceConfig::default(),
                     ).unwrap();
-    
+
+                    helper.resolve_and_bind(1, batch.pattern_inputs, bindings, pass);
+
                     pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
                     // TODO: optional hook to bind extra data
                     pass.set_pipeline(pipeline);
@@ -327,7 +342,7 @@ impl TileRenderer {
         if !render_pass.opaque_image_tiles.is_empty() {
             let pipeline = shaders.try_get(
                 resources.opaque_pipeline,
-                resources.texture_load.pattern_id(),
+                resources.texture.load_pattern_id(),
                 SurfaceConfig::default(),
             ).unwrap();
 
@@ -335,25 +350,32 @@ impl TileRenderer {
             pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
 
             pass.set_pipeline(pipeline);
-            //pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
             pass.set_bind_group(1, &resources.src_color_bind_group, &[]);
             pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
+
+            helper.reset_binding(1);
         }
+
 
         if let Some(range) = &self.encoder.ranges.alpha_tiles {
             pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
             pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
-    
+            helper.reset_binding(1);
+
             for batch in &self.encoder.alpha_batches[render_pass.alpha_batches.clone()] {
                 let pipeline = shaders.try_get(
                     resources.masked_pipeline,
                     batch.pattern,
                     SurfaceConfig::default(),
                 ).unwrap();
-    
-                //pass.set_pipeline(&resources.masked_image_pipeline);
+
+                if batch.pattern_inputs == SRC_COLOR_ATLAS_BINDING {
+                    helper.bind(2, batch.pattern_inputs, &resources.src_color_bind_group, pass);
+                } else {
+                    helper.resolve_and_bind(2, batch.pattern_inputs, bindings, pass);
+                }
+
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(2, &resources.src_color_bind_group, &[]);
                 pass.draw_indexed(0..6, 0, batch.tiles.clone());
             }
         }
@@ -380,14 +402,15 @@ impl CanvasRenderer for TileRenderer {
         index: u32,
         shaders: &Shaders,
         resources: &GpuResources,
+        bindings: &dyn BindingResolver,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         let pass = &self.encoder.render_passes[index as usize];
         if pass.color_pre_pass {
-            self.render_color_atlas(pass.color_atlas_index, shaders, &resources[self.common_resources], &resources[self.resources], encoder)
+            self.render_color_atlas(pass.color_atlas_index, shaders, &resources[self.common_resources], &resources[self.resources], bindings, encoder)
         }
         if pass.mask_pre_pass {
-            self.render_mask_atlas(pass.mask_atlas_index, &resources[self.common_resources], &resources[self.resources], encoder)
+            self.render_mask_atlas(pass.mask_atlas_index, &resources[self.common_resources], &resources[self.resources], bindings, encoder)
         }
     }
 
@@ -397,8 +420,9 @@ impl CanvasRenderer for TileRenderer {
         _surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
+        bindings: &'resources dyn BindingResolver,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.render_pass(index as usize, shaders, &resources[self.common_resources], &resources[self.resources], render_pass);
+        self.render_pass(index as usize, shaders, &resources[self.common_resources], &resources[self.resources], bindings, render_pass);
     }
 }

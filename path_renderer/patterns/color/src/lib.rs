@@ -26,13 +26,9 @@ impl SolidColorRenderer {
     }
 
     pub fn add(&self, color: Color) -> BuiltPattern {
-        BuiltPattern {
-            data: color.to_u32(),
-            shader: self.shader,
-            is_opaque: color.is_opaque(),
-            can_stretch_horizontally: true,
-            favor_prerendering: false,
-        }
+        BuiltPattern::new(self.shader, color.to_u32())
+            .with_opacity(color.is_opaque())
+            .with_horizontal_stretching(true)
     }
 }
 

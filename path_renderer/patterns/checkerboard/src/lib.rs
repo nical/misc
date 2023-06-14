@@ -6,7 +6,7 @@ use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Varying};
 use core::gpu::{GpuStore, Shaders};
 use core::Color;
 
-use core::pattern::BuiltPattern;
+use core::pattern::{BuiltPattern};
 
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -61,13 +61,9 @@ impl CheckerboardRenderer {
             pattern.scale,
         ]);
     
-        BuiltPattern {
-            data: handle.to_u32(),
-            shader: self.shader,
-            is_opaque,
-            can_stretch_horizontally: false,
-            favor_prerendering: true,
-        }
+        BuiltPattern::new(self.shader, handle.to_u32())
+            .with_opacity(is_opaque)
+            .prerender_by_default()
     }
 }
 

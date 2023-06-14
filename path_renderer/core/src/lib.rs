@@ -3,9 +3,11 @@ pub mod gpu;
 pub mod buffer;
 //pub mod flatten_simd;
 pub mod pattern;
+pub mod resources;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 
+use pattern::BindingsId;
 pub use wgpu;
 pub use bytemuck;
 pub use lyon::geom;
@@ -86,4 +88,12 @@ pub fn u32_range(r: Range<usize>) -> Range<u32> {
 #[inline]
 pub fn usize_range(r: Range<u32>) -> Range<usize> {
     r.start as usize .. r.end as usize
+}
+
+pub trait BindingResolver {
+    fn resolve(&self, id: BindingsId) -> Option<&wgpu::BindGroup>;
+}
+
+impl BindingResolver for () {
+    fn resolve(&self, _: BindingsId) -> Option<&wgpu::BindGroup> { None }
 }

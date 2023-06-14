@@ -1,11 +1,14 @@
+use core::pattern::BindingsId;
+use core::wgpu::util::DeviceExt;
 use std::sync::Arc;
 use std::time::Duration;
 use lyon::path::Path;
 use lyon::path::geom::euclid::size2;
 use core::geom::euclid::default::{Size2D, Transform2D};
-use core::Color;
+use core::{Color, BindingResolver};
 use core::canvas::*;
 use core::gpu::{Shaders, GpuStore, PipelineDefaults};
+use core::resources::{GpuResources, CommonGpuResources, ResourcesHandle};
 use tess::{MeshGpuResources, MeshRenderer};
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tiling::*;
@@ -14,7 +17,7 @@ use tiling::*;
 use pattern_color::SolidColorRenderer;
 use pattern_linear_gradient::{LinearGradientRenderer, LinearGradient};
 use pattern_checkerboard::{CheckerboardRenderer, Checkerboard};
-use pattern_texture::{TextureLoadRenderer};
+use pattern_texture::{TextureRenderer};
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -135,7 +138,7 @@ fn main() {
         colors: SolidColorRenderer::register(&mut shaders),
         gradients: LinearGradientRenderer::register(&mut shaders),
         checkerboards: CheckerboardRenderer::register(&mut shaders),
-        texture_load: TextureLoadRenderer::register(&device, &mut shaders),
+        textures: TextureRenderer::register(&device, &mut shaders),
     };
 
     let common_handle = ResourcesHandle::new(0);
@@ -144,7 +147,7 @@ fn main() {
     let stencil_handle = ResourcesHandle::new(3);
 
     let mut canvas = Canvas::new();
-    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.texture_load);
+    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.textures);
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
     let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
     let mut dummy = DummyRenderer::new(3);
@@ -157,7 +160,7 @@ fn main() {
         &mut common_resources,
         &device,
         &mut shaders,
-        &patterns.texture_load,
+        &patterns.textures,
         mask_atlas_size,
         color_atlas_size,
         use_ssaa4,
@@ -175,6 +178,11 @@ fn main() {
     ]);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+
+    let mut source_textures = SourceTextures::new();
+
+    let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
+    let image_binding = source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -269,6 +277,18 @@ fn main() {
             .then_translate(vector(hw, hh));
 
         paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &patterns, &mut gpu_store, &transform);
+        tiling.fill(
+            &mut canvas,
+            Circle { center: point(10.0, 600.0), radius: 100.0, inverted: false},
+            patterns.textures.sample_rect(
+                &mut gpu_store,
+                image_binding,
+                &Box2D { min: point(0.0, 0.0), max: point(800.0, 600.0) },
+                &Box2D { min: point(-100.0, 500.0), max: point(700.0, 1100.0) },
+                true,
+            ),
+        );
+
 
         let frame_build_start = time::precise_time_ns();
 
@@ -312,7 +332,7 @@ fn main() {
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, &mut shaders, &device, common_handle, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -677,5 +697,104 @@ struct Patterns {
     colors: SolidColorRenderer,
     gradients: LinearGradientRenderer,
     checkerboards: CheckerboardRenderer,
-    texture_load: TextureLoadRenderer,
+    textures: TextureRenderer,
+}
+
+struct SourceTexture {
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    handle: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
+
+struct SourceTextures {
+    textures: Vec<SourceTexture>,
+}
+
+impl SourceTextures {
+    fn new() -> Self {
+        SourceTextures {
+            textures: Vec::new(),
+        }
+    }
+
+    fn add_texture(&mut self, texture: SourceTexture) -> BindingsId {
+        let id = BindingsId::from_index(self.textures.len());
+        self.textures.push(texture);
+        id
+    }
+}
+
+impl BindingResolver for SourceTextures {
+    fn resolve(&self, id: core::pattern::BindingsId) -> Option<&wgpu::BindGroup> {
+        if id.is_none() {
+            return None;
+        }
+
+        Some(&self.textures[id.index()].bind_group)
+    }
+}
+
+impl SourceTexture {
+    fn from_data(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        desc: &wgpu::TextureDescriptor,
+        data: &[u8]
+    ) -> Self {
+        let handle = device.create_texture_with_data(queue, desc, data);
+        let view = handle.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("source texture"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        SourceTexture {
+            width: desc.size.width,
+            height: desc.size.height,
+            format: desc.format,
+            handle,
+            view: view,
+            bind_group,
+        }
+    }
+}
+
+fn create_image(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, w: u32, h: u32) -> SourceTexture {
+    let mut img = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let r = (x * 255 / w) as u8;
+            let g = (y * 255 / h) as u8;
+            let b = if x % 50 == 0 || y % 50 == 0 { 255 } else { 0 };
+
+            img.push(r);
+            img.push(g);
+            img.push(b);
+            img.push(255);
+        }
+    }
+
+    SourceTexture::from_data(
+        device,
+        queue,
+        layout,
+        &wgpu::TextureDescriptor {
+            label: Some("image"),
+            mip_level_count: 1,
+            sample_count: 1,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        &img
+    )
 }

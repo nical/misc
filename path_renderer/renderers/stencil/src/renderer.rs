@@ -2,8 +2,8 @@ use std::ops::Range;
 
 use lyon::{path::{PathSlice, PathEvent, traits::PathIterator, FillRule}, math::{Box2D, Point, Transform, point}, geom::{QuadraticBezierSegment, CubicBezierSegment}, lyon_tessellation::VertexBuffers};
 
-use core::{canvas::{Canvas, Shape,  RendererCommandIndex, GpuResources, RendererId, ResourcesHandle, CommonGpuResources, RecordedShape, CanvasRenderer, SubPass, ZIndex, RenderPasses, RenderPassState, TransformId}, gpu::{DynBufferRange, shader::{SurfaceConfig, StencilMode, DepthMode, ShaderPatternId}, Shaders}, pattern::BuiltPattern};
-
+use core::{canvas::{Canvas, Shape,  RendererCommandIndex, RendererId, RecordedShape, CanvasRenderer, SubPass, ZIndex, RenderPasses, RenderPassState, TransformId, DrawHelper}, gpu::{DynBufferRange, shader::{SurfaceConfig, StencilMode, DepthMode, ShaderPatternId}, Shaders}, pattern::{BuiltPattern, BindingsId}, BindingResolver};
+use core::resources::{GpuResources, ResourcesHandle, CommonGpuResources};
 use super::StencilAndCoverResources;
 use core::bytemuck;
 use core::wgpu;
@@ -42,6 +42,7 @@ struct Draw {
     fill_rule: FillRule,
     opaque: bool,
     pattern: ShaderPatternId,
+    pattern_inputs: BindingsId,
 }
 
 pub struct Fill {
@@ -180,6 +181,7 @@ impl StencilAndCoverRenderer {
                             fill_rule: shape.fill_rule,
                             opaque,
                             pattern: fill.pattern.shader,
+                            pattern_inputs: fill.pattern.bindings,
                         });
                     }
                     _ => {
@@ -352,6 +354,7 @@ impl CanvasRenderer for StencilAndCoverRenderer {
         surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
+        bindings: &'resources dyn BindingResolver,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
 
@@ -363,6 +366,8 @@ impl CanvasRenderer for StencilAndCoverRenderer {
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
         render_pass.set_stencil_reference(128);
+
+        let mut helper = DrawHelper::new();
 
         for draw in &self.draws[pass.draws.clone()] {
             // Stencil
@@ -384,6 +389,8 @@ impl CanvasRenderer for StencilAndCoverRenderer {
             } else {
                 stencil_resources.alpha_cover_pipeline
             };
+
+            helper.resolve_and_bind(1, draw.pattern_inputs, bindings, render_pass);
 
             // TODO: Take advantage of the fact that we tend to query the same pipeline multiple times in a row.
             let pipeline = shaders.try_get(pipeline_id, draw.pattern, surface).unwrap();

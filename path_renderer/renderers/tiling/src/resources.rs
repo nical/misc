@@ -1,13 +1,12 @@
 use core::{gpu::{
     Shaders, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId},
-}, canvas::CommonGpuResources};
+}, resources::{CommonGpuResources, RendererResources}};
 use crate::{
     encoder::{LineEdge},
     TilePosition, PatternData,
     atlas_uploader::MaskUploadCopies,
 };
-use pattern_texture::TextureLoadRenderer;
-use core::canvas::RendererResources;
+use pattern_texture::TextureRenderer;
 use core::wgpu;
 use core::wgpu::util::DeviceExt;
 use core::bytemuck;
@@ -56,7 +55,7 @@ pub struct TilingGpuResources {
 
     pub opaque_pipeline: GeneratedPipelineId,
     pub masked_pipeline: GeneratedPipelineId,
-    pub texture_load: TextureLoadRenderer,
+    pub texture: TextureRenderer,
 }
 
 const MASK_ATLAS_SRC: &'static str = " 
@@ -75,7 +74,7 @@ impl TilingGpuResources {
         common: &mut CommonGpuResources,
         device: &wgpu::Device,
         shaders: &mut Shaders,
-        texture_load: &TextureLoadRenderer,
+        texture: &TextureRenderer,
         mask_atlas_size: u32,
         color_atlas_size: u32,
         use_ssaa4: bool,
@@ -212,7 +211,7 @@ impl TilingGpuResources {
 
         let src_color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Color tiles"),
-            layout: &shaders.get_bind_group_layout(texture_load.bind_group_layout()).handle,
+            layout: &shaders.get_bind_group_layout(texture.bind_group_layout()).handle,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -232,7 +231,11 @@ impl TilingGpuResources {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&common.gpu_store_view)
-                }
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&common.default_sampler)
+                },
             ],
         });
 
@@ -247,7 +250,11 @@ impl TilingGpuResources {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&common.gpu_store_view)
-                }
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&common.default_sampler)
+                },
             ],
         });
 
@@ -284,7 +291,7 @@ impl TilingGpuResources {
 
             opaque_pipeline,
             masked_pipeline,
-            texture_load: texture_load.clone(),
+            texture: texture.clone(),
         }
     }
 

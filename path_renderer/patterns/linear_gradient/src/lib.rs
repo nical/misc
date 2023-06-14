@@ -59,13 +59,9 @@ impl LinearGradientRenderer {
             color1[0], color1[1], color1[2], color1[3],
         ]);
 
-        BuiltPattern {
-            data: handle.to_u32(),
-            is_opaque,
-            can_stretch_horizontally,
-            shader: self.shader,
-            favor_prerendering: false,
-        }
+        BuiltPattern::new(self.shader, handle.to_u32())
+            .with_opacity(is_opaque)
+            .with_horizontal_stretching(can_stretch_horizontally)
     }
 }
 

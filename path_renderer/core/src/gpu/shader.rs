@@ -374,8 +374,9 @@ impl Shaders {
             None
         };
     
-        let label = format!("{}{}{}{})",
+        let label = format!("{}|{}{}{}{}",
             params.label,
+            pattern.map(|p| &p.name[..]).unwrap_or(""),
             match surface.depth {
                 DepthMode::Enabled => "|depth(enabled)",
                 DepthMode::Ignore => "|depth(ignore)",
@@ -795,6 +796,7 @@ pub fn generate_shader_source(
         // TODO right now the base bindings are in the imported sources. generate them
         // once the shaders have moved to this system.
         //bindings.generate_shader_source(group_index, &mut source);
+        writeln!(source, "@group(0) @binding(2) var default_sampler: sampler;").unwrap();
         group_index += 1;
     }
     if let Some(bindings) = geom_bindings {

@@ -17,9 +17,9 @@
  - [ ] Rasterize fill masks directly in the color pass
  - [ ] Try pathfinder's binning algorithm
  - [ ] Image patterns.
- - [ ] Custom masks
+ - [x] Custom masks
  - [ ] Support rasterizing masks with static loops
- - [ ] mix tiled and non-tiled draws
+ - [x] mix tiled and non-tiled draws
  - [x] Fix the CPU rasterizer code path.
  - [ ] Rasterize CPU masks asynchronously.
  - [ ] Stroke mask shader (round joins/caps).
@@ -34,4 +34,4 @@
  - [ ] Clip paths.
  - [ ] GPU tiling (compute shaders).
  - [ ] Support for combining masks
- - [ ] Get a demo working on top of GL without ssbos.
+ - [x] Get a demo working on top of GL without ssbos.

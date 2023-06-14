@@ -8,8 +8,8 @@ use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
 use core::gpu::shader::ShaderPatternId;
 use core::gpu::{DynBufferRange, DynamicStore};
-use core::pattern::BuiltPattern;
-use pattern_texture::TextureLoadRenderer;
+use core::pattern::{BuiltPattern, BindingsId};
+use pattern_texture::TextureRenderer;
 use crate::*;
 use crate::cpu_rasterizer::*;
 use crate::atlas_uploader::TileAtlasUploader;
@@ -20,6 +20,7 @@ use copyless::VecHelper;
 use core::bytemuck;
 use core::wgpu;
 
+pub const SRC_COLOR_ATLAS_BINDING: BindingsId = BindingsId::from_index(65000);
 
 fn opaque_span(
     mut x: u32,
@@ -346,6 +347,7 @@ pub struct RenderPass {
 pub struct Batch {
     pub tiles: Range<u32>,
     pub pattern: ShaderPatternId,
+    pub pattern_inputs: BindingsId,
 }
 
 
@@ -372,6 +374,9 @@ pub struct PatternTiles {
     prerendered: Vec<TileInstance>,
     prerendered_start: u32, // offset of the first prerendered tile for the current render pass
     opaque_start: u32,
+    // TODO: probably also need to keep track of the current binding for prerendered tiles?
+    // Or use this one.
+    current_opaque_binding: BindingsId,
     pub prerendered_vbo_range: Option<DynBufferRange>,
     pub opaque_vbo_range: Option<DynBufferRange>,
 }
@@ -391,7 +396,7 @@ pub struct TileEncoder {
     pub opaque_image_tiles: Vec<TileInstance>,
     pub patterns: Vec<PatternTiles>,
 
-    current_pattern_index: Option<ShaderPatternId>,
+    current_pattern: Option<BuiltPattern>,
     // First mask index of the current mask pass.
     alpha_batches_start: usize,
     opaque_batches_start: usize,
@@ -419,7 +424,7 @@ pub struct TileEncoder {
 }
 
 impl TileEncoder {
-    pub fn new(config: &TilerConfig, atlas_shader: &TextureLoadRenderer, num_patterns: usize) -> Self {
+    pub fn new(config: &TilerConfig, atlas_shader: &TextureRenderer, num_patterns: usize) -> Self {
         // TODO: should round up?
         let mask_atlas_tiles_x = config.mask_atlas_size.width / TILE_SIZE;
         let mask_atlas_tiles_y = config.mask_atlas_size.height / TILE_SIZE;
@@ -434,6 +439,7 @@ impl TileEncoder {
                 opaque_start: 0,
                 opaque_vbo_range: None,
                 prerendered_vbo_range: None,
+                current_opaque_binding: BindingsId::NONE,
             });
         }
         TileEncoder {
@@ -446,7 +452,7 @@ impl TileEncoder {
             color_atlas_passes: Vec::with_capacity(16),
             opaque_batches: Vec::with_capacity(num_patterns),
             patterns,
-            current_pattern_index: None,
+            current_pattern: None,
             alpha_batches_start: 0,
             opaque_batches_start: 0,
             opaque_image_tiles_start: 0,
@@ -454,7 +460,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
             current_z_index: 0,
-            tile_atlas_pattern: atlas_shader.pattern_id(),
+            tile_atlas_pattern: atlas_shader.load_pattern_id(),
 
             mask_uploader: TileAtlasUploader::new(config.staging_buffer_size),
 
@@ -489,6 +495,7 @@ impl TileEncoder {
                 opaque_start: 0,
                 opaque_vbo_range: None,
                 prerendered_vbo_range: None,
+                current_opaque_binding: BindingsId::NONE,
             });
         }
         TileEncoder {
@@ -501,7 +508,7 @@ impl TileEncoder {
             color_atlas_passes: Vec::with_capacity(16),
             opaque_batches: Vec::with_capacity(num_patterns),
             patterns,
-            current_pattern_index: None,
+            current_pattern: None,
             alpha_batches_start: 0,
             opaque_batches_start: 0,
             opaque_image_tiles_start: 0,
@@ -535,7 +542,7 @@ impl TileEncoder {
         self.alpha_batches.clear();
         self.opaque_batches.clear();
         self.mask_uploader.reset();
-        self.current_pattern_index = None;
+        self.current_pattern = None;
         self.edge_distributions = [0; 16];
         self.alpha_batches_start = 0;
         self.opaque_batches_start = 0;
@@ -613,15 +620,26 @@ impl TileEncoder {
     }
 
     pub fn begin_path(&mut self, pattern: &BuiltPattern) {
-        let index = if self.prerender_pattern {
-            self.tile_atlas_pattern
+        let pattern = if self.prerender_pattern {
+            BuiltPattern::new(self.tile_atlas_pattern, 0).with_bindings(SRC_COLOR_ATLAS_BINDING)
         } else{
-            pattern.shader
+            *pattern
         };
 
-        if self.current_pattern_index != Some(index) {
-            self.end_alpha_batch();
-            self.current_pattern_index = Some(index);
+        if self.current_pattern != Some(pattern) {
+            let flush = self.current_pattern.map(|p| p.batch_key() != pattern.batch_key()).unwrap_or(true);
+            if flush {
+                self.end_alpha_batch();
+                // if the binding changed for the opaque batch, break the batch.
+                // this isn't ideal. Instead we could have a separate entry for patterns
+                // with different bindings since we know they will never overlap in the
+                // opaque pass.
+                if self.patterns[pattern.shader.index()].current_opaque_binding != pattern.bindings {
+                    self.end_opaque_batch(pattern.shader);
+                    self.patterns[pattern.shader.index()].current_opaque_binding = pattern.bindings;
+                }    
+            }
+            self.current_pattern = Some(pattern);
         }
     }
 
@@ -759,7 +777,11 @@ impl TileEncoder {
                 }
                 let tiles = pattern.prerendered_start .. len;
                 pattern.prerendered_start = len;
-                self.atlas_pattern_batches.push(Batch { pattern: ShaderPatternId::from_index(idx), tiles });
+                self.atlas_pattern_batches.push(Batch {
+                    pattern: ShaderPatternId::from_index(idx),
+                    pattern_inputs: BindingsId::NONE, // TODO
+                    tiles,
+                });
             }
             let atlas_batches_end = self.atlas_pattern_batches.len();
             while self.color_atlas_passes.len() <= self.color_texture_index as usize {
@@ -778,8 +800,8 @@ impl TileEncoder {
     }
 
     fn end_alpha_batch(&mut self) {
-        let pattern_index = if let Some(index) = self.current_pattern_index {
-            index
+        let pattern = if let Some(pattern) = self.current_pattern {
+            pattern
         } else {
             return;
         };
@@ -788,10 +810,27 @@ impl TileEncoder {
         if self.alpha_tiles_start != alpha_tiles_end {
             self.alpha_batches.alloc().init(Batch {
                 tiles: self.alpha_tiles_start..alpha_tiles_end,
-                pattern: pattern_index,
+                pattern: pattern.shader,
+                pattern_inputs: pattern.bindings,
             });
             self.alpha_tiles_start = alpha_tiles_end;
         }
+    }
+
+    fn end_opaque_batch(&mut self, pattern_id: ShaderPatternId) {
+        let pattern = &mut self.patterns[pattern_id.index()];
+        let opaque_end = pattern.opaque.len() as u32;
+        if pattern.opaque_start == opaque_end {
+            return;
+        }
+
+        self.opaque_batches.push(Batch {
+            tiles: pattern.opaque_start..opaque_end,
+            pattern: pattern_id,
+            pattern_inputs: pattern.current_opaque_binding,
+        });
+
+        pattern.opaque_start = opaque_end;
     }
 
     fn end_opaque_batches(&mut self) {
@@ -804,6 +843,7 @@ impl TileEncoder {
             self.opaque_batches.push(Batch {
                 tiles: pattern.opaque_start..opaque_end,
                 pattern: ShaderPatternId::from_index(pattern_idx),
+                pattern_inputs: pattern.current_opaque_binding,
             });
 
             pattern.opaque_start = opaque_end;

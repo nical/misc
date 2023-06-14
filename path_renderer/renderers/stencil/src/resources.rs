@@ -1,4 +1,4 @@
-use core::{canvas::{RendererResources, CommonGpuResources}, gpu::{PipelineDefaults, VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
+use core::{resources::{RendererResources, CommonGpuResources}, gpu::{PipelineDefaults, VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
 use core::wgpu;
 
 pub struct StencilAndCoverResources {

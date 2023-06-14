@@ -1,16 +1,17 @@
 use lyon::{
     tessellation::{FillTessellator, FillOptions, VertexBuffers, FillVertexConstructor, BuffersBuilder},
-    path::traits::PathIterator
+    path::traits::PathIterator, geom::euclid::vec2
 };
 use core::{
-    canvas::{ResourcesHandle, RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, GpuResources, CanvasRenderer, RenderPasses, SubPass, ZIndex, CommonGpuResources, RenderPassState, TransformId},
+    canvas::{RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, CanvasRenderer, RenderPasses, SubPass, ZIndex, RenderPassState, TransformId, DrawHelper},
+    resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
         shader::{StencilMode, SurfaceConfig, DepthMode, ShaderPatternId},
         DynBufferRange, Shaders
     },
-    pattern::BuiltPattern, usize_range,
+    pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu,
+    wgpu, BindingResolver,
 };
 use std::ops::Range;
 
@@ -57,6 +58,7 @@ struct MeshSubPass {
 struct Draw {
     indices: Range<u32>,
     pattern: ShaderPatternId,
+    pattern_inputs: BindingsId,
     // TODO: blend mode.
     opaque: bool,
 }
@@ -134,23 +136,24 @@ impl MeshRenderer {
             let z_index = commands[range.start].z_index;
 
             let draw_start = self.draws.len() as u32;
-            let mut current_shader = commands.first().as_ref().unwrap().pattern.shader;
+            let mut key = commands.first().as_ref().unwrap().pattern.batch_key();
 
             // Opaque pass.
             let mut geom_start = self.geometry.indices.len() as u32;
             if self.enable_opaque_pass {
                 for fill in commands[range.clone()].iter().rev().filter(|fill| fill.pattern.is_opaque) {
-                    if current_shader != fill.pattern.shader{
+                    if key != fill.pattern.batch_key() {
                         let end = self.geometry.indices.len() as u32;
                         if end > geom_start {
                             self.draws.push(Draw {
                                 indices: geom_start..end,
-                                pattern: current_shader,
+                                pattern: key.0,
+                                pattern_inputs: key.1,
                                 opaque: true,
                             });
                         }
                         geom_start = end;
-                        current_shader = fill.pattern.shader;
+                        key = fill.pattern.batch_key();
                     }
                     self.prepare_fill(fill, canvas);
                 }
@@ -160,7 +163,8 @@ impl MeshRenderer {
             if end > geom_start {
                 self.draws.push(Draw {
                     indices: geom_start..end,
-                    pattern: current_shader,
+                    pattern: key.0,
+                    pattern_inputs: key.1,
                     opaque: true,
                 });
             }
@@ -169,17 +173,18 @@ impl MeshRenderer {
             // Blended pass.
             let enable_opaque_pass = self.enable_opaque_pass;
             for fill in commands[range.clone()].iter().filter(|fill| !enable_opaque_pass || !fill.pattern.is_opaque) {
-                if current_shader != fill.pattern.shader {
+                if key != fill.pattern.batch_key() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
                         self.draws.push(Draw {
                             indices: geom_start..end,
-                            pattern: current_shader,
+                            pattern: key.0,
+                            pattern_inputs: key.1,
                             opaque: false,
                         });
                     }
                     geom_start = end;
-                    current_shader = fill.pattern.shader;
+                    key = fill.pattern.batch_key();
                 }
                 self.prepare_fill(fill, canvas);
             }
@@ -188,7 +193,8 @@ impl MeshRenderer {
             if end > geom_start {
                 self.draws.push(Draw {
                     indices: geom_start..end,
-                    pattern: current_shader,
+                    pattern: key.0,
+                    pattern_inputs: key.1,
                     opaque: false,
                 });
             }
@@ -216,6 +222,22 @@ impl MeshRenderer {
                 // done in the tessellator itself.
                 self.tessellator.tessellate(
                     shape.path.iter().transformed(transform),
+                    &options,
+                    &mut BuffersBuilder::new(
+                        &mut self.geometry,
+                        VertexCtor {
+                            z_index: fill.z_index,
+                            pattern: fill.pattern.data,
+                        },
+                    )
+                ).unwrap();
+            }
+            RecordedShape::Circle(circle) => {
+                let options = FillOptions::tolerance(self.tolerenace);
+                self.tessellator.tessellate_circle(
+                    transform.transform_point(circle.center),
+                    // TODO: that's not quite right if the transform has more than scale+offset
+                    transform.transform_vector(vec2(circle.radius, 0.0)).length(),
                     &options,
                     &mut BuffersBuilder::new(
                         &mut self.geometry,
@@ -285,6 +307,7 @@ impl CanvasRenderer for MeshRenderer {
         surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
+        bindings: &'resources dyn BindingResolver,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &resources[self.common_resources];
@@ -299,12 +322,16 @@ impl CanvasRenderer for MeshRenderer {
 
         let surface = surface_info.surface_config(self.enable_opaque_pass, None);
 
+        let mut helper = DrawHelper::new();
+
         for draw in &self.draws[usize_range(pass.draws.clone())] {
             let pipeline = shaders.try_get(
                 if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
                 draw.pattern,
                 surface
             ).unwrap();
+
+            helper.resolve_and_bind(1, draw.pattern_inputs, bindings, render_pass);
 
             render_pass.set_pipeline(pipeline);
             render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);

@@ -1,4 +1,7 @@
-use core::{gpu::{Shaders, shader::{ShaderGeometryId, GeometryDescriptor, VertexAtribute, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, ShaderMaskId}}, canvas::{RendererResources}};
+use core::{
+    gpu::shader::{Shaders, ShaderGeometryId, GeometryDescriptor, VertexAtribute, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, ShaderMaskId},
+    resources::{RendererResources}
+};
 use core::wgpu;
 
 pub struct MeshGpuResources {
