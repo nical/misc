@@ -1,7 +1,7 @@
 use lyon::geom::euclid::default::Size2D;
 use wgpu::util::DeviceExt;
 use crate::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId};
-use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor, PipelineDefaults};
+use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
 use std::{any::Any, marker::PhantomData};
 
 pub trait RendererResources: AsAny {
@@ -118,7 +118,7 @@ pub struct CommonGpuResources {
 
     pub msaa_blit_layout: wgpu::PipelineLayout,
     pub msaa_blit_pipeline: wgpu::RenderPipeline,
-    pub msaa_blit_with_depth_pipeline: wgpu::RenderPipeline,
+    pub msaa_blit_with_depth_stencil_pipeline: wgpu::RenderPipeline,
     pub msaa_blit_src_bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -214,8 +214,6 @@ impl CommonGpuResources {
         let vertices = DynamicStore::new_vertices(4096 * 32);
         let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
 
-        let defaults = PipelineDefaults::new();
-
         let msaa_blit_src_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Msaa blit source"),
             entries: &[
@@ -244,6 +242,7 @@ impl CommonGpuResources {
             push_constant_ranges: &[],
         });
 
+        let targets = &[shaders.defaults.color_target_state_no_blend()];
         let mut descriptor = wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(&msaa_blit_layout),
@@ -255,13 +254,13 @@ impl CommonGpuResources {
             fragment: Some(wgpu::FragmentState {
                 module: &color_module,
                 entry_point: "fs_main",
-                targets: defaults.color_target_state_no_blend()
+                targets,
             }),
-            primitive: PipelineDefaults::primitive_state(),
+            primitive: shaders.defaults.primitive_state(),
             depth_stencil: None,
             multiview: None,
             multisample: wgpu::MultisampleState {
-                count: crate::gpu::PipelineDefaults::msaa_sample_count(),
+                count: shaders.defaults.msaa_sample_count(),
                 .. wgpu::MultisampleState::default()
             },
         };
@@ -269,14 +268,14 @@ impl CommonGpuResources {
         let msaa_blit = device.create_render_pipeline(&descriptor);
 
         descriptor.depth_stencil = Some(wgpu::DepthStencilState {
-            format: PipelineDefaults::depth_format(),
+            format: shaders.defaults.depth_stencil_format().unwrap(),
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::Always,
             bias: wgpu::DepthBiasState::default(),
             stencil: wgpu::StencilState::default(),
         });
 
-        let msaa_blit_depth = device.create_render_pipeline(&descriptor);
+        let msaa_blit_depth_stencil = device.create_render_pipeline(&descriptor);
 
         let target_and_gpu_store_layout = shaders.register_bind_group_layout(target_and_gpu_store_layout);
 
@@ -292,7 +291,7 @@ impl CommonGpuResources {
             gpu_store_view,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,
-            msaa_blit_with_depth_pipeline: msaa_blit_depth,
+            msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
             msaa_blit_layout,
             msaa_blit_src_bind_group_layout,
         }

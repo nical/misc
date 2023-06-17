@@ -123,24 +123,46 @@ impl Default for ZIndices {
 pub type RendererId = u32;
 pub type RendererCommandIndex = u32;
 
+#[derive(Clone, Debug)]
+pub struct CommandRange {
+    pub commands: Range<RendererCommandIndex>,
+    pub surface: SurfaceState,
+}
+
 pub struct Commands {
-    commands: Vec<(RendererId, Range<RendererCommandIndex>)>,
+    commands: Vec<(RendererId, CommandRange)>,
+    current: Option <(RendererId, CommandRange)>,
+    surface: SurfaceState,
 }
 
 impl Commands {
-    pub fn new() -> Self {
-        Commands { commands: Vec::new() }
+    pub fn new(surface: SurfaceState) -> Self {
+        Commands { commands: Vec::new(), current: None, surface }
     }
 
     pub fn push(&mut self, renderer: RendererId, internal_index: RendererCommandIndex) {
-        if let Some((sys, range)) = self.commands.last_mut() {
-            if *sys == renderer && range.end == internal_index {
-                range.end += 1;
-                return;
+        if let Some((sys, range)) = &mut self.current {
+            if *sys == renderer {
+                range.commands.end += 1;
+                return
             }
+
+            self.commands.push((*sys, range.clone()));
         }
 
-        self.commands.push((renderer, internal_index..(internal_index + 1)));
+        self.current = Some((
+            renderer,
+            CommandRange {
+                commands: internal_index..(internal_index + 1),
+                surface: self.surface,
+            }
+        ));
+    }
+
+    fn flush(&mut self) {
+        if let Some(commands) = self.current.take() {
+            self.commands.push(commands);
+        }
     }
 
     pub fn clear(&mut self) {
@@ -148,18 +170,18 @@ impl Commands {
     }
 
 
-    pub fn with_renderer(&self, id: RendererId) -> impl Iterator<Item = &Range<RendererCommandIndex>> {
+    pub fn with_renderer(&self, id: RendererId) -> impl Iterator<Item = &CommandRange> {
         self.commands.iter().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
     }
 
-    pub fn with_renderer_rev(&self, id: RendererId) -> impl Iterator<Item = &Range<RendererCommandIndex>> {
+    pub fn with_renderer_rev(&self, id: RendererId) -> impl Iterator<Item = &CommandRange> {
         self.commands.iter().rev().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
     }
 }
 
 impl Default for Commands {
     fn default() -> Self {
-        Self::new()
+        Self::new(SurfaceState::default())
     }
 }
 
@@ -169,9 +191,7 @@ pub type RenderPassId = u32;
 struct RenderPass {
     pre_passes: Range<u32>,
     sub_passes: Range<u32>,
-    depth: bool,
-    stencil: bool,
-    msaa: bool,
+    surface: SurfaceState,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -181,9 +201,7 @@ struct RenderPass {
 struct RenderPassSlice<'a> {
     pre_passes: &'a [PrePass],
     sub_passes: &'a [SubPass],
-    depth: bool,
-    stencil: bool,
-    msaa: bool,
+    surface: SurfaceState,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -191,11 +209,19 @@ struct RenderPassSlice<'a> {
 
 pub struct RenderPassesRequirements {
     pub msaa: bool,
-    pub depth: bool,
-    pub msaa_depth: bool,
+    pub depth_stencil: bool,
+    pub msaa_depth_stencil: bool,
     // Temporary color target used in place of the main target if we need
     // to read from it but can't.
     pub temporary: bool,
+}
+
+impl RenderPassesRequirements {
+    fn add_pass(&mut self, pass: SurfaceState) {
+        self.msaa |= pass.msaa;
+        self.msaa_depth_stencil |= pass.msaa && (pass.depth || pass.stencil);
+        self.depth_stencil |= !pass.msaa && (pass.depth || pass.stencil);
+    }
 }
 
 #[derive(Default)]
@@ -220,11 +246,11 @@ impl RenderPasses {
         self.passes.is_empty()
     }
 
-    pub fn build(&mut self, surface: &SurfaceState) -> RenderPassesRequirements {
+    pub fn build(&mut self, surface: &SurfaceParameters) -> RenderPassesRequirements {
         let mut requirements = RenderPassesRequirements {
             msaa: false,
-            depth: false,
-            msaa_depth: false,
+            depth_stencil: false,
+            msaa_depth_stencil: false,
             temporary: false,
         };
 
@@ -240,66 +266,52 @@ impl RenderPasses {
 
         // A bit per system specifying whether they have been used in the current
         // render pass yet.
-        let mut req: u64 = 0;
+        let mut renderer_bits: u64 = 0;
 
         let mut start = 0;
         let mut pre_start = 0;
 
-        let (mut prev_use_depth, mut prev_use_stencil, mut prev_use_msaa) = {
-            let first = self.sub_passes.first().unwrap();
-            (first.use_depth, first.use_stencil, first.use_msaa)
-        };
+        let mut current = self.sub_passes.first().unwrap().surface;
         let mut msaa_blit = false;
 
         for (idx, pass) in self.sub_passes.iter().enumerate() {
             let req_bit: u64 = 1 << pass.renderer_id;
-            let depth_stencil_changed = pass.use_depth != prev_use_depth
-                || pass.use_stencil != prev_use_stencil;
-            let msaa_changed = pass.use_msaa != prev_use_msaa;
-            let flush_pass = depth_stencil_changed
-                || msaa_changed
-                || (pass.require_pre_pass && req & req_bit != 0);
+            let flush_pass = pass.surface != current
+                || (pass.require_pre_pass && renderer_bits & req_bit != 0);
+ 
             //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
-                // When transitioning from non-msaa to msaa, blit the non-msaa target
-                // into the msaa one.
-                let msaa_resolve = msaa_changed && !pass.use_msaa;
+                // When transitioning from msaa to non-msaa targets, resolve the msaa
+                // target into the non msaa one.
+                let msaa_resolve = current.msaa && !pass.surface.msaa;
                 //println!("   -> flush msaa resolve {msaa_resolve} blit {msaa_blit}");
                 self.passes.push(RenderPass {
                     pre_passes: u32_range(pre_start..self.pre_passes.len()),
                     sub_passes: u32_range(start..idx),
-                    depth: prev_use_depth,
-                    stencil: prev_use_stencil,
-                    msaa: prev_use_msaa,
+                    surface: current,
                     msaa_resolve,
                     msaa_blit,
                     temporary: false,
                 });
-                requirements.msaa |= prev_use_msaa;
-                requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
-                requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
+                requirements.add_pass(current);
                 requirements.temporary |= disable_msaa_blit_from_main_target && msaa_blit;
 
-                // When transitioning from msaa to non-msaa targets, resolve the msaa
-                // target into the non msaa one.
-                msaa_blit = msaa_changed && pass.use_msaa;
-
-                start = idx;
-                pre_start = self.pre_passes.len();
-                prev_use_depth = pass.use_depth;
-                prev_use_stencil = pass.use_stencil;
-                prev_use_msaa = pass.use_msaa;
-
-                req = 0;
-
+                // When transitioning from non-msaa to msaa, blit the non-msaa target
+                // into the msaa one.
+                msaa_blit = !current.msaa && pass.surface.msaa;
                 if msaa_blit && disable_msaa_blit_from_main_target {
                     for pass in self.passes.iter_mut().rev() {
-                        if pass.msaa {
+                        if pass.surface.msaa {
                             break
                         }
                         pass.temporary = true;
                     }
                 }
+
+                start = idx;
+                pre_start = self.pre_passes.len();
+                current = pass.surface;
+                renderer_bits = 0;
             }
 
             if pass.require_pre_pass {
@@ -308,7 +320,7 @@ impl RenderPasses {
                     internal_index: pass.internal_index,
                 });
 
-                req |= req_bit;
+                renderer_bits |= req_bit;
             }
         }
 
@@ -316,17 +328,13 @@ impl RenderPasses {
             self.passes.push(RenderPass {
                 pre_passes: u32_range(pre_start..self.pre_passes.len()),
                 sub_passes: u32_range(start..self.sub_passes.len()),
-                depth: prev_use_depth,
-                stencil: prev_use_stencil,
-                msaa: prev_use_msaa,
-                msaa_resolve: prev_use_msaa,
+                surface: current,
+                msaa_resolve: current.msaa,
                 msaa_blit,
                 temporary: false,
             });
 
-            requirements.msaa |= prev_use_msaa;
-            requirements.msaa_depth |= prev_use_msaa && (prev_use_depth || prev_use_stencil);
-            requirements.depth |= !prev_use_msaa && (prev_use_depth || prev_use_stencil);
+            requirements.add_pass(current);
             requirements.temporary |= msaa_blit;
         }
 
@@ -338,9 +346,7 @@ impl RenderPasses {
             RenderPassSlice {
                 pre_passes: &self.pre_passes[usize_range(pass.pre_passes.clone())],
                 sub_passes: &self.sub_passes[usize_range(pass.sub_passes.clone())],
-                depth: pass.depth,
-                stencil: pass.stencil,
-                msaa: pass.msaa,
+                surface: pass.surface,
                 msaa_resolve: pass.msaa_resolve,
                 msaa_blit: pass.msaa_blit,
                 temporary: pass.temporary,
@@ -355,22 +361,58 @@ impl RenderPasses {
 // constraints. The problem with resolving constraints while building the render passes is that the renderers
 // need to know about the presence of an opaque pass earlier.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct SurfaceState {
+pub struct SurfaceParameters {
     size: Size2D<u32>,
-    opaque_pass: bool,
-    msaa: bool,
+    state: SurfaceState,
     clear: Option<Color>,
     /// If true, the main target cannot be sampled (for example a swapchain's target).
     write_only_target: bool,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SurfaceState {
+    pub depth: bool,
+    pub msaa: bool,
+    pub stencil: bool,
+}
+
+impl Default for SurfaceState {
+    fn default() -> Self {
+        SurfaceState { depth: false, msaa: false, stencil: false }
+    }
+}
+
 impl SurfaceState {
+    pub fn msaa(&self) -> bool { self.msaa }
+    pub fn depth(&self) -> bool { self.depth }
+    pub fn stencil(&self) -> bool { self.stencil }
+    pub fn depth_or_stencil(&self) -> bool { self.depth || self.stencil }
+    pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
+        SurfaceConfig {
+            msaa: self.msaa,
+            depth: match (use_depth, self.depth) {
+                (true, true) => DepthMode::Enabled,
+                (false, true) => DepthMode::Ignore,
+                (false, false) => DepthMode::None,
+                (true, false) => panic!("Attempting to use the depth buffer on a surface that does not have one"),
+            },
+            stencil: match (stencil, self.stencil) {
+                (None, false) => StencilMode::None,
+                (None, true) => StencilMode::Ignore,
+                (Some(FillRule::EvenOdd), true) => StencilMode::EvenOdd,
+                (Some(FillRule::NonZero), true) => StencilMode::NonZero,
+                (Some(_), false) => panic!("Attempting to use the stencil buffer on a surface that does not have one"),
+            },
+        }
+    }
+}
+
+impl SurfaceParameters {
     #[inline]
     pub fn new(size: Size2D<u32>) -> Self {
-        SurfaceState {
+        SurfaceParameters {
             size,
-            opaque_pass: false,
-            msaa: false,
+            state: SurfaceState::default(),
             clear: Some(Color::BLACK),
             write_only_target: true,
         }
@@ -378,13 +420,13 @@ impl SurfaceState {
 
     #[inline]
     pub fn with_opaque_pass(mut self, enabled: bool) -> Self {
-        self.opaque_pass = enabled;
+        self.state.depth = enabled;
         self
     }
 
     #[inline]
     pub fn with_msaa(mut self, enabled: bool) -> Self {
-        self.msaa = enabled;
+        self.state.msaa = enabled;
         self
     }
 
@@ -401,40 +443,29 @@ impl SurfaceState {
 
     #[inline]
     pub fn msaa(&self) -> bool {
-        self.msaa
+        self.state.msaa
     }
 
     #[inline]
     pub fn opaque_pass(&self) -> bool {
-        self.opaque_pass
+        self.state.depth
+    }
+
+    #[inline]
+    pub fn state(&self) -> SurfaceState {
+        self.state
     }
 }
 
 pub struct RenderPassState {
     pub output_type: OutputType,
-    pub depth_buffer: bool,
-    pub stencil_buffer: bool,
-    pub msaa: bool,
+    pub surface: SurfaceState,
 }
 
 impl RenderPassState {
+    #[inline]
     pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
-        SurfaceConfig {
-            msaa: self.msaa,
-            depth: match (use_depth, self.depth_buffer) {
-                (true, true) => DepthMode::Enabled,
-                (false, true) => DepthMode::Ignore,
-                (false, false) => DepthMode::None,
-                (true, false) => panic!("Attempting to use the depth buffer on a surface that does not have one"),
-            },
-            stencil: match (stencil, self.stencil_buffer) {
-                (None, false) => StencilMode::None,
-                (None, true) => StencilMode::Ignore,
-                (Some(FillRule::EvenOdd), true) => StencilMode::EvenOdd,
-                (Some(FillRule::NonZero), true) => StencilMode::NonZero,
-                (Some(_), false) => panic!("Attempting to use the stencil buffer on a surface that does not have one"),
-            },
-        }
+        self.surface.surface_config(use_depth, stencil)
     }
 }
 
@@ -456,7 +487,7 @@ pub struct Canvas {
     pub transforms: Transforms,
     pub z_indices: ZIndices,
     pub commands: Commands,
-    pub surface: SurfaceState,
+    pub surface: SurfaceParameters,
     render_passes: RenderPasses,
     pub params: CanvasParams,
 }
@@ -466,12 +497,26 @@ impl Canvas {
         Self::default()
     }
 
-    pub fn begin_frame(&mut self, surface: SurfaceState) {
+    pub fn begin_frame(&mut self, surface: SurfaceParameters) {
         self.transforms.clear();
         self.z_indices.clear();
-        self.commands.clear();
         self.render_passes.clear();
+        self.commands.clear();
+        self.commands.surface = surface.state;
         self.surface = surface;
+    }
+
+    pub fn prepare(&mut self) {
+        self.commands.flush();
+    }
+
+    pub fn reconfigure_surface(&mut self, state: SurfaceState) {
+        if self.commands.surface == state {
+            return;
+        }
+
+        self.commands.flush();
+        self.commands.surface = state;
     }
 
     pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) -> RenderPassesRequirements {
@@ -496,7 +541,7 @@ impl Canvas {
         #[cfg(debug_assertions)]
         if self.surface.clear.is_none() && self.surface.write_only_target && !self.render_passes.is_empty() {
             let first = self.render_passes.iter().next().unwrap();
-            if first.msaa || first.temporary {
+            if first.surface.msaa || first.temporary {
                 println!("Can't load content if the first pass is a temporary or msaa target");
             }
         }
@@ -506,7 +551,7 @@ impl Canvas {
                 renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, shaders, resources, bindings, encoder);
             }
 
-            let (view, label) = if pass.msaa {
+            let (view, label) = if pass.surface.msaa {
                 (target.msaa_color.unwrap(), "MSAA color target")
             } else if pass.temporary {
                 (target.temporary_color.unwrap(), "Temporary color target")
@@ -550,14 +595,14 @@ impl Canvas {
                     resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
                     ops,
                 })],
-                depth_stencil_attachment: if pass.depth || pass.stencil {
+                depth_stencil_attachment: if pass.surface.depth_or_stencil() {
                     Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: if pass.msaa {
+                        view: if pass.surface.msaa {
                             target.msaa_depth
                         } else {
                             target.depth
                         }.unwrap(),
-                        depth_ops: if pass.depth {
+                        depth_ops: if pass.surface.depth {
                             Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(0.0),
                                 store: false,
@@ -565,7 +610,7 @@ impl Canvas {
                         } else {
                             None
                         },
-                        stencil_ops: if pass.stencil {
+                        stencil_ops: if pass.surface.stencil {
                             Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(128),
                                 store: false,
@@ -583,8 +628,8 @@ impl Canvas {
                 let common = &resources[common_resources];
                 render_pass.set_bind_group(0, target.temporary_src_bind_group.unwrap(), &[]);
                 render_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.set_pipeline(if pass.depth || pass.stencil {
-                    &common.msaa_blit_with_depth_pipeline
+                render_pass.set_pipeline(if pass.surface.depth || pass.surface.stencil {
+                    &common.msaa_blit_with_depth_stencil_pipeline
                 } else {
                     &common.msaa_blit_pipeline
                 });
@@ -593,9 +638,7 @@ impl Canvas {
 
             let pass_info = RenderPassState {
                 output_type: OutputType::Color,
-                stencil_buffer: pass.stencil,
-                depth_buffer: pass.depth,
-                msaa: pass.msaa,
+                surface: pass.surface,
             };
 
             for sub_pass in pass.sub_passes {
@@ -639,9 +682,7 @@ pub struct SubPass {
     pub internal_index: u32,
     pub z_index: ZIndex,
     pub require_pre_pass: bool,
-    pub use_depth: bool,
-    pub use_stencil: bool,
-    pub use_msaa: bool,
+    pub surface: SurfaceState,
 }
 
 #[derive(Debug)]
@@ -690,9 +731,7 @@ impl CanvasRenderer for DummyRenderer {
                 internal_index: idx as u32,
                 z_index: *z_index,
                 require_pre_pass: false,
-                use_depth: false,
-                use_stencil: false,
-                use_msaa: false,
+                surface: SurfaceState::default(),
             });
         }
     }

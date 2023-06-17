@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use lyon::{path::{PathSlice, PathEvent, traits::PathIterator, FillRule}, math::{Box2D, Point, Transform, point}, geom::{QuadraticBezierSegment, CubicBezierSegment}, lyon_tessellation::VertexBuffers};
 
-use core::{canvas::{Canvas, Shape,  RendererCommandIndex, RendererId, RecordedShape, CanvasRenderer, SubPass, ZIndex, RenderPasses, RenderPassState, TransformId, DrawHelper}, gpu::{DynBufferRange, shader::{SurfaceConfig, StencilMode, DepthMode, ShaderPatternId}, Shaders}, pattern::{BuiltPattern, BindingsId}, BindingResolver};
+use core::{canvas::{Canvas, Shape,  RendererCommandIndex, RendererId, RecordedShape, CanvasRenderer, SubPass, ZIndex, RenderPasses, RenderPassState, TransformId, DrawHelper, SurfaceState}, gpu::{DynBufferRange, shader::{SurfaceConfig, StencilMode, DepthMode, ShaderPatternId}, Shaders}, pattern::{BuiltPattern, BindingsId}, BindingResolver};
 use core::resources::{GpuResources, ResourcesHandle, CommonGpuResources};
 use super::StencilAndCoverResources;
 use core::bytemuck;
@@ -55,6 +55,7 @@ pub struct Fill {
 struct Pass {
     draws: Range<usize>,
     z_index: ZIndex,
+    surface: SurfaceState,
 }
 
 pub struct StencilAndCoverRenderer {
@@ -130,7 +131,8 @@ impl StencilAndCoverRenderer {
     pub fn prepare(&mut self, canvas: &Canvas) {
         let commands = std::mem::take(&mut self.commands);
         for range in canvas.commands.with_renderer(self.renderer_id) {
-            let range = range.start as usize .. range.end as usize;
+            let surface = range.surface;
+            let range = range.commands.start as usize .. range.commands.end as usize;
 
             let draws_start = self.draws.len();
             let pass_z_index = commands[range.start].z_index;
@@ -196,6 +198,7 @@ impl StencilAndCoverRenderer {
                 self.passes.push(Pass {
                     draws: draws_start..draws_end,
                     z_index: pass_z_index,
+                    surface,
                 });
             }
         }
@@ -212,19 +215,21 @@ impl StencilAndCoverRenderer {
         self.cover_vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
         self.cover_ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
 
-        for draw in &self.draws {
-            let surface = SurfaceConfig {
-                msaa: self.enable_msaa,
-                // TODO: take advantage of the opaque pass.
-                depth: if self.opaque_pass { DepthMode::Ignore } else { DepthMode::None },
-                stencil: match draw.fill_rule {
-                    FillRule::EvenOdd => StencilMode::EvenOdd,
-                    FillRule::NonZero => StencilMode::NonZero,
-                },
-            };
+        for pass in &self.passes {
+            for draw in &self.draws[pass.draws.clone()] {
+                let surface = SurfaceConfig {
+                    msaa: pass.surface.msaa,
+                    // TODO: take advantage of the opaque pass.
+                    depth: if pass.surface.depth { DepthMode::Ignore } else { DepthMode::None },
+                    stencil: match draw.fill_rule {
+                        FillRule::EvenOdd => StencilMode::EvenOdd,
+                        FillRule::NonZero => StencilMode::NonZero,
+                    },
+                };
 
-            let id = if draw.opaque { opaque_pipeline } else { alpha_pipeline };
-            shaders.prepare_pipeline(device, id, draw.pattern, surface);
+                let id = if draw.opaque { opaque_pipeline } else { alpha_pipeline };
+                shaders.prepare_pipeline(device, id, draw.pattern, surface);
+            }
         }
     }
 }
@@ -341,9 +346,10 @@ impl CanvasRenderer for StencilAndCoverRenderer {
                 internal_index: idx as u32,
                 require_pre_pass: false,
                 z_index: pass.z_index,
-                use_depth: self.opaque_pass,
-                use_msaa: self.enable_msaa,
-                use_stencil: true,
+                surface: SurfaceState {
+                    stencil: true,
+                    .. pass.surface
+                },
             });
         }
     }

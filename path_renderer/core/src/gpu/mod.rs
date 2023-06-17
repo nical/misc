@@ -7,6 +7,8 @@ pub use shader::Shaders;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
+use self::shader::{SurfaceConfig, DepthMode, StencilMode};
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct GpuTargetDescriptor {
@@ -80,34 +82,31 @@ impl VertexBuilder {
     }
 }
 
+// TODO: manage the number of shader configurations so that it remains reasonable
+// while not constraining renderers too much.
+// for example we don't want depth and stencil in the tile atlas passes
+// but we should allow the tiling renderer to work in a render pass that has depth
+// and/or stencil enabled (ignoring them).
 pub struct PipelineDefaults {
-    target_states: [Option<wgpu::ColorTargetState>; 3]
+    color_format: wgpu::TextureFormat,
+    mask_format: wgpu::TextureFormat,
+    depth_buffer: bool,
+    stencil_buffer: bool,
+    msaa_samples: u32,
 }
 
 impl PipelineDefaults {
     pub fn new() -> Self {
         PipelineDefaults {
-            target_states: [
-                Some(wgpu::ColorTargetState {
-                    format: Self::color_format(),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: Self::color_format(),
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: Self::mask_format(),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ]
+            color_format: wgpu::TextureFormat::Bgra8Unorm,
+            mask_format: wgpu::TextureFormat::R8Unorm,
+            depth_buffer: true,
+            stencil_buffer: true,
+            msaa_samples: 4,
         }
     }
 
-    pub fn primitive_state() -> wgpu::PrimitiveState {
+    pub fn primitive_state(&self) -> wgpu::PrimitiveState {
         wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             polygon_mode: wgpu::PolygonMode::Fill,
@@ -119,38 +118,60 @@ impl PipelineDefaults {
         }
     }
 
-    pub fn color_target_state(&self) -> &[Option<wgpu::ColorTargetState>] {
-        let idx = 1;
-        &self.target_states[idx..idx+1]
+    pub fn color_target_state(&self) -> Option<wgpu::ColorTargetState> {
+        Some(wgpu::ColorTargetState {
+            format: self.color_format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })
     }
 
-    pub fn color_target_state_no_blend(&self) -> &[Option<wgpu::ColorTargetState>] {
-        let idx = 0;
-        &self.target_states[idx..idx+1]
+    pub fn color_target_state_no_blend(&self) -> Option<wgpu::ColorTargetState> {
+        Some(wgpu::ColorTargetState {
+            format: self.color_format,
+            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })
     }
 
-    pub fn alpha_target_state(&self) -> &[Option<wgpu::ColorTargetState>] {
-        let idx = 2;
-        &self.target_states[idx..idx+1]
+    pub fn alpha_target_state(&self) -> Option<wgpu::ColorTargetState> {
+        Some(wgpu::ColorTargetState {
+            format: self.mask_format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })
     }
 
-    pub fn depth_format() -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Depth24PlusStencil8
+    pub fn depth_stencil_format(&self) -> Option<wgpu::TextureFormat> {
+        match (self.depth_buffer, self.stencil_buffer) {
+            (false, false) => None,
+            (true, false) => Some(wgpu::TextureFormat::Depth32Float),
+            (false, true) => Some(wgpu::TextureFormat::Stencil8),
+            (true, true) => Some(wgpu::TextureFormat::Depth24PlusStencil8),
+        }
     }
 
-    pub fn color_format() -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Bgra8UnormSrgb
+    pub fn color_format(&self) -> wgpu::TextureFormat {
+        self.color_format
     }
 
-    pub fn mask_format() -> wgpu::TextureFormat {
-        wgpu::TextureFormat::R8Unorm
+    pub fn mask_format(&self) -> wgpu::TextureFormat {
+        self.mask_format
     }
 
-    pub fn msaa_format() -> wgpu::TextureFormat {
-        Self::color_format()
+    pub fn msaa_format(&self) -> wgpu::TextureFormat {
+        self.color_format
     }
 
-    pub fn msaa_sample_count() -> u32 {
-        4
+    pub fn msaa_sample_count(&self) -> u32 {
+        self.msaa_samples
+    }
+
+    pub fn surface_config(&self, msaa: bool) -> SurfaceConfig {
+        SurfaceConfig {
+            msaa,
+            depth: if self.depth_buffer { DepthMode::Ignore } else { DepthMode::None },
+            stencil: if self.stencil_buffer { StencilMode::Ignore } else { StencilMode::None },
+        }
     }
 }

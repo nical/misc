@@ -1,6 +1,6 @@
 use lyon::{geom::euclid::Size2D};
 use core::{
-    canvas::{Fill, Shape, RendererCommandIndex, Canvas, RecordedShape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper},
+    canvas::{Fill, Shape, RendererCommandIndex, Canvas, RecordedShape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState},
     resources::{GpuResources, ResourcesHandle, CommonGpuResources},
     pattern::{BuiltPattern},
     gpu::{shader::SurfaceConfig, Shaders}, BindingResolver,
@@ -86,7 +86,7 @@ impl TileRenderer {
         let commands = std::mem::take(&mut self.commands);
         // Process paths back to front in order to let the occlusion culling logic do its magic.
         for range in canvas.commands.with_renderer_rev(self.renderer_id) {
-            let range = range.start as usize .. range.end as usize;
+            let range = range.commands.start as usize .. range.commands.end as usize;
             for fill in commands[range].iter().rev() {
                 self.prepare_fill(fill, canvas, device);
             }
@@ -390,9 +390,12 @@ impl CanvasRenderer for TileRenderer {
                 internal_index: idx as u32,
                 require_pre_pass: pass.color_pre_pass || pass.mask_pre_pass,
                 z_index: pass.z_index,
-                use_depth: false,
-                use_stencil: false,
-                use_msaa: false,
+                // TODO: support more surface states.
+                surface: SurfaceState {
+                    depth: false,
+                    stencil: false,
+                    msaa: false,
+                }
             });
         }
     }

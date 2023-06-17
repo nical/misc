@@ -186,12 +186,12 @@ fn main() {
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: PipelineDefaults::color_format(),
+        format: wgpu::TextureFormat::Bgra8Unorm,
         width: window_size.width,
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-        view_formats: vec![PipelineDefaults::color_format()],
+        view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
     };
 
     surface.configure(&device, &surface_desc);
@@ -256,11 +256,14 @@ fn main() {
 
         //println!("\n\n\n ----- \n\n");
 
-        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(shaders.defaults.color_format()),
+            .. wgpu::TextureViewDescriptor::default()
+        });
         let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceState::new(size).with_opaque_pass(true).with_msaa(true));
+        canvas.begin_frame(SurfaceParameters::new(size).with_opaque_pass(true).with_msaa(true));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
@@ -292,6 +295,7 @@ fn main() {
 
         let frame_build_start = time::precise_time_ns();
 
+        canvas.prepare();
         tiling.prepare(&canvas, &device);
         meshes.prepare(&canvas);
         stencil.prepare(&canvas);
@@ -301,7 +305,7 @@ fn main() {
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
-        create_render_targets(&device, &requirements, size, &mut depth_texture, &mut msaa_texture, &mut msaa_depth_texture, &mut temporary_texture);
+        create_render_targets(&device, &requirements, size, &shaders.defaults, &mut depth_texture, &mut msaa_texture, &mut msaa_depth_texture, &mut temporary_texture);
         let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
@@ -406,6 +410,7 @@ fn paint_scene(
         }.transformed(canvas.transforms.get_current())),
     );
 
+    //canvas.reconfigure_surface(SurfaceState { opaque_pass: true, msaa: true, stencil: true });
     for (path, pattern) in paths {
         let pattern = match pattern {
             &SvgPattern::Color(color) => patterns.colors.add(color),
@@ -424,6 +429,7 @@ fn paint_scene(
             _ => unimplemented!()
         }
     }
+    //canvas.reconfigure_surface(SurfaceState { opaque_pass: true, msaa: false, stencil: false });
 
     tiling.fill(
         canvas,
@@ -482,6 +488,7 @@ fn create_render_targets(
     device: &wgpu::Device,
     requirements: &RenderPassesRequirements,
     size: Size2D<u32>,
+    defaults: &PipelineDefaults,
     depth_texture: &mut Option<wgpu::TextureView>,
     msaa_texture: &mut Option<wgpu::TextureView>,
     msaa_depth_texture: &mut Option<wgpu::TextureView>,
@@ -493,14 +500,14 @@ fn create_render_targets(
         depth_or_array_layers: 1,
     };
 
-    if requirements.depth && depth_texture.is_none() {
+    if requirements.depth_stencil && depth_texture.is_none() {
         println!("create depth texture");
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: PipelineDefaults::depth_format(),
+            format: defaults.depth_stencil_format().unwrap(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             label: Some("depth"),
             view_formats: &[],
@@ -514,9 +521,9 @@ fn create_render_targets(
         let msaa = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
-            sample_count: PipelineDefaults::msaa_sample_count(),
+            sample_count: defaults.msaa_sample_count(),
             dimension: wgpu::TextureDimension::D2,
-            format: PipelineDefaults::msaa_format(),
+            format: defaults.msaa_format(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             label: Some("msaa"),
             view_formats: &[],
@@ -525,14 +532,14 @@ fn create_render_targets(
         *msaa_texture = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
     }
 
-    if requirements.msaa_depth && msaa_depth_texture.is_none() {
+    if requirements.msaa_depth_stencil && msaa_depth_texture.is_none() {
         println!("create msaa depth texture");
         let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
             size,
             mip_level_count: 1,
-            sample_count: PipelineDefaults::msaa_sample_count(),
+            sample_count: defaults.msaa_sample_count(),
             dimension: wgpu::TextureDimension::D2,
-            format: PipelineDefaults::depth_format(),
+            format: defaults.depth_stencil_format().unwrap(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             label: Some("depth+msaa"),
             view_formats: &[],
@@ -548,7 +555,7 @@ fn create_render_targets(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: PipelineDefaults::color_format(),
+            format: defaults.color_format(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             label: Some("Temporary color"),
             view_formats: &[],

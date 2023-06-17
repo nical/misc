@@ -3,10 +3,10 @@ use lyon::{
     path::traits::PathIterator, geom::euclid::vec2
 };
 use core::{
-    canvas::{RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, CanvasRenderer, RenderPasses, SubPass, ZIndex, RenderPassState, TransformId, DrawHelper},
+    canvas::{RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, CanvasRenderer, RenderPasses, SubPass, ZIndex, RenderPassState, TransformId, DrawHelper, SurfaceState},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
-        shader::{StencilMode, SurfaceConfig, DepthMode, ShaderPatternId},
+        shader::{ShaderPatternId},
         DynBufferRange, Shaders
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
@@ -53,6 +53,7 @@ impl FillVertexConstructor<Vertex> for VertexCtor {
 struct MeshSubPass {
     draws: Range<u32>,
     z_index: ZIndex,
+    surface: SurfaceState,
 }
 
 struct Draw {
@@ -132,7 +133,8 @@ impl MeshRenderer {
 
         let commands = std::mem::take(&mut self.commands);
         for range in canvas.commands.with_renderer(self.renderer_id) {
-            let range = range.start as usize .. range.end as usize;
+            let surface = range.surface;
+            let range = range.commands.start as usize .. range.commands.end as usize;
             let z_index = commands[range.start].z_index;
 
             let draw_start = self.draws.len() as u32;
@@ -140,7 +142,7 @@ impl MeshRenderer {
 
             // Opaque pass.
             let mut geom_start = self.geometry.indices.len() as u32;
-            if self.enable_opaque_pass {
+            if surface.depth {
                 for fill in commands[range.clone()].iter().rev().filter(|fill| fill.pattern.is_opaque) {
                     if key != fill.pattern.batch_key() {
                         let end = self.geometry.indices.len() as u32;
@@ -171,8 +173,7 @@ impl MeshRenderer {
             geom_start = end;
 
             // Blended pass.
-            let enable_opaque_pass = self.enable_opaque_pass;
-            for fill in commands[range.clone()].iter().filter(|fill| !enable_opaque_pass || !fill.pattern.is_opaque) {
+            for fill in commands[range.clone()].iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
                 if key != fill.pattern.batch_key() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
@@ -202,8 +203,7 @@ impl MeshRenderer {
             let draws = draw_start .. self.draws.len() as u32;
 
             if !draws.is_empty() {
-                // TODO: emmit draws per pattern.
-                self.render_passes.push(MeshSubPass { draws, z_index });
+                self.render_passes.push(MeshSubPass { draws, z_index, surface });
             }
         }
 
@@ -268,20 +268,17 @@ impl MeshRenderer {
         self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
         self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
 
-        let surface = SurfaceConfig {
-            msaa: self.enable_msaa,
-            depth: if self.enable_opaque_pass { DepthMode::Enabled } else { DepthMode::None },
-            stencil: StencilMode::None,
-        };
-
         let mut prev_pattern = None;
-        for draw in &self.draws {
-            if Some(draw.pattern) == prev_pattern {
-                return;
+        for pass in &self.render_passes {
+            for draw in &self.draws[usize_range(pass.draws.clone())] {
+                if Some((draw.pattern, pass.surface)) == prev_pattern {
+                    return;
+                }
+                let surface = pass.surface.surface_config(pass.surface.depth, None);
+                shaders.prepare_pipeline(device, opaque_pipeline, draw.pattern, surface);
+                shaders.prepare_pipeline(device, alpha_pipeline, draw.pattern, surface);
+                prev_pattern = Some((draw.pattern, pass.surface));
             }
-            shaders.prepare_pipeline(device, opaque_pipeline, draw.pattern, surface);
-            shaders.prepare_pipeline(device, alpha_pipeline, draw.pattern, surface);
-            prev_pattern = Some(draw.pattern);
         }
     }
 }
@@ -294,9 +291,7 @@ impl CanvasRenderer for MeshRenderer {
                 internal_index: idx as u32,
                 require_pre_pass: false,
                 z_index: pass.z_index,
-                use_depth: self.enable_opaque_pass,
-                use_stencil: false,
-                use_msaa: self.enable_msaa,
+                surface: pass.surface,
             });
         }
     }

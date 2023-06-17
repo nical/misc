@@ -1,5 +1,5 @@
 use core::{gpu::{
-    Shaders, GpuTargetDescriptor, VertexBuilder, PipelineDefaults, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId},
+    Shaders, GpuTargetDescriptor, VertexBuilder, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId},
 }, resources::{CommonGpuResources, RendererResources}};
 use crate::{
     encoder::{LineEdge},
@@ -101,7 +101,7 @@ impl TilingGpuResources {
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 }
-            }], 
+            }],
         ));
 
         let fill_mask_id = shaders.register_mask(MaskDescriptor {
@@ -189,11 +189,11 @@ impl TilingGpuResources {
                 height: color_atlas_size,
                 depth_or_array_layers: 1,
             },
-            format: PipelineDefaults::color_format(),
+            format: shaders.defaults.color_format(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             mip_level_count: 1,
             sample_count: 1,
-            view_formats: &[PipelineDefaults::color_format()],
+            view_formats: &[shaders.defaults.color_format()],
         });
 
         let src_color_texture_view = src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -385,7 +385,6 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
         push_constant_ranges: &[],
     });
 
-    let defaults = PipelineDefaults::new();
     let mut attributes = VertexBuilder::new(wgpu::VertexStepMode::Instance);
     attributes.push(wgpu::VertexFormat::Uint32x2);
     attributes.push(wgpu::VertexFormat::Uint32);
@@ -401,6 +400,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
 
     let fill_module = shaders.create_shader_module(device, "Mask fill", fill_src, &fill_features);
 
+    let targets = &[shaders.defaults.alpha_target_state()];
     let fill_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Fill mask"),
         layout: Some(&tile_pipeline_layout),
@@ -412,9 +412,9 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
         fragment: Some(wgpu::FragmentState {
             module: &fill_module,
             entry_point: "fs_main",
-            targets: defaults.alpha_target_state(),
+            targets,
         }),
-        primitive: PipelineDefaults::primitive_state(),
+        primitive: shaders.defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -427,6 +427,7 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
     attributes.push(wgpu::VertexFormat::Float32);
     attributes.push(wgpu::VertexFormat::Float32x2);
 
+    let alpha_target = &[shaders.defaults.alpha_target_state()];
     let circle_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("Circle mask"),
         layout: Some(&tile_pipeline_layout),
@@ -438,9 +439,9 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
         fragment: Some(wgpu::FragmentState {
             module: &circle_module,
             entry_point: "fs_main",
-            targets: defaults.alpha_target_state(),
+            targets: alpha_target,
         }),
-        primitive: PipelineDefaults::primitive_state(),
+        primitive: shaders.defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -462,9 +463,9 @@ fn create_mask_pipeline(device: &wgpu::Device, shaders: &mut Shaders, edges: &St
         fragment: Some(wgpu::FragmentState {
             module: &rect_module,
             entry_point: "fs_main",
-            targets: defaults.alpha_target_state(),
+            targets: alpha_target,
         }),
-        primitive: PipelineDefaults::primitive_state(),
+        primitive: shaders.defaults.primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),

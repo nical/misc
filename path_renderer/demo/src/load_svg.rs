@@ -66,7 +66,7 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path
                 let pattern = match usvg_path.fill {
                     Some(ref fill) => {
                         match fill.paint {
-                            usvg::Paint::Color(c) => SvgPattern::Color(Color::srgb_to_linear(c.red, c.green, c.blue, 255)),
+                            usvg::Paint::Color(c) => SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255)),
                             usvg::Paint::Link(ref id) => {
                                 gradients.get(id).cloned().unwrap_or_else(|| {
                                     println!("Could not find pattern {:?}", id);

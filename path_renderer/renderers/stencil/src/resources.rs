@@ -1,4 +1,4 @@
-use core::{resources::{RendererResources, CommonGpuResources}, gpu::{PipelineDefaults, VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
+use core::{resources::{RendererResources, CommonGpuResources}, gpu::{VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
 use core::wgpu;
 
 pub struct StencilAndCoverResources {
@@ -43,7 +43,7 @@ impl StencilAndCoverResources {
         });
 
         let targets = &[Some(wgpu::ColorTargetState {
-            format: PipelineDefaults::color_format(),
+            format: shaders.defaults.color_format(),
             blend: None,
             write_mask: wgpu::ColorWrites::empty(),
         })];
@@ -61,7 +61,7 @@ impl StencilAndCoverResources {
                 entry_point: "fs_main",
                 targets,
             }),
-            primitive: PipelineDefaults::primitive_state(),
+            primitive: shaders.defaults.primitive_state(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::GreaterEqual,
@@ -82,7 +82,7 @@ impl StencilAndCoverResources {
                     write_mask: 0xFFFFFFFF,
                 },
                 bias: wgpu::DepthBiasState::default(),
-                format: PipelineDefaults::depth_format(),
+                format: shaders.defaults.depth_stencil_format().unwrap(),
             }),
             multiview: None,
             multisample: wgpu::MultisampleState::default(),
@@ -90,7 +90,7 @@ impl StencilAndCoverResources {
         let stencil_pipeline = device.create_render_pipeline(&descriptor);
 
         descriptor.multisample = wgpu::MultisampleState {
-            count: PipelineDefaults::msaa_sample_count(),
+            count: shaders.defaults.msaa_sample_count(),
             .. wgpu::MultisampleState::default()
         };
         let msaa_stencil_pipeline = device.create_render_pipeline(&descriptor);

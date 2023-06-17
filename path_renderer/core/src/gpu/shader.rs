@@ -83,6 +83,7 @@ pub struct Shaders {
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
     // TODO: storing base bindings here and letting the common resources set is not great.
     pub base_bindings: Option<BindGroupLayoutId>,
+    pub defaults: PipelineDefaults,
 }
 
 impl Shaders {
@@ -100,6 +101,7 @@ impl Shaders {
             pipeline_layouts: HashMap::new(),
             // TODO: this is hacky: base bindings is initialized by the common gpu resources.
             base_bindings: None,
+            defaults: PipelineDefaults::new(),
         }
     }
 
@@ -235,7 +237,7 @@ impl Shaders {
         pattern: ShaderPatternId,
         surface: &SurfaceConfig,
     ) -> wgpu::RenderPipeline {
-    
+
         let params = &self.params[pipeline_id.index()];
 
         let module_key = ModuleKey {
@@ -244,19 +246,19 @@ impl Shaders {
             pattern,
             user_flags: params.user_flags,
         };
-    
+
         let geometry = &self.geometries[params.geometry.index()];
         let mask = params.mask.map(|m| &self.masks[m.index()]);
         let pattern = pattern.map(|p| &self.patterns[p.index()]);
-    
+
         let module = self.module_cache.entry(module_key).or_insert_with(|| {
             let base_bindings = self.base_bindings.map(|id| &self.bind_group_layouts[id as usize]);
             let geom_bindings = geometry.bindings.map(|id| &self.bind_group_layouts[id as usize]);
             let mask_bindings = mask.map(|desc| desc.bindings).flatten().map(|id| &self.bind_group_layouts[id as usize]);
             let pattern_bindings = pattern.map(|desc| desc.bindings).flatten().map(|id| &self.bind_group_layouts[id as usize]);
-    
+
             let src = generate_shader_source(geometry, mask, pattern, base_bindings, geom_bindings, mask_bindings, pattern_bindings);
-    
+
             //println!("--------------- pipeline {} mask {:?}. pattern {:?}", params.label, mask.map(|m| &m.name), pattern.map(|p| &p.name));
             //println!("{src}");
             //println!("----");
@@ -264,17 +266,17 @@ impl Shaders {
             //for define in defines {
             //    shaders.preprocessor.define(define);
             //}
-    
+
             let src = self.sources.preprocessor.preprocess("generated module", &src, &mut self.sources.source_library).unwrap();
-    
+
             //println!("==================\n{src}\n=================");
-    
+
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("generated module"),
                 source: wgpu::ShaderSource::Wgsl(src.into()),
             })
         });
-    
+
         // Increment the ids by 1 so that id zero isn't equal to no id.
         let mut key = 0u64;
         let mut shift = 0;
@@ -282,52 +284,52 @@ impl Shaders {
             key |= (id as u64 + 1) << shift;
             shift += 16;
         }
-    
+
         if let Some(mask) = mask {
             if let Some(id) = mask.bindings {
                 key |= (id as u64 + 1) << shift;
                 shift += 16;
-            }    
+            }
         }
-    
+
         if let Some(pattern) = pattern {
             if let Some(id) = pattern.bindings {
                 key |= (id as u64 + 1) << shift;
             }
         }
-    
-    
+
+
         let layout = self.pipeline_layouts.entry(key).or_insert_with(|| {
             let mut layouts = Vec::new();
             layouts.push(&self.bind_group_layouts[self.base_bindings.unwrap() as usize].handle);
-    
+
             if let Some(id) = geometry.bindings {
                 layouts.push(&self.bind_group_layouts[id as usize].handle);
             }
-    
+
             if let Some(mask) = mask {
                 if let Some(id) = mask.bindings {
                     layouts.push(&self.bind_group_layouts[id as usize].handle);
                 }
             }
-    
+
             if let Some(pattern) = pattern {
                 if let Some(id) = pattern.bindings {
                     layouts.push(&self.bind_group_layouts[id as usize].handle);
                 }
             }
-    
+
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &layouts[..],
                 push_constant_ranges: &[],
             })
         });
-    
+
         let color_target = &[Some(wgpu::ColorTargetState {
             format: match params.output {
-                OutputType::Color => PipelineDefaults::color_format(),
-                OutputType::Alpha => PipelineDefaults::mask_format(),
+                OutputType::Color => self.defaults.color_format(),
+                OutputType::Alpha => self.defaults.mask_format(),
             },
             blend: match params.blend {
                 BlendMode::None => None,
@@ -336,44 +338,48 @@ impl Shaders {
             },
             write_mask: wgpu::ColorWrites::ALL,
         })];
-    
+
         let multisample = if surface.msaa {
             wgpu::MultisampleState {
-                count: PipelineDefaults::msaa_sample_count(),
+                count: self.defaults.msaa_sample_count(),
                 .. wgpu::MultisampleState::default()
             }
         } else {
             wgpu::MultisampleState::default()
         };
-    
+
         let depth_stencil = if (surface.depth, surface.stencil) != (DepthMode::None, StencilMode::None) {
+            let stencil = if surface.stencil == StencilMode::None {
+                wgpu::StencilState::default()
+            } else {
+                let face_state = wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::NotEqual,
+                    // reset the stencil buffer.
+                    fail_op: wgpu::StencilOperation::Replace,
+                    depth_fail_op: wgpu::StencilOperation::Replace,
+                    pass_op: wgpu::StencilOperation::Replace,
+                };
+                wgpu::StencilState {
+                    front: face_state,
+                    back: face_state,
+                    read_mask: 1, // even-odd, TODO: non-zero
+                    write_mask: 0xFFFFFFFF,
+                }
+            };
+            let depth_write_enabled = surface.depth == DepthMode::Enabled && params.blend == BlendMode::None;
+            let depth_compare = if surface.depth == DepthMode::Enabled { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always };
+
             Some(wgpu::DepthStencilState {
-                depth_write_enabled: surface.depth == DepthMode::Enabled && params.blend == BlendMode::None,
-                depth_compare: if surface.depth == DepthMode::Enabled { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always },
-                stencil: if surface.stencil == StencilMode::None {
-                    wgpu::StencilState::default()
-                } else {
-                    let face_state = wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::NotEqual,
-                        // reset the stencil buffer.
-                        fail_op: wgpu::StencilOperation::Replace,
-                        depth_fail_op: wgpu::StencilOperation::Replace,
-                        pass_op: wgpu::StencilOperation::Replace,
-                    };
-                    wgpu::StencilState {
-                        front: face_state,
-                        back: face_state,
-                        read_mask: 1, // even-odd, TODO: non-zero
-                        write_mask: 0xFFFFFFFF,
-                    }
-                },
+                depth_write_enabled,
+                depth_compare,
+                stencil,
                 bias: wgpu::DepthBiasState::default(),
-                format: PipelineDefaults::depth_format(),
+                format: self.defaults.depth_stencil_format().unwrap(),
             })
         } else {
             None
         };
-    
+
         let label = format!("{}|{}{}{}{}",
             params.label,
             pattern.map(|p| &p.name[..]).unwrap_or(""),
@@ -390,10 +396,10 @@ impl Shaders {
             },
             if surface.msaa { "|msaa" } else { "" },
         );
-    
+
         let mut vertices = VertexBuilder::new(wgpu::VertexStepMode::Vertex);
         let mut instances = VertexBuilder::new(wgpu::VertexStepMode::Instance);
-    
+
         let geom = &self.geometries[params.geometry.index()];
         for vtx in &geom.vertex_attributes {
             vertices.push(vtx.to_wgpu());
@@ -401,7 +407,7 @@ impl Shaders {
         for inst in &geom.instance_attributes {
             instances.push(inst.to_wgpu());
         }
-    
+
         let mut vertex_buffers = Vec::new();
         if !geom.vertex_attributes.is_empty() {
             vertex_buffers.push(vertices.buffer_layout());
@@ -409,7 +415,7 @@ impl Shaders {
         if !geom.instance_attributes.is_empty() {
             vertex_buffers.push(instances.buffer_layout());
         }
-    
+
         let descriptor = wgpu::RenderPipelineDescriptor {
             label: Some(&label),
             layout: Some(layout),
@@ -423,15 +429,15 @@ impl Shaders {
                 entry_point: "fs_main",
                 targets: color_target,
             }),
-            primitive: PipelineDefaults::primitive_state(),
+            primitive: self.defaults.primitive_state(),
             depth_stencil,
             multiview: None,
             multisample,
         };
-    
+
         device.create_render_pipeline(&descriptor)
     }
-    
+
 
     pub fn try_get(
         &self,
@@ -754,7 +760,7 @@ impl BindGroupLayout {
 
             binding += 1;
         }
-    } 
+    }
 }
 
 pub struct PatternDescriptor {
@@ -877,7 +883,7 @@ pub fn generate_shader_source(
     }
     writeln!(source, ") -> VertexOutput {{").unwrap();
 
-    writeln!(source, "    var vertex = geometry(").unwrap();    
+    writeln!(source, "    var vertex = geometry(").unwrap();
     writeln!(source, "        vertex_index,").unwrap();
     for attrib in &geometry.vertex_attributes {
         writeln!(source, "        vtx_{},", attrib.name).unwrap();
@@ -1010,7 +1016,7 @@ pub enum DepthMode {
     None,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SurfaceConfig {
     pub msaa: bool,
     pub depth: DepthMode,

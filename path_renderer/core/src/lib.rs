@@ -56,6 +56,10 @@ impl Color {
         }
     }
 
+    pub fn new(r: u8, g: u8, b: u8, a:u8) -> Self {
+        Color { r, g, b, a }
+    }
+
     pub fn linear_to_srgb(r: u8, g: u8, b: u8, a:u8) -> Self {
         fn f(linear: f32) -> f32 {
             if linear <= 0.0031308 { linear * 12.92}  else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
