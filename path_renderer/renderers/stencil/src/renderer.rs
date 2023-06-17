@@ -268,9 +268,7 @@ pub fn generate_geometry(
 
             }
             PathEvent::End { last, first, .. } => {
-                let f = clip_rect.contains(last);
-                let t = clip_rect.contains(first);
-                if !f && !t {
+                if skip_edge(&clip_rect, last, first) {
                     continue;
                 }
 
@@ -279,9 +277,7 @@ pub fn generate_geometry(
                 triangle(indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
-                let f = clip_rect.contains(from);
-                let t = clip_rect.contains(to);
-                if !f && !t {
+                if skip_edge(&clip_rect, from, to) {
                     continue;
                 }
 
@@ -290,10 +286,9 @@ pub fn generate_geometry(
                 triangle(indices, pivot, a, b);
             }
             PathEvent::Quadratic { from, ctrl, to } => {
-                let f = clip_rect.contains(from);
-                let c = clip_rect.contains(ctrl);
-                let t = clip_rect.contains(to);
-                if !f && !c && !t {
+                let max_x = from.x.max(ctrl.x).max(to.x);
+                let max_y = from.y.max(ctrl.y).max(to.y);
+                if max_x < clip_rect.min.x || max_y < clip_rect.min.y {
                     continue;
                 }
 
@@ -301,38 +296,57 @@ pub fn generate_geometry(
                 let b = vertex(vertices, to);
 
                 triangle(indices, pivot, a, b);
-                let mut prev = a;
-                QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |seg| {
-                    let next = vertex(vertices, seg.to);
-                    if prev != a {
-                        triangle(indices, a, prev, next);
-                    }
-                    prev = next;
-                });
-            }
-            PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
-                let f = clip_rect.contains(from);
-                let c1 = clip_rect.contains(ctrl1);
-                let c2 = clip_rect.contains(ctrl1);
-                let t = clip_rect.contains(to);
-                if !f && !c1 && !c2 && !t {
-                    continue;
-                }
 
-                CubicBezierSegment { from, ctrl1, ctrl2, to}.for_each_quadratic_bezier(tolerance, &mut |quad| {
-                    let a = vertex(vertices, quad.from);
-                    let b = vertex(vertices, quad.to);
-    
-                    triangle(indices, pivot, a, b);
+                let aabb = Box2D {
+                    min: point(
+                        from.x.min(ctrl.x).min(to.x),
+                        from.y.min(ctrl.y).min(to.y),
+                    ),
+                    max: point(max_x, max_y),
+                };
+
+                if aabb.intersects(&clip_rect) {
                     let mut prev = a;
-                    quad.for_each_flattened(tolerance, &mut |seg| {
+                    QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |seg| {
                         let next = vertex(vertices, seg.to);
                         if prev != a {
-                            triangle(indices, a, prev, next);    
+                            triangle(indices, a, prev, next);
                         }
                         prev = next;
                     });
-                });
+                }
+            }
+            PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+                let max_x = from.x.max(ctrl1.x).max(ctrl2.x).max(to.x);
+                let max_y = from.y.max(ctrl1.y).max(ctrl2.y).max(to.y);
+                if max_x < clip_rect.min.x || max_y < clip_rect.min.y {
+                    continue;
+                }
+
+                let aabb = Box2D {
+                    min: point(
+                        from.x.min(ctrl1.x).min(ctrl2.x).min(to.x),
+                        from.y.min(ctrl1.y).min(ctrl2.y).min(to.y),
+                    ),
+                    max: point(max_x, max_y),
+                };
+
+                if aabb.intersects(&clip_rect) {
+                    CubicBezierSegment { from, ctrl1, ctrl2, to}.for_each_quadratic_bezier(tolerance, &mut |quad| {
+                        let a = vertex(vertices, quad.from);
+                        let b = vertex(vertices, quad.to);
+
+                        triangle(indices, pivot, a, b);
+                        let mut prev = a;
+                        quad.for_each_flattened(tolerance, &mut |seg| {
+                            let next = vertex(vertices, seg.to);
+                            if prev != a {
+                                triangle(indices, a, prev, next);    
+                            }
+                            prev = next;
+                        });
+                    });
+                }
             }
         }
     }
@@ -407,4 +421,9 @@ impl CanvasRenderer for StencilAndCoverRenderer {
             render_pass.draw_indexed(draw.cover_indices.clone(), 0, 0..1);
         }
     }
+}
+
+fn skip_edge(rect: &Box2D, from: Point, to: Point) -> bool {
+    from.x < rect.min.x && to.x < rect.min.x 
+        || from.y < rect.min.y && to.y < rect.min.y
 }
