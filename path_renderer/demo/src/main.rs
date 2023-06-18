@@ -354,7 +354,7 @@ fn main() {
             render_time = Duration::ZERO;
             frame_idx = 0;
             println!("frame {:.2} (prepare {:.2} render {:.2})", fbt + rt, fbt, rt);
-            print_stats(&tiling, scene.window_size);
+            print_stats(&tiling, &stencil, scene.window_size);
         }
 
         gpu_resources.end_frame();
@@ -457,7 +457,7 @@ fn paint_scene(
 }
 
 
-fn print_stats(tiling: &TileRenderer, window_size: PhysicalSize<u32>) {
+fn print_stats(tiling: &TileRenderer, stencil: &StencilAndCoverRenderer, window_size: PhysicalSize<u32>) {
     let mut stats = Stats::new();
     tiling.update_stats(&mut stats);
     println!("{:#?}", stats);
@@ -467,6 +467,7 @@ fn print_stats(tiling: &TileRenderer, window_size: PhysicalSize<u32>) {
     println!("  cpu masks: {:2} kb", stats.cpu_masks_bytes() as f32 / 1000.0);
     println!("   uploaded: {:2} kb", stats.uploaded_bytes() as f32 / 1000.0);
     let win_bytes = (window_size.width * window_size.height * 4) as f32;
+    println!(" stencil-and-cover: {:?}", stencil.stats);
     println!(
         " resolution: {}x{} ({:2} kb)  overhead {:2}%",
         window_size.width, window_size.height, win_bytes / 1000.0,
