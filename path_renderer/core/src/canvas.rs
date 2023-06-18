@@ -2,6 +2,7 @@
 // are poorly named and/or belong elsewhere.
 
 use std::sync::Arc;
+use lyon::geom::euclid::vec2;
 use lyon::math::{Point};
 use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
@@ -845,6 +846,13 @@ impl Circle {
     pub fn inverted(mut self) -> Self {
         self.inverted = !self.inverted;
         self
+    }
+
+    pub fn aabb(&self) -> Box2D<f32> {
+        Box2D {
+            min: self.center - vec2(self.radius, self.radius),
+            max: self.center + vec2(self.radius, self.radius),
+        }
     }
 }
 

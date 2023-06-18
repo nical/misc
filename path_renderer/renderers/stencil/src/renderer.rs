@@ -145,7 +145,7 @@ impl StencilAndCoverRenderer {
     }
 
     pub fn prepare(&mut self, canvas: &Canvas) {
-        let mut rects: ArrayVec<Box2D, 16> = ArrayVec::new();
+        let mut batch_rects: ArrayVec<Box2D, 16> = ArrayVec::new();
         let mut prev_pattern = None;
         let mut stencil_idx_start = 0;
         let mut cover_idx_start = 0;
@@ -163,78 +163,92 @@ impl StencilAndCoverRenderer {
                 let transform = canvas.transforms.get(fill.transform);
                 let opaque = fill.pattern.is_opaque;
 
+                let (local_aabb, fill_rule) = match &fill.shape {
+                    RecordedShape::Path(shape) => (
+                        lyon::algorithms::aabb::fast_bounding_box(&shape.path.as_slice()),
+                        shape.fill_rule
+                    ),
+                    RecordedShape::Rect(rect) => (*rect, FillRule::NonZero),
+                    RecordedShape::Circle(circle) => (circle.aabb(), FillRule::NonZero),
+                    RecordedShape::Canvas => (
+                        // TODO: that's the transformed aabb!
+                        Box2D::from_size(canvas.surface.size().to_f32()),
+                        FillRule::NonZero
+                    ),
+                };
+
+                let transformed_aabb = transform.outer_transformed_box(&local_aabb);
+
+                let batch_key = (fill.pattern.shader, fill.pattern.bindings, fill_rule, opaque);
+
+                let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
+                let cover_idx_end = self.cover_geometry.indices.len() as u32;
+
+                let new_stencil_batch = stencil_idx_end > stencil_idx_start
+                    && (batch_rects.capacity() == 0 || intersects_batch_rects(&transformed_aabb, &batch_rects));
+                let new_cover_batch = cover_idx_end > cover_idx_start
+                    && (new_stencil_batch || prev_pattern != Some(batch_key));
+
+                if new_stencil_batch {
+                    self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
+                    stencil_idx_start = stencil_idx_end;
+                    batch_rects.clear();
+                    self.stats.stencil_batches += 1;
+                }
+                batch_rects.push(transformed_aabb);
+
+                if new_cover_batch {
+                    self.draws.push(Draw::Cover {
+                        indices: cover_idx_start..cover_idx_end,
+                        fill_rule: fill_rule,
+                        opaque,
+                        pattern: fill.pattern.shader,
+                        pattern_inputs: fill.pattern.bindings,
+                    });
+                    cover_idx_start = cover_idx_end;
+                    prev_pattern = Some(batch_key);
+                    self.stats.cover_batches += 1;
+                }
+
                 match &fill.shape {
                     RecordedShape::Path(shape) => {
-                        let aabb = lyon::algorithms::aabb::fast_bounding_box(&shape.path.as_slice());
-
-                        let batch_key = (fill.pattern.shader, fill.pattern.bindings, shape.fill_rule, opaque);
-
-                        let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
-                        let cover_idx_end = self.cover_geometry.indices.len() as u32;
-
-                        let new_stencil_batch = stencil_idx_end > stencil_idx_start
-                            && (rects.capacity() == 0 || intersects_batch_rects(&aabb, &rects));
-                        let new_cover_batch = cover_idx_end > cover_idx_start
-                            && (new_stencil_batch || prev_pattern != Some(batch_key));
-
-                        if new_stencil_batch {
-                            self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
-                            stencil_idx_start = stencil_idx_end;
-                            rects.clear();
-                            self.stats.stencil_batches += 1;
-                        }
-                        rects.push(aabb);
-
-                        if new_cover_batch {
-                            self.draws.push(Draw::Cover {
-                                indices: cover_idx_start..cover_idx_end,
-                                fill_rule: shape.fill_rule,
-                                opaque,
-                                pattern: fill.pattern.shader,
-                                pattern_inputs: fill.pattern.bindings,
-                            });
-                            cover_idx_start = cover_idx_end;
-                            prev_pattern = Some(batch_key);
-                            self.stats.cover_batches += 1;
-                        }
-
                         generate_stencil_geometry(
                             shape.path.as_slice(),
                             transform,
                             canvas.params.tolerance,
-                            &aabb,
+                            &transformed_aabb,
                             &mut self.stencil_geometry,
                         );
-
-                        generate_cover_geometry(
-                            &aabb,
-                            transform,
-                            fill,
-                            &mut self.cover_geometry
-                        );
-
-                        if is_last {
-                            let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
-                            if stencil_idx_end > stencil_idx_start {
-                                self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
-                                self.stats.stencil_batches += 1;
-                            }
-
-                            let cover_idx_end = self.cover_geometry.indices.len() as u32;
-                            if cover_idx_end > cover_idx_start {
-                                self.draws.push(Draw::Cover {
-                                    indices: cover_idx_start..cover_idx_end,
-                                    fill_rule: shape.fill_rule,
-                                    opaque,
-                                    pattern: fill.pattern.shader,
-                                    pattern_inputs: fill.pattern.bindings,
-                                });
-                                self.stats.cover_batches += 1;
-                            }
-                        }
                     }
                     _ => {
                         todo!()
+                    }
+                }
+
+                generate_cover_geometry(
+                    &local_aabb,
+                    transform,
+                    fill,
+                    &mut self.cover_geometry
+                );
+
+                if is_last {
+                    let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
+                    if stencil_idx_end > stencil_idx_start {
+                        self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
+                        self.stats.stencil_batches += 1;
+                    }
+
+                    let cover_idx_end = self.cover_geometry.indices.len() as u32;
+                    if cover_idx_end > cover_idx_start {
+                        self.draws.push(Draw::Cover {
+                            indices: cover_idx_start..cover_idx_end,
+                            fill_rule: fill_rule,
+                            opaque,
+                            pattern: fill.pattern.shader,
+                            pattern_inputs: fill.pattern.bindings,
+                        });
+                        self.stats.cover_batches += 1;
                     }
                 }
             }
@@ -290,10 +304,6 @@ pub fn generate_stencil_geometry(
     aabb: &Box2D,
     stencil_geometry: &mut VertexBuffers<StencilVertex, u32>,
 ) {
-    let clip_rect = transform.outer_transformed_box(
-        &aabb
-    );
-
     let vertices = &mut stencil_geometry.vertices;
     let indices = &mut stencil_geometry.indices;
 
@@ -309,7 +319,7 @@ pub fn generate_stencil_geometry(
         indices.push(c)
     }
 
-    let pivot = vertex(vertices, clip_rect.min);
+    let pivot = vertex(vertices, aabb.min);
 
     for evt in path.iter().transformed(transform) {
         match evt {
@@ -317,7 +327,7 @@ pub fn generate_stencil_geometry(
 
             }
             PathEvent::End { last, first, .. } => {
-                if skip_edge(&clip_rect, last, first) {
+                if skip_edge(&aabb, last, first) {
                     continue;
                 }
 
@@ -326,7 +336,7 @@ pub fn generate_stencil_geometry(
                 triangle(indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
-                if skip_edge(&clip_rect, from, to) {
+                if skip_edge(&aabb, from, to) {
                     continue;
                 }
 
@@ -337,7 +347,7 @@ pub fn generate_stencil_geometry(
             PathEvent::Quadratic { from, ctrl, to } => {
                 let max_x = from.x.max(ctrl.x).max(to.x);
                 let max_y = from.y.max(ctrl.y).max(to.y);
-                if max_x < clip_rect.min.x || max_y < clip_rect.min.y {
+                if max_x < aabb.min.x || max_y < aabb.min.y {
                     continue;
                 }
 
@@ -354,7 +364,7 @@ pub fn generate_stencil_geometry(
                     max: point(max_x, max_y),
                 };
 
-                if aabb.intersects(&clip_rect) {
+                if aabb.intersects(&aabb) {
                     let mut prev = a;
                     QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |seg| {
                         let next = vertex(vertices, seg.to);
@@ -368,7 +378,7 @@ pub fn generate_stencil_geometry(
             PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
                 let max_x = from.x.max(ctrl1.x).max(ctrl2.x).max(to.x);
                 let max_y = from.y.max(ctrl1.y).max(ctrl2.y).max(to.y);
-                if max_x < clip_rect.min.x || max_y < clip_rect.min.y {
+                if max_x < aabb.min.x || max_y < aabb.min.y {
                     continue;
                 }
 
@@ -380,7 +390,7 @@ pub fn generate_stencil_geometry(
                     max: point(max_x, max_y),
                 };
 
-                if aabb.intersects(&clip_rect) {
+                if aabb.intersects(&aabb) {
                     CubicBezierSegment { from, ctrl1, ctrl2, to}.for_each_quadratic_bezier(tolerance, &mut |quad| {
                         let a = vertex(vertices, quad.from);
                         let b = vertex(vertices, quad.to);
