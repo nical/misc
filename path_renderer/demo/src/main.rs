@@ -75,7 +75,6 @@ fn main() {
     let mut tiler_config = TilerConfig {
         view_box: Box2D::from_size(inital_window_size.to_f32()),
         tolerance,
-        flatten: false,
         mask_atlas_size: size2(mask_atlas_size, mask_atlas_size),
         color_atlas_size: size2(color_atlas_size, color_atlas_size),
         staging_buffer_size: tiling::BYTES_PER_MASK as u32 * 2048,
@@ -217,8 +216,6 @@ fn main() {
 
     let mut frame_build_time = Duration::ZERO;
     let mut render_time = Duration::ZERO;
-    let mut row_time = Duration::ZERO;
-    let mut tile_time = Duration::ZERO;
     let mut frame_idx = 0;
     event_loop.run(move |event, _, control_flow| {
         device.poll(wgpu::Maintain::Poll);
@@ -353,14 +350,10 @@ fn main() {
         if frame_idx == n {
             let fbt = ms(frame_build_time) / (n as f64);
             let rt = ms(render_time) / (n as f64);
-            let row = ms(row_time) / (n as f64);
-            let tile = ms(tile_time) / (n as f64);
             frame_build_time = Duration::ZERO;
             render_time = Duration::ZERO;
-            row_time = Duration::ZERO;
-            tile_time = Duration::ZERO;
             frame_idx = 0;
-            println!("frame build {:.2} (row: {:.2}, tile {:.2}) render {:.2}", fbt, row, tile, rt);
+            println!("frame {:.2} (prepare {:.2} render {:.2})", fbt + rt, fbt, rt);
             print_stats(&tiling, scene.window_size);
         }
 

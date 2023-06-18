@@ -4,7 +4,6 @@ pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
-use lyon::geom::{LineSegment, QuadraticBezierSegment};
 
 use core::gpu::shader::ShaderPatternId;
 use core::gpu::{DynBufferRange, DynamicStore};
@@ -15,6 +14,7 @@ use crate::cpu_rasterizer::*;
 use crate::atlas_uploader::TileAtlasUploader;
 use crate::resources::{TileInstance, Mask as GpuMask};
 use crate::TILE_SIZE;
+use super::mask::MaskEncoder;
 
 use copyless::VecHelper;
 use core::bytemuck;
@@ -851,7 +851,7 @@ impl TileEncoder {
     }
 
     pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>, device: &wgpu::Device) -> TilePosition {
-        self.add_line_gpu_mask(tile, draw, active_edges, edges)
+        self.add_gpu_mask(tile, draw, active_edges, edges)
             .unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
     }
 
@@ -862,7 +862,7 @@ impl TileEncoder {
         (tile, atlas_index)
     }
 
-    pub fn add_line_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>) -> Option<TilePosition> {
+    pub fn add_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>) -> Option<TilePosition> {
         //println!(" * tile ({:?}, {:?}), backdrop: {}, {:?}", tile.x, tile.y, tile.backdrop, active_edges);
 
         if active_edges.len() > draw.max_edges_per_gpu_tile {
@@ -889,15 +889,8 @@ impl TileEncoder {
                 ));
             }
 
-            if edge.is_line() {
-                if edge.from.y != edge.to.y {
-                    edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
-                }
-            } else {
-                let curve = QuadraticBezierSegment { from: edge.from - offset, ctrl: edge.ctrl - offset, to: edge.to - offset };
-                flatten_quad(&curve, draw.tolerance, &mut |segment| {
-                    edges.alloc().init(LineEdge(segment.from, segment.to));
-                });
+            if edge.from.y != edge.to.y {
+                edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
             }
         }
 
@@ -948,12 +941,7 @@ impl TileEncoder {
             let from = edge.from - tile_offset;
             let to = edge.to - tile_offset;
 
-            if edge.is_line() {
-                draw_line(from, to, &mut accum);
-            } else {
-                let ctrl = edge.ctrl - tile_offset;
-                draw_curve(from, ctrl, to, draw.tolerance, &mut accum);
-            }
+            draw_line(from, to, &mut accum);
         }
 
         let (tile_position, atlas_index) = self.src.mask_tiles.allocate();
@@ -1075,52 +1063,3 @@ impl TileAllocator {
         (self.next_id * 100) / self.tiles_per_atlas > 70
     }
 }
-
-
-pub fn flatten_quad(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
-    let sq_error = square_distance_to_point(&curve.baseline().to_line(), curve.ctrl) * 0.25;
-
-    let sq_tolerance = tolerance * tolerance;
-    if sq_error <= sq_tolerance {
-        cb(&curve.baseline());
-    } else if sq_error <= sq_tolerance * 4.0 {
-        let ft = curve.from.lerp(curve.to, 0.5);
-        let mid = ft.lerp(curve.ctrl, 0.5);
-        cb(&LineSegment { from: curve.from, to: mid });
-        cb(&LineSegment { from: mid, to: curve.to });
-    } else {
-
-        // The baseline cost of this is fairly high and then amortized if the number of segments is high.
-        // In practice the number of edges tends to be low in our case due to splitting into small tiles.
-        curve.for_each_flattened(tolerance, cb);
-        //unsafe { crate::flatten_simd::flatten_quad_sse(curve, tolerance, cb); }
-        //crate::flatten_simd::flatten_quad_ref(curve, tolerance, cb);
-
-        // This one is comes from font-rs. It's less work than for_each_flattened but generates
-        // more edges, the overall performance is about the same from a quick measurement.
-        // Maybe try using a lookup table?
-        //let ddx = curve.from.x - 2.0 * curve.ctrl.x + curve.to.x;
-        //let ddy = curve.from.y - 2.0 * curve.ctrl.y + curve.to.y;
-        //let square_dev = ddx * ddx + ddy * ddy;
-        //let n = 1 + (3.0 * square_dev).sqrt().sqrt().floor() as u32;
-        //let inv_n = (n as f32).recip();
-        //let mut t = 0.0;
-        //for _ in 0..(n - 1) {
-        //    t += inv_n;
-        //    cb(curve.sample(t));
-        //}
-        //cb(curve.to);
-    }
-}
-
-use lyon::geom::Line;
-
-use super::mask::MaskEncoder;
-
-#[inline]
-fn square_distance_to_point(line: &Line<f32>, p: Point) -> f32 {
-    let v = p - line.point;
-    let c = line.vector.cross(v);
-    (c * c) / line.vector.square_length()
-}
-

@@ -9,7 +9,6 @@ pub mod renderer;
 pub mod atlas_uploader;
 
 use core::pattern::BuiltPattern;
-use std::time::Duration;
 
 pub use tiler::*;
 pub use resources::*;
@@ -130,9 +129,6 @@ pub struct Stats {
     pub edges: usize,
     pub render_passes: usize,
     pub batches: usize,
-
-    pub row_time: Duration,
-    pub tile_time: Duration,
 }
 
 impl Stats {
