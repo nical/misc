@@ -113,7 +113,7 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let src_rect = data.data0;
     let dst_rect = data.data1;
 
-    let inv_texture_size = vec2<f32>(1.0) / vec2<f32>(textureDimensions(src_color_texture, 0u).xy);
+    let inv_texture_size = vec2<f32>(1.0) / vec2<f32>(textureDimensions(src_color_texture, 0i).xy);
 
     // dst_uv and uv_bounds are in normalized texture space.
 
