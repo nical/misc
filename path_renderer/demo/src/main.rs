@@ -39,6 +39,7 @@ fn main() {
 
     let mut trace = None;
     let mut force_gl = false;
+    let mut force_vk = false;
     let mut asap = false;
     let mut read_tolerance = false;
     let mut use_ssaa4 = false;
@@ -50,6 +51,7 @@ fn main() {
         }
         if arg == "--ssaa" { use_ssaa4 = true; }
         if arg == "--gl" { force_gl = true; }
+        if arg == "--vulkan" { force_vk = true; }
         if arg == "--x11" {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
             // it runs into new issues.
@@ -88,6 +90,8 @@ fn main() {
 
     let backends = if force_gl {
         wgpu::Backends::GL
+    } else if force_vk {
+        wgpu::Backends::VULKAN
     } else {
         wgpu::Backends::all()
     };
@@ -106,6 +110,7 @@ fn main() {
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
     })).unwrap();
+    println!("{:#?}", adapter.get_info());
     // create a device and a queue
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
