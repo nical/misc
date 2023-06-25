@@ -221,6 +221,7 @@ fn main() {
 
     let mut frame_build_time = Duration::ZERO;
     let mut render_time = Duration::ZERO;
+    let mut present_time = Duration::ZERO;
     let mut frame_idx = 0;
     event_loop.run(move |event, _, control_flow| {
         device.poll(wgpu::Maintain::Poll);
@@ -342,9 +343,12 @@ fn main() {
 
         queue.submit(Some(encoder.finish()));
 
+        let present_start = time::precise_time_ns();
+        render_time += Duration::from_nanos(present_start - render_start);
+
         frame.present();
 
-        render_time += Duration::from_nanos(time::precise_time_ns() - render_start);
+        present_time += Duration::from_nanos(time::precise_time_ns() - present_start);
 
         fn ms(duration: Duration) -> f64 {
             duration.as_micros() as f64 / 1000.0
@@ -355,10 +359,12 @@ fn main() {
         if frame_idx == n {
             let fbt = ms(frame_build_time) / (n as f64);
             let rt = ms(render_time) / (n as f64);
+            let pt = ms(present_time) / (n as f64);
             frame_build_time = Duration::ZERO;
             render_time = Duration::ZERO;
+            present_time = Duration::ZERO;
             frame_idx = 0;
-            println!("frame {:.2} (prepare {:.2} render {:.2})", fbt + rt, fbt, rt);
+            println!("frame {:.2}ms (prepare {:.2}ms, render {:.2}ms, present {:.2}ms)", fbt + rt, fbt, rt, pt);
             print_stats(&tiling, &stencil, scene.window_size);
         }
 
