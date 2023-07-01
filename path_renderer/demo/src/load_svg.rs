@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{Point, point};
-use lyon::path::Path;
+use core::path::Path;
 use core::Color;
 
 pub const FALLBACK_COLOR: Color = Color {

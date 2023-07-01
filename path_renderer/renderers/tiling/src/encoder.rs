@@ -586,25 +586,13 @@ impl TileEncoder {
                 batch.tiles = (num_alpha_tiles - batch.tiles.end) .. (num_alpha_tiles - batch.tiles.start);
             }
 
-            self.render_passes.reverse();
+            //self.render_passes.reverse(); this is now done per-"batch" in the renderer.
         }
 
-        let num_alpha_batches = self.alpha_batches.len();
-        let mut current_color_atlas = u32::MAX;
-        let mut current_mask_atlas = u32::MAX;
-        for pass in &mut self.render_passes {
-            if reversed {
+        if reversed {
+            let num_alpha_batches = self.alpha_batches.len();
+            for pass in &mut self.render_passes {
                 pass.alpha_batches = (num_alpha_batches - pass.alpha_batches.end) .. (num_alpha_batches - pass.alpha_batches.start);
-            }
-
-            if current_color_atlas != pass.color_atlas_index {
-                current_color_atlas = pass.color_atlas_index;
-                pass.color_pre_pass = true;
-            }
-
-            if current_mask_atlas != pass.mask_atlas_index {
-                current_mask_atlas = pass.mask_atlas_index;
-                pass.mask_pre_pass = true;
             }
         }
     }

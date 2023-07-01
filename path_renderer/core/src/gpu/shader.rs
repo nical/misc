@@ -2,6 +2,7 @@ use std::{borrow::Cow};
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use lyon::path::FillRule;
 use wgslp::preprocessor::{SourceError, Preprocessor, Source};
 
 use super::VertexBuilder;
@@ -349,21 +350,37 @@ impl Shaders {
         };
 
         let depth_stencil = if (surface.depth, surface.stencil) != (DepthMode::None, StencilMode::None) {
-            let stencil = if surface.stencil == StencilMode::None {
-                wgpu::StencilState::default()
-            } else {
-                let face_state = wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::NotEqual,
-                    // reset the stencil buffer.
-                    fail_op: wgpu::StencilOperation::Replace,
-                    depth_fail_op: wgpu::StencilOperation::Replace,
-                    pass_op: wgpu::StencilOperation::Replace,
-                };
-                wgpu::StencilState {
-                    front: face_state,
-                    back: face_state,
-                    read_mask: 1, // even-odd, TODO: non-zero
-                    write_mask: 0xFFFFFFFF,
+            let stencil = match surface.stencil {
+                StencilMode::None | StencilMode::Ignore => wgpu::StencilState::default(),
+                StencilMode::NonZero => {
+                    let face_state = wgpu::StencilFaceState {
+                        compare: wgpu::CompareFunction::Equal,
+                        // reset the stencil buffer.
+                        fail_op: wgpu::StencilOperation::Replace,
+                        depth_fail_op: wgpu::StencilOperation::Replace,
+                        pass_op: wgpu::StencilOperation::Replace,
+                    };
+                    wgpu::StencilState {
+                        front: face_state,
+                        back: face_state,
+                        read_mask: 0xFFFFFFFF,
+                        write_mask: 0xFFFFFFFF,
+                    }
+                }
+                StencilMode::EvenOdd => {
+                    let face_state = wgpu::StencilFaceState {
+                        compare: wgpu::CompareFunction::NotEqual,
+                        // reset the stencil buffer.
+                        fail_op: wgpu::StencilOperation::Replace,
+                        depth_fail_op: wgpu::StencilOperation::Replace,
+                        pass_op: wgpu::StencilOperation::Replace,
+                    };
+                    wgpu::StencilState {
+                        front: face_state,
+                        back: face_state,
+                        read_mask: 1,
+                        write_mask: 0xFFFFFFFF,
+                    }
                 }
             };
             let depth_write_enabled = surface.depth == DepthMode::Enabled && params.blend == BlendMode::None;
@@ -1007,6 +1024,15 @@ pub enum StencilMode {
     NonZero,
     Ignore,
     None,
+}
+
+impl From<FillRule> for StencilMode {
+    fn from(fill_rule: FillRule) -> Self {
+        match fill_rule {
+            FillRule::EvenOdd => { StencilMode::EvenOdd }
+            FillRule::NonZero => { StencilMode::NonZero }
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

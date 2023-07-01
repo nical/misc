@@ -3,7 +3,7 @@ use lyon::{
     path::traits::PathIterator, geom::euclid::vec2
 };
 use core::{
-    canvas::{RendererId, Shape, RendererCommandIndex, Canvas, RecordedShape, CanvasRenderer, RenderPasses, SubPass, ZIndex, RenderPassState, TransformId, DrawHelper, SurfaceState},
+    canvas::{RendererId, Canvas, Shape, CanvasRenderer, ZIndex, RenderPassState, TransformId, DrawHelper, SurfaceState},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
         shader::{ShaderPatternId},
@@ -11,17 +11,23 @@ use core::{
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu, BindingResolver,
+    wgpu, BindingResolver, batching::BatchFlags,
 };
-use std::ops::Range;
+use std::{ops::Range, collections::HashMap};
 
 use super::MeshGpuResources;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 
+struct Batch {
+    commands: Vec<Fill>,
+    draws: Range<u32>,
+    surface: SurfaceState,
+}
+
 pub struct Fill {
-    pub shape: RecordedShape,
+    pub shape: Shape,
     pub pattern: BuiltPattern,
     pub transform: TransformId,
     pub z_index: ZIndex,
@@ -50,12 +56,6 @@ impl FillVertexConstructor<Vertex> for VertexCtor {
     }
 }
 
-struct MeshSubPass {
-    draws: Range<u32>,
-    z_index: ZIndex,
-    surface: SurfaceState,
-}
-
 struct Draw {
     indices: Range<u32>,
     pattern: ShaderPatternId,
@@ -71,14 +71,13 @@ pub struct MeshRenderer {
     tessellator: FillTessellator,
     geometry: VertexBuffers<Vertex, u32>,
     tolerenace: f32,
-    enable_opaque_pass: bool,
     enable_msaa: bool,
 
-    commands: Vec<Fill>,
+    batches: Vec<Batch>,
     draws: Vec<Draw>,
-    render_passes: Vec<MeshSubPass>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
+    shaders: HashMap<(bool, ShaderPatternId, SurfaceState), Option<u32>>,
 }
 
 impl MeshRenderer {
@@ -90,63 +89,81 @@ impl MeshRenderer {
             tessellator: FillTessellator::new(),
             geometry: VertexBuffers::new(),
             tolerenace: 0.25,
-            enable_opaque_pass: false,
             enable_msaa: false,
 
-            commands: Vec::new(),
             draws: Vec::new(),
-            render_passes: Vec::new(),
+            batches: Vec::new(),
             vbo_range: None,
             ibo_range: None,
+            shaders: HashMap::new(),
         }
     }
 
     pub fn begin_frame(&mut self, canvas: &Canvas) {
-        self.commands.clear();
         self.draws.clear();
-        self.render_passes.clear();
+        self.batches.clear();
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
-        self.enable_opaque_pass = canvas.surface.opaque_pass();
         self.enable_msaa = canvas.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
 
-    pub fn fill<S: Shape>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
+    pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
         let transform = canvas.transforms.current();
         let z_index = canvas.z_indices.push();
-        let index = self.commands.len() as RendererCommandIndex;
-        self.commands.push(Fill {
-            shape: shape.to_command(),
-            pattern,
-            transform,
-            z_index,
-        });
-        canvas.commands.push(self.renderer_id, index);
+        let new_batch_index = self.batches.len() as u32;
+
+        let shape = shape.into();
+        let aabb = shape.aabb();
+
+        let batch_index = canvas.batcher.find_or_add_batch(
+            self.renderer_id,
+            new_batch_index,
+            &pattern.batch_key(),
+            &aabb,
+            BatchFlags::empty(),
+        );
+
+        if batch_index == new_batch_index {
+            self.batches.push(Batch {
+                commands: Vec::with_capacity(32),
+                draws: 0..0,
+                surface: canvas.surface.current_state()
+            });
+        }
+
+        let batch = &mut self.batches[batch_index as usize];
+        batch.commands.push(Fill { shape, pattern, transform, z_index });
     }
 
     pub fn prepare(&mut self, canvas: &Canvas) {
-        if self.commands.is_empty() {
+        if self.batches.is_empty() {
             return;
         }
 
-        let commands = std::mem::take(&mut self.commands);
-        for range in canvas.commands.with_renderer(self.renderer_id) {
-            let surface = range.surface;
-            let range = range.commands.start as usize .. range.commands.end as usize;
-            let z_index = commands[range.start].z_index;
+        let id = self.renderer_id;
+        let mut batches = std::mem::take(&mut self.batches);
+        for batch_id in canvas.batcher.batches()
+            .iter()
+            .filter(|batch| batch.renderer == id) {
+
+            let batch = &mut batches[batch_id.index as usize];
+
+            let surface = batch.surface;
 
             let draw_start = self.draws.len() as u32;
-            let mut key = commands.first().as_ref().unwrap().pattern.batch_key();
+            let mut key = batch.commands.first().as_ref().unwrap().pattern.shader_and_bindings();
 
             // Opaque pass.
             let mut geom_start = self.geometry.indices.len() as u32;
             if surface.depth {
-                for fill in commands[range.clone()].iter().rev().filter(|fill| fill.pattern.is_opaque) {
-                    if key != fill.pattern.batch_key() {
+                for fill in batch.commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
+                    if key != fill.pattern.shader_and_bindings() {
                         let end = self.geometry.indices.len() as u32;
                         if end > geom_start {
+                            let state = canvas.surface.state(batch_id.surface);
+                            self.shaders.entry((true, key.0, state)).or_insert(None);
                             self.draws.push(Draw {
                                 indices: geom_start..end,
                                 pattern: key.0,
@@ -155,7 +172,7 @@ impl MeshRenderer {
                             });
                         }
                         geom_start = end;
-                        key = fill.pattern.batch_key();
+                        key = fill.pattern.shader_and_bindings();
                     }
                     self.prepare_fill(fill, canvas);
                 }
@@ -163,6 +180,8 @@ impl MeshRenderer {
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
+                let state = canvas.surface.state(batch_id.surface);
+                self.shaders.entry((true, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
                     pattern: key.0,
@@ -173,10 +192,12 @@ impl MeshRenderer {
             geom_start = end;
 
             // Blended pass.
-            for fill in commands[range.clone()].iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
-                if key != fill.pattern.batch_key() {
+            for fill in batch.commands.iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
+                if key != fill.pattern.shader_and_bindings() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
+                        let state = canvas.surface.state(batch_id.surface);
+                        self.shaders.entry((false, key.0, state)).or_insert(None);
                         self.draws.push(Draw {
                             indices: geom_start..end,
                             pattern: key.0,
@@ -185,13 +206,15 @@ impl MeshRenderer {
                         });
                     }
                     geom_start = end;
-                    key = fill.pattern.batch_key();
+                    key = fill.pattern.shader_and_bindings();
                 }
                 self.prepare_fill(fill, canvas);
             }
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
+                let state = canvas.surface.state(batch_id.surface);
+                self.shaders.entry((false, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
                     pattern: key.0,
@@ -201,20 +224,17 @@ impl MeshRenderer {
             }
 
             let draws = draw_start .. self.draws.len() as u32;
-
-            if !draws.is_empty() {
-                self.render_passes.push(MeshSubPass { draws, z_index, surface });
-            }
+            batch.draws = draws;
         }
 
-        self.commands = commands;
+        self.batches = batches;
     }
 
     fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas) {
         let transform = canvas.transforms.get(fill.transform);
 
         match &fill.shape {
-            RecordedShape::Path(shape) => {
+            Shape::Path(shape) => {
                 let options = FillOptions::tolerance(self.tolerenace)
                     .with_fill_rule(shape.fill_rule);
 
@@ -232,7 +252,7 @@ impl MeshRenderer {
                     )
                 ).unwrap();
             }
-            RecordedShape::Circle(circle) => {
+            Shape::Circle(circle) => {
                 let options = FillOptions::tolerance(self.tolerenace);
                 self.tessellator.tessellate_circle(
                     transform.transform_point(circle.center),
@@ -268,34 +288,17 @@ impl MeshRenderer {
         self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
         self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
 
-        let mut prev_pattern = None;
-        for pass in &self.render_passes {
-            for draw in &self.draws[usize_range(pass.draws.clone())] {
-                if Some((draw.pattern, pass.surface)) == prev_pattern {
-                    return;
-                }
-                let surface = pass.surface.surface_config(pass.surface.depth, None);
-                shaders.prepare_pipeline(device, opaque_pipeline, draw.pattern, surface);
-                shaders.prepare_pipeline(device, alpha_pipeline, draw.pattern, surface);
-                prev_pattern = Some((draw.pattern, pass.surface));
+        for (&(opaque, pattern, surface), shader_id) in &mut self.shaders {
+            if shader_id.is_none() {
+                let surface = surface.surface_config(true, None);
+                let id = if opaque { opaque_pipeline } else { alpha_pipeline };
+                shaders.prepare_pipeline(device, id, pattern, surface);
             }
         }
     }
 }
 
 impl CanvasRenderer for MeshRenderer {
-    fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
-        for (idx, pass) in self.render_passes.iter().enumerate() {
-            render_passes.push(SubPass {
-                renderer_id: self.renderer_id,
-                internal_index: idx as u32,
-                require_pre_pass: false,
-                z_index: pass.z_index,
-                surface: pass.surface,
-            });
-        }
-    }
-
     fn render<'pass, 'resources: 'pass>(
         &self,
         index: u32,
@@ -308,18 +311,18 @@ impl CanvasRenderer for MeshRenderer {
         let common_resources = &resources[self.common_resources];
         let mesh_resources = &resources[self.resources];
 
-        let pass = &self.render_passes[index as usize];
+        let batch = &self.batches[index as usize];
 
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
         render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
 
-        let surface = surface_info.surface_config(self.enable_opaque_pass, None);
+        let surface = surface_info.surface_config(true, None);
 
         let mut helper = DrawHelper::new();
 
-        for draw in &self.draws[usize_range(pass.draws.clone())] {
+        for draw in &self.draws[usize_range(batch.draws.clone())] {
             let pipeline = shaders.try_get(
                 if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
                 draw.pattern,

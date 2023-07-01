@@ -77,7 +77,12 @@ impl BuiltPattern {
     }
 
     #[inline]
-    pub fn batch_key(&self) -> (ShaderPatternId, BindingsId) {
+    pub fn batch_key(&self) -> u64 {
+        (self.shader.index() as u64) << 16
+        | (self.bindings.index() as u64)
+    }
+
+    pub fn shader_and_bindings(&self) -> (ShaderPatternId, BindingsId) {
         (self.shader, self.bindings)
     }
 }

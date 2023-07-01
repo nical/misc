@@ -151,9 +151,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.1.0"
+version = "2.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c70beb79cbb5ce9c4f8e20849978f34225931f665bb49efa6982875a4d5facb3"
+checksum = "630be753d4e58660abd17930c71b647fe46c27ea6b63cc59e1e3851406972e42"
 
 [[package]]
 name = "block"
@@ -276,6 +276,7 @@ checksum = "a2df960f5d869b2dd8532793fde43eb5427cceb126c929747a26823ab0eeb536"
 name = "core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.3.3",
  "bytemuck",
  "futures",
  "lyon",
@@ -2357,7 +2358,7 @@ checksum = "625bea30a0ba50d88025f95c80211d1a85c86901423647fb74f397f614abbd9a"
 dependencies = [
  "arrayvec 0.7.2",
  "bit-vec",
- "bitflags 2.1.0",
+ "bitflags 2.3.3",
  "codespan-reporting",
  "log",
  "naga",
@@ -2384,7 +2385,7 @@ dependencies = [
  "arrayvec 0.7.2",
  "ash",
  "bit-set",
- "bitflags 2.1.0",
+ "bitflags 2.3.3",
  "block",
  "core-graphics-types",
  "d3d12",
@@ -2422,7 +2423,7 @@ version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bd33a976130f03dcdcd39b3810c0c3fc05daf86f0aaf867db14bfb7c4a9a32b"
 dependencies = [
- "bitflags 2.1.0",
+ "bitflags 2.3.3",
  "js-sys",
  "serde",
  "web-sys",

@@ -2,7 +2,7 @@ use core::pattern::BindingsId;
 use core::wgpu::util::DeviceExt;
 use std::sync::Arc;
 use std::time::Duration;
-use lyon::path::Path;
+use core::path::Path;
 use lyon::path::geom::euclid::size2;
 use core::geom::euclid::default::{Size2D, Transform2D};
 use core::{Color, BindingResolver};
@@ -12,7 +12,6 @@ use core::resources::{GpuResources, CommonGpuResources, ResourcesHandle};
 use tess::{MeshGpuResources, MeshRenderer};
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tiling::*;
-//use lyon::extra::rust_logo::build_logo_path;
 
 use pattern_color::SolidColorRenderer;
 use pattern_linear_gradient::{LinearGradientRenderer, LinearGradient};
@@ -124,7 +123,7 @@ fn main() {
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
     } else {
-        let mut builder = lyon::path::Path::builder();
+        let mut builder = core::path::Path::builder();
         builder.begin(point(0.0, 0.0));
         builder.line_to(point(50.0, 400.0));
         builder.line_to(point(450.0, 450.0));
@@ -154,7 +153,6 @@ fn main() {
     let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.textures);
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
     let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
-    let mut dummy = DummyRenderer::new(3);
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
@@ -266,15 +264,15 @@ fn main() {
         let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceParameters::new(size).with_opaque_pass(true).with_msaa(true));
+        canvas.begin_frame(SurfaceParameters::new(size, SurfaceState { depth: false, msaa: false, stencil: false }));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
 
         gpu_resources.begin_frame();
 
-        let tx = scene.pan[0];
-        let ty = scene.pan[1];
+        let tx = scene.pan[0].round();
+        let ty = scene.pan[1].round();
         let hw = (size.width as f32) * 0.5;
         let hh = (size.height as f32) * 0.5;
         let transform = Transform2D::translation(tx, ty)
@@ -302,9 +300,8 @@ fn main() {
         tiling.prepare(&canvas, &device);
         meshes.prepare(&canvas);
         stencil.prepare(&canvas);
-        dummy.prepare(&canvas);
 
-        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil, &mut dummy]);
+        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
@@ -339,7 +336,7 @@ fn main() {
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &stencil, &dummy], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &stencil], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -387,7 +384,7 @@ fn paint_scene(
     gpu_store: &mut GpuStore,
     transform: &Transform2D<f32>,
 ) {
-    let mut builder = lyon::path::Path::builder();
+    let mut builder = core::path::Path::builder();
     builder.begin(point(0.0, 0.0));
     builder.line_to(point(50.0, 400.0));
     builder.line_to(point(450.0, 450.0));
@@ -414,7 +411,12 @@ fn paint_scene(
         }.transformed(canvas.transforms.get_current())),
     );
 
-    //canvas.reconfigure_surface(SurfaceState { opaque_pass: true, msaa: true, stencil: true });
+    if selected_renderer == 1 {
+        canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: false });
+    } else if selected_renderer == 2 {
+        canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: true });
+    }
+
     for (path, pattern) in paths {
         let pattern = match pattern {
             &SvgPattern::Color(color) => patterns.colors.add(color),
@@ -433,7 +435,10 @@ fn paint_scene(
             _ => unimplemented!()
         }
     }
-    //canvas.reconfigure_surface(SurfaceState { opaque_pass: true, msaa: false, stencil: false });
+
+    if selected_renderer != 0 {
+        canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
+    }
 
     tiling.fill(
         canvas,

@@ -4,6 +4,8 @@ pub mod buffer;
 //pub mod flatten_simd;
 pub mod pattern;
 pub mod resources;
+pub mod batching;
+pub mod path;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 

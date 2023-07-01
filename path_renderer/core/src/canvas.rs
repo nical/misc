@@ -4,8 +4,9 @@
 use std::sync::Arc;
 use lyon::geom::euclid::vec2;
 use lyon::math::{Point};
-use lyon::path::{Path, FillRule};
 use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
+use crate::path::{Path, FillRule};
+use crate::batching::{Batcher, DefaultBatcher, BatchId, SurfaceIndex};
 use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode};
 use crate::resources::{GpuResources, CommonGpuResources, ResourcesHandle, AsAny};
 use crate::{Color, u32_range, usize_range, BindingResolver};
@@ -121,71 +122,7 @@ impl Default for ZIndices {
     }
 }
 
-pub type RendererId = u32;
-pub type RendererCommandIndex = u32;
-
-#[derive(Clone, Debug)]
-pub struct CommandRange {
-    pub commands: Range<RendererCommandIndex>,
-    pub surface: SurfaceState,
-}
-
-pub struct Commands {
-    commands: Vec<(RendererId, CommandRange)>,
-    current: Option <(RendererId, CommandRange)>,
-    surface: SurfaceState,
-}
-
-impl Commands {
-    pub fn new(surface: SurfaceState) -> Self {
-        Commands { commands: Vec::new(), current: None, surface }
-    }
-
-    pub fn push(&mut self, renderer: RendererId, internal_index: RendererCommandIndex) {
-        if let Some((sys, range)) = &mut self.current {
-            if *sys == renderer {
-                range.commands.end += 1;
-                return
-            }
-
-            self.commands.push((*sys, range.clone()));
-        }
-
-        self.current = Some((
-            renderer,
-            CommandRange {
-                commands: internal_index..(internal_index + 1),
-                surface: self.surface,
-            }
-        ));
-    }
-
-    fn flush(&mut self) {
-        if let Some(commands) = self.current.take() {
-            self.commands.push(commands);
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.commands.clear();
-    }
-
-
-    pub fn with_renderer(&self, id: RendererId) -> impl Iterator<Item = &CommandRange> {
-        self.commands.iter().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
-    }
-
-    pub fn with_renderer_rev(&self, id: RendererId) -> impl Iterator<Item = &CommandRange> {
-        self.commands.iter().rev().filter(move |cmd| cmd.0 == id).map(|cmd| &cmd.1)
-    }
-}
-
-impl Default for Commands {
-    fn default() -> Self {
-        Self::new(SurfaceState::default())
-    }
-}
-
+pub type RendererId = u16;
 pub type RenderPassId = u32;
 
 #[derive(Debug)]
@@ -263,8 +200,6 @@ impl RenderPasses {
             return requirements;
         }
 
-        self.sub_passes.sort_by_key(|pass| pass.z_index);
-
         // A bit per system specifying whether they have been used in the current
         // render pass yet.
         let mut renderer_bits: u64 = 0;
@@ -279,27 +214,28 @@ impl RenderPasses {
             let req_bit: u64 = 1 << pass.renderer_id;
             let flush_pass = pass.surface != current
                 || (pass.require_pre_pass && renderer_bits & req_bit != 0);
- 
             //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
                 // When transitioning from msaa to non-msaa targets, resolve the msaa
                 // target into the non msaa one.
-                let msaa_resolve = current.msaa && !pass.surface.msaa;
+                let current_surface = surface.states[current as usize];
+                let pass_surface = surface.states[pass.surface as usize];
+                let msaa_resolve = current_surface.msaa && !pass_surface.msaa;
                 //println!("   -> flush msaa resolve {msaa_resolve} blit {msaa_blit}");
                 self.passes.push(RenderPass {
                     pre_passes: u32_range(pre_start..self.pre_passes.len()),
                     sub_passes: u32_range(start..idx),
-                    surface: current,
+                    surface: current_surface,
                     msaa_resolve,
                     msaa_blit,
                     temporary: false,
                 });
-                requirements.add_pass(current);
+                requirements.add_pass(current_surface);
                 requirements.temporary |= disable_msaa_blit_from_main_target && msaa_blit;
 
                 // When transitioning from non-msaa to msaa, blit the non-msaa target
                 // into the msaa one.
-                msaa_blit = !current.msaa && pass.surface.msaa;
+                msaa_blit = !current_surface.msaa && pass_surface.msaa;
                 if msaa_blit && disable_msaa_blit_from_main_target {
                     for pass in self.passes.iter_mut().rev() {
                         if pass.surface.msaa {
@@ -326,16 +262,17 @@ impl RenderPasses {
         }
 
         if start < self.sub_passes.len() {
+            let surface = surface.states[current as usize];
             self.passes.push(RenderPass {
                 pre_passes: u32_range(pre_start..self.pre_passes.len()),
                 sub_passes: u32_range(start..self.sub_passes.len()),
-                surface: current,
-                msaa_resolve: current.msaa,
+                surface,
+                msaa_resolve: surface.msaa,
                 msaa_blit,
                 temporary: false,
             });
 
-            requirements.add_pass(current);
+            requirements.add_pass(surface);
             requirements.temporary |= msaa_blit;
         }
 
@@ -363,6 +300,7 @@ impl RenderPasses {
 // need to know about the presence of an opaque pass earlier.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SurfaceParameters {
+    states: Vec<SurfaceState>,
     size: Size2D<u32>,
     state: SurfaceState,
     clear: Option<Color>,
@@ -394,8 +332,7 @@ impl SurfaceState {
             depth: match (use_depth, self.depth) {
                 (true, true) => DepthMode::Enabled,
                 (false, true) => DepthMode::Ignore,
-                (false, false) => DepthMode::None,
-                (true, false) => panic!("Attempting to use the depth buffer on a surface that does not have one"),
+                (_, false) => DepthMode::None,
             },
             stencil: match (stencil, self.stencil) {
                 (None, false) => StencilMode::None,
@@ -410,27 +347,15 @@ impl SurfaceState {
 
 impl SurfaceParameters {
     #[inline]
-    pub fn new(size: Size2D<u32>) -> Self {
+    pub fn new(size: Size2D<u32>, state: SurfaceState) -> Self {
         SurfaceParameters {
+            states: vec![state],
             size,
-            state: SurfaceState::default(),
+            state,
             clear: Some(Color::BLACK),
             write_only_target: true,
         }
     }
-
-    #[inline]
-    pub fn with_opaque_pass(mut self, enabled: bool) -> Self {
-        self.state.depth = enabled;
-        self
-    }
-
-    #[inline]
-    pub fn with_msaa(mut self, enabled: bool) -> Self {
-        self.state.msaa = enabled;
-        self
-    }
-
     #[inline]
     pub fn with_clear(mut self, clear: Option<Color>) -> Self {
         self.clear = clear;
@@ -453,7 +378,11 @@ impl SurfaceParameters {
     }
 
     #[inline]
-    pub fn state(&self) -> SurfaceState {
+    pub fn state(&self, surface: SurfaceIndex) -> SurfaceState {
+        self.states[surface as usize]
+    }
+
+    pub fn current_state(&self) -> SurfaceState {
         self.state
     }
 }
@@ -481,49 +410,56 @@ impl Default for CanvasParams {
 }
 
 // TODO: canvas isn't a great name for this.
-#[derive(Default)]
 pub struct Canvas {
     // TODO: maybe split off the push/pop transforms builder thing so that this remains more compatible
     // with a retained scene model as well.
     pub transforms: Transforms,
     pub z_indices: ZIndices,
-    pub commands: Commands,
     pub surface: SurfaceParameters,
     render_passes: RenderPasses,
     pub params: CanvasParams,
+    pub batcher: Box<dyn Batcher>,
 }
 
 impl Canvas {
     pub fn new() -> Self {
-        Self::default()
+        Canvas {
+            transforms: Transforms::default(),
+            z_indices: ZIndices::default(),
+            surface: SurfaceParameters::default(),
+            render_passes: RenderPasses::default(),
+            params: CanvasParams::default(),
+            batcher: Box::new(DefaultBatcher::new()),
+        }
     }
 
     pub fn begin_frame(&mut self, surface: SurfaceParameters) {
         self.transforms.clear();
         self.z_indices.clear();
         self.render_passes.clear();
-        self.commands.clear();
-        self.commands.surface = surface.state;
         self.surface = surface;
+        self.batcher.begin();
     }
 
     pub fn prepare(&mut self) {
-        self.commands.flush();
+        self.batcher.finish();
+        self.surface.states.push(self.surface.state);
     }
 
     pub fn reconfigure_surface(&mut self, state: SurfaceState) {
-        if self.commands.surface == state {
+        if self.surface.state == state {
             return;
         }
-
-        self.commands.flush();
-        self.commands.surface = state;
+        self.batcher.set_render_pass(self.surface.states.len() as u16);
+        self.surface.states.push(state);
+        self.surface.state = state;
     }
 
     pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) -> RenderPassesRequirements {
-        for renderer in renderers {
-            renderer.add_render_passes(&mut self.render_passes);
+        for batch in self.batcher.batches() {
+            renderers[batch.renderer as usize].add_render_passes(*batch, &mut self.render_passes)
         }
+
         self.render_passes.build(&self.surface)
     }
 
@@ -657,7 +593,15 @@ impl Canvas {
 }
 
 pub trait CanvasRenderer: AsAny {
-    fn add_render_passes(&mut self, render_passes: &mut RenderPasses);
+    fn add_render_passes(&mut self, batch: BatchId, render_passes: &mut RenderPasses) {
+        render_passes.push(SubPass {
+            renderer_id: batch.renderer,
+            internal_index: batch.index,
+            require_pre_pass: false,
+            surface: batch.surface,
+        });
+    }
+
     fn render_pre_pass(
         &self,
         _index: u32,
@@ -681,61 +625,15 @@ pub trait CanvasRenderer: AsAny {
 pub struct SubPass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
-    pub z_index: ZIndex,
+    //pub z_index: ZIndex,
     pub require_pre_pass: bool,
-    pub surface: SurfaceState,
+    pub surface: SurfaceIndex,
 }
 
 #[derive(Debug)]
 pub struct PrePass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
-}
-
-
-pub struct DummyRenderer {
-    pub system_id: RendererId,
-    passes: Vec<ZIndex>,
-}
-
-impl DummyRenderer {
-    pub fn new(system_id: RendererId) -> Self {
-        DummyRenderer {
-            system_id,
-            passes: Vec::new(),
-        }
-    }
-
-    pub fn begin_frame(&mut self) {
-        self.passes.clear();
-    }
-
-    pub fn command(&mut self, canvas: &mut Canvas) {
-        let z_index = canvas.z_indices.push();
-        let index = self.passes.len() as RendererCommandIndex;
-        self.passes.push(z_index);
-        canvas.commands.push(self.system_id, index);
-    }
-
-    pub fn prepare(&mut self, canvas: &Canvas) {
-        for _range in canvas.commands.with_renderer(self.system_id) {
-            // A typical system would build batches here but this one does nothing.
-        }
-    }
-}
-
-impl CanvasRenderer for DummyRenderer {
-    fn add_render_passes(&mut self, render_passes: &mut RenderPasses) {
-        for (idx, z_index) in self.passes.iter().enumerate() {
-            render_passes.push(SubPass {
-                renderer_id: self.system_id,
-                internal_index: idx as u32,
-                z_index: *z_index,
-                require_pre_pass: false,
-                surface: SurfaceState::default(),
-            });
-        }
-    }
 }
 
 pub struct SurfaceResources<'a> {
@@ -796,13 +694,10 @@ impl DrawHelper {
 
 
 
-pub trait Shape {
-    fn to_command(self) -> RecordedShape;
-}
-
 pub struct PathShape {
     pub path: Arc<Path>,
     pub fill_rule: FillRule,
+    // TODO: maybe move this out of the shape.
     pub inverted: bool,
 }
 
@@ -820,15 +715,15 @@ impl PathShape {
     }
 }
 
-impl Shape for PathShape {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Path(self)
+impl Into<Shape> for PathShape {
+    fn into(self) -> Shape {
+        Shape::Path(self)
     }
 }
 
-impl Shape for Arc<Path> {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Path(PathShape::new(self))
+impl Into<Shape> for Arc<Path> {
+    fn into(self) -> Shape {
+        Shape::Path(PathShape::new(self))
     }
 }
 
@@ -856,43 +751,58 @@ impl Circle {
     }
 }
 
-impl Shape for Circle {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Circle(self)
+impl Into<Shape> for Circle {
+    fn into(self) -> Shape {
+        Shape::Circle(self)
     }
 }
 
-impl Shape for Box2D<f32> {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Rect(self)
+impl Into<Shape> for Box2D<f32> {
+    fn into(self) -> Shape {
+        Shape::Rect(self)
     }
 }
 
-impl Shape for Box2D<i32> {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Rect(self.to_f32())
+impl Into<Shape> for Box2D<i32> {
+    fn into(self) -> Shape {
+        Shape::Rect(self.to_f32())
     }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct All;
 
-impl Shape for All {
-    fn to_command(self) -> RecordedShape {
-        RecordedShape::Canvas
+impl Into<Shape> for All {
+    fn into(self) -> Shape {
+        Shape::Canvas
     }
 }
 
 // TODO: the enum prevents other types of shapes from being added externally.
-pub enum RecordedShape {
+pub enum Shape {
     Path(PathShape),
     Rect(Box2D<f32>),
     Circle(Circle),
     Canvas,
 }
 
+impl Shape {
+    pub fn aabb(&self) -> Box2D<f32> {
+        match self {
+            // TODO: return the correct aabb for inverted shapes.
+            Shape::Path(shape) => *shape.path.aabb(),
+            Shape::Rect(rect) => *rect,
+            Shape::Circle(circle) => circle.aabb(),
+            Shape::Canvas => Box2D {
+                min: Point::new(std::f32::MIN, std::f32::MIN),
+                max: Point::new(std::f32::MAX, std::f32::MAX),
+            }
+        }
+    }
+}
+
 pub struct Fill {
-    pub shape: RecordedShape,
+    pub shape: Shape,
     pub pattern: BuiltPattern,
     pub transform: TransformId,
     pub z_index: ZIndex,
