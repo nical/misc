@@ -15,6 +15,7 @@ core = { path = "../core" }
 tess = { path = "../renderers/tess" }
 tiling = { path = "../renderers/tiling" }
 stencil = { path = "../renderers/stencil" }
+rectangles = { path = "../renderers/rectangles" }
 
 pattern_color = { path = "../patterns/color" }
 pattern_linear_gradient = { path = "../patterns/linear_gradient" }

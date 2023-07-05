@@ -625,7 +625,6 @@ pub trait CanvasRenderer: AsAny {
 pub struct SubPass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
-    //pub z_index: ZIndex,
     pub require_pre_pass: bool,
     pub surface: SurfaceIndex,
 }

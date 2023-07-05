@@ -86,6 +86,7 @@ impl TilingGpuResources {
             source: include_str!("../shaders/tile.wgsl").into(),
             vertex_attributes: Vec::new(),
             instance_attributes: vec![VertexAtribute::uint32x4("instance")],
+            varyings: Vec::new(),
             bindings: None,
         });
 
@@ -118,6 +119,7 @@ impl TilingGpuResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::None,
+            shader_defines: Vec::new(),
         });
 
         let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
@@ -127,6 +129,7 @@ impl TilingGpuResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
+            shader_defines: Vec::new(),
         });
 
         // TODO: build the pipelines lazily

@@ -388,7 +388,7 @@ impl Batcher for OrderIndependentBatcher {
     fn finish(&mut self) {
         // Reverse the batches to increase the likelihood of opaque primitives
         // being rendered in front-to-back order.
-        // Don´t reorder batches across split points, though.
+        // Don't reorder batches across split points, though.
         let mut start = 0;
         for split in &self.splits {
             self.batches[start..*split].reverse();
@@ -435,6 +435,7 @@ impl OrderIndependentBatcher {
 pub struct DefaultBatcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
+    batches: Vec<BatchId>,
 }
 
 impl Batcher for DefaultBatcher {
@@ -468,33 +469,117 @@ impl Batcher for DefaultBatcher {
     }
 
     fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
+        self.flush_batches();
+
         self.ordered.set_render_pass(pass_idx);
         self.order_independent.set_render_pass(pass_idx);
     }
 
     fn begin(&mut self) {
+        self.batches.clear();
         self.ordered.begin();
         self.order_independent.begin();
     }
 
     fn finish(&mut self) {
+        self.flush_batches();
+
         self.ordered.finish();
         self.order_independent.finish();
-        // Put all batches in the same vector.
-        self.order_independent.batches.extend_from_slice(&self.ordered.batches);
     }
 
     fn batches(&self) -> &[BatchId] {
-        &self.order_independent.batches
+        &self.batches
     }
 }
 
 impl DefaultBatcher {
     pub fn new() -> Self {
         DefaultBatcher {
+            batches: Vec::new(),
             ordered: OrderedBatcher::new(),
             order_independent: OrderIndependentBatcher::new(),
         }
     }
+
+    fn flush_batches(&mut self) {
+        self.order_independent.batches.reverse();
+        self.batches.extend_from_slice(&self.order_independent.batches);
+        self.order_independent.batches.clear();
+
+        self.batches.extend_from_slice(&self.ordered.batches);
+        self.ordered.batches.clear();
+    }
 }
 
+
+/// A helper class for storing batches in a renderer.
+pub struct BatchList<T, I> {
+    // TODO: try something more efficient than Vec<Vec<T>>
+    batches: Vec<(Vec<T>, I)>,
+    renderer: RendererId,
+}
+
+impl<T, I> BatchList<T, I> {
+    pub fn new(renderer: RendererId) -> Self {
+        BatchList {
+            batches: Vec::new(),
+            renderer
+        }
+    }
+
+    pub fn find_or_add_batch(
+        &mut self,
+        batcher: &mut dyn Batcher,
+        batch_key: &BatchKey,
+        aabb: &Rect,
+        flags: BatchFlags,
+        or_add: &mut impl FnMut() -> I, 
+    ) -> (&mut Vec<T>, &mut I) {
+        let new_batch_index = self.batches.len() as u32;
+        let batch_index = batcher.find_or_add_batch(
+            self.renderer,
+            new_batch_index,
+            batch_key,
+            aabb,
+            flags,
+        );
+
+        if batch_index == new_batch_index {
+            self.batches.push((Vec::with_capacity(32), or_add()));
+        }
+
+        let b = &mut self.batches[batch_index as usize];
+        return (&mut b.0, &mut b.1)
+    }
+
+    pub fn get(&self, index: BatchIndex) -> (&[T], &I) {
+        let b = &self.batches[index as usize];
+        (&b.0, &b.1)
+    }
+
+    pub fn get_mut(&mut self, index: BatchIndex) -> (&mut Vec<T>, &mut I) {
+        let b = &mut self.batches[index as usize];
+        (&mut b.0, &mut b.1)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Vec<T>, &I)> {
+        self.batches.iter().map(|b| (&b.0, &b.1))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &mut I)> {
+        self.batches.iter_mut().map(|b| (&mut b.0, &mut b.1))
+    }
+
+    pub fn is_empty(&self) -> bool { self.batches.is_empty() }
+
+    pub fn batch_count(&self) -> usize { self.batches.len() }
+
+    pub fn clear(&mut self) {
+        self.batches.clear();
+    }
+
+    pub fn take(&mut self) -> Self {
+        BatchList { batches: std::mem::take(&mut self.batches), renderer: self.renderer }
+    }
+}

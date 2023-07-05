@@ -1,9 +1,9 @@
 use lyon::{geom::euclid::Size2D};
 use core::{
-    canvas::{Fill, Canvas, Shape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper},
+    canvas::{Fill, Canvas, Shape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState},
     resources::{GpuResources, ResourcesHandle, CommonGpuResources},
     pattern::{BuiltPattern},
-    gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags}, u32_range,
+    gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags, BatchList}, u32_range,
 };
 use crate::{Tiler, TilerConfig, TILE_SIZE, TileMask, encoder::SRC_COLOR_ATLAS_BINDING};
 use super::{encoder::TileEncoder, TilingGpuResources, mask::MaskEncoder, FillOptions, Stats};
@@ -16,7 +16,7 @@ pub struct TileRenderer {
     pub encoder: TileEncoder,
     pub tiler: Tiler,
     pub occlusion_mask: TileMask,
-    batches: Vec<Batch>,
+    batches: BatchList<Fill, Range<u32>>,
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TilingGpuResources>,
@@ -24,11 +24,6 @@ pub struct TileRenderer {
     masks: TilingMasks,
     current_mask_atlas: u32,
     current_color_atlas: u32,
-}
-
-struct Batch {
-    commands: Vec<Fill>,
-    passes: Range<u32>,
 }
 
 struct TilingMasks {
@@ -48,7 +43,7 @@ impl TileRenderer {
         let tiles_x = (size.width + crate::TILE_SIZE - 1) / crate::TILE_SIZE;
         let tiles_y = (size.height + crate::TILE_SIZE - 1) / crate::TILE_SIZE;
         TileRenderer {
-            batches: Vec::new(),
+            batches: BatchList::new(renderer_id),
             renderer_id,
             common_resources: common_resources_id,
             resources: resources_id,
@@ -63,6 +58,10 @@ impl TileRenderer {
             current_color_atlas: std::u32::MAX,
             current_mask_atlas: std::u32::MAX,
         }
+    }
+
+    pub fn supports_surface(&self, surface: SurfaceState) -> bool {
+        surface == SurfaceState { depth: false, stencil: false, msaa: false }
     }
 
     pub fn begin_frame(&mut self, canvas: &Canvas) {
@@ -81,35 +80,22 @@ impl TileRenderer {
     }
 
     pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
-        let transform = canvas.transforms.current();
-        let z_index = canvas.z_indices.push();
+        debug_assert!(self.supports_surface(canvas.surface.current_state()));
 
         let shape = shape.into();
-        let aabb = shape.aabb(); // TODO: transfom the aabb or split batches when the transform changes!
+        let aabb = canvas.transforms.get_current().outer_transformed_box(&shape.aabb());
 
-        let new_batch_index = self.batches.len() as u32;
-        let batch_index = canvas.batcher.find_or_add_batch(
-            self.renderer_id,
-            new_batch_index,
+        self.batches.find_or_add_batch(
+            &mut *canvas.batcher,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
-        );
-
-        if batch_index == new_batch_index {
-            self.batches.push(Batch {
-                commands: Vec::with_capacity(32),
-                passes: 0..0,
-            });
-        }
-
-        let batch = &mut self.batches[batch_index as usize];
-
-        batch.commands.push(Fill {
+            &mut || Default::default(),
+        ).0.push(Fill {
             shape: shape.into(),
             pattern,
-            transform,
-            z_index,
+            transform: canvas.transforms.current(),
+            z_index: canvas.z_indices.push(),
         });
     }
 
@@ -120,21 +106,21 @@ impl TileRenderer {
 
         // Process paths back to front in order to let the occlusion culling logic do its magic.
         let id = self.renderer_id;
-        let mut batches = std::mem::take(&mut self.batches);
+        let mut batches = self.batches.take();
         for batch_id in canvas.batcher.batches()
             .iter()
             .rev()
             .filter(|batch| batch.renderer == id) {
-            let batch = &mut batches[batch_id.index as usize];
             let passes_start = self.encoder.render_passes.len();
-            for fill in batch.commands.iter().rev() {
+            let (commands, info) = batches.get_mut(batch_id.index);
+            for fill in commands.iter().rev() {
                 self.prepare_fill(fill, canvas, device);
             }
             self.encoder.split_sub_pass();
             let passes_end = self.encoder.render_passes.len();
             let passes = passes_start..passes_end;
             self.encoder.render_passes[passes.clone()].reverse();
-            batch.passes = u32_range(passes);
+            *info = u32_range(passes);
         }
 
         self.batches = batches;
@@ -427,8 +413,8 @@ impl TileRenderer {
 
 impl CanvasRenderer for TileRenderer {
     fn add_render_passes(&mut self, batch_id: BatchId, render_passes: &mut RenderPasses) {
-        let batch = &mut self.batches[batch_id.index as usize];
-        for pass_idx in batch.passes.clone() {
+        let (_, passes) = self.batches.get(batch_id.index);
+        for pass_idx in passes.clone() {
             let pass = &mut self.encoder.render_passes[pass_idx as usize];
 
             pass.color_pre_pass = self.current_color_atlas != pass.color_atlas_index;

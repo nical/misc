@@ -446,6 +446,7 @@ dependencies = [
  "pattern_linear_gradient",
  "pattern_texture",
  "profiling",
+ "rectangles",
  "stencil",
  "tess",
  "tiling",
@@ -1586,6 +1587,15 @@ name = "rctree"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da0b3901505c2faa2390e27188078852eb3ed0dd9176e2153f403cdcdd18e0e7"
+
+[[package]]
+name = "rectangles"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "lyon",
+ "profiling",
+]
 
 [[package]]
 name = "redox_syscall"

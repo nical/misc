@@ -24,6 +24,7 @@ impl MeshGpuResources {
                 VertexAtribute::uint32("pattern"),
             ],
             instance_attributes: Vec::new(),
+            varyings: Vec::new(),
             bindings: None,
         });
 
@@ -34,6 +35,7 @@ impl MeshGpuResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::None,
+            shader_defines: Vec::new(),
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "mesh(alpha)",
@@ -42,6 +44,7 @@ impl MeshGpuResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
+            shader_defines: Vec::new(),
         });
 
         MeshGpuResources {
@@ -68,7 +71,7 @@ impl RendererResources for MeshGpuResources {
 const SIMPLE_MESH_SRC: &'static str = "
 #import render_target
 
-fn geometry(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern_data: u32) -> Geometry {
+fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern_data: u32) -> Geometry {
     var target_position = canvas_to_target(canvas_position);
 
     var position = vec4<f32>(
@@ -87,4 +90,7 @@ fn geometry(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern
         0u,
     );
 }
+
+fn geometry_fragment() -> f32 { return 1.0; }
+
 ";

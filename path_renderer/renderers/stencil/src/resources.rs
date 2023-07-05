@@ -106,6 +106,7 @@ impl StencilAndCoverResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::None,
+            shader_defines: Vec::new(),
         });
         let alpha_cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "cover(alpha)",
@@ -114,6 +115,7 @@ impl StencilAndCoverResources {
             user_flags: 0,
             output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
+            shader_defines: Vec::new(),
         });
 
         StencilAndCoverResources {

@@ -4,7 +4,7 @@ members = [
     "renderers/tess",
     "renderers/stencil",
     "renderers/tiling",
-    #"renderers/rectangles",
+    "renderers/rectangles",
     "patterns/color",
     "patterns/linear_gradient",
     "patterns/checkerboard",

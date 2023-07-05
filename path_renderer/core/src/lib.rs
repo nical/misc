@@ -13,6 +13,32 @@ use pattern::BindingsId;
 pub use wgpu;
 pub use bytemuck;
 pub use lyon::geom;
+pub use bitflags;
+
+pub mod units {
+    use lyon::geom::euclid::{self, Box2D, Point2D, Vector2D, Size2D};
+
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+    pub struct LocalSpace;
+
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+    pub struct SurfaceSpace;
+
+    pub type Rect = euclid::default::Box2D<f32>;
+    pub type Point = euclid::default::Point2D<f32>;
+    pub type Vector = euclid::default::Vector2D<f32>;
+    pub type Size = euclid::default::Size2D<f32>;
+
+    pub type SurfaceRect = Box2D<f32, SurfaceSpace>;
+    pub type SurfacePoint = Point2D<f32, SurfaceSpace>;
+    pub type SurfaceVector = Vector2D<f32, SurfaceSpace>;
+    pub type SurfaceSize = Size2D<f32, SurfaceSpace>;
+
+    pub type LocalRect = Box2D<f32, LocalSpace>;
+    pub type LocalPoint = Point2D<f32, LocalSpace>;
+    pub type LocalVector = Vector2D<f32, LocalSpace>;
+    pub type LocalSize = Size2D<f32, LocalSpace>;
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {

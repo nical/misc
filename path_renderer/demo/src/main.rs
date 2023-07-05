@@ -1,9 +1,11 @@
 use core::pattern::BindingsId;
+use core::units::LocalRect;
 use core::wgpu::util::DeviceExt;
 use std::sync::Arc;
 use std::time::Duration;
 use core::path::Path;
 use lyon::path::geom::euclid::size2;
+use tiling::euclid::point2;
 use core::geom::euclid::default::{Size2D, Transform2D};
 use core::{Color, BindingResolver};
 use core::canvas::*;
@@ -11,6 +13,7 @@ use core::gpu::{Shaders, GpuStore, PipelineDefaults};
 use core::resources::{GpuResources, CommonGpuResources, ResourcesHandle};
 use tess::{MeshGpuResources, MeshRenderer};
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
+use rectangles::{RectangleRenderer, RectangleGpuResources, Aa};
 use tiling::*;
 
 use pattern_color::SolidColorRenderer;
@@ -28,6 +31,10 @@ use core::wgpu;
 
 mod load_svg;
 use load_svg::*;
+
+const TILING: usize = 0;
+const TESS: usize = 1;
+const STENCIL: usize = 2;
 
 fn main() {
     profiling::register_thread!("Main");
@@ -148,11 +155,13 @@ fn main() {
     let tiling_handle = ResourcesHandle::new(1);
     let mesh_handle = ResourcesHandle::new(2);
     let stencil_handle = ResourcesHandle::new(3);
+    let rectangle_handle = ResourcesHandle::new(4);
 
     let mut canvas = Canvas::new();
     let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.textures);
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
     let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
+    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle);
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
@@ -172,11 +181,14 @@ fn main() {
 
     let stencil_resources = StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
 
+    let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
+
     let mut gpu_resources = GpuResources::new(vec![
         Box::new(common_resources),
         Box::new(tiling_resources),
         Box::new(mesh_resources),
         Box::new(stencil_resources),
+        Box::new(rectangle_resources),
     ]);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -268,6 +280,7 @@ fn main() {
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
+        rectangles.begin_frame(&canvas);
 
         gpu_resources.begin_frame();
 
@@ -280,7 +293,7 @@ fn main() {
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(hw, hh));
 
-        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &patterns, &mut gpu_store, &transform);
+        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &mut rectangles, &patterns, &mut gpu_store, &transform);
         tiling.fill(
             &mut canvas,
             Circle { center: point(10.0, 600.0), radius: 100.0, inverted: false},
@@ -300,8 +313,9 @@ fn main() {
         tiling.prepare(&canvas, &device);
         meshes.prepare(&canvas);
         stencil.prepare(&canvas);
+        rectangles.prepare(&canvas);
 
-        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil]);
+        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil, &mut rectangles]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
@@ -332,11 +346,12 @@ fn main() {
         tiling.upload(&mut gpu_resources, &device, &queue);
         meshes.upload(&mut gpu_resources, &mut shaders, &device, &queue);
         stencil.upload(&mut gpu_resources, &mut shaders, &device);
+        rectangles.upload(&mut gpu_resources, &mut shaders, &device, &queue);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &stencil], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
+        canvas.render(&[&tiling, &meshes, &stencil, &rectangles], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
 
         queue.submit(Some(encoder.finish()));
 
@@ -380,6 +395,7 @@ fn paint_scene(
     tiling: &mut TileRenderer,
     meshes: &mut MeshRenderer,
     stencil: &mut StencilAndCoverRenderer,
+    rectangles: &mut RectangleRenderer,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
     transform: &Transform2D<f32>,
@@ -411,9 +427,9 @@ fn paint_scene(
         }.transformed(canvas.transforms.get_current())),
     );
 
-    if selected_renderer == 1 {
+    if selected_renderer == TESS {
         canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: false });
-    } else if selected_renderer == 2 {
+    } else if selected_renderer == STENCIL {
         canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: true });
     }
 
@@ -429,16 +445,45 @@ fn paint_scene(
         };
 
         match selected_renderer {
-            0 => { tiling.fill(canvas, path.clone(), pattern); }
-            1 => { meshes.fill(canvas, path.clone(), pattern); }
-            2 => { stencil.fill(canvas, path.clone(), pattern); }
+            TILING => { tiling.fill(canvas, path.clone(), pattern); }
+            TESS => { meshes.fill(canvas, path.clone(), pattern); }
+            STENCIL => { stencil.fill(canvas, path.clone(), pattern); }
             _ => unimplemented!()
         }
     }
 
-    if selected_renderer != 0 {
+    canvas.reconfigure_surface(SurfaceState { depth: true, msaa: false, stencil: false });
+
+    rectangles.fill_rect(
+        canvas,
+        &LocalRect { min: point2(500.0, 200.0), max: point2(600.0, 400.0) },
+        Aa::ALL,
+        patterns.gradients.add(gpu_store,
+            LinearGradient {
+                from: point(0.0, 200.0),
+                to: point(0.0, 400.0),
+                color0: Color { r: 0, g: 30, b: 100, a: 255 },
+                color1: Color { r: 0, g: 60, b: 250, a: 255 },
+            }
+        ),
+    );
+    rectangles.fill_rect(
+        canvas,
+        &LocalRect { min: point2(610.5, 200.5), max: point2(710.5, 400.5) },
+        Aa::LEFT | Aa::RIGHT | Aa::ALL,
+        patterns.gradients.add(gpu_store,
+            LinearGradient {
+                from: point(0.0, 200.0),
+                to: point(0.0, 400.0),
+                color0: Color { r: 0, g: 30, b: 100, a: 255 },
+                color1: Color { r: 0, g: 60, b: 250, a: 255 },
+            }
+        ),
+    );
+
+    //if selected_renderer != TILING {
         canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
-    }
+    //}
 
     tiling.fill(
         canvas,

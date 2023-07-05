@@ -11,7 +11,7 @@ use core::{
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu, BindingResolver, batching::BatchFlags,
+    wgpu, BindingResolver, batching::{BatchFlags, BatchList},
 };
 use std::{ops::Range, collections::HashMap};
 
@@ -20,8 +20,7 @@ use super::MeshGpuResources;
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 
-struct Batch {
-    commands: Vec<Fill>,
+struct BatchInfo {
     draws: Range<u32>,
     surface: SurfaceState,
 }
@@ -73,7 +72,7 @@ pub struct MeshRenderer {
     tolerenace: f32,
     enable_msaa: bool,
 
-    batches: Vec<Batch>,
+    batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
@@ -92,11 +91,15 @@ impl MeshRenderer {
             enable_msaa: false,
 
             draws: Vec::new(),
-            batches: Vec::new(),
+            batches: BatchList::new(renderer_id),
             vbo_range: None,
             ibo_range: None,
             shaders: HashMap::new(),
         }
+    }
+
+    pub fn supports_surface(&self, _surface: SurfaceState) -> bool {
+        true
     }
 
     pub fn begin_frame(&mut self, canvas: &Canvas) {
@@ -112,29 +115,22 @@ impl MeshRenderer {
     pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
         let transform = canvas.transforms.current();
         let z_index = canvas.z_indices.push();
-        let new_batch_index = self.batches.len() as u32;
 
         let shape = shape.into();
-        let aabb = shape.aabb();
+        let aabb = canvas.transforms.get_current().outer_transformed_box(&shape.aabb());
 
-        let batch_index = canvas.batcher.find_or_add_batch(
-            self.renderer_id,
-            new_batch_index,
+        let (commands, info) = self.batches.find_or_add_batch(
+            &mut*canvas.batcher,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
-        );
-
-        if batch_index == new_batch_index {
-            self.batches.push(Batch {
-                commands: Vec::with_capacity(32),
+            &mut || BatchInfo {
                 draws: 0..0,
-                surface: canvas.surface.current_state()
-            });
-        }
-
-        let batch = &mut self.batches[batch_index as usize];
-        batch.commands.push(Fill { shape, pattern, transform, z_index });
+                surface: canvas.surface.current_state(),
+            },
+        );
+        info.surface = canvas.surface.current_state();
+        commands.push(Fill { shape, pattern, transform, z_index });
     }
 
     pub fn prepare(&mut self, canvas: &Canvas) {
@@ -143,22 +139,22 @@ impl MeshRenderer {
         }
 
         let id = self.renderer_id;
-        let mut batches = std::mem::take(&mut self.batches);
+        let mut batches = self.batches.take();
         for batch_id in canvas.batcher.batches()
             .iter()
             .filter(|batch| batch.renderer == id) {
 
-            let batch = &mut batches[batch_id.index as usize];
+            let (commands, info) = &mut batches.get_mut(batch_id.index);
 
-            let surface = batch.surface;
+            let surface = info.surface;
 
             let draw_start = self.draws.len() as u32;
-            let mut key = batch.commands.first().as_ref().unwrap().pattern.shader_and_bindings();
+            let mut key = commands.first().as_ref().unwrap().pattern.shader_and_bindings();
 
             // Opaque pass.
             let mut geom_start = self.geometry.indices.len() as u32;
             if surface.depth {
-                for fill in batch.commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
+                for fill in commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
                     if key != fill.pattern.shader_and_bindings() {
                         let end = self.geometry.indices.len() as u32;
                         if end > geom_start {
@@ -192,7 +188,7 @@ impl MeshRenderer {
             geom_start = end;
 
             // Blended pass.
-            for fill in batch.commands.iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
+            for fill in commands.iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
                 if key != fill.pattern.shader_and_bindings() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
@@ -224,7 +220,7 @@ impl MeshRenderer {
             }
 
             let draws = draw_start .. self.draws.len() as u32;
-            batch.draws = draws;
+            info.draws = draws;
         }
 
         self.batches = batches;
@@ -311,7 +307,7 @@ impl CanvasRenderer for MeshRenderer {
         let common_resources = &resources[self.common_resources];
         let mesh_resources = &resources[self.resources];
 
-        let batch = &self.batches[index as usize];
+        let (_, batch_info) = self.batches.get(index);
 
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
@@ -322,7 +318,7 @@ impl CanvasRenderer for MeshRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for draw in &self.draws[usize_range(batch.draws.clone())] {
+        for draw in &self.draws[usize_range(batch_info.draws.clone())] {
             let pipeline = shaders.try_get(
                 if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
                 draw.pattern,
