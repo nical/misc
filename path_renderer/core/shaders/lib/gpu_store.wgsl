@@ -1,4 +1,5 @@
 const GPU_STORE_WIDTH: u32 = 2048u;
+const GPU_STORE_HANDLE_NONE: u32 = 0xFFFFFu;
 
 @group(0) @binding(1) var gpu_store_texture: texture_2d<f32>;
 

@@ -3,7 +3,8 @@ use lyon::{
     path::traits::PathIterator, geom::euclid::vec2
 };
 use core::{
-    canvas::{RendererId, Canvas, Shape, CanvasRenderer, ZIndex, RenderPassState, TransformId, DrawHelper, SurfaceState},
+    shape::{PathShape, Circle},
+    canvas::{RendererId, Canvas, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceState, SubPass},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
         shader::{ShaderPatternId},
@@ -11,7 +12,7 @@ use core::{
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu, BindingResolver, batching::{BatchFlags, BatchList},
+    wgpu, BindingResolver, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point},
 };
 use std::{ops::Range, collections::HashMap};
 
@@ -20,16 +21,41 @@ use super::MeshGpuResources;
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 
+pub struct TessellatedMesh {
+    pub vertices: Vec<LocalPoint>,
+    pub indices: Vec<u32>,
+    pub aabb: LocalRect,
+}
+
 struct BatchInfo {
     draws: Range<u32>,
     surface: SurfaceState,
 }
 
-pub struct Fill {
-    pub shape: Shape,
-    pub pattern: BuiltPattern,
-    pub transform: TransformId,
-    pub z_index: ZIndex,
+enum Shape {
+    Path(PathShape),
+    Rect(LocalRect),
+    Circle(Circle),
+    Mesh(TessellatedMesh),
+}
+
+impl Shape {
+    pub fn aabb(&self) -> LocalRect {
+        match self {
+            // TODO: return the correct aabb for inverted shapes.
+            Shape::Path(shape) => *shape.path.aabb(),
+            Shape::Rect(rect) => *rect,
+            Shape::Circle(circle) => circle.aabb(),
+            Shape::Mesh(mesh) => mesh.aabb
+        }
+    }
+}
+
+struct Fill {
+    shape: Shape,
+    pattern: BuiltPattern,
+    transform: TransformId,
+    z_index: ZIndex,
 }
 
 #[repr(C)]
@@ -112,15 +138,30 @@ impl MeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
-        let transform = canvas.transforms.current();
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, path: P, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+    }
+
+    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Rect(rect), pattern);
+    }
+
+    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    }
+
+    pub fn fill_mesh(&mut self, canvas: &mut Canvas, mesh: TessellatedMesh, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Mesh(mesh), pattern);
+    }
+
+    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
+        let transform = canvas.transforms.current_id();
         let z_index = canvas.z_indices.push();
 
-        let shape = shape.into();
-        let aabb = canvas.transforms.get_current().outer_transformed_box(&shape.aabb());
+        let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&shape.aabb());
 
         let (commands, info) = self.batches.find_or_add_batch(
-            &mut*canvas.batcher,
+            &mut canvas.batcher,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
@@ -227,17 +268,20 @@ impl MeshRenderer {
     }
 
     fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas) {
-        let transform = canvas.transforms.get(fill.transform);
+        let transform = canvas.transforms.get(fill.transform).matrix();
+        let z_index = fill.z_index;
+        let pattern = fill.pattern.data;
 
         match &fill.shape {
             Shape::Path(shape) => {
+                let transform = transform.to_untyped();
                 let options = FillOptions::tolerance(self.tolerenace)
                     .with_fill_rule(shape.fill_rule);
 
                 // TODO: some way to simplify/discard offscreen geometry, would probably be best
                 // done in the tessellator itself.
                 self.tessellator.tessellate(
-                    shape.path.iter().transformed(transform),
+                    shape.path.iter().transformed(&transform),
                     &options,
                     &mut BuffersBuilder::new(
                         &mut self.geometry,
@@ -251,7 +295,7 @@ impl MeshRenderer {
             Shape::Circle(circle) => {
                 let options = FillOptions::tolerance(self.tolerenace);
                 self.tessellator.tessellate_circle(
-                    transform.transform_point(circle.center),
+                    transform.transform_point(circle.center).cast_unit(),
                     // TODO: that's not quite right if the transform has more than scale+offset
                     transform.transform_vector(vec2(circle.radius, 0.0)).length(),
                     &options,
@@ -264,8 +308,38 @@ impl MeshRenderer {
                     )
                 ).unwrap();
             }
-            _ => {
-                todo!()
+            Shape::Mesh(mesh) => {
+                let vtx_offset = self.geometry.vertices.len() as u32;
+                for vertex in &mesh.vertices {
+                    let pos = transform.transform_point(*vertex);
+                    self.geometry.vertices.push(Vertex {
+                        x: pos.x,
+                        y: pos.y,
+                        z_index: fill.z_index,
+                        pattern: fill.pattern.data,
+                    });
+                }
+                for index in &mesh.indices {
+                    self.geometry.indices.push(*index + vtx_offset);
+                }
+            }
+            Shape::Rect(rect) => {
+                let vtx_offset = self.geometry.vertices.len() as u32;
+                let a = transform.transform_point(rect.min);
+                let b = transform.transform_point(point(rect.max.x, rect.min.y));
+                let c = transform.transform_point(rect.max);
+                let d = transform.transform_point(point(rect.min.x, rect.max.y));
+
+                self.geometry.vertices.push(Vertex { x: a.x, y: a.y, z_index, pattern });
+                self.geometry.vertices.push(Vertex { x: b.x, y: b.y, z_index, pattern });
+                self.geometry.vertices.push(Vertex { x: c.x, y: c.y, z_index, pattern });
+                self.geometry.vertices.push(Vertex { x: d.x, y: d.y, z_index, pattern });
+                self.geometry.indices.push(vtx_offset);
+                self.geometry.indices.push(vtx_offset + 1);
+                self.geometry.indices.push(vtx_offset + 2);
+                self.geometry.indices.push(vtx_offset);
+                self.geometry.indices.push(vtx_offset + 2);
+                self.geometry.indices.push(vtx_offset + 3);
             }
         }
     }
@@ -297,7 +371,7 @@ impl MeshRenderer {
 impl CanvasRenderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        index: u32,
+        sub_passes: &[SubPass],
         surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
@@ -307,10 +381,7 @@ impl CanvasRenderer for MeshRenderer {
         let common_resources = &resources[self.common_resources];
         let mesh_resources = &resources[self.resources];
 
-        let (_, batch_info) = self.batches.get(index);
-
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
-
         render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
 
@@ -318,17 +389,20 @@ impl CanvasRenderer for MeshRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for draw in &self.draws[usize_range(batch_info.draws.clone())] {
-            let pipeline = shaders.try_get(
-                if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
-                draw.pattern,
-                surface
-            ).unwrap();
+        for sub_pass in sub_passes {
+            let (_, batch_info) = self.batches.get(sub_pass.internal_index);
+            for draw in &self.draws[usize_range(batch_info.draws.clone())] {
+                let pipeline = shaders.try_get(
+                    if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
+                    draw.pattern,
+                    surface
+                ).unwrap();
 
-            helper.resolve_and_bind(1, draw.pattern_inputs, bindings, render_pass);
+                helper.resolve_and_bind(1, draw.pattern_inputs, bindings, render_pass);
 
-            render_pass.set_pipeline(pipeline);
-            render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);
+                render_pass.set_pipeline(pipeline);
+                render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);
+            }
         }
     }
 }

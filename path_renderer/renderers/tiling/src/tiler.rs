@@ -1,11 +1,11 @@
 use ordered_float::OrderedFloat;
-pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 pub use lyon::geom;
 use lyon::{geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment}};
 
+pub use core::units::{Point, point, Vector, vector};
 use core::pattern::BuiltPattern;
 use crate::{TILE_SIZE_F32, FillOptions, TileMaskRow, TileVisibility, tile_visibility, TilePosition, Stats};
 

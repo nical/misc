@@ -6,6 +6,8 @@ pub mod pattern;
 pub mod resources;
 pub mod batching;
 pub mod path;
+pub mod transform;
+pub mod shape;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 
@@ -33,11 +35,18 @@ pub mod units {
     pub type SurfacePoint = Point2D<f32, SurfaceSpace>;
     pub type SurfaceVector = Vector2D<f32, SurfaceSpace>;
     pub type SurfaceSize = Size2D<f32, SurfaceSpace>;
+    pub type SurfaceIntSize = Size2D<i32, SurfaceSpace>;
 
     pub type LocalRect = Box2D<f32, LocalSpace>;
     pub type LocalPoint = Point2D<f32, LocalSpace>;
     pub type LocalVector = Vector2D<f32, LocalSpace>;
     pub type LocalSize = Size2D<f32, LocalSpace>;
+
+    pub type LocalToSurfaceTransform = euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
+    pub type LocalTransform = euclid::Transform2D<f32, LocalSpace, LocalSpace>;
+
+    pub use euclid::vec2 as vector;
+    pub use euclid::point2 as point;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

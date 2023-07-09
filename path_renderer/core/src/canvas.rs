@@ -1,90 +1,16 @@
 // TODO: this module lumps together a bunch of structural concepts some of which
 // are poorly named and/or belong elsewhere.
 
-use std::sync::Arc;
-use lyon::geom::euclid::vec2;
-use lyon::math::{Point};
-use lyon::geom::euclid::default::{Transform2D, Box2D, Size2D};
-use crate::path::{Path, FillRule};
-use crate::batching::{Batcher, DefaultBatcher, BatchId, SurfaceIndex};
+use lyon::geom::euclid::default::{Size2D};
+use crate::path::{FillRule};
+use crate::batching::{Batcher, BatchId, SurfaceIndex};
 use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode};
 use crate::resources::{GpuResources, CommonGpuResources, ResourcesHandle, AsAny};
+use crate::transform::{Transforms};
 use crate::{Color, u32_range, usize_range, BindingResolver};
-use crate::pattern::{BuiltPattern, BindingsId};
+use crate::pattern::{BindingsId};
 use std::{ops::Range};
 use crate::gpu::{Shaders};
-
-pub type TransformId = u32;
-
-struct Transform {
-    transform: Transform2D<f32>,
-    parent: Option<TransformId>,
-}
-
-pub struct Transforms {
-    current_transform: TransformId,
-    transforms: Vec<Transform>,
-}
-
-impl Transforms {
-    pub fn new() -> Self {
-        Transforms {
-            current_transform: 0,
-            transforms: vec![
-                Transform {
-                    transform: Transform2D::identity(),
-                    parent: None,
-                },
-            ],
-        }
-    }
-
-    pub fn push(&mut self, transform: &Transform2D<f32>) {
-        let id = self.transforms.len() as TransformId;
-        if self.current_transform == 0 {
-            self.transforms.push(Transform {
-                transform: *transform,
-                parent: Some(self.current_transform),
-            });
-        } else {
-            let transform = self.transforms[self.current_transform as usize].transform.then(transform);
-            self.transforms.push(Transform {
-                transform,
-                parent: Some(self.current_transform),
-            });
-        }
-
-        self.current_transform = id;
-    }
-
-    pub fn pop(&mut self) {
-        assert!(self.current_transform != 0);
-        self.current_transform = self.transforms[self.current_transform as usize].parent.unwrap_or(0);
-    }
-
-    pub fn current(&self) -> TransformId {
-        self.current_transform
-    }
-
-    pub fn get(&self, id: TransformId) -> &Transform2D<f32> {
-        &self.transforms[id as usize].transform
-    }
-
-    pub fn get_current(&self) -> &Transform2D<f32> {
-        self.get(self.current())
-    }
-
-    pub fn clear(&mut self) {
-        self.current_transform = 0;
-        self.transforms.shrink_to(1);
-    }
-}
-
-impl Default for Transforms {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 pub type ZIndex = u32;
 
@@ -115,6 +41,7 @@ impl ZIndices {
         self.next = 0;
     }
 }
+
 
 impl Default for ZIndices {
     fn default() -> Self {
@@ -418,7 +345,7 @@ pub struct Canvas {
     pub surface: SurfaceParameters,
     render_passes: RenderPasses,
     pub params: CanvasParams,
-    pub batcher: Box<dyn Batcher>,
+    pub batcher: Batcher,
 }
 
 impl Canvas {
@@ -429,7 +356,7 @@ impl Canvas {
             surface: SurfaceParameters::default(),
             render_passes: RenderPasses::default(),
             params: CanvasParams::default(),
-            batcher: Box::new(DefaultBatcher::new()),
+            batcher: Batcher::new(),
         }
     }
 
@@ -578,9 +505,25 @@ impl Canvas {
                 surface: pass.surface,
             };
 
-            for sub_pass in pass.sub_passes {
-                renderers[sub_pass.renderer_id as usize].render(
-                    sub_pass.internal_index,
+            let mut start = 0;
+            let mut renderer = pass.sub_passes[0].renderer_id;
+            for (idx, sub_pass) in pass.sub_passes.iter().enumerate() {
+                if renderer != sub_pass.renderer_id && idx > start {
+                    renderers[renderer as usize].render(
+                        &pass.sub_passes[start..idx],
+                        &pass_info,
+                        shaders,
+                        resources,
+                        bindings,
+                        &mut render_pass,
+                    );
+                    start = idx;
+                    renderer = sub_pass.renderer_id;
+                }
+            }
+            if pass.sub_passes.len() > start {
+                renderers[renderer as usize].render(
+                    &pass.sub_passes[start..pass.sub_passes.len()],
                     &pass_info,
                     shaders,
                     resources,
@@ -610,9 +553,10 @@ pub trait CanvasRenderer: AsAny {
         _bindings: &dyn BindingResolver,
         _encoder: &mut wgpu::CommandEncoder,
     ) {}
+
     fn render<'pass, 'resources: 'pass>(
         &self,
-        _index: u32,
+        _sub_passes: &[SubPass],
         _pass_info: &RenderPassState,
         _shaders: &'resources Shaders,
         _renderers: &'resources GpuResources,
@@ -621,7 +565,7 @@ pub trait CanvasRenderer: AsAny {
     ) {}
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct SubPass {
     pub renderer_id: RendererId,
     pub internal_index: u32,
@@ -689,120 +633,4 @@ impl DrawHelper {
     pub fn reset_binding(&mut self, group_index: u32) {
         self.current_bindings[group_index as usize] = BindingsId::NONE;
     }
-}
-
-
-
-pub struct PathShape {
-    pub path: Arc<Path>,
-    pub fill_rule: FillRule,
-    // TODO: maybe move this out of the shape.
-    pub inverted: bool,
-}
-
-impl PathShape {
-    pub fn new(path: Arc<Path>) -> Self {
-        PathShape { path, fill_rule: FillRule::EvenOdd, inverted: false }
-    }
-    pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
-        self.fill_rule = fill_rule;
-        self
-    }
-    pub fn inverted(mut self) -> Self {
-        self.inverted = !self.inverted;
-        self
-    }
-}
-
-impl Into<Shape> for PathShape {
-    fn into(self) -> Shape {
-        Shape::Path(self)
-    }
-}
-
-impl Into<Shape> for Arc<Path> {
-    fn into(self) -> Shape {
-        Shape::Path(PathShape::new(self))
-    }
-}
-
-pub struct Circle {
-    pub center: Point,
-    pub radius: f32,
-    pub inverted: bool,
-}
-
-impl Circle {
-    pub fn new(center: Point, radius: f32) -> Self {
-        Circle { center, radius, inverted: false }
-    }
-
-    pub fn inverted(mut self) -> Self {
-        self.inverted = !self.inverted;
-        self
-    }
-
-    pub fn aabb(&self) -> Box2D<f32> {
-        Box2D {
-            min: self.center - vec2(self.radius, self.radius),
-            max: self.center + vec2(self.radius, self.radius),
-        }
-    }
-}
-
-impl Into<Shape> for Circle {
-    fn into(self) -> Shape {
-        Shape::Circle(self)
-    }
-}
-
-impl Into<Shape> for Box2D<f32> {
-    fn into(self) -> Shape {
-        Shape::Rect(self)
-    }
-}
-
-impl Into<Shape> for Box2D<i32> {
-    fn into(self) -> Shape {
-        Shape::Rect(self.to_f32())
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct All;
-
-impl Into<Shape> for All {
-    fn into(self) -> Shape {
-        Shape::Canvas
-    }
-}
-
-// TODO: the enum prevents other types of shapes from being added externally.
-pub enum Shape {
-    Path(PathShape),
-    Rect(Box2D<f32>),
-    Circle(Circle),
-    Canvas,
-}
-
-impl Shape {
-    pub fn aabb(&self) -> Box2D<f32> {
-        match self {
-            // TODO: return the correct aabb for inverted shapes.
-            Shape::Path(shape) => *shape.path.aabb(),
-            Shape::Rect(rect) => *rect,
-            Shape::Circle(circle) => circle.aabb(),
-            Shape::Canvas => Box2D {
-                min: Point::new(std::f32::MIN, std::f32::MIN),
-                max: Point::new(std::f32::MAX, std::f32::MAX),
-            }
-        }
-    }
-}
-
-pub struct Fill {
-    pub shape: Shape,
-    pub pattern: BuiltPattern,
-    pub transform: TransformId,
-    pub z_index: ZIndex,
 }

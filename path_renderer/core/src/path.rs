@@ -3,7 +3,7 @@ use lyon::path::builder::WithSvg;
 use lyon::path::path::Iter;
 use lyon::path::traits::Build;
 use lyon::path::{Path as PathInner, path::Builder as BuilderInner, builder::PathBuilder, Attributes, EndpointId};
-use lyon::math::{Box2D, Point, Vector};
+use crate::units::{Point, Vector, LocalRect, point, vector};
 
 pub use lyon::path::FillRule;
 
@@ -17,7 +17,7 @@ const NEGATIVE_TURNS: PathFlags = 1 << 5;
 
 pub struct Path {
     path: PathInner,
-    aabb: Box2D,
+    aabb: LocalRect,
     flags: PathFlags,
 }
 
@@ -26,7 +26,7 @@ impl Path {
         Builder::new()
     }
 
-    pub fn aabb(&self) -> &Box2D { &self.aabb }
+    pub fn aabb(&self) -> &LocalRect { &self.aabb }
 
     pub fn is_convex(&self) -> bool {
         self.flags | CONVEX != 0
@@ -52,7 +52,7 @@ impl Path {
 pub struct Builder {
     builder: BuilderInner,
     flags: u32,
-    aabb: Box2D,
+    aabb: LocalRect,
     v0: Vector,
     prev: Point,
     first: Point,
@@ -64,13 +64,13 @@ impl Builder {
         Builder {
             builder: BuilderInner::new(),
             flags: 0,
-            aabb: Box2D {
-                min: Point::new(std::f32::MAX, std::f32::MAX),
-                max: Point::new(std::f32::MIN, std::f32::MIN),
+            aabb: LocalRect {
+                min: point(std::f32::MAX, std::f32::MAX),
+                max: point(std::f32::MIN, std::f32::MIN),
             },
-            v0: Vector::new(0.0, 0.0),
-            prev: Point::new(0.0, 0.0),
-            first: Point::new(0.0, 0.0),
+            v0: vector(0.0, 0.0),
+            prev: point(0.0, 0.0),
+            first: point(0.0, 0.0),
             num_subpaths: 0,
         }
     }
@@ -140,7 +140,9 @@ impl Builder {
     pub fn build(self) -> Path {
         let mut flags = self.flags;
         if !((flags & POSITIVE_TURNS != 0) && (flags & NEGATIVE_TURNS != 0)) {
-            flags |= CONVEX;
+            // TODO: that's incorrect. A self-intersecting path can be concave with 
+            // only left or write turns. 
+            //flags |= CONVEX;
         }
         if self.num_subpaths < 2 {
             flags |= SINGLE_SUBPATH;

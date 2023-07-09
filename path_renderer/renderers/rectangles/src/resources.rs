@@ -9,13 +9,13 @@ use core::bytemuck;
 bitflags!{
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct InstanceFlags: u16 {
-        const AaTop    = 1;
-        const AaRight  = 2;
-        const AaBottom = 4;
-        const AaLeft   = 8;
-        const Aa       = 1|2|4|8;
-        const AaCenter = 16;
+    pub struct InstanceFlags: u32 {
+        const AaTop    = 1 << 20;
+        const AaRight  = 2 << 20;
+        const AaBottom = 4 << 20;
+        const AaLeft   = 8 << 20;
+        const Aa       = (1|2|4|8) << 20;
+        const AaCenter = 16 << 20;
     }
 }
 
@@ -26,8 +26,7 @@ pub struct Instance {
     pub z_index: u32,
     pub pattern: u32,
     pub mask: u32,
-    pub transform: u16,
-    pub flags: InstanceFlags,
+    pub flags_transform: u32,
 }
 
 unsafe impl bytemuck::Zeroable for InstanceFlags {}
@@ -147,12 +146,13 @@ impl RendererResources for RectangleGpuResources {
 const RECTANGLE_SRC: &'static str = "
 #import render_target
 #import rect
+#import gpu_store
 
-const FLAG_AA_TOP: u32      = 1u;
-const FLAG_AA_RIGHT: u32    = 2u;
-const FLAG_AA_BOTTOM: u32   = 4u;
-const FLAG_AA_LEFT: u32     = 8u;
-const FLAG_AA_CENTER: u32   = 16u;
+const FLAG_AA_TOP: u32      = 1048576u; // 1u << 20u;
+const FLAG_AA_RIGHT: u32    = 2097152u; // 2u << 20u;
+const FLAG_AA_BOTTOM: u32   = 4194304u; // 4u << 20u;
+const FLAG_AA_LEFT: u32     = 8388608u; // 8u << 20u;
+const FLAG_AA_CENTER: u32   = 16777216u; // 16u << 20u;
 
 fn edge_aa_offset(mask: u32, flags: u32, offset: f32) -> f32 {
     if ((flags & mask) == 0u) {
@@ -167,20 +167,33 @@ fn edge_aa_offset(mask: u32, flags: u32, offset: f32) -> f32 {
     return sign * offset;
 }
 
+fn fetch_transform(address: u32) -> mat3x2<f32> {
+    if address == GPU_STORE_HANDLE_NONE {
+        return mat3x2<f32>(
+            vec2<f32>(1.0, 0.0),
+            vec2<f32>(0.0, 1.0),
+            vec2<f32>(0.0, 0.0),
+        );
+    }
+
+    let d = gpu_store_fetch_2(address);
+
+    return mat3x2<f32>(
+        d.data0.xy,
+        d.data0.zw,
+        d.data1.xy,
+    );
+}
+
 fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> Geometry {
 
-    let transform_id = transform_flags & 0xFFFFu;
-    let flags = (transform_flags >> 16u) & 0xFFFFu;
+    let transform_id = transform_flags & 0xFFFFFu;
+    let flags = transform_flags & 0xFFF00000u;
 
     var local_rect = rect;
     var uv = rect_get_uv(vertex_index);
 
-    // TODO: fetch from the gpu store.
-    let transform = mat3x2<f32>(
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-    );
+    let transform = fetch_transform(transform_id);
 
     var aa_distances = vec4<f32>(42.0);
 

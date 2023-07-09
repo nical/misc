@@ -1,10 +1,9 @@
 use std::ops::Range;
 
-pub use lyon::path::math::{Point, point, Vector, vector};
 pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
-pub use lyon::geom::euclid;
 
+pub use core::units::{Point, point, Vector, vector};
 use core::gpu::shader::ShaderPatternId;
 use core::gpu::{DynBufferRange, DynamicStore};
 use core::pattern::{BuiltPattern, BindingsId};
@@ -310,9 +309,9 @@ pub fn clip_line_segment_1d(
 
 pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
     // Same as Skia's SK_ScalarNearlyZero.
-    const ESPILON: f32 = 1.0 / 4096.0;
+    const EPSILON: f32 = 1.0 / 4096.0;
 
-    if m.m12.abs() > ESPILON || m.m21.abs() > ESPILON {
+    if m.m12.abs() > EPSILON || m.m21.abs() > EPSILON {
         return None;
     }
 

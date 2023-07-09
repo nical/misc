@@ -1,5 +1,5 @@
-mod resources;
 mod renderer;
+mod resources;
 
-pub use resources::*;
 pub use renderer::*;
+pub use resources::*;

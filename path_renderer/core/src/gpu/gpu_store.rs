@@ -4,6 +4,8 @@ use wgpu::BufferAddress;
 const GPU_STORE_WIDTH: u32 = 2048;
 const FLOATS_PER_ROW: usize = GPU_STORE_WIDTH as usize * 4;
 
+// Packed into 20 bits, leaving 12 bits unused so that it can be packed
+// with other data in GPU instances.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GpuStoreHandle(u32);
 
@@ -11,7 +13,8 @@ unsafe impl bytemuck::Pod for GpuStoreHandle {}
 unsafe impl bytemuck::Zeroable for GpuStoreHandle {}
 
 impl GpuStoreHandle {
-    pub const INVALID: Self = GpuStoreHandle(std::u32::MAX);
+    pub const MASK: u32 = 0xFFFFF;
+    pub const INVALID: Self = GpuStoreHandle(Self::MASK);
 
     pub fn to_u32(self) -> u32 { self.0 }
 }

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use bitflags::bitflags;
 
-pub type Rect = lyon::math::Box2D;
+pub type Rect = crate::units::SurfaceRect;
 
 pub type SurfaceIndex = u16;
 pub type RendererId = u16;
@@ -26,49 +26,6 @@ bitflags! {
     }
 }
 
-
-pub trait Batcher {
-    fn begin(&mut self) {}
-    fn finish(&mut self) {}
-
-    fn find_compatible_batch(
-        &mut self,
-        renderer: RendererId,
-        key: &BatchKey,
-        rect: &Rect,
-        flags: BatchFlags,
-    ) -> Option<BatchIndex>;
-
-    fn add_batch(
-        &mut self,
-        renderer: RendererId,
-        batch_index: BatchIndex,
-        key: &BatchKey,
-        rect: &Rect,
-        flags: BatchFlags,
-    );
-
-    fn find_or_add_batch(
-        &mut self,
-        renderer: RendererId,
-        or_add_index: BatchIndex,
-        key: &BatchKey,
-        rect: &Rect,
-        flags: BatchFlags,
-    ) -> BatchIndex {
-        if let Some(idx) = self.find_compatible_batch(renderer, key, rect, flags) {
-            return idx;
-        }
-        self.add_batch(renderer, or_add_index, key, rect, flags);
-
-        or_add_index
-    }
-
-    /// Batches are not merged and reordered across split points.
-    fn set_render_pass(&mut self, pass_idx: SurfaceIndex);
-
-    fn batches(&self) -> &[BatchId];
-}
 
 struct Batch {
     renderer: RendererId,
@@ -124,8 +81,8 @@ pub struct OrderedBatcher {
     pass_idx: SurfaceIndex,
 }
 
-impl Batcher for OrderedBatcher {
-    fn find_compatible_batch(
+impl OrderedBatcher {
+    pub fn find_compatible_batch(
         &mut self,
         renderer: RendererId,
         key: &BatchKey,
@@ -148,7 +105,7 @@ impl Batcher for OrderedBatcher {
         return None;
     }
 
-    fn add_batch(
+    pub fn add_batch(
         &mut self,
         renderer: RendererId,
         batch_index: BatchIndex,
@@ -172,24 +129,21 @@ impl Batcher for OrderedBatcher {
         });
     }
 
-    fn set_render_pass(&mut self, pass_idx: u16) {
+    pub fn set_render_pass(&mut self, pass_idx: u16) {
         self.pass_idx = pass_idx;
         self.lookback.clear();
     }
 
-
-    fn begin(&mut self) {
+    pub fn begin(&mut self) {
         self.lookback.clear();
         self.batches.clear();
         self.pass_idx = 0;
     }
 
-    fn batches(&self) -> &[BatchId] {
+    pub fn batches(&self) -> &[BatchId] {
         &self.batches
     }
-}
 
-impl OrderedBatcher {
     pub fn new() -> Self {
         Self::with_lookback(32)
     }
@@ -252,72 +206,9 @@ impl OrderedBatcher {
         selected
     }
 
-    pub fn batches(&self) -> &[BatchId] {
-        &self.batches
-    }
+    pub fn finish(&mut self) {}
 }
 
-
-pub struct BasicOrderedBatcher {
-    batches: Vec<BatchId>,
-    prev: Option<(RendererId, BatchIndex, BatchKey)>,
-    pass_idx: SurfaceIndex,
-}
-
-impl Batcher for BasicOrderedBatcher {
-    fn find_compatible_batch(
-        &mut self,
-        renderer: RendererId,
-        key: &BatchKey,
-        _rect: &Rect,
-        _flags: BatchFlags,
-    ) -> Option<BatchIndex> {
-        if let Some((prev_renderer, index, prev_key)) = self.prev {
-            if renderer == prev_renderer && *key == prev_key {
-                return Some(index);
-            }
-        }
-
-        None
-    }
-
-    fn add_batch(
-        &mut self,
-        renderer: RendererId,
-        index: BatchIndex,
-        key: &BatchKey,
-        _rect: &Rect,
-        _flags: BatchFlags,
-    ) {
-        self.prev = Some((renderer, index, *key));
-        self.batches.push(BatchId { renderer, index, surface: self.pass_idx });
-    }
-
-    fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
-        self.prev = None;
-        self.pass_idx = pass_idx;
-    }
-
-    fn begin(&mut self) {
-        self.batches.clear();
-        self.prev = None;
-        self.pass_idx = 0;
-    }
-
-    fn batches(&self) -> &[BatchId] {
-        &self.batches
-    }
-}
-
-impl BasicOrderedBatcher {
-    pub fn new() -> Self {
-        BasicOrderedBatcher {
-            batches: Vec::new(),
-            prev: None,
-            pass_idx: 0,
-        }
-    }
-}
 
 struct OrderIndependentBatch {
     renderer: RendererId,
@@ -333,8 +224,8 @@ pub struct OrderIndependentBatcher {
     pass_idx: SurfaceIndex,
 }
 
-impl Batcher for OrderIndependentBatcher {
-    fn find_compatible_batch(
+impl OrderIndependentBatcher {
+    pub fn find_compatible_batch(
         &mut self,
         renderer: RendererId,
         key: &BatchKey,
@@ -355,7 +246,7 @@ impl Batcher for OrderIndependentBatcher {
         return None;
     }
 
-    fn add_batch(
+    pub fn add_batch(
         &mut self,
         renderer: RendererId,
         index: BatchIndex,
@@ -372,20 +263,20 @@ impl Batcher for OrderIndependentBatcher {
         self.batches.push(BatchId { renderer, index, surface: self.pass_idx });
     }
 
-    fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
+    pub fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
         self.candidates.clear();
         self.splits.push(self.batches.len());
         self.pass_idx = pass_idx;
     }
 
-    fn begin(&mut self) {
+    pub fn begin(&mut self) {
         self.candidates.clear();
         self.batches.clear();
         self.splits.clear();
         self.pass_idx = 0;
     }
 
-    fn finish(&mut self) {
+    pub fn finish(&mut self) {
         // Reverse the batches to increase the likelihood of opaque primitives
         // being rendered in front-to-back order.
         // Don't reorder batches across split points, though.
@@ -398,12 +289,10 @@ impl Batcher for OrderIndependentBatcher {
         self.batches[start..end].reverse();
     }
 
-    fn batches(&self) -> &[BatchId] {
+    pub fn batches(&self) -> &[BatchId] {
         &self.batches
     }
-}
 
-impl OrderIndependentBatcher {
     pub fn new() -> Self {
         OrderIndependentBatcher {
             batches: Vec::new(),
@@ -432,14 +321,14 @@ impl OrderIndependentBatcher {
 
 }
 
-pub struct DefaultBatcher {
+pub struct Batcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
     batches: Vec<BatchId>,
 }
 
-impl Batcher for DefaultBatcher {
-    fn find_compatible_batch(
+impl Batcher {
+    pub fn find_compatible_batch(
         &mut self,
         renderer: RendererId,
         key: &BatchKey,
@@ -453,7 +342,7 @@ impl Batcher for DefaultBatcher {
         }
     }
 
-    fn add_batch(
+    pub fn add_batch(
         &mut self,
         renderer: RendererId,
         index: BatchIndex,
@@ -468,34 +357,48 @@ impl Batcher for DefaultBatcher {
         }
     }
 
-    fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
+    pub fn find_or_add_batch(
+        &mut self,
+        renderer: RendererId,
+        or_add_index: BatchIndex,
+        key: &BatchKey,
+        rect: &Rect,
+        flags: BatchFlags,
+    ) -> BatchIndex {
+        if let Some(idx) = self.find_compatible_batch(renderer, key, rect, flags) {
+            return idx;
+        }
+        self.add_batch(renderer, or_add_index, key, rect, flags);
+
+        or_add_index
+    }
+
+    pub fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
         self.flush_batches();
 
         self.ordered.set_render_pass(pass_idx);
         self.order_independent.set_render_pass(pass_idx);
     }
 
-    fn begin(&mut self) {
+    pub fn begin(&mut self) {
         self.batches.clear();
         self.ordered.begin();
         self.order_independent.begin();
     }
 
-    fn finish(&mut self) {
+    pub fn finish(&mut self) {
         self.flush_batches();
 
         self.ordered.finish();
         self.order_independent.finish();
     }
 
-    fn batches(&self) -> &[BatchId] {
+    pub fn batches(&self) -> &[BatchId] {
         &self.batches
     }
-}
 
-impl DefaultBatcher {
     pub fn new() -> Self {
-        DefaultBatcher {
+        Batcher {
             batches: Vec::new(),
             ordered: OrderedBatcher::new(),
             order_independent: OrderIndependentBatcher::new(),
@@ -530,7 +433,7 @@ impl<T, I> BatchList<T, I> {
 
     pub fn find_or_add_batch(
         &mut self,
-        batcher: &mut dyn Batcher,
+        batcher: &mut Batcher,
         batch_key: &BatchKey,
         aabb: &Rect,
         flags: BatchFlags,

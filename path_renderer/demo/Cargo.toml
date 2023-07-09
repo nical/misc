@@ -28,6 +28,7 @@ usvg = "0.4"
 profiling = "1.0.4"
 time = "0.1.42"
 futures = "0.3.5"
+color-backtrace = { version = "0.5" }
 
 [features]
 tracy_profiling = ["core/tracy_profiling"]

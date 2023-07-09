@@ -1,9 +1,11 @@
 use lyon::{geom::euclid::Size2D};
 use core::{
-    canvas::{Fill, Canvas, Shape, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState},
+    units::{LocalRect, point},
+    shape::{PathShape, Circle},
+    canvas::{Canvas, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState, ZIndex},
     resources::{GpuResources, ResourcesHandle, CommonGpuResources},
     pattern::{BuiltPattern},
-    gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags, BatchList}, u32_range,
+    gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags, BatchList}, u32_range, transform::TransformId,
 };
 use crate::{Tiler, TilerConfig, TILE_SIZE, TileMask, encoder::SRC_COLOR_ATLAS_BINDING};
 use super::{encoder::TileEncoder, TilingGpuResources, mask::MaskEncoder, FillOptions, Stats};
@@ -11,6 +13,36 @@ use pattern_texture::TextureRenderer;
 use core::wgpu;
 use core::bytemuck;
 use std::ops::Range;
+
+
+struct Fill {
+    shape: Shape,
+    pattern: BuiltPattern,
+    transform: TransformId,
+    z_index: ZIndex,
+}
+
+// TODO: the enum prevents other types of shapes from being added externally.
+pub enum Shape {
+    Path(PathShape),
+    Rect(LocalRect),
+    Circle(Circle),
+    Canvas,
+}
+
+impl Shape {
+    pub fn aabb(&self) -> LocalRect {
+        match self {
+            Shape::Path(shape) => shape.aabb(),
+            Shape::Rect(rect) => *rect,
+            Shape::Circle(circle) => circle.aabb(),
+            Shape::Canvas => LocalRect {
+                min: point(std::f32::MIN, std::f32::MIN),
+                max: point(std::f32::MAX, std::f32::MAX),
+            }
+        }
+    }
+}
 
 pub struct TileRenderer {
     pub encoder: TileEncoder,
@@ -79,14 +111,29 @@ impl TileRenderer {
         self.current_mask_atlas = std::u32::MAX;
     }
 
-    pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, shape: P, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Path(shape.into()), pattern);
+    }
+
+    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Rect(rect), pattern);
+    }
+
+    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    }
+
+    pub fn fill_canvas(&mut self, canvas: &mut Canvas, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Canvas, pattern);
+    }
+
+    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
         debug_assert!(self.supports_surface(canvas.surface.current_state()));
 
-        let shape = shape.into();
-        let aabb = canvas.transforms.get_current().outer_transformed_box(&shape.aabb());
+        let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&shape.aabb());
 
         self.batches.find_or_add_batch(
-            &mut *canvas.batcher,
+            &mut canvas.batcher,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
@@ -94,7 +141,7 @@ impl TileRenderer {
         ).0.push(Fill {
             shape: shape.into(),
             pattern,
-            transform: canvas.transforms.current(),
+            transform: canvas.transforms.current_id(),
             z_index: canvas.z_indices.push(),
         });
     }
@@ -132,9 +179,9 @@ impl TileRenderer {
         self.encoder.finish(reversed);
     }
 
-    pub fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas, device: &wgpu::Device) {
-        let transform = if fill.transform != 0 {
-            Some(canvas.transforms.get(fill.transform))
+    fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas, device: &wgpu::Device) {
+        let transform = if fill.transform != TransformId::NONE {
+            Some(canvas.transforms.get(fill.transform).matrix().to_untyped())
         } else {
             None
         };
@@ -145,7 +192,7 @@ impl TileRenderer {
          match &fill.shape {
             Shape::Path(shape) => {
                 let options = FillOptions::new()
-                    .with_transform(transform)
+                    .with_transform(transform.as_ref())
                     .with_fill_rule(shape.fill_rule)
                     .with_prerendered_pattern(prerender)
                     .with_tolerance(self.tolerance)
@@ -154,7 +201,7 @@ impl TileRenderer {
             }
             Shape::Circle(circle) => {
                 let options = FillOptions::new()
-                    .with_transform(transform)
+                    .with_transform(transform.as_ref())
                     .with_prerendered_pattern(prerender)
                     .with_tolerance(self.tolerance)
                     .with_inverted(circle.inverted);
@@ -172,11 +219,11 @@ impl TileRenderer {
             }
             Shape::Rect(rect) => {
                 let options = FillOptions::new()
-                    .with_transform(transform)
+                    .with_transform(transform.as_ref())
                     .with_prerendered_pattern(prerender)
                     .with_tolerance(self.tolerance);
                 crate::mask::rect::fill_rect(
-                    rect,
+                    &rect.to_untyped(),
                     &options,
                     &fill.pattern,
                     &mut self.occlusion_mask,
@@ -335,77 +382,78 @@ impl TileRenderer {
 
     pub fn render_pass<'pass, 'resources: 'pass>(
         &self,
-        pass_idx: usize,
+        sub_passes: &[SubPass],
         shaders: &'resources Shaders,
         common_resources: &'resources CommonGpuResources,
         resources: &'resources TilingGpuResources,
         bindings: &'resources dyn BindingResolver,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let render_pass = &self.encoder.render_passes[pass_idx];
-
         pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
         pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
 
         let mut helper = DrawHelper::new();
 
-        if !render_pass.opaque_batches.is_empty() {
-            for batch in &self.encoder.opaque_batches[render_pass.opaque_batches.clone()] {
-                if let Some(range) = &self.encoder.get_opaque_batch_vertices(batch.pattern.index()) {
+        for sub_pass in sub_passes {
+            let render_pass = &self.encoder.render_passes[sub_pass.internal_index as usize];
+
+            if !render_pass.opaque_batches.is_empty() {
+                for batch in &self.encoder.opaque_batches[render_pass.opaque_batches.clone()] {
+                    if let Some(range) = &self.encoder.get_opaque_batch_vertices(batch.pattern.index()) {
+                        let pipeline = shaders.try_get(
+                            resources.opaque_pipeline,
+                            batch.pattern,
+                            SurfaceConfig::default(),
+                        ).unwrap();
+
+                        helper.resolve_and_bind(1, batch.pattern_inputs, bindings, pass);
+
+                        pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
+                        pass.set_pipeline(pipeline);
+                        pass.draw_indexed(0..6, 0, batch.tiles.clone());
+                    }
+                }
+            }
+
+            if !render_pass.opaque_image_tiles.is_empty() {
+                let pipeline = shaders.try_get(
+                    resources.opaque_pipeline,
+                    resources.texture.load_pattern_id(),
+                    SurfaceConfig::default(),
+                ).unwrap();
+
+                let range = &self.encoder.ranges.opaque_image_tiles.as_ref().unwrap();
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
+
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(1, &resources.src_color_bind_group, &[]);
+                pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
+
+                helper.reset_binding(1);
+            }
+
+
+            if let Some(range) = &self.encoder.ranges.alpha_tiles {
+                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
+                pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
+                helper.reset_binding(1);
+
+                for batch in &self.encoder.alpha_batches[render_pass.alpha_batches.clone()] {
                     let pipeline = shaders.try_get(
-                        resources.opaque_pipeline,
+                        resources.masked_pipeline,
                         batch.pattern,
                         SurfaceConfig::default(),
                     ).unwrap();
 
-                    helper.resolve_and_bind(1, batch.pattern_inputs, bindings, pass);
+                    if batch.pattern_inputs == SRC_COLOR_ATLAS_BINDING {
+                        helper.bind(2, batch.pattern_inputs, &resources.src_color_bind_group, pass);
+                    } else {
+                        helper.resolve_and_bind(2, batch.pattern_inputs, bindings, pass);
+                    }
 
-                    pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
-                    // TODO: optional hook to bind extra data
                     pass.set_pipeline(pipeline);
                     pass.draw_indexed(0..6, 0, batch.tiles.clone());
                 }
-            }
-        }
-
-        if !render_pass.opaque_image_tiles.is_empty() {
-            let pipeline = shaders.try_get(
-                resources.opaque_pipeline,
-                resources.texture.load_pattern_id(),
-                SurfaceConfig::default(),
-            ).unwrap();
-
-            let range = &self.encoder.ranges.opaque_image_tiles.as_ref().unwrap();
-            pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
-
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, &resources.src_color_bind_group, &[]);
-            pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
-
-            helper.reset_binding(1);
-        }
-
-
-        if let Some(range) = &self.encoder.ranges.alpha_tiles {
-            pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
-            pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
-            helper.reset_binding(1);
-
-            for batch in &self.encoder.alpha_batches[render_pass.alpha_batches.clone()] {
-                let pipeline = shaders.try_get(
-                    resources.masked_pipeline,
-                    batch.pattern,
-                    SurfaceConfig::default(),
-                ).unwrap();
-
-                if batch.pattern_inputs == SRC_COLOR_ATLAS_BINDING {
-                    helper.bind(2, batch.pattern_inputs, &resources.src_color_bind_group, pass);
-                } else {
-                    helper.resolve_and_bind(2, batch.pattern_inputs, bindings, pass);
-                }
-
-                pass.set_pipeline(pipeline);
-                pass.draw_indexed(0..6, 0, batch.tiles.clone());
             }
         }
     }
@@ -450,13 +498,13 @@ impl CanvasRenderer for TileRenderer {
 
     fn render<'pass, 'resources: 'pass>(
         &self,
-        index: u32,
+        sub_passes: &[SubPass],
         _surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
         bindings: &'resources dyn BindingResolver,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.render_pass(index as usize, shaders, &resources[self.common_resources], &resources[self.resources], bindings, render_pass);
+        self.render_pass(sub_passes, shaders, &resources[self.common_resources], &resources[self.resources], bindings, render_pass);
     }
 }

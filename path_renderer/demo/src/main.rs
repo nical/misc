@@ -1,31 +1,34 @@
+use core::canvas::*;
+use core::shape::*;
+use core::geom::euclid::default::Size2D;
+use core::gpu::{GpuStore, PipelineDefaults, Shaders};
+use core::path::Path;
 use core::pattern::BindingsId;
-use core::units::LocalRect;
+use core::resources::{CommonGpuResources, GpuResources};
+use core::units::{
+    point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize,
+};
 use core::wgpu::util::DeviceExt;
+use core::{BindingResolver, Color};
+use lyon::geom::Angle;
+use lyon::path::geom::euclid::size2;
+use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
 use std::sync::Arc;
 use std::time::Duration;
-use core::path::Path;
-use lyon::path::geom::euclid::size2;
-use tiling::euclid::point2;
-use core::geom::euclid::default::{Size2D, Transform2D};
-use core::{Color, BindingResolver};
-use core::canvas::*;
-use core::gpu::{Shaders, GpuStore, PipelineDefaults};
-use core::resources::{GpuResources, CommonGpuResources, ResourcesHandle};
-use tess::{MeshGpuResources, MeshRenderer};
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
-use rectangles::{RectangleRenderer, RectangleGpuResources, Aa};
+use tess::{MeshGpuResources, MeshRenderer};
 use tiling::*;
 
+use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
-use pattern_linear_gradient::{LinearGradientRenderer, LinearGradient};
-use pattern_checkerboard::{CheckerboardRenderer, Checkerboard};
-use pattern_texture::{TextureRenderer};
+use pattern_linear_gradient::{LinearGradient, LinearGradientRenderer};
+use pattern_texture::TextureRenderer;
 
+use futures::executor::block_on;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
-use futures::executor::block_on;
 
 use core::wgpu;
 
@@ -37,6 +40,7 @@ const TESS: usize = 1;
 const STENCIL: usize = 2;
 
 fn main() {
+    color_backtrace::install();
     profiling::register_thread!("Main");
 
     let args: Vec<String> = std::env::args().collect();
@@ -55,9 +59,15 @@ fn main() {
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
         }
-        if arg == "--ssaa" { use_ssaa4 = true; }
-        if arg == "--gl" { force_gl = true; }
-        if arg == "--vulkan" { force_vk = true; }
+        if arg == "--ssaa" {
+            use_ssaa4 = true;
+        }
+        if arg == "--gl" {
+            force_gl = true;
+        }
+        if arg == "--vulkan" {
+            force_vk = true;
+        }
         if arg == "--x11" {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
             // it runs into new issues.
@@ -90,8 +100,12 @@ fn main() {
 
     let event_loop = EventLoop::new();
     let window = winit::window::WindowBuilder::new()
-        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(inital_window_size.width, inital_window_size.height)))
-        .build(&event_loop).unwrap();
+        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(
+            inital_window_size.width,
+            inital_window_size.height,
+        )))
+        .build(&event_loop)
+        .unwrap();
     let window_size = window.inner_size();
 
     let backends = if force_gl {
@@ -104,7 +118,7 @@ fn main() {
     // create an instance
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
-        .. wgpu::InstanceDescriptor::default()
+        ..wgpu::InstanceDescriptor::default()
     });
 
     // create an surface
@@ -115,7 +129,8 @@ fn main() {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
-    })).unwrap();
+    }))
+    .unwrap();
     println!("{:#?}", adapter.get_info());
     // create a device and a queue
     let (device, queue) = block_on(adapter.request_device(
@@ -125,7 +140,8 @@ fn main() {
             limits: wgpu::Limits::default(),
         },
         trace,
-    )).unwrap();
+    ))
+    .unwrap();
 
     let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
@@ -137,7 +153,21 @@ fn main() {
         builder.line_to(point(400.0, 50.0));
         builder.end(true);
 
-        (Box2D { min: point(0.0, 0.0), max: point(500.0, 500.0) }, vec![(Arc::new(builder.build()), SvgPattern::Color(Color { r: 50, g: 200, b: 100, a: 255 }))])
+        (
+            Box2D {
+                min: point(0.0, 0.0),
+                max: point(500.0, 500.0),
+            },
+            vec![(
+                Arc::new(builder.build()),
+                SvgPattern::Color(Color {
+                    r: 50,
+                    g: 200,
+                    b: 100,
+                    a: 255,
+                }),
+            )],
+        )
     };
 
     tiler_config.view_box = view_box;
@@ -151,21 +181,16 @@ fn main() {
         textures: TextureRenderer::register(&device, &mut shaders),
     };
 
-    let common_handle = ResourcesHandle::new(0);
-    let tiling_handle = ResourcesHandle::new(1);
-    let mesh_handle = ResourcesHandle::new(2);
-    let stencil_handle = ResourcesHandle::new(3);
-    let rectangle_handle = ResourcesHandle::new(4);
-
     let mut canvas = Canvas::new();
-    let mut tiling = TileRenderer::new(0, common_handle, tiling_handle, &tiler_config, &patterns.textures);
-    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
-    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
-    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle);
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
-    let mut common_resources = CommonGpuResources::new(&device, Size2D::new(window_size.width, window_size.height), &gpu_store, &mut shaders);
+    let mut common_resources = CommonGpuResources::new(
+        &device,
+        SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
+        &gpu_store,
+        &mut shaders,
+    );
 
     let tiling_resources = TilingGpuResources::new(
         &mut common_resources,
@@ -179,24 +204,36 @@ fn main() {
 
     let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
 
-    let stencil_resources = StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
+    let stencil_resources =
+        StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
 
     let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
 
-    let mut gpu_resources = GpuResources::new(vec![
-        Box::new(common_resources),
-        Box::new(tiling_resources),
-        Box::new(mesh_resources),
-        Box::new(stencil_resources),
-        Box::new(rectangle_resources),
-    ]);
+    let mut gpu_resources = GpuResources::new();
+    let common_handle = gpu_resources.register(common_resources);
+    let tiling_handle = gpu_resources.register(tiling_resources);
+    let mesh_handle = gpu_resources.register(mesh_resources);
+    let stencil_handle = gpu_resources.register(stencil_resources);
+    let rectangle_handle = gpu_resources.register(rectangle_resources);
+
+    let mut tiling = TileRenderer::new(
+        0,
+        common_handle,
+        tiling_handle,
+        &tiler_config,
+        &patterns.textures,
+    );
+    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
+    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
+    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
     let mut source_textures = SourceTextures::new();
 
     let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
-    let image_binding = source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
+    let image_binding =
+        source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -217,12 +254,14 @@ fn main() {
         target_zoom: 1.0,
         pan: [0.0, 0.0],
         target_pan: [0.0, 0.0],
-        window_size,
+        window_size: SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
         wireframe: false,
         size_changed: true,
         render: true,
         selected_renderer: 0,
     };
+
+    update_title(&window, scene.selected_renderer);
 
     let mut depth_texture = None;
     let mut msaa_texture = None;
@@ -243,10 +282,13 @@ fn main() {
         if scene.size_changed {
             scene.size_changed = false;
             let physical = scene.window_size;
-            surface_desc.width = physical.width;
-            surface_desc.height = physical.height;
+            surface_desc.width = physical.width as u32;
+            surface_desc.height = physical.height as u32;
             surface.configure(&device, &surface_desc);
-            gpu_resources[common_handle].resize_target(Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32), &queue);
+            gpu_resources[common_handle].resize_target(
+                SurfaceIntSize::new(scene.window_size.width, scene.window_size.height),
+                &queue,
+            );
 
             depth_texture = None;
             msaa_texture = None;
@@ -271,12 +313,22 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(shaders.defaults.color_format()),
-            .. wgpu::TextureViewDescriptor::default()
+            ..wgpu::TextureViewDescriptor::default()
         });
-        let size = Size2D::new(scene.window_size.width as u32, scene.window_size.height as u32);
+        let size = Size2D::new(
+            scene.window_size.width as u32,
+            scene.window_size.height as u32,
+        );
 
         gpu_store.clear();
-        canvas.begin_frame(SurfaceParameters::new(size, SurfaceState { depth: false, msaa: false, stencil: false }));
+        canvas.begin_frame(SurfaceParameters::new(
+            size,
+            SurfaceState {
+                depth: false,
+                msaa: false,
+                stencil: false,
+            },
+        ));
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
@@ -288,24 +340,45 @@ fn main() {
         let ty = scene.pan[1].round();
         let hw = (size.width as f32) * 0.5;
         let hh = (size.height as f32) * 0.5;
-        let transform = Transform2D::translation(tx, ty)
+        let transform = LocalTransform::translation(tx, ty)
             .then_translate(-vector(hw, hh))
             .then_scale(scene.zoom, scene.zoom)
             .then_translate(vector(hw, hh));
 
-        paint_scene(&paths, scene.selected_renderer, &mut canvas, &mut tiling, &mut meshes, &mut stencil, &mut rectangles, &patterns, &mut gpu_store, &transform);
-        tiling.fill(
+        paint_scene(
+            &paths,
+            scene.selected_renderer,
             &mut canvas,
-            Circle { center: point(10.0, 600.0), radius: 100.0, inverted: false},
+            &mut tiling,
+            &mut meshes,
+            &mut stencil,
+            &mut rectangles,
+            &patterns,
+            &mut gpu_store,
+            &transform,
+        );
+        //canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
+        tiling.fill_circle(
+            &mut canvas,
+            Circle {
+                center: point(10.0, 600.0),
+                radius: 100.0,
+                inverted: false,
+            },
             patterns.textures.sample_rect(
                 &mut gpu_store,
                 image_binding,
-                &Box2D { min: point(0.0, 0.0), max: point(800.0, 600.0) },
-                &Box2D { min: point(-100.0, 500.0), max: point(700.0, 1100.0) },
+                &Box2D {
+                    min: point(0.0, 0.0),
+                    max: point(800.0, 600.0),
+                },
+                &Box2D {
+                    min: point(-100.0, 500.0),
+                    max: point(700.0, 1100.0),
+                },
                 true,
             ),
         );
-
 
         let frame_build_start = time::precise_time_ns();
 
@@ -315,19 +388,35 @@ fn main() {
         stencil.prepare(&canvas);
         rectangles.prepare(&canvas);
 
-        let requirements = canvas.build_render_passes(&mut[&mut tiling, &mut meshes, &mut stencil, &mut rectangles]);
+        let requirements = canvas.build_render_passes(&mut [
+            &mut tiling,
+            &mut meshes,
+            &mut stencil,
+            &mut rectangles,
+        ]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
 
-        create_render_targets(&device, &requirements, size, &shaders.defaults, &mut depth_texture, &mut msaa_texture, &mut msaa_depth_texture, &mut temporary_texture);
-        let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(tex),
-            }]
-        }));
+        create_render_targets(
+            &device,
+            &requirements,
+            size,
+            &shaders.defaults,
+            &mut depth_texture,
+            &mut msaa_texture,
+            &mut msaa_depth_texture,
+            &mut temporary_texture,
+        );
+        let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(tex),
+                }],
+            })
+        });
         let target = SurfaceResources {
             main: &frame_view,
             depth: depth_texture.as_ref(),
@@ -339,9 +428,8 @@ fn main() {
 
         let render_start = time::precise_time_ns();
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: None,
-        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         tiling.upload(&mut gpu_resources, &device, &queue);
         meshes.upload(&mut gpu_resources, &mut shaders, &device, &queue);
@@ -351,7 +439,16 @@ fn main() {
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(&[&tiling, &meshes, &stencil, &rectangles], &gpu_resources, &source_textures, &mut shaders, &device, common_handle, &target, &mut encoder);
+        canvas.render(
+            &[&tiling, &meshes, &stencil, &rectangles],
+            &gpu_resources,
+            &source_textures,
+            &mut shaders,
+            &device,
+            common_handle,
+            &target,
+            &mut encoder,
+        );
 
         queue.submit(Some(encoder.finish()));
 
@@ -376,7 +473,13 @@ fn main() {
             render_time = Duration::ZERO;
             present_time = Duration::ZERO;
             frame_idx = 0;
-            println!("frame {:.2}ms (prepare {:.2}ms, render {:.2}ms, present {:.2}ms)", fbt + rt, fbt, rt, pt);
+            println!(
+                "frame {:.2}ms (prepare {:.2}ms, render {:.2}ms, present {:.2}ms)",
+                fbt + rt,
+                fbt,
+                rt,
+                pt
+            );
             print_stats(&tiling, &stencil, scene.window_size);
         }
 
@@ -398,7 +501,7 @@ fn paint_scene(
     rectangles: &mut RectangleRenderer,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
-    transform: &Transform2D<f32>,
+    transform: &LocalTransform,
 ) {
     let mut builder = core::path::Path::builder();
     builder.begin(point(0.0, 0.0));
@@ -407,118 +510,259 @@ fn paint_scene(
     builder.line_to(point(400.0, 50.0));
     builder.end(true);
 
-    tiling.fill(
+    tiling.fill_canvas(
         canvas,
-        All,
-        patterns.gradients.add(gpu_store, LinearGradient {
-            from: point(100.0, 100.0), color0: Color { r: 10, g: 50, b: 250, a: 255},
-            to: point(100.0, 1500.0), color1: Color { r: 50, g: 0, b: 50, a: 255},
-        }.transformed(canvas.transforms.get_current())),
+        patterns.gradients.add(
+            gpu_store,
+            LinearGradient {
+                from: point(100.0, 100.0),
+                color0: Color {
+                    r: 10,
+                    g: 50,
+                    b: 250,
+                    a: 255,
+                },
+                to: point(100.0, 1500.0),
+                color1: Color {
+                    r: 50,
+                    g: 0,
+                    b: 50,
+                    a: 255,
+                },
+            }
+            .transformed(&canvas.transforms.get_current().matrix().to_untyped()),
+        ),
     );
 
     canvas.transforms.push(transform);
 
-    tiling.fill(
+    tiling.fill_circle(
         canvas,
         Circle::new(point(500.0, 500.0), 800.0),
-        patterns.gradients.add(gpu_store, LinearGradient {
-            from: point(100.0, 100.0), color0: Color { r: 200, g: 150, b: 0, a: 255},
-            to: point(100.0, 1000.0), color1: Color { r: 250, g: 50, b: 10, a: 255},
-        }.transformed(canvas.transforms.get_current())),
+        patterns.gradients.add(
+            gpu_store,
+            LinearGradient {
+                from: point(100.0, 100.0),
+                color0: Color {
+                    r: 200,
+                    g: 150,
+                    b: 0,
+                    a: 255,
+                },
+                to: point(100.0, 1000.0),
+                color1: Color {
+                    r: 250,
+                    g: 50,
+                    b: 10,
+                    a: 255,
+                },
+            }
+            .transformed(&canvas.transforms.get_current().matrix().to_untyped()),
+        ),
     );
 
     if selected_renderer == TESS {
-        canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: false });
+        canvas.reconfigure_surface(SurfaceState {
+            depth: true,
+            msaa: true,
+            stencil: false,
+        });
     } else if selected_renderer == STENCIL {
-        canvas.reconfigure_surface(SurfaceState { depth: true, msaa: true, stencil: true });
+        canvas.reconfigure_surface(SurfaceState {
+            depth: true,
+            msaa: true,
+            stencil: true,
+        });
     }
 
     for (path, pattern) in paths {
         let pattern = match pattern {
             &SvgPattern::Color(color) => patterns.colors.add(color),
-            &SvgPattern::Gradient { color0, color1, from, to } => {
-                patterns.gradients.add(
-                    gpu_store,
-                    LinearGradient { color0, color1, from, to }.transformed(canvas.transforms.get_current())
-                )
-            }
+            &SvgPattern::Gradient {
+                color0,
+                color1,
+                from,
+                to,
+            } => patterns.gradients.add(
+                gpu_store,
+                LinearGradient {
+                    color0,
+                    color1,
+                    from,
+                    to,
+                }
+                .transformed(&canvas.transforms.get_current().matrix().to_untyped()),
+            ),
         };
 
+        let path = PathShape::new(path.clone());
         match selected_renderer {
-            TILING => { tiling.fill(canvas, path.clone(), pattern); }
-            TESS => { meshes.fill(canvas, path.clone(), pattern); }
-            STENCIL => { stencil.fill(canvas, path.clone(), pattern); }
-            _ => unimplemented!()
+            TILING => {
+                tiling.fill_path(canvas, path, pattern);
+            }
+            TESS => {
+                meshes.fill_path(canvas, path, pattern);
+            }
+            STENCIL => {
+                stencil.fill_path(canvas, path, pattern);
+            }
+            _ => unimplemented!(),
         }
     }
 
-    canvas.reconfigure_surface(SurfaceState { depth: true, msaa: false, stencil: false });
+    canvas.reconfigure_surface(SurfaceState {
+        depth: true,
+        msaa: false,
+        stencil: true,
+    });
+
+    canvas
+        .transforms
+        .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+    let transform_handle = canvas.transforms.get_current_gpu_handle(gpu_store);
 
     rectangles.fill_rect(
         canvas,
-        &LocalRect { min: point2(500.0, 200.0), max: point2(600.0, 400.0) },
+        &LocalRect {
+            min: point(500.0, 200.0),
+            max: point(600.0, 400.0),
+        },
         Aa::ALL,
-        patterns.gradients.add(gpu_store,
+        patterns.gradients.add(
+            gpu_store,
             LinearGradient {
                 from: point(0.0, 200.0),
                 to: point(0.0, 400.0),
-                color0: Color { r: 0, g: 30, b: 100, a: 255 },
-                color1: Color { r: 0, g: 60, b: 250, a: 255 },
-            }
+                color0: Color {
+                    r: 0,
+                    g: 30,
+                    b: 100,
+                    a: 255,
+                },
+                color1: Color {
+                    r: 0,
+                    g: 60,
+                    b: 250,
+                    a: 255,
+                },
+            },
         ),
+        transform_handle,
     );
     rectangles.fill_rect(
         canvas,
-        &LocalRect { min: point2(610.5, 200.5), max: point2(710.5, 400.5) },
+        &LocalRect {
+            min: point(610.5, 200.5),
+            max: point(710.5, 400.5),
+        },
         Aa::LEFT | Aa::RIGHT | Aa::ALL,
-        patterns.gradients.add(gpu_store,
+        patterns.gradients.add(
+            gpu_store,
             LinearGradient {
                 from: point(0.0, 200.0),
                 to: point(0.0, 400.0),
-                color0: Color { r: 0, g: 30, b: 100, a: 255 },
-                color1: Color { r: 0, g: 60, b: 250, a: 255 },
-            }
+                color0: Color {
+                    r: 0,
+                    g: 30,
+                    b: 100,
+                    a: 255,
+                },
+                color1: Color {
+                    r: 0,
+                    g: 60,
+                    b: 250,
+                    a: 255,
+                },
+            },
         ),
+        transform_handle,
     );
+    canvas.transforms.pop();
 
     //if selected_renderer != TILING {
-        canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
+    canvas.reconfigure_surface(SurfaceState {
+        depth: false,
+        msaa: false,
+        stencil: false,
+    });
     //}
 
-    tiling.fill(
+    tiling.fill_circle(
         canvas,
         Circle::new(point(500.0, 300.0), 200.0),
-        patterns.gradients.add(gpu_store, LinearGradient {
-            from: point(300.0, 100.0), color0: Color { r: 10, g: 200, b: 100, a: 100},
-            to: point(700.0, 100.0), color1: Color { r: 200, g: 100, b: 250, a: 255},
-        }.transformed(canvas.transforms.get_current())),
+        patterns.gradients.add(
+            gpu_store,
+            LinearGradient {
+                from: point(300.0, 100.0),
+                color0: Color {
+                    r: 10,
+                    g: 200,
+                    b: 100,
+                    a: 100,
+                },
+                to: point(700.0, 100.0),
+                color1: Color {
+                    r: 200,
+                    g: 100,
+                    b: 250,
+                    a: 255,
+                },
+            }
+            .transformed(&canvas.transforms.get_current().matrix().to_untyped()),
+        ),
     );
 
-    tiling.fill(
+    tiling.fill_path(
         canvas,
-        Arc::new(builder.build()),
+        builder.build(),
         patterns.checkerboards.add(
             gpu_store,
             &Checkerboard {
-                color0: Color { r: 10, g: 100, b: 250, a: 255 },
+                color0: Color {
+                    r: 10,
+                    g: 100,
+                    b: 250,
+                    a: 255,
+                },
                 color1: Color::WHITE,
-                scale: 25.0, offset: point(0.0, 0.0)
-            }.transformed(canvas.transforms.get_current())
-        )
+                scale: 25.0,
+                offset: point(0.0, 0.0),
+            }
+            .transformed(&canvas.transforms.get_current().matrix().to_untyped()),
+        ),
     );
 
     canvas.transforms.pop();
 
     let black = patterns.colors.add(Color::BLACK);
-    tiling.fill(canvas, Box2D { min: point(10.0, 10.0), max: point(50.0, 50.0) }, black);
-    tiling.fill(canvas, Box2D { min: point(60.5, 10.5), max: point(100.5, 50.5) }, black);
+    tiling.fill_rect(
+        canvas,
+        LocalRect {
+            min: point(10.0, 10.0),
+            max: point(50.0, 50.0),
+        },
+        black,
+    );
+    tiling.fill_rect(
+        canvas,
+        LocalRect {
+            min: point(60.5, 10.5),
+            max: point(100.5, 50.5),
+        },
+        black,
+    );
 
-    canvas.transforms.push(&Transform2D::translation(10.0, 1.0));
+    canvas
+        .transforms
+        .push(&LocalTransform::translation(10.0, 1.0));
     canvas.transforms.pop();
 }
 
-
-fn print_stats(tiling: &TileRenderer, stencil: &StencilAndCoverRenderer, window_size: PhysicalSize<u32>) {
+fn print_stats(
+    tiling: &TileRenderer,
+    stencil: &StencilAndCoverRenderer,
+    window_size: SurfaceIntSize,
+) {
     let mut stats = Stats::new();
     tiling.update_stats(&mut stats);
     println!("Tiling: {:#?}", stats);
@@ -526,17 +770,27 @@ fn print_stats(tiling: &TileRenderer, stencil: &StencilAndCoverRenderer, window_
     println!("Data:");
     println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
     println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
-    println!("  cpu masks: {:2} kb", stats.cpu_masks_bytes() as f32 / 1000.0);
-    println!("   uploaded: {:2} kb", stats.uploaded_bytes() as f32 / 1000.0);
+    println!(
+        "  cpu masks: {:2} kb",
+        stats.cpu_masks_bytes() as f32 / 1000.0
+    );
+    println!(
+        "   uploaded: {:2} kb",
+        stats.uploaded_bytes() as f32 / 1000.0
+    );
     let win_bytes = (window_size.width * window_size.height * 4) as f32;
     println!(
         " resolution: {}x{} ({:2} kb)  overhead {:2}%",
-        window_size.width, window_size.height, win_bytes / 1000.0,
+        window_size.width,
+        window_size.height,
+        win_bytes / 1000.0,
         stats.uploaded_bytes() as f32 * 100.0 / win_bytes as f32,
     );
-    println!("#edge distributions: {:?}", tiling.encoder.edge_distributions);
+    println!(
+        "#edge distributions: {:?}",
+        tiling.encoder.edge_distributions
+    );
     println!("\n");
-
 }
 
 fn create_render_targets(
@@ -620,7 +874,6 @@ fn create_render_targets(
     }
 }
 
-
 // Default scene has all values set to zero
 #[derive(Copy, Clone, Debug)]
 pub struct SceneGlobals {
@@ -628,7 +881,7 @@ pub struct SceneGlobals {
     pub target_zoom: f32,
     pub pan: [f32; 2],
     pub target_pan: [f32; 2],
-    pub window_size: PhysicalSize<u32>,
+    pub window_size: SurfaceIntSize,
     pub wireframe: bool,
     pub size_changed: bool,
     pub render: bool,
@@ -663,12 +916,16 @@ fn update_inputs(
             event: WindowEvent::Resized(size),
             ..
         } => {
+            let size = SurfaceIntSize::new(size.width as i32, size.height as i32);
             if scene.window_size != size {
                 scene.window_size = size;
                 scene.size_changed = true
             }
         }
-        Event::WindowEvent { event: WindowEvent::MouseWheel { delta , .. }, ..} => {
+        Event::WindowEvent {
+            event: WindowEvent::MouseWheel { delta, .. },
+            ..
+        } => {
             use winit::event::MouseScrollDelta::*;
             let (dx, dy) = match delta {
                 LineDelta(x, y) => (x * 20.0, -y * 20.0),
@@ -727,9 +984,11 @@ fn update_inputs(
                 } else {
                     scene.selected_renderer -= 1;
                 }
+                update_title(window, scene.selected_renderer);
             }
             VirtualKeyCode::K => {
                 scene.selected_renderer = (scene.selected_renderer + 1) % 3;
+                update_title(window, scene.selected_renderer);
             }
 
             _key => {}
@@ -740,7 +999,10 @@ fn update_inputs(
     }
 
     if r != scene.selected_renderer {
-        println!("{}", &["tiling", "tessellation", "stencil and cover"][scene.selected_renderer])
+        println!(
+            "{}",
+            &["tiling", "tessellation", "stencil and cover"][scene.selected_renderer]
+        )
     }
 
     scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
@@ -753,6 +1015,15 @@ fn update_inputs(
     *control_flow = ControlFlow::Poll;
 
     true
+}
+
+fn update_title(window: &Window, selected_renderer: usize) {
+    window.set_title(match selected_renderer {
+        TILING => "demo - tiling",
+        TESS => "demo - tessellation",
+        STENCIL => "demo - stencil_and_colver",
+        _ => "demo",
+    });
 }
 
 struct Patterns {
@@ -805,7 +1076,7 @@ impl SourceTexture {
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         desc: &wgpu::TextureDescriptor,
-        data: &[u8]
+        data: &[u8],
     ) -> Self {
         let handle = device.create_texture_with_data(queue, desc, data);
         let view = handle.create_view(&wgpu::TextureViewDescriptor::default());
@@ -828,7 +1099,13 @@ impl SourceTexture {
     }
 }
 
-fn create_image(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, w: u32, h: u32) -> SourceTexture {
+fn create_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    w: u32,
+    h: u32,
+) -> SourceTexture {
     let mut img = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         for x in 0..w {
@@ -851,12 +1128,16 @@ fn create_image(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindG
             label: Some("image"),
             mip_level_count: 1,
             sample_count: 1,
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         },
-        &img
+        &img,
     )
 }

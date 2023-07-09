@@ -1,9 +1,10 @@
-use lyon::{math::{Point, point, vector}, geom::Box2D, path::Winding};
+use lyon::{geom::Box2D, path::Winding};
 
 use crate::{TilePosition, encoder::{TileEncoder, as_scale_offset}, TileVisibility, FillOptions, TileMask, Tiler, tile_visibility};
 use crate::tiler::affected_range;
 use super::MaskEncoder;
 use core::pattern::BuiltPattern;
+use core::units::{LocalPoint, Point, point, vector};
 
 use core::bytemuck;
 use core::wgpu;
@@ -35,7 +36,7 @@ pub fn add_cricle_mask(tile_encoder: &mut TileEncoder, circle_masks: &mut MaskEn
 }
 
 pub fn fill_circle(
-    mut center: Point,
+    mut center: LocalPoint,
     mut radius: f32,
     options: &FillOptions,
     pattern: &BuiltPattern,
@@ -53,7 +54,7 @@ pub fn fill_circle(
         simple = false;
         if let Some((scale, offset)) = as_scale_offset(transform) {
             if (scale.x - scale.y).abs() < 0.01 {
-                center = center * scale.x + offset;
+                center = center * scale.x + offset.cast_unit();
                 radius = radius * scale.x;
                 simple = true;
             }
@@ -73,7 +74,7 @@ pub fn fill_circle(
         );
     } else {
         let mut path = lyon::path::Path::builder();
-        path.add_circle(center, radius, Winding::Positive);
+        path.add_circle(center.cast_unit(), radius, Winding::Positive);
         let path = path.build();
 
         tiler.fill_path(
@@ -88,7 +89,7 @@ pub fn fill_circle(
 }
 
 fn fill_transformed_circle(
-    center: Point,
+    center: LocalPoint,
     radius: f32,
     scissor: &Box2D<f32>,
     inverted: bool,
@@ -170,7 +171,7 @@ fn fill_transformed_circle(
 
             let tile_offset = vector(tx as f32, tile_y as f32) * TILE_SIZE;
             let center = center - tile_offset;
-            let mask_id = add_cricle_mask(encoder, circle_masks, center, radius, inverted);
+            let mask_id = add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
 
             let tile_position = TilePosition::new(tx, tile_y);
 
@@ -222,7 +223,7 @@ fn fill_transformed_circle(
 
             let tile_offset = vector(tx as f32, tile_y as f32) * TILE_SIZE;
             let center = center - tile_offset;
-            let mask_id = add_cricle_mask(encoder, circle_masks, center, radius, inverted);
+            let mask_id = add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
 
             let tile_position = TilePosition::new(tx, tile_y);
 

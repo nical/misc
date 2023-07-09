@@ -1,18 +1,36 @@
-use std::{ops::Range, collections::HashMap};
+use std::{collections::HashMap, ops::Range};
 
-use lyon::{path::{PathSlice, PathEvent, traits::PathIterator, FillRule}, math::{Box2D, Point, Transform, point}, geom::{QuadraticBezierSegment, CubicBezierSegment, arrayvec::ArrayVec}, lyon_tessellation::VertexBuffers};
+use lyon::{
+    geom::{arrayvec::ArrayVec, CubicBezierSegment, QuadraticBezierSegment},
+    lyon_tessellation::{VertexBuffers, FillOptions, FillVertexConstructor, FillTessellator, BuffersBuilder},
+    path::{traits::PathIterator, PathEvent, PathSlice},
+};
 
-use core::{canvas::{Canvas, RendererId, Shape, CanvasRenderer, ZIndex, RenderPassState, TransformId, DrawHelper, SurfaceState}, gpu::{DynBufferRange, shader::{SurfaceConfig, StencilMode, DepthMode, ShaderPatternId}, Shaders}, pattern::{BuiltPattern, BindingsId}, BindingResolver, batching::{BatchFlags, BatchList}};
-use core::resources::{GpuResources, ResourcesHandle, CommonGpuResources};
 use super::StencilAndCoverResources;
-use core::bytemuck;
+use core::{bytemuck, shape::{PathShape, Circle}, batching::SurfaceIndex};
+use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::wgpu;
-
+use core::{
+    batching::{BatchFlags, BatchList},
+    canvas::{
+        Canvas, CanvasRenderer, DrawHelper, RenderPassState, RendererId, SubPass,
+        SurfaceState, ZIndex,
+    },
+    gpu::{
+        shader::{DepthMode, ShaderPatternId, StencilMode, SurfaceConfig},
+        DynBufferRange, Shaders,
+    },
+    pattern::{BindingsId, BuiltPattern},
+    transform::TransformId,
+    units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect},
+    BindingResolver,
+};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct StencilVertex {
-    pub x: f32, pub y: f32
+    pub x: f32,
+    pub y: f32,
 }
 
 impl StencilVertex {
@@ -33,25 +51,56 @@ pub struct CoverVertex {
     pub pattern: u32,
 }
 
-unsafe impl bytemuck::Pod for CoverVertex {}
-unsafe impl bytemuck::Zeroable for CoverVertex {}
+struct VertexCtor {
+    pattern: u32, z_index: u32,
+}
 
-pub enum Draw {
-    Stencil { indices: Range<u32> },
-    Cover {
-        indices: Range<u32>,
-        fill_rule: FillRule,
-        opaque: bool,
-        pattern: ShaderPatternId,
-        pattern_inputs: BindingsId,
+impl FillVertexConstructor<CoverVertex> for VertexCtor {
+    fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> CoverVertex {
+        let (x, y) = vertex.position().to_tuple();
+        CoverVertex { x, y, z_index: self.z_index, pattern: self.pattern }
     }
 }
 
-pub struct Fill {
-    pub shape: Shape,
-    pub pattern: BuiltPattern,
-    pub transform: TransformId,
-    pub z_index: ZIndex,
+unsafe impl bytemuck::Pod for CoverVertex {}
+unsafe impl bytemuck::Zeroable for CoverVertex {}
+
+enum Shape {
+    Path(PathShape),
+    Rect(LocalRect),
+    Circle(Circle),
+}
+
+impl Shape {
+    pub fn aabb(&self) -> LocalRect {
+        match self {
+            // TODO: return the correct aabb for inverted shapes.
+            Shape::Path(shape) => *shape.path.aabb(),
+            Shape::Rect(rect) => *rect,
+            Shape::Circle(circle) => circle.aabb(),
+            //Shape::Mesh(mesh) => mesh.aabb
+        }
+    }
+}
+
+pub enum Draw {
+    Stencil {
+        indices: Range<u32>,
+    },
+    Cover {
+        indices: Range<u32>,
+        stencil_mode: StencilMode,
+        opaque: bool,
+        pattern: ShaderPatternId,
+        pattern_inputs: BindingsId,
+    },
+}
+
+struct Fill {
+    shape: Shape,
+    pattern: BuiltPattern,
+    transform: TransformId,
+    z_index: ZIndex,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +108,15 @@ pub struct Stats {
     pub commands: u32,
     pub stencil_batches: u32,
     pub cover_batches: u32,
+}
+
+type BatchRects = ArrayVec<SurfaceRect, 16>;
+
+struct BatchHelper {
+    rects: BatchRects,
+    cover_idx_start: u32,
+    stencil_idx_start: u32,
+    prev_pattern: Option<(ShaderPatternId, BindingsId, StencilMode, bool)>,
 }
 
 pub struct StencilAndCoverRenderer {
@@ -106,7 +164,7 @@ impl StencilAndCoverRenderer {
                 commands: 0,
                 stencil_batches: 0,
                 cover_batches: 0,
-            }
+            },
         }
     }
 
@@ -131,40 +189,61 @@ impl StencilAndCoverRenderer {
         self.stats = Stats::default();
     }
 
-    pub fn fill<S: Into<Shape>>(&mut self, canvas: &mut Canvas, shape: S, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, path: P, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+    }
+
+    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: &LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Rect(*rect), pattern);
+    }
+
+    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    }
+
+    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
         debug_assert!(self.supports_surface(canvas.surface.current_state()));
 
-        let shape = shape.into();
-        let aabb = canvas.transforms.get_current().outer_transformed_box(&shape.aabb());
+        let aabb = canvas
+            .transforms
+            .get_current()
+            .matrix()
+            .outer_transformed_box(&shape.aabb());
 
-        self.batches.find_or_add_batch(
-            &mut *canvas.batcher,
-            &0,
-            &aabb,
-            BatchFlags::empty(),
-            &mut Default::default,
-        ).0.push(Fill {
-            shape,
-            pattern,
-            transform: canvas.transforms.current(),
-            z_index: canvas.z_indices.push(),
-        });
+        self.batches
+            .find_or_add_batch(
+                &mut canvas.batcher,
+                &0,
+                &aabb,
+                BatchFlags::empty(),
+                &mut Default::default,
+            )
+            .0
+            .push(Fill {
+                shape,
+                pattern,
+                transform: canvas.transforms.current_id(),
+                z_index: canvas.z_indices.push(),
+            });
     }
 
     pub fn prepare(&mut self, canvas: &Canvas) {
+        let mut batching = BatchHelper {
+            rects: ArrayVec::new(),
+            prev_pattern: None,
+            stencil_idx_start: 0,
+            cover_idx_start: 0,
+        };
 
-        let mut batch_rects: ArrayVec<Box2D, 16> = ArrayVec::new();
-        let mut prev_pattern = None;
-        let mut stencil_idx_start = 0;
-        let mut cover_idx_start = 0;
-
-        let commands = std::mem::take(&mut self.commands);
-        self.stats.commands += commands.len() as u32;
-        for batch_id in canvas.batcher.batches()
+        let mut batches = self.batches.take();
+        let id = self.renderer_id;
+        for batch_id in canvas
+            .batcher
+            .batches()
             .iter()
-            .filter(|batch| batch.renderer == self.renderer_id) {
-
-            let (commands, draws) = self.batches.get_mut(batch_id.index);
+            .filter(|batch| batch.renderer == id)
+        {
+            let (commands, draws) = batches.get_mut(batch_id.index);
 
             //let surface = range.surface;
             //let range = range.commands.start as usize .. range.commands.end as usize;
@@ -173,128 +252,195 @@ impl StencilAndCoverRenderer {
 
             for (fill_idx, fill) in commands.iter().enumerate() {
                 let is_last = fill_idx == commands.len() - 1;
-                let transform = canvas.transforms.get(fill.transform);
-                let opaque = fill.pattern.is_opaque;
-
-                let (local_aabb, fill_rule) = match &fill.shape {
-                    Shape::Path(shape) => (
-                        *shape.path.aabb(),
-                        shape.fill_rule
-                    ),
-                    Shape::Rect(rect) => (*rect, FillRule::NonZero),
-                    Shape::Circle(circle) => (circle.aabb(), FillRule::NonZero),
-                    Shape::Canvas => (
-                        // TODO: that's the transformed aabb!
-                        Box2D::from_size(canvas.surface.size().to_f32()),
-                        FillRule::NonZero
-                    ),
-                };
-
-                let transformed_aabb = transform.outer_transformed_box(&local_aabb);
-
-                let batch_key = (fill.pattern.shader, fill.pattern.bindings, fill_rule, opaque);
-
-                let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
-                let cover_idx_end = self.cover_geometry.indices.len() as u32;
-
-                let new_stencil_batch = stencil_idx_end > stencil_idx_start
-                    && (batch_rects.capacity() == 0 || intersects_batch_rects(&transformed_aabb, &batch_rects));
-                let new_cover_batch = cover_idx_end > cover_idx_start
-                    && (new_stencil_batch || prev_pattern != Some(batch_key));
-
-                if new_stencil_batch {
-                    self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
-                    stencil_idx_start = stencil_idx_end;
-                    batch_rects.clear();
-                    self.stats.stencil_batches += 1;
-                }
-                batch_rects.push(transformed_aabb);
-
-                if new_cover_batch {
-                    let state = canvas.surface.state(batch_id.surface);
-                    self.shaders.entry((opaque, fill.pattern.shader, fill_rule.into(), state)).or_insert(None);
-
-                    self.draws.push(Draw::Cover {
-                        indices: cover_idx_start..cover_idx_end,
-                        fill_rule: fill_rule,
-                        opaque,
-                        pattern: fill.pattern.shader,
-                        pattern_inputs: fill.pattern.bindings,
-                    });
-                    cover_idx_start = cover_idx_end;
-                    prev_pattern = Some(batch_key);
-                    self.stats.cover_batches += 1;
-                }
-
-                match &fill.shape {
-                    Shape::Path(shape) => {
-                        generate_stencil_geometry(
-                            shape.path.as_slice(),
-                            transform,
-                            canvas.params.tolerance,
-                            &transformed_aabb,
-                            &mut self.stencil_geometry,
-                        );
-                    }
-                    _ => {
-                        todo!()
-                    }
-                }
-
-                generate_cover_geometry(
-                    &local_aabb,
-                    transform,
-                    fill,
-                    &mut self.cover_geometry
-                );
-
-                if is_last {
-                    let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
-                    if stencil_idx_end > stencil_idx_start {
-                        self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
-                        self.stats.stencil_batches += 1;
-                    }
-
-                    let cover_idx_end = self.cover_geometry.indices.len() as u32;
-                    if cover_idx_end > cover_idx_start {
-                        self.draws.push(Draw::Cover {
-                            indices: cover_idx_start..cover_idx_end,
-                            fill_rule: fill_rule,
-                            opaque,
-                            pattern: fill.pattern.shader,
-                            pattern_inputs: fill.pattern.bindings,
-                        });
-                        self.stats.cover_batches += 1;
-                    }
-                }
+                self.prepare_fill(canvas, fill, &mut batching, is_last, batch_id.surface);
             }
 
             let draws_end = self.draws.len();
-            *draws = draws_start .. draws_end;
+            *draws = draws_start..draws_end;
+        }
+
+        //self.stats.commands += commands.len() as u32; TODO
+
+        self.batches = batches;
+    }
+
+    fn prepare_fill(
+        &mut self,
+        canvas: &Canvas,
+        fill: &Fill,
+        batch: &mut BatchHelper,
+        is_last: bool,
+        surface_idx: SurfaceIndex,
+    ) {
+        let transform = canvas.transforms.get(fill.transform);
+        let opaque = fill.pattern.is_opaque;
+
+        let local_aabb = fill.shape.aabb();
+        let stencil_mode: StencilMode =  match &fill.shape {
+            Shape::Path(shape) => shape.fill_rule.into(),
+            Shape::Rect(_) => StencilMode::Ignore,
+            Shape::Circle(_) => StencilMode::Ignore,
+            //Shape::Canvas => StencilMode::Ignore,
+        };
+
+        let transformed_aabb = transform.matrix().outer_transformed_box(&local_aabb);
+
+        let batch_key = (
+            fill.pattern.shader,
+            fill.pattern.bindings,
+            stencil_mode,
+            opaque,
+        );
+
+        let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
+        let cover_idx_end = self.cover_geometry.indices.len() as u32;
+
+        let new_stencil_batch = stencil_idx_end > batch.stencil_idx_start
+            && (batch.rects.capacity() == 0
+                || intersects_batch_rects(&transformed_aabb, &batch.rects));
+        let new_cover_batch = cover_idx_end > batch.cover_idx_start
+            && (new_stencil_batch || batch.prev_pattern != Some(batch_key));
+
+        if new_stencil_batch {
+            self.draws.push(Draw::Stencil {
+                indices: batch.stencil_idx_start..stencil_idx_end,
+            });
+            batch.stencil_idx_start = stencil_idx_end;
+            batch.rects.clear();
+            self.stats.stencil_batches += 1;
+        }
+        batch.rects.push(transformed_aabb);
+
+        if new_cover_batch {
+            self.draws.push(Draw::Cover {
+                indices: batch.cover_idx_start..cover_idx_end,
+                stencil_mode,
+                opaque,
+                pattern: fill.pattern.shader,
+                pattern_inputs: fill.pattern.bindings,
+            });
+            batch.cover_idx_start = cover_idx_end;
+            batch.prev_pattern = Some(batch_key);
+            self.stats.cover_batches += 1;
+        }
+
+        match &fill.shape {
+            Shape::Path(shape) => {
+                generate_stencil_geometry(
+                    shape.path.as_slice(),
+                    transform.matrix(),
+                    canvas.params.tolerance,
+                    &transformed_aabb,
+                    &mut self.stencil_geometry,
+                );
+            }
+            _ => {
+                // No stenciling to do.
+            }
+        }
+
+        match &fill.shape {
+            Shape::Circle(circle) => {
+                if let Some(t) = transform.as_scale_offset() {
+                    if (t.scale.x - t.scale.y).abs() > 0.001 {
+                        todo!();
+                    }
+                    FillTessellator::new().tessellate_circle(
+                        t.transform_point(circle.center).cast_unit(),
+                        circle.radius * t.scale.x,
+                        &FillOptions::tolerance(canvas.params.tolerance),
+                        &mut BuffersBuilder::new(
+                            &mut self.cover_geometry,
+                            VertexCtor {
+                                z_index: fill.z_index,
+                                pattern: fill.pattern.data,
+                            },
+                        )
+                    ).unwrap();    
+                }
+            }
+            _ => {
+                generate_cover_geometry(
+                    &local_aabb,
+                    transform.matrix(),
+                    fill,
+                    &mut self.cover_geometry,
+                );
+            }         
+        }
+
+        if is_last {
+            let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
+            if stencil_idx_end > batch.stencil_idx_start {
+                self.draws.push(Draw::Stencil {
+                    indices: batch.stencil_idx_start..stencil_idx_end,
+                });
+                self.stats.stencil_batches += 1;
+            }
+
+            let cover_idx_end = self.cover_geometry.indices.len() as u32;
+            if cover_idx_end > batch.cover_idx_start {
+                self.draws.push(Draw::Cover {
+                    indices: batch.cover_idx_start..cover_idx_end,
+                    stencil_mode,
+                    opaque,
+                    pattern: fill.pattern.shader,
+                    pattern_inputs: fill.pattern.bindings,
+                });
+                self.stats.cover_batches += 1;
+            }
+        }
+
+        if is_last || new_cover_batch {
+            let state = canvas.surface.state(surface_idx);
+            self.shaders
+                .entry((opaque, fill.pattern.shader, stencil_mode, state))
+                .or_insert(None);
         }
     }
 
-    pub fn upload(&mut self, resources: &mut GpuResources, shaders: &mut Shaders, device: &wgpu::Device) {
+    pub fn upload(
+        &mut self,
+        resources: &mut GpuResources,
+        shaders: &mut Shaders,
+        device: &wgpu::Device,
+    ) {
         let stencil_res = &resources[self.resources];
         let opaque_pipeline = stencil_res.opaque_cover_pipeline;
         let alpha_pipeline = stencil_res.alpha_cover_pipeline;
 
         let res = &mut resources[self.common_resources];
-        self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.stencil_geometry.vertices));
-        self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.stencil_geometry.indices));
-        self.cover_vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
-        self.cover_ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
+        self.vbo_range = res.vertices.upload(
+            device,
+            bytemuck::cast_slice(&self.stencil_geometry.vertices),
+        );
+        self.ibo_range = res
+            .indices
+            .upload(device, bytemuck::cast_slice(&self.stencil_geometry.indices));
+        self.cover_vbo_range = res
+            .vertices
+            .upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
+        self.cover_ibo_range = res
+            .indices
+            .upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
 
         for (&(opaque, pattern, stencil, surface), shader_id) in &mut self.shaders {
             if shader_id.is_none() {
                 let surface = SurfaceConfig {
                     msaa: surface.msaa,
-                    // TODO: take advantage of the opaque pass.
-                    depth: if surface.depth { DepthMode::Ignore } else { DepthMode::None },
+                    depth: if surface.depth {
+                        DepthMode::Ignore // TODO
+                    } else {
+                        DepthMode::None
+                    },
                     stencil,
                 };
 
-                let id = if opaque { opaque_pipeline } else { alpha_pipeline };
+                let id = if opaque {
+                    opaque_pipeline
+                } else {
+                    alpha_pipeline
+                };
                 shaders.prepare_pipeline(device, id, pattern, surface);
             }
         }
@@ -303,11 +449,12 @@ impl StencilAndCoverRenderer {
 
 pub fn generate_stencil_geometry(
     path: PathSlice,
-    transform: &Transform,
+    transform: &LocalToSurfaceTransform,
     tolerance: f32,
-    aabb: &Box2D,
+    aabb: &SurfaceRect,
     stencil_geometry: &mut VertexBuffers<StencilVertex, u32>,
 ) {
+    let transform = &transform.to_untyped();
     let vertices = &mut stencil_geometry.vertices;
     let indices = &mut stencil_geometry.indices;
 
@@ -323,13 +470,12 @@ pub fn generate_stencil_geometry(
         indices.push(c)
     }
 
-    let pivot = vertex(vertices, aabb.min);
+    // Use the center of the bounding box as the pivot point.
+    let pivot = vertex(vertices, aabb.center().cast_unit());
 
     for evt in path.iter().transformed(transform) {
         match evt {
-            PathEvent::Begin { .. } => {
-
-            }
+            PathEvent::Begin { .. } => {}
             PathEvent::End { last, first, .. } => {
                 if skip_edge(&aabb, last, first) {
                     continue;
@@ -360,33 +506,38 @@ pub fn generate_stencil_geometry(
 
                 triangle(indices, pivot, a, b);
 
-                let aabb = Box2D {
-                    min: point(
-                        from.x.min(ctrl.x).min(to.x),
-                        from.y.min(ctrl.y).min(to.y),
-                    ),
+                let seg_aabb = SurfaceRect {
+                    min: point(from.x.min(ctrl.x).min(to.x), from.y.min(ctrl.y).min(to.y)),
                     max: point(max_x, max_y),
                 };
 
-                if aabb.intersects(&aabb) {
+                if seg_aabb.intersects(&aabb) {
                     let mut prev = a;
-                    QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |seg| {
-                        let next = vertex(vertices, seg.to);
-                        if prev != a {
-                            triangle(indices, a, prev, next);
-                        }
-                        prev = next;
-                    });
+                    QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(
+                        tolerance,
+                        &mut |seg| {
+                            let next = vertex(vertices, seg.to);
+                            if prev != a {
+                                triangle(indices, a, prev, next);
+                            }
+                            prev = next;
+                        },
+                    );
                 }
             }
-            PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+            PathEvent::Cubic {
+                from,
+                ctrl1,
+                ctrl2,
+                to,
+            } => {
                 let max_x = from.x.max(ctrl1.x).max(ctrl2.x).max(to.x);
                 let max_y = from.y.max(ctrl1.y).max(ctrl2.y).max(to.y);
                 if max_x < aabb.min.x || max_y < aabb.min.y {
                     continue;
                 }
 
-                let aabb = Box2D {
+                let seg_aabb = SurfaceRect {
                     min: point(
                         from.x.min(ctrl1.x).min(ctrl2.x).min(to.x),
                         from.y.min(ctrl1.y).min(ctrl2.y).min(to.y),
@@ -394,8 +545,14 @@ pub fn generate_stencil_geometry(
                     max: point(max_x, max_y),
                 };
 
-                if aabb.intersects(&aabb) {
-                    CubicBezierSegment { from, ctrl1, ctrl2, to}.for_each_quadratic_bezier(tolerance, &mut |quad| {
+                if seg_aabb.intersects(&aabb) {
+                    CubicBezierSegment {
+                        from,
+                        ctrl1,
+                        ctrl2,
+                        to,
+                    }
+                    .for_each_quadratic_bezier(tolerance, &mut |quad| {
                         let a = vertex(vertices, quad.from);
                         let b = vertex(vertices, quad.to);
 
@@ -416,8 +573,8 @@ pub fn generate_stencil_geometry(
 }
 
 fn generate_cover_geometry(
-    aabb: &Box2D,
-    transform: &Transform,
+    aabb: &LocalRect,
+    transform: &LocalToSurfaceTransform,
     fill: &Fill,
     geometry: &mut VertexBuffers<CoverVertex, u32>,
 ) {
@@ -427,11 +584,12 @@ fn generate_cover_geometry(
     let d = transform.transform_point(point(aabb.min.x, aabb.max.y));
 
     let z_index = fill.z_index;
+    let pattern = fill.pattern.data;
     let offset = geometry.vertices.len() as u32;
-    geometry.vertices.push(CoverVertex { x: a.x, y: a.y, z_index, pattern: fill.pattern.data });
-    geometry.vertices.push(CoverVertex { x: b.x, y: b.y, z_index, pattern: fill.pattern.data });
-    geometry.vertices.push(CoverVertex { x: c.x, y: c.y, z_index, pattern: fill.pattern.data });
-    geometry.vertices.push(CoverVertex { x: d.x, y: d.y, z_index, pattern: fill.pattern.data });
+    geometry.vertices.push(CoverVertex { x: a.x, y: a.y, z_index, pattern });
+    geometry.vertices.push(CoverVertex { x: b.x, y: b.y, z_index, pattern });
+    geometry.vertices.push(CoverVertex { x: c.x, y: c.y, z_index, pattern });
+    geometry.vertices.push(CoverVertex { x: d.x, y: d.y, z_index, pattern });
     geometry.indices.push(offset);
     geometry.indices.push(offset + 1);
     geometry.indices.push(offset + 2);
@@ -443,7 +601,7 @@ fn generate_cover_geometry(
 impl CanvasRenderer for StencilAndCoverRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        index: u32,
+        sub_passes: &[SubPass],
         surface_info: &RenderPassState,
         shaders: &'resources Shaders,
         resources: &'resources GpuResources,
@@ -453,59 +611,93 @@ impl CanvasRenderer for StencilAndCoverRenderer {
         let common_resources = &resources[self.common_resources];
         let stencil_resources = &resources[self.resources];
 
-        let (_, draws) = self.batches.get(index);
-
-        render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
-
-        render_pass.set_stencil_reference(128);
-
         let mut helper = DrawHelper::new();
 
-        for draw in &self.draws[draws.clone()] {
-            match draw {
-                Draw::Stencil { indices } => {
-                    // Stencil
-                    let pipeline = if surface_info.surface.msaa {
-                        &stencil_resources.msaa_stencil_pipeline
-                    } else {
-                        &stencil_resources.stencil_pipeline
-                    };
-                    render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
-                    render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
-                    render_pass.set_pipeline(pipeline);
-                    render_pass.draw_indexed(indices.clone(), 0, 0..1);
-                }
-                &Draw::Cover { ref indices, fill_rule, opaque, pattern, pattern_inputs } => {
-                    // Cover
-                    let surface = surface_info.surface_config(false, Some(fill_rule));
+        render_pass.set_bind_group(
+            0,
+            &common_resources.main_target_and_gpu_store_bind_group,
+            &[],
+        );
+        render_pass.set_stencil_reference(128);
 
-                    let pipeline_id = if opaque {
-                        stencil_resources.opaque_cover_pipeline
-                    } else {
-                        stencil_resources.alpha_cover_pipeline
-                    };
+        for sub_pass in sub_passes {
+            let (_, draws) = self.batches.get(sub_pass.internal_index);
 
-                    helper.resolve_and_bind(1, pattern_inputs, bindings, render_pass);
+            for draw in &self.draws[draws.clone()] {
+                match draw {
+                    Draw::Stencil { indices } => {
+                        // Stencil
+                        let pipeline = if surface_info.surface.msaa {
+                            &stencil_resources.msaa_stencil_pipeline
+                        } else {
+                            &stencil_resources.stencil_pipeline
+                        };
+                        render_pass.set_index_buffer(
+                            common_resources
+                                .indices
+                                .get_buffer_slice(self.ibo_range.as_ref().unwrap()),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        render_pass.set_vertex_buffer(
+                            0,
+                            common_resources
+                                .vertices
+                                .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
+                        );
+                        render_pass.set_pipeline(pipeline);
+                        render_pass.draw_indexed(indices.clone(), 0, 0..1);
+                    }
+                    &Draw::Cover {
+                        ref indices,
+                        stencil_mode,
+                        opaque,
+                        pattern,
+                        pattern_inputs,
+                    } => {
+                        // Cover
+                        let surface = SurfaceConfig {
+                            msaa: surface_info.surface.msaa,
+                            depth: if surface_info.surface.depth { DepthMode::Ignore } else { DepthMode::None },
+                            stencil: stencil_mode,
+                        };
 
-                    // TODO: Take advantage of the fact that we tend to query the same pipeline multiple times in a row.
-                    let pipeline = shaders.try_get(pipeline_id, pattern, surface).unwrap();
+                        let pipeline_id = if opaque {
+                            stencil_resources.opaque_cover_pipeline
+                        } else {
+                            stencil_resources.alpha_cover_pipeline
+                        };
 
-                    render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.cover_ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
-                    render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.cover_vbo_range.as_ref().unwrap()));
-                    render_pass.set_pipeline(pipeline);
-                    render_pass.draw_indexed(indices.clone(), 0, 0..1);
+                        helper.resolve_and_bind(1, pattern_inputs, bindings, render_pass);
+
+                        // TODO: Take advantage of the fact that we tend to query the same pipeline multiple times in a row.
+                        let pipeline = shaders.try_get(pipeline_id, pattern, surface).unwrap();
+
+                        render_pass.set_index_buffer(
+                            common_resources
+                                .indices
+                                .get_buffer_slice(self.cover_ibo_range.as_ref().unwrap()),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        render_pass.set_vertex_buffer(
+                            0,
+                            common_resources
+                                .vertices
+                                .get_buffer_slice(self.cover_vbo_range.as_ref().unwrap()),
+                        );
+                        render_pass.set_pipeline(pipeline);
+                        render_pass.draw_indexed(indices.clone(), 0, 0..1);
+                    }
                 }
             }
         }
     }
 }
 
-fn skip_edge(rect: &Box2D, from: Point, to: Point) -> bool {
-    from.x < rect.min.x && to.x < rect.min.x
-        || from.y < rect.min.y && to.y < rect.min.y
+fn skip_edge(rect: &SurfaceRect, from: Point, to: Point) -> bool {
+    from.x < rect.min.x && to.x < rect.min.x || from.y < rect.min.y && to.y < rect.min.y
 }
 
-fn intersects_batch_rects(new_rect: &Box2D, batch_rects: &[Box2D]) -> bool {
+fn intersects_batch_rects(new_rect: &SurfaceRect, batch_rects: &[SurfaceRect]) -> bool {
     for rect in batch_rects {
         if new_rect.intersects(rect) {
             return true;

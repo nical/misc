@@ -1,5 +1,11 @@
-use core::{resources::{RendererResources, CommonGpuResources}, gpu::{VertexBuilder, Shaders, shader::{OutputType, PipelineDescriptor, BlendMode, GeneratedPipelineId, ShaderMaskId}}};
 use core::wgpu;
+use core::{
+    gpu::{
+        shader::{BlendMode, GeneratedPipelineId, OutputType, PipelineDescriptor, ShaderMaskId},
+        Shaders, VertexBuilder,
+    },
+    resources::{CommonGpuResources, RendererResources},
+};
 
 pub struct StencilAndCoverResources {
     pub stencil_pipeline: wgpu::RenderPipeline,
@@ -27,7 +33,8 @@ impl StencilAndCoverResources {
         device: &wgpu::Device,
         shaders: &mut Shaders,
     ) -> Self {
-        let stencil_module = shaders.create_shader_module(device, "stencil", STENCIL_SHADER_SRC, &[]);
+        let stencil_module =
+            shaders.create_shader_module(device, "stencil", STENCIL_SHADER_SRC, &[]);
 
         let vertex_attributes = VertexBuilder::from_slice(
             wgpu::VertexStepMode::Vertex,
@@ -36,9 +43,9 @@ impl StencilAndCoverResources {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stencil"),
-            bind_group_layouts: &[
-                &shaders.get_bind_group_layout(common.target_and_gpu_store_layout).handle,
-            ],
+            bind_group_layouts: &[&shaders
+                .get_bind_group_layout(common.target_and_gpu_store_layout)
+                .handle],
             push_constant_ranges: &[],
         });
 
@@ -91,7 +98,7 @@ impl StencilAndCoverResources {
 
         descriptor.multisample = wgpu::MultisampleState {
             count: shaders.defaults.msaa_sample_count(),
-            .. wgpu::MultisampleState::default()
+            ..wgpu::MultisampleState::default()
         };
         let msaa_stencil_pipeline = device.create_render_pipeline(&descriptor);
 
@@ -128,13 +135,11 @@ impl StencilAndCoverResources {
 }
 
 impl RendererResources for StencilAndCoverResources {
-    fn name(&self) -> &'static str { "StencilAndCoverResources" }
-
-    fn begin_frame(&mut self) {
-
+    fn name(&self) -> &'static str {
+        "StencilAndCoverResources"
     }
 
-    fn end_frame(&mut self) {
+    fn begin_frame(&mut self) {}
 
-    }
+    fn end_frame(&mut self) {}
 }

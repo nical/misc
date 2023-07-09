@@ -1,7 +1,7 @@
-use lyon::geom::euclid::default::Size2D;
 use wgpu::util::DeviceExt;
 use crate::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId};
 use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
+use crate::units::SurfaceIntSize;
 use std::{any::Any, marker::PhantomData};
 
 pub trait RendererResources: AsAny {
@@ -41,13 +41,24 @@ impl<T> Clone for ResourcesHandle<T> {
 
 pub struct GpuResources {
     systems: Vec<Box<dyn RendererResources>>,
+    next_handle: u8,
 }
 
 impl GpuResources {
-    pub fn new(systems: Vec<Box<dyn RendererResources>>) -> Self {
+    pub fn new() -> Self {
         GpuResources {
-            systems,
+            systems: Vec::with_capacity(32),
+            next_handle: 0,
         }
+    }
+
+    pub fn register<T: RendererResources+'static>(&mut self, system: T) -> ResourcesHandle<T> {
+        let handle = ResourcesHandle::new(self.next_handle);
+        self.next_handle += 1;
+
+        self.systems.push(Box::new(system));
+
+        handle
     }
 
     pub fn get<T: 'static>(&self, handle: ResourcesHandle<T>) -> &T {
@@ -125,7 +136,7 @@ pub struct CommonGpuResources {
 impl CommonGpuResources {
     pub fn new(
         device: &wgpu::Device,
-        target_size: Size2D<u32>,
+        target_size: SurfaceIntSize,
         gpu_store: &GpuStore,
         shaders: &mut crate::gpu::Shaders,
     ) -> Self {
@@ -163,7 +174,7 @@ impl CommonGpuResources {
         let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Target info"),
             contents: bytemuck::cast_slice(&[
-                GpuTargetDescriptor::new(target_size.width, target_size.height)
+                GpuTargetDescriptor::new(target_size.width as u32, target_size.height as u32)
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -297,11 +308,11 @@ impl CommonGpuResources {
         }
     }
 
-    pub fn resize_target(&self, size: Size2D<u32>, queue: &wgpu::Queue) {
+    pub fn resize_target(&self, size: SurfaceIntSize, queue: &wgpu::Queue) {
         queue.write_buffer(
             &self.main_target_descriptor_ubo,
             0,
-            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width, size.height)]),
+            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width as u32, size.height as u32)]),
         );
     }
 }

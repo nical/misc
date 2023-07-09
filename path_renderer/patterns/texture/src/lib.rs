@@ -94,18 +94,22 @@ impl TextureRenderer {
 }
 
 const LOAD_SHADER_SRC: &'static str = "
+#import pattern::color
+
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     return Pattern(pattern_pos);
 }
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
-    var uv = vec2<i32>(pattern.uv);
-    return textureLoad(src_color_texture, uv, 0);
+    let uv = vec2<i32>(pattern.uv);
+    let color = textureLoad(src_color_texture, uv, 0);
+    return unpremultiply_color(color);
 }
 ";
 
 const SAMPLE_SHADER_SRC: &'static str = "
 #import gpu_store
+#import pattern::color
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let data = gpu_store_fetch_2(pattern_handle);
@@ -138,6 +142,8 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
     uv = max(uv, pattern.uv_bounds.xy);
     uv = min(uv, pattern.uv_bounds.zw);
 
-    return textureSampleLevel(src_color_texture, default_sampler, uv, 0.0);
+    let color = textureSampleLevel(src_color_texture, default_sampler, uv, 0.0);
+
+    return unpremultiply_color(color);
 }
 ";
