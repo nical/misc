@@ -1,6 +1,6 @@
 use lyon::{
     tessellation::{FillTessellator, FillOptions, VertexBuffers, FillVertexConstructor, BuffersBuilder},
-    path::traits::PathIterator, geom::euclid::vec2
+    path::traits::PathIterator, geom::euclid::vec2, lyon_tessellation::{StrokeOptions, StrokeTessellator, StrokeVertexConstructor}
 };
 use core::{
     shape::{PathShape, Circle},
@@ -12,7 +12,7 @@ use core::{
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu, BindingResolver, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point},
+    wgpu, BindingResolver, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point}, path::Path,
 };
 use std::{ops::Range, collections::HashMap};
 
@@ -37,6 +37,7 @@ enum Shape {
     Rect(LocalRect),
     Circle(Circle),
     Mesh(TessellatedMesh),
+    StrokePath(Path, f32),
 }
 
 impl Shape {
@@ -46,7 +47,8 @@ impl Shape {
             Shape::Path(shape) => *shape.path.aabb(),
             Shape::Rect(rect) => *rect,
             Shape::Circle(circle) => circle.aabb(),
-            Shape::Mesh(mesh) => mesh.aabb
+            Shape::Mesh(mesh) => mesh.aabb,
+            Shape::StrokePath(path, width) => path.aabb().inflate(*width, *width)
         }
     }
 }
@@ -76,6 +78,12 @@ struct VertexCtor {
 
 impl FillVertexConstructor<Vertex> for VertexCtor {
     fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> Vertex {
+        let (x, y) = vertex.position().to_tuple();
+        Vertex { x, y, z_index: self.z_index, pattern: self.pattern }
+    }
+}
+impl StrokeVertexConstructor<Vertex> for VertexCtor {
+    fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::StrokeVertex) -> Vertex {
         let (x, y) = vertex.position().to_tuple();
         Vertex { x, y, z_index: self.z_index, pattern: self.pattern }
     }
@@ -140,6 +148,10 @@ impl MeshRenderer {
 
     pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, path: P, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+    }
+
+    pub fn stroke_path(&mut self, canvas: &mut Canvas, path: Path, width: f32, pattern: BuiltPattern) {
+        self.fill_shape(canvas, Shape::StrokePath(path, width), pattern);
     }
 
     pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: LocalRect, pattern: BuiltPattern) {
@@ -340,6 +352,25 @@ impl MeshRenderer {
                 self.geometry.indices.push(vtx_offset);
                 self.geometry.indices.push(vtx_offset + 2);
                 self.geometry.indices.push(vtx_offset + 3);
+            }
+            Shape::StrokePath(path, width) => {
+                let transform = transform.to_untyped();
+                let options = StrokeOptions::tolerance(self.tolerenace)
+                    .with_line_width(*width);
+
+                // TODO: some way to simplify/discard offscreen geometry, would probably be best
+                // done in the tessellator itself.
+                StrokeTessellator::new().tessellate(
+                    path.iter().transformed(&transform),
+                    &options,
+                    &mut BuffersBuilder::new(
+                        &mut self.geometry,
+                        VertexCtor {
+                            z_index: fill.z_index,
+                            pattern: fill.pattern.data,
+                        },
+                    )
+                ).unwrap();
             }
         }
     }

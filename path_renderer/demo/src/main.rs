@@ -5,6 +5,7 @@ use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::BindingsId;
 use core::resources::{CommonGpuResources, GpuResources};
+use core::stroke::*;
 use core::units::{
     point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize,
 };
@@ -503,13 +504,6 @@ fn paint_scene(
     gpu_store: &mut GpuStore,
     transform: &LocalTransform,
 ) {
-    let mut builder = core::path::Path::builder();
-    builder.begin(point(0.0, 0.0));
-    builder.line_to(point(50.0, 400.0));
-    builder.line_to(point(450.0, 450.0));
-    builder.line_to(point(400.0, 50.0));
-    builder.end(true);
-
     tiling.fill_canvas(
         canvas,
         patterns.gradients.add(
@@ -712,6 +706,13 @@ fn paint_scene(
         ),
     );
 
+    let mut builder = core::path::Path::builder();
+    builder.begin(point(0.0, 0.0));
+    builder.line_to(point(50.0, 400.0));
+    builder.line_to(point(450.0, 450.0));
+    builder.line_to(point(400.0, 50.0));
+    builder.end(true);
+
     tiling.fill_path(
         canvas,
         builder.build(),
@@ -751,6 +752,115 @@ fn paint_scene(
         },
         black,
     );
+
+    let mut builder2 = core::path::Path::builder();
+    {
+        let o = transform.m31 * 0.1;
+        let mut stroker = StrokeToFillBuilder::new(
+            &mut builder2,
+            &StrokeOptions {
+                tolerance: 0.25,
+                offsets: (-50.0, -60.0-o),
+                miter_limit: 0.5,
+                line_join: LineJoin::Miter,
+                start_cap: LineCap::TriangleInverted,
+                end_cap: LineCap::Round,
+                add_empty_caps: true,
+                .. Default::default()
+            },
+        );
+
+        stroker.begin(point(110.0, 110.0));
+        stroker.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+        stroker.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+        stroker.end(false);
+
+        stroker.begin(point(300.0, 100.0));
+        stroker.line_to(point(400.0, 100.0));
+        stroker.line_to(point(400.0, 200.0));
+        stroker.line_to(point(390.0, 250.0));
+        stroker.end(true);
+
+        stroker.begin(point(600.0, 400.0));
+        stroker.end(true);
+        stroker.begin(point(700.0, 400.0));
+        stroker.end(true);
+    }
+    {
+        let mut offsetter = OffsetBuilder::new(&mut builder2, &OffsetOptions {
+            offset: transform.m31 * 0.1,
+            join: LineJoin::Round,
+            miter_limit: 0.5,
+            tolerance: 0.25,
+            simplify_inner_joins: true,
+        });
+
+        offsetter.begin(point(500.0, 500.0));
+        offsetter.line_to(point(600.0, 500.0));
+        offsetter.line_to(point(650.0, 400.0));
+        offsetter.line_to(point(700.0, 500.0));
+        offsetter.line_to(point(800.0, 500.0));
+        offsetter.line_to(point(650.0, 600.0));
+        offsetter.end(true);
+
+
+        //offsetter.begin(point(800.0, 500.0));
+        //offsetter.line_to(point(900.0, 500.0));
+        //offsetter.line_to(point(900.0, 600.0));
+        //offsetter.line_to(point(800.0, 600.0));
+        //offsetter.end(true);
+
+        offsetter.begin(point(800.0, 700.0));
+        offsetter.line_to(point(800.0, 800.0));
+        offsetter.line_to(point(900.0, 800.0));
+        offsetter.line_to(point(900.0, 700.0));
+        offsetter.end(false);
+    }
+
+    let offset_path = builder2.build();
+    tiling.fill_path(canvas, offset_path.clone(), patterns.colors.add(Color::RED));
+
+    meshes.stroke_path(canvas, offset_path.clone(), 1.0, patterns.colors.add(Color::BLACK));
+
+    let mut b = Path::builder();
+    b.begin(point(500.0, 500.0));
+    b.line_to(point(600.0, 500.0));
+    b.line_to(point(650.0, 400.0));
+    b.line_to(point(700.0, 500.0));
+    b.line_to(point(800.0, 500.0));
+    b.line_to(point(650.0, 600.0));
+    b.end(true);
+
+    b.begin(point(110.0, 110.0));
+    b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+    b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+    b.end(false);
+    meshes.stroke_path(canvas, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+
+
+    let green = patterns.colors.add(Color::GREEN);
+    let blue = patterns.colors.add(Color::BLUE);
+    let white = patterns.colors.add(Color::WHITE);
+    for evt in offset_path.as_slice() {
+        match evt {
+            PathEvent::Begin { at } => {
+                meshes.fill_circle(canvas, Circle { center: at.cast_unit(), radius: 3.0, inverted: false }, green);
+            }
+            PathEvent::Line { to, .. } => {
+                meshes.fill_circle(canvas, Circle { center: to.cast_unit(), radius: 3.0, inverted: false }, green);
+            }
+            PathEvent::Quadratic { ctrl, to, .. } => {
+                meshes.fill_circle(canvas, Circle { center: ctrl.cast_unit(), radius: 4.0, inverted: false }, blue);
+                meshes.fill_circle(canvas, Circle { center: to.cast_unit(), radius: 3.0, inverted: false }, white);
+            }
+            PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
+                meshes.fill_circle(canvas, Circle { center: ctrl1.cast_unit(), radius: 4.0, inverted: false }, blue);
+                meshes.fill_circle(canvas, Circle { center: ctrl2.cast_unit(), radius: 4.0, inverted: false }, blue);
+                meshes.fill_circle(canvas, Circle { center: to.cast_unit(), radius: 2.0, inverted: false }, white);
+            }
+            _ => {}
+        }
+    }
 
     canvas
         .transforms
@@ -1034,11 +1144,11 @@ struct Patterns {
 }
 
 struct SourceTexture {
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    handle: wgpu::Texture,
-    view: wgpu::TextureView,
+    //width: u32,
+    //height: u32,
+    //format: wgpu::TextureFormat,
+    //handle: wgpu::Texture,
+    //view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
 }
 
@@ -1089,11 +1199,11 @@ impl SourceTexture {
             }],
         });
         SourceTexture {
-            width: desc.size.width,
-            height: desc.size.height,
-            format: desc.format,
-            handle,
-            view: view,
+            //width: desc.size.width,
+            //height: desc.size.height,
+            //format: desc.format,
+            //handle,
+            //view: view,
             bind_group,
         }
     }

@@ -8,6 +8,7 @@ pub mod batching;
 pub mod path;
 pub mod transform;
 pub mod shape;
+pub mod stroke;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 

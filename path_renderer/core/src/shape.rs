@@ -14,7 +14,7 @@ pub struct PathShape {
 
 impl PathShape {
     pub fn new(path: Arc<Path>) -> Self {
-        PathShape { path, fill_rule: FillRule::EvenOdd, inverted: false }
+        PathShape { path, fill_rule: FillRule::NonZero, inverted: false }
     }
     pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
         self.fill_rule = fill_rule;

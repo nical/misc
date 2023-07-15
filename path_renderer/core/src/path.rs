@@ -1,6 +1,7 @@
 use lyon::path::PathSlice;
 use lyon::path::builder::WithSvg;
-use lyon::path::path::Iter;
+use lyon::path::iterator::NoAttributes;
+use lyon::path::path::{Iter, Reversed};
 use lyon::path::traits::Build;
 use lyon::path::{Path as PathInner, path::Builder as BuilderInner, builder::PathBuilder, Attributes, EndpointId};
 use crate::units::{Point, Vector, LocalRect, point, vector};
@@ -15,6 +16,7 @@ const QUADRATIC_CURVES: PathFlags = 1 << 3;
 const POSITIVE_TURNS: PathFlags = 1 << 4;
 const NEGATIVE_TURNS: PathFlags = 1 << 5;
 
+#[derive(Clone)]
 pub struct Path {
     path: PathInner,
     aabb: LocalRect,
@@ -46,6 +48,10 @@ impl Path {
 
     pub fn iter(&self) -> Iter {
         self.path.iter()
+    }
+
+    pub fn reversed(&self) -> NoAttributes<Reversed> {
+        self.path.reversed()
     }
 }
 
