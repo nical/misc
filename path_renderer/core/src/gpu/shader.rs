@@ -355,7 +355,7 @@ impl Shaders {
                 StencilMode::None | StencilMode::Ignore => wgpu::StencilState::default(),
                 StencilMode::NonZero => {
                     let face_state = wgpu::StencilFaceState {
-                        compare: wgpu::CompareFunction::Equal,
+                        compare: wgpu::CompareFunction::NotEqual,
                         // reset the stencil buffer.
                         fail_op: wgpu::StencilOperation::Replace,
                         depth_fail_op: wgpu::StencilOperation::Replace,
