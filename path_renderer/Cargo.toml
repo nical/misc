@@ -9,6 +9,7 @@ members = [
     "patterns/linear_gradient",
     "patterns/checkerboard",
     "patterns/texture",
+    "document",
     "demo"
 ]
 

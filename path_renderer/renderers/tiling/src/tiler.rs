@@ -3,7 +3,7 @@ pub use lyon::path::{PathEvent, FillRule};
 pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
 pub use lyon::geom::euclid;
 pub use lyon::geom;
-use lyon::{geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment}};
+use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
 
 pub use core::units::{Point, point, Vector, vector};
 use core::pattern::BuiltPattern;
@@ -43,8 +43,6 @@ pub struct Tiler {
 
     first_row: usize,
     last_row: usize,
-
-    pub edges: Vec<LineEdge>,
 
     // For debugging.
     pub selected_row: Option<usize>,
@@ -99,8 +97,6 @@ impl Tiler {
             active_edges: Vec::with_capacity(64),
             rows: Vec::new(),
 
-            edges: Vec::with_capacity(8192),
-
             selected_row: None,
 
             color_tiles_per_row: 0,
@@ -115,19 +111,6 @@ impl Tiler {
         self.scissor = Box2D::from_size(size);
         self.num_tiles_x = f32::ceil(size.width / TILE_SIZE_F32) as u32;
         self.num_tiles_y = f32::ceil(size.height / TILE_SIZE_F32);
-        self.edges.clear();
-    }
-
-    fn set_fill_rule(&mut self, fill_rule: FillRule, inverted: bool) {
-        self.draw.fill_rule = fill_rule;
-        self.draw.encoded_fill_rule = match fill_rule {
-            FillRule::EvenOdd => 0,
-            FillRule::NonZero => 1,
-        };
-        if inverted {
-            self.draw.encoded_fill_rule |= 2;
-        }
-        self.draw.inverted = inverted;
     }
 
     pub fn set_scissor(&mut self, scissor: &Box2D<f32>) {
@@ -187,8 +170,7 @@ impl Tiler {
         (start_idx, end_idx)
     }
 
-    /// Initialize the tiler before adding edges manually.
-    pub fn begin_path(&mut self) {
+    fn begin_path(&mut self) {
         self.first_row = self.rows.len();
         self.last_row = 0;
 
@@ -206,8 +188,7 @@ impl Tiler {
         }
     }
 
-    /// Process manually edges and encode them into the output encoder.
-    pub fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &BuiltPattern, device: &wgpu::Device) {
+    fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &BuiltPattern, device: &wgpu::Device) {
         if self.draw.inverted {
             self.first_row = 0;
             self.last_row = self.num_tiles_y as usize;
@@ -226,8 +207,6 @@ impl Tiler {
 
         encoder.begin_path(pattern);
 
-        let mut edge_buffer = std::mem::take(&mut self.edges);
-
         // borrow-ck dance.
         let mut rows = std::mem::take(&mut self.rows);
         // This could be done in parallel but it's already quite fast serially.
@@ -243,18 +222,28 @@ impl Tiler {
                 &mut tile_mask.row(row.tile_y),
                 pattern,
                 encoder,
-                &mut edge_buffer,
                 device,
             );
         }
 
-        self.edges = edge_buffer;
         self.active_edges = active_edges;
         self.rows = rows;
 
         for row in &mut self.rows {
             row.edges.clear();
         }
+    }
+
+    fn set_fill_rule(&mut self, fill_rule: FillRule, inverted: bool) {
+        self.draw.fill_rule = fill_rule;
+        self.draw.encoded_fill_rule = match fill_rule {
+            FillRule::EvenOdd => 0,
+            FillRule::NonZero => 1,
+        };
+        if inverted {
+            self.draw.encoded_fill_rule |= 2;
+        }
+        self.draw.inverted = inverted;
     }
 
     // An equialent of this was tried that binned quadratic bézier curves into the
@@ -325,7 +314,7 @@ impl Tiler {
     /// Can be used to tile a segment manually.
     ///
     /// Should only be called between begin_path and end_path.
-    pub fn add_line_segment(&mut self, edge: &LineSegment<f32>) {
+    fn add_line_segment(&mut self, edge: &LineSegment<f32>) {
         let mut edge = *edge;
 
         let mut winding = 1;
@@ -407,7 +396,6 @@ impl Tiler {
         coarse_mask: &mut TileMaskRow,
         pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
-        edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
     )  {
         //println!("--------- row {}", tile_y);
@@ -479,7 +467,7 @@ impl Tiler {
                     let n = tx-tile.x;
                     self.update_tile_rects(&mut tile, n);
                 } else {
-                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer, device);
+                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, device);
                 }
             }
 
@@ -493,7 +481,7 @@ impl Tiler {
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
         while tile.x < tiles_end && !active_edges.is_empty() {
-            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, edge_buffer, device);
+            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, device);
         }
 
         if tile.x < tiles_end
@@ -521,7 +509,6 @@ impl Tiler {
         coarse_mask: &mut TileMaskRow,
         pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
-        edge_buffer: &mut Vec<LineEdge>,
         device: &wgpu::Device,
     ) {
         let visibility = tile_visibility(pattern);
@@ -530,7 +517,7 @@ impl Tiler {
         if visibility != TileVisibility::Empty && coarse_mask.test(tile.x, opaque) {
             let tile_position = TilePosition::new(tile.x, tile.y);
 
-            let mask_tile = encoder.add_fill_mask(tile, &self.draw, active_edges, edge_buffer, device);
+            let mask_tile = encoder.add_fill_mask(tile, &self.draw, active_edges, device);
             encoder.add_tile(pattern, opaque, tile_position, mask_tile);
         }
 
@@ -604,42 +591,7 @@ impl Tiler {
         }
     }
 
-    pub fn update_stats(&self, stats: &mut Stats) {
-        stats.edges += self.edges.len();
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct MonotonicEdge {
-    from: Point,
-    to: Point,
-    winding: i16,
-}
-
-impl MonotonicEdge {
-    pub fn linear(mut segment: LineSegment<f32>) -> Self {
-        let winding = if segment.from.y > segment.to.y {
-            std::mem::swap(&mut segment.from, &mut segment.to);
-            -1
-        } else {
-            1
-        };
-
-        // TODO: offsetting edges by half a pixel so that the
-        // result matches what canvas/SVG expect: lines at integer
-        // pixel coordinates show anti-aliasing while lines landing
-        // on `.5` corrdinates are crisp.
-        // Note also the the offset begin unapplied in mask_fill.wgsl.
-        // This is obviously the wrong way to deal with this. The tile
-        // bounds probably should be offset instead of of applying/unapplying
-        // it on edges.
-        let half_px = vector(0.5, 0.5);
-
-        MonotonicEdge {
-            from: segment.from - half_px,
-            to: segment.to - half_px,
-            winding,
-        }
+    pub fn update_stats(&self, _stats: &mut Stats) {
     }
 }
 
@@ -698,20 +650,6 @@ pub fn clip_line_segment_1d(
     let t1 = ((max - from) * inv_d).min(1.0);
 
     t0 .. t1
-}
-
-pub fn as_scale_offset(m: &Transform2D<f32>) -> Option<(Vector, Vector)> {
-    // Same as Skia's SK_ScalarNearlyZero.
-    const ESPILON: f32 = 1.0 / 4096.0;
-
-    if m.m12.abs() > ESPILON || m.m21.abs() > ESPILON {
-        return None;
-    }
-
-    Some((
-        vector(m.m11, m.m22),
-        vector(m.m31, m.m32),
-    ))
 }
 
 pub fn affected_range(min: f32, max: f32, scissor_min: f32, scissor_max: f32) -> (usize, usize) {

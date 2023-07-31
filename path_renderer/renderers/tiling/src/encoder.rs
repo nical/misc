@@ -332,7 +332,7 @@ unsafe impl bytemuck::Zeroable for LineEdge {}
 // multiple passes. Each pass builds the atlas and renders it into the color target.
 #[derive(Debug)]
 pub struct RenderPass {
-    pub opaque_image_tiles: Range<u32>,
+    pub opaque_prerendered_tiles: Range<u32>,
     pub alpha_batches: Range<usize>,
     pub opaque_batches: Range<usize>,
     pub mask_atlas_index: AtlasIndex,
@@ -352,13 +352,13 @@ pub struct Batch {
 
 #[derive(Default, Debug)]
 pub struct BufferRanges {
-    pub opaque_image_tiles: Option<DynBufferRange>,
+    pub opaque_prerendered_tiles: Option<DynBufferRange>,
     pub alpha_tiles: Option<DynBufferRange>,
 }
 
 impl BufferRanges {
     pub fn reset(&mut self) {
-        self.opaque_image_tiles = None;
+        self.opaque_prerendered_tiles = None;
         self.alpha_tiles = None;
     }
 }
@@ -383,6 +383,8 @@ pub struct PatternTiles {
 pub struct TileEncoder {
     // State and output associated with the current group/layer:
 
+    pub edges: Vec<LineEdge>,
+
     // These should move into dedicated things.
     pub fill_masks: MaskEncoder,
 
@@ -392,14 +394,14 @@ pub struct TileEncoder {
     pub atlas_pattern_batches: Vec<Batch>,
     pub color_atlas_passes: Vec<Range<usize>>,
     pub alpha_tiles: Vec<TileInstance>,
-    pub opaque_image_tiles: Vec<TileInstance>,
+    pub opaque_prerendered_tiles: Vec<TileInstance>,
     pub patterns: Vec<PatternTiles>,
 
     current_pattern: Option<BuiltPattern>,
     // First mask index of the current mask pass.
     alpha_batches_start: usize,
     opaque_batches_start: usize,
-    opaque_image_tiles_start: u32,
+    opaque_prerendered_tiles_start: u32,
     // First masked color tile of the current mask pass.
     alpha_tiles_start: u32,
     // Index of the current mask texture (increments every time we run out of space in the
@@ -442,7 +444,8 @@ impl TileEncoder {
             });
         }
         TileEncoder {
-            opaque_image_tiles: Vec::with_capacity(2048),
+            edges: Vec::with_capacity(8182),
+            opaque_prerendered_tiles: Vec::with_capacity(2048),
             alpha_tiles: Vec::with_capacity(8192),
             fill_masks: MaskEncoder::new(),
             render_passes: Vec::with_capacity(16),
@@ -454,7 +457,7 @@ impl TileEncoder {
             current_pattern: None,
             alpha_batches_start: 0,
             opaque_batches_start: 0,
-            opaque_image_tiles_start: 0,
+            opaque_prerendered_tiles_start: 0,
             alpha_tiles_start: 0,
             masks_texture_index: 0,
             color_texture_index: 0,
@@ -482,59 +485,9 @@ impl TileEncoder {
         pattern.opaque_vbo_range.as_ref()
     }
 
-    // TODO: can remove this?
-    pub fn create_similar(&self) -> Self {
-        let num_patterns = self.patterns.len();
-        let mut patterns = Vec::with_capacity(num_patterns);
-        for _ in 0..num_patterns {
-            patterns.alloc().init(PatternTiles {
-                opaque: Vec::with_capacity(2048),
-                prerendered: Vec::with_capacity(1024),
-                prerendered_start: 0,
-                opaque_start: 0,
-                opaque_vbo_range: None,
-                prerendered_vbo_range: None,
-                current_opaque_binding: BindingsId::NONE,
-            });
-        }
-        TileEncoder {
-            opaque_image_tiles: Vec::with_capacity(2000),
-            alpha_tiles: Vec::with_capacity(6000),
-            fill_masks: MaskEncoder::new(),
-            render_passes: Vec::with_capacity(16),
-            alpha_batches: Vec::with_capacity(64),
-            atlas_pattern_batches: Vec::with_capacity(64),
-            color_atlas_passes: Vec::with_capacity(16),
-            opaque_batches: Vec::with_capacity(num_patterns),
-            patterns,
-            current_pattern: None,
-            alpha_batches_start: 0,
-            opaque_batches_start: 0,
-            opaque_image_tiles_start: 0,
-            alpha_tiles_start: 0,
-            masks_texture_index: 0,
-            color_texture_index: 0,
-            current_z_index: 0,
-            tile_atlas_pattern: self.tile_atlas_pattern.clone(),
-
-            mask_uploader: TileAtlasUploader::new(self.mask_uploader.staging_buffer_size()),
-
-            reversed: false,
-
-            ranges: BufferRanges::default(),
-
-            edge_distributions: [0; 16],
-
-            src: SourceTiles {
-                mask_tiles: TileAllocator::new(self.src.mask_tiles.width(), self.src.mask_tiles.height()),
-                color_tiles: TileAllocator::new(self.src.color_tiles.width(), self.src.color_tiles.height()),
-            },
-            prerender_pattern: true,
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.opaque_image_tiles.clear();
+     pub fn reset(&mut self) {
+        self.edges.clear();
+        self.opaque_prerendered_tiles.clear();
         self.alpha_tiles.clear();
         self.fill_masks.reset();
         self.render_passes.clear();
@@ -545,7 +498,7 @@ impl TileEncoder {
         self.edge_distributions = [0; 16];
         self.alpha_batches_start = 0;
         self.opaque_batches_start = 0;
-        self.opaque_image_tiles_start = 0;
+        self.opaque_prerendered_tiles_start = 0;
         self.alpha_tiles_start = 0;
         self.masks_texture_index = 0;
         self.color_texture_index = 0;
@@ -692,7 +645,7 @@ impl TileEncoder {
         // Add the tile that will be rendered into the main pass.
         if opaque {
             let tiles = if prerender {
-                &mut self.opaque_image_tiles
+                &mut self.opaque_prerendered_tiles
             } else {
                 &mut self.patterns[pattern.shader.index()].opaque
             };
@@ -735,13 +688,13 @@ impl TileEncoder {
 
         let alpha_batches_end = self.alpha_batches.len();
         let opaque_batches_end = self.opaque_batches.len();
-        let opaque_image_tiles_end = self.opaque_image_tiles.len() as u32;
+        let opaque_prerendered_tiles_end = self.opaque_prerendered_tiles.len() as u32;
 
         if alpha_batches_end != self.alpha_batches_start
         || opaque_batches_end != self.opaque_batches_start
-        || opaque_image_tiles_end != self.opaque_image_tiles_start {
+        || opaque_prerendered_tiles_end != self.opaque_prerendered_tiles_start {
             self.render_passes.alloc().init(RenderPass {
-                opaque_image_tiles: self.opaque_image_tiles_start..opaque_image_tiles_end,
+                opaque_prerendered_tiles: self.opaque_prerendered_tiles_start..opaque_prerendered_tiles_end,
                 alpha_batches: self.alpha_batches_start..alpha_batches_end,
                 opaque_batches: self.opaque_batches_start..opaque_batches_end,
                 mask_atlas_index: self.masks_texture_index,
@@ -752,7 +705,7 @@ impl TileEncoder {
             });
             self.alpha_batches_start = alpha_batches_end;
             self.opaque_batches_start = opaque_batches_end;
-            self.opaque_image_tiles_start = opaque_image_tiles_end;
+            self.opaque_prerendered_tiles_start = opaque_prerendered_tiles_end;
         }
 
         if force_flush || self.color_texture_index != self.src.color_tiles.current_atlas {
@@ -837,8 +790,8 @@ impl TileEncoder {
         }
     }
 
-    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>, device: &wgpu::Device) -> TilePosition {
-        self.add_gpu_mask(tile, draw, active_edges, edges)
+    pub fn add_fill_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], device: &wgpu::Device) -> TilePosition {
+        self.add_gpu_mask(tile, draw, active_edges)
             .unwrap_or_else(|| self.add_cpu_mask(tile, draw, active_edges, device))
     }
 
@@ -849,47 +802,47 @@ impl TileEncoder {
         (tile, atlas_index)
     }
 
-    pub fn add_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge], edges: &mut Vec<LineEdge>) -> Option<TilePosition> {
+    pub fn add_gpu_mask(&mut self, tile: &TileInfo, draw: &DrawParams, active_edges: &[ActiveEdge]) -> Option<TilePosition> {
         //println!(" * tile ({:?}, {:?}), backdrop: {}, {:?}", tile.x, tile.y, tile.backdrop, active_edges);
 
         if active_edges.len() > draw.max_edges_per_gpu_tile {
             return None;
         }
 
-        let edges_start = edges.len();
+        let edges_start = self.edges.len();
 
         let offset = vector(tile.rect.min.x, tile.rect.min.y);
 
         for edge in active_edges {
             // Handle auxiliary edges for edges that cross the tile's left side.
             if edge.from.x < tile.rect.min.x && edge.from.y != tile.rect.min.y {
-                edges.alloc().init(LineEdge(
+                self.edges.alloc().init(LineEdge(
                     point(-10.0, tile.rect.max.y),
                     point(-10.0, edge.from.y),
                 ));
             }
 
             if edge.to.x < tile.rect.min.x && edge.to.y != tile.rect.min.y {
-                edges.alloc().init(LineEdge(
+                self.edges.alloc().init(LineEdge(
                     point(-10.0, edge.to.y),
                     point(-10.0, tile.rect.max.y),
                 ));
             }
 
             if edge.from.y != edge.to.y {
-                edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
+                self.edges.alloc().init(LineEdge(edge.from - offset, edge.to - offset));
             }
         }
 
         // If the number of edges is larger than a certain threshold, we'll fall back to
         // rasterizing them on the CPU.
-        if (edges.len() - edges_start) > draw.max_edges_per_gpu_tile {
-            edges.truncate(edges_start);
+        if (self.edges.len() - edges_start) > draw.max_edges_per_gpu_tile {
+            self.edges.truncate(edges_start);
             return None;
         }
 
         let edges_start = edges_start as u32;
-        let edges_end = edges.len() as u32;
+        let edges_end = self.edges.len() as u32;
         //debug_assert!(edges_end > edges_start, "{} > {} {:?}", edges_end, edges_start, active_edges);
         self.edge_distributions[(edges_end - edges_start).min(15) as usize] += 1;
 
@@ -959,7 +912,7 @@ impl TileEncoder {
     pub fn upload(&mut self, vertices: &mut DynamicStore, device: &wgpu::Device) {
         self.fill_masks.upload(vertices, device);
 
-        self.ranges.opaque_image_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_image_tiles));
+        self.ranges.opaque_prerendered_tiles = vertices.upload(device, bytemuck::cast_slice(&self.opaque_prerendered_tiles));
         self.ranges.alpha_tiles = vertices.upload(device, bytemuck::cast_slice(&self.alpha_tiles));
 
         for pattern in &mut self.patterns {
@@ -969,11 +922,12 @@ impl TileEncoder {
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
+        stats.edges += self.edges.len();
         for pattern in &self.patterns {
             stats.opaque_tiles += pattern.opaque.len();
             stats.prerendered_tiles += pattern.prerendered.len();
         }
-        stats.opaque_tiles += self.opaque_image_tiles.len();
+        stats.opaque_tiles += self.opaque_prerendered_tiles.len();
         stats.alpha_tiles += self.alpha_tiles.len();
         stats.gpu_mask_tiles += self.fill_masks.masks.len();
         stats.cpu_mask_tiles += self.num_cpu_masks();

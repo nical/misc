@@ -35,6 +35,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0942ffc6dcaadf03badf6e6a2d0228460359d5e34b57ccdc720b7382dfbd5ec5"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,6 +500,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac1b7517328c04c2aa68422fc60a41b92208182142ed04a25879c26c8f878794"
 dependencies = [
  "libloading 0.7.3",
+]
+
+[[package]]
+name = "document"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "lyon",
+ "shared_vector",
 ]
 
 [[package]]
@@ -1817,6 +1832,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "900fba806f70c630b0a382d0d825e17a0f19fcd059a2ade1ff237bcddf446b31"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared_vector"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fedf3f42342bc599d499101f718082efc026b6df8fb1ea7e6ea2ae19bf389cfd"
+dependencies = [
+ "allocator-api2",
 ]
 
 [[package]]

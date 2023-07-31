@@ -1,10 +1,10 @@
-use lyon::{geom::euclid::Size2D};
+use lyon::geom::euclid::Size2D;
 use core::{
     units::{LocalRect, point},
     shape::{PathShape, Circle},
     canvas::{Canvas, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState, ZIndex},
     resources::{GpuResources, ResourcesHandle, CommonGpuResources},
-    pattern::{BuiltPattern},
+    pattern::BuiltPattern,
     gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags, BatchList}, u32_range, transform::TransformId,
 };
 use crate::{Tiler, TilerConfig, TILE_SIZE, TileMask, encoder::SRC_COLOR_ATLAS_BINDING};
@@ -246,12 +246,12 @@ impl TileRenderer {
     ) {
         let tile_resources = &mut resources[self.resources];
 
-        tile_resources.edges.bump_allocator().push(self.tiler.edges.len());
+        tile_resources.edges.bump_allocator().push(self.encoder.edges.len());
         // TODO: this should come after reserving the memory from potentially multiple tilers
         // however it currently needs to run between the line above and the one below.
         tile_resources.allocate(device);
         // TODO: hard coded offset implies a single tiler can use the edge buffer
-        tile_resources.edges.upload_bytes(0, bytemuck::cast_slice(&self.tiler.edges), &queue);
+        tile_resources.edges.upload_bytes(0, bytemuck::cast_slice(&self.encoder.edges), &queue);
 
         let common_resources = &mut resources[self.common_resources];
 
@@ -415,19 +415,19 @@ impl TileRenderer {
                 }
             }
 
-            if !render_pass.opaque_image_tiles.is_empty() {
+            if !render_pass.opaque_prerendered_tiles.is_empty() {
                 let pipeline = shaders.try_get(
                     resources.opaque_pipeline,
                     resources.texture.load_pattern_id(),
                     SurfaceConfig::default(),
                 ).unwrap();
 
-                let range = &self.encoder.ranges.opaque_image_tiles.as_ref().unwrap();
+                let range = &self.encoder.ranges.opaque_prerendered_tiles.as_ref().unwrap();
                 pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
 
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, &resources.src_color_bind_group, &[]);
-                pass.draw_indexed(0..6, 0, render_pass.opaque_image_tiles.clone());
+                pass.draw_indexed(0..6, 0, render_pass.opaque_prerendered_tiles.clone());
 
                 helper.reset_binding(1);
             }
