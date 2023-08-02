@@ -17,6 +17,7 @@ pub enum LineCap {
     Butt,
     Square,
     Round,
+    Roundish,
     RoundInverted,
     Triangle,
     TriangleInverted,
@@ -192,62 +193,31 @@ fn normal(v: Vector) -> Vector {
 }
 
 pub mod offset {
-    use lyon::geom::{Scalar, QuadraticBezierSegment, Point, Vector, point, vector};
+    use lyon::geom::{Scalar, QuadraticBezierSegment, Vector, point, vector};
     use lyon::geom::euclid;
-
-    struct QuadOffsetter<S> {
-        prev_tangent: Vector<S>,
-        potential_prev_tangent: Vector<S>,
-        from: Point<S>,
-        d: S,
-    }
-
-    impl<S: Scalar> QuadOffsetter<S> {
-        fn new(curve: &QuadraticBezierSegment<S>, d: S) -> Self {
-            let v0 = (curve.ctrl - curve.from).normalize();
-            let n0 = vector(-v0.y, v0.x);
-            let from = curve.from + n0 * d;
-
-            QuadOffsetter { prev_tangent: v0, potential_prev_tangent: v0, from, d }
-        }
-
-        fn offset(&mut self, curve: &QuadraticBezierSegment<S>) -> QuadraticBezierSegment<S> {
-            let v0 = self.prev_tangent;
-            let from = curve.from + vector(-v0.y, v0.x) * self.d;
-
-            let v1 = (curve.to - curve.ctrl).normalize();
-            let n1 = vector(-v1.y, v1.x);
-            let to = curve.to + n1 * self.d;
-            self.potential_prev_tangent = v1;
-
-            let v01 = v0 + v1;
-
-            let tangent = v01.normalize();
-            let n = vector(-tangent.y, tangent.x);
-
-            let inv_len = n.dot(n1);
-
-            let d2 = if inv_len != S::ZERO {
-                self.d / inv_len
-            } else {
-                self.d
-            };
-
-            let ctrl = curve.ctrl + n * d2;
-
-            QuadraticBezierSegment {
-                from, ctrl, to,
-            }
-        }
-
-        fn next(&mut self) {
-            self.prev_tangent = self.potential_prev_tangent;
-        }
-    }
 
     pub fn for_each_offset<S: Scalar, F>(curve: &QuadraticBezierSegment<S>, dist: S, tolerance: S, cb: &mut F)
     where F: FnMut(&QuadraticBezierSegment<S>) {
         let tolerance = tolerance.max(S::value(0.001));
+
+        let (t1, t2) = critical_points(curve, dist);
+
+        let mut  t0 = S::ZERO;
+        if let Some(t1) = t1 {
+            let sub_curve = curve.split_range(t0..t1);
+            for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+            t0 = t1;
+        }
+
+        if let Some(t2) = t2 {
+            let sub_curve = curve.split_range(t0..t2);
+            for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+            t0 = t2;
+        }
+
+        let sub_curve = curve.split_range(t0..S::ONE);
+        for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+/*
         if let Some(t) = find_sharp_turn(curve) {
             let t0 = t * S::value(0.8);
             let t1 = t + (S::ONE - t) * S::value(0.8);
@@ -258,36 +228,55 @@ pub mod offset {
         } else {
             for_each_offset_inner(curve, dist, tolerance, cb);
         }
+*/
     }
 
     fn for_each_offset_inner<S: Scalar, F>(curve: &QuadraticBezierSegment<S>, dist: S, tolerance: S, cb: &mut F)
     where F: FnMut(&QuadraticBezierSegment<S>) {
         let mut range = S::ZERO..S::ONE;
         let end = range.end;
-        let mut offsetter = QuadOffsetter::new(curve, dist);
+
+        fn normal<S: Scalar>(v: Vector<S>) -> Vector<S> {
+            Vector::new(-v.y, v.x)
+        }
+
+        let mut v0 = (curve.ctrl - curve.from).normalize();
+        let mut from = curve.from + normal(v0) * dist;
 
         while range.start < range.end {
             let sub_curve = curve.split_range(range.clone());
-            let offset = offsetter.offset(&sub_curve);
 
+            // Offset the sub-curve
+            let v1 = (sub_curve.to - sub_curve.ctrl).normalize();
+            let n1 = normal(v1);
+            let n = normal((v0 + v1).normalize());
+            let inv_len = n.dot(n1);
+            let ctrl_offset = if inv_len != S::ZERO { dist / inv_len } else { dist };
+            let ctrl = sub_curve.ctrl + n * ctrl_offset;
+
+            let to = sub_curve.to + n1 * dist;
+            let offset_curve = QuadraticBezierSegment { from, ctrl, to, };
+
+            // Evaluate the error.
             let err = if range.end - range.start < S::value(0.1) {
                 S::ZERO
             } else {
-                let d = (sub_curve.sample(S::HALF) - offset.sample(S::HALF)).length();
+                let d = (sub_curve.sample(S::HALF) - offset_curve.sample(S::HALF)).length();
                 (d - dist.abs()).abs()
             };
 
             if err <= tolerance {
-                cb(&offset);
+                cb(&offset_curve);
                 range = range.end .. end;
-                offsetter.next();
+                from = to;
+                v0 = v1;
             } else {
                 range.end = (range.start + range.end) * S::HALF;
             }
         }
     }
 
-    fn find_sharp_turn<S: Scalar>(curve: &QuadraticBezierSegment<S>) -> Option<S> {
+    fn _find_sharp_turn<S: Scalar>(curve: &QuadraticBezierSegment<S>) -> Option<S> {
         // TODO: There's a better approach described in https://blend2d.com/research/precise_offset_curves.pdf
         // TODO: The various thresholds here should take the line width into account.
         let baseline = curve.to - curve.from;
@@ -319,6 +308,37 @@ pub mod offset {
         };
 
         rotated.local_x_extremum_t()
+    }
+
+    fn critical_points<S: Scalar>(curve: &QuadraticBezierSegment<S>, offset: S) -> (Option<S>, Option<S>) {
+        // See https://blend2d.com/research/precise_offset_curves.pdf
+        let from = curve.from;
+        let ctrl = curve.ctrl;
+        let to = curve.to;
+        let v1 = from - ctrl;
+        let a = (ctrl - to) * S::TWO - v1;
+        let b = v1 * S::TWO;
+
+        let axbx_ayby = a.x * b.x + a.y * b.y;
+        let axbx_ayby_2 = axbx_ayby * axbx_ayby;
+        let ax2_ay2 = a.x * a.x + a.y * a.y;
+        let bx2_by2 = b.x * b.x + b.y * b.y;
+        let dot_ab = b.x * a.y - a.x * b.y;
+
+        let r3 = (offset * offset * dot_ab * dot_ab).cbrt();
+        let r2 = (axbx_ayby_2 - ax2_ay2 * (bx2_by2 - r3)).sqrt();
+
+        let mut t1 = (-axbx_ayby + r2) / ax2_ay2;
+        let mut t2 = (-axbx_ayby - r2) / ax2_ay2;
+
+        if t2 < t1 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
+
+        let t1 = if t1 > S::ZERO && t1 < S::ONE { Some(t1) } else { None };
+        let t2 = if t2 > S::ZERO && t2 < S::ONE { Some(t2) } else { None };
+
+        (t1, t2)
     }
 }
 
@@ -468,6 +488,21 @@ fn quad_join(
     output.quadratic_bezier_to(ctrl, end, NO_ATTRIBUTES);
 }
 
+fn round_join(
+    output: &mut dyn PathBuilder,
+    position: Point,
+    start_tangent: Vector,
+    end_tangent: Vector,
+    width: f32,
+    miter_limit: f32,
+    tolerance: f32,
+    prev_is_line: bool,
+    next_is_line: bool,
+) {
+    // TODO!
+    quad_join(output, position, start_tangent, end_tangent, width, miter_limit, tolerance, prev_is_line, next_is_line)
+}
+
 fn butt_cap(
     output: &mut dyn PathBuilder,
     _position: Point,
@@ -500,6 +535,41 @@ fn square_cap(
 }
 
 fn round_cap(
+    output: &mut dyn PathBuilder,
+    pivot: Point,
+    tangent: Vector,
+    end: Point,
+    width: f32,
+    sign: f32,
+    _tolerance: f32,
+) {
+    let tangent = tangent.normalize();
+    let tw = tangent * width;
+    let n = normal(tangent) * sign;
+    let mid = pivot + tw;
+
+    const SIN_FRACT_PI_4: f32 = 0.70710678118;
+    const SIN_FRACT_PI_8: f32 = SIN_FRACT_PI_4 * 0.5;
+    let d1 = SIN_FRACT_PI_4 * width;
+    let d2 = SIN_FRACT_PI_8 * width;
+
+    let start = pivot + n * width;
+
+    let p0 = start + tangent * d2;
+    let p1 = pivot + (tangent + n) * d1;
+    let p2 = mid + n * d2;
+
+    let p3 = mid - n * d2;
+    let p4 = pivot + (tangent - n) * d1;
+    let p5 = end + tangent * d2;
+
+    output.quadratic_bezier_to(p0, p1, NO_ATTRIBUTES);
+    output.quadratic_bezier_to(p2, mid, NO_ATTRIBUTES);
+    output.quadratic_bezier_to(p3, p4, NO_ATTRIBUTES);
+    output.quadratic_bezier_to(p5, end, NO_ATTRIBUTES);
+}
+
+fn roundish_cap(
     output: &mut dyn PathBuilder,
     pivot: Point,
     tangent: Vector,
@@ -722,7 +792,7 @@ impl<'l> OffsetBuilder<'l> {
                 LineJoin::Bevel => bevel_join,
                 LineJoin::Miter => miter_join,
                 LineJoin::MiterClip => miter_clip_join,
-                LineJoin::Round => quad_join,
+                LineJoin::Round => round_join,
             },
             simplify_inner_joins: options.simplify_inner_joins,
         }
@@ -874,6 +944,7 @@ fn get_cap_fn(cap : LineCap) -> CapBuilder {
         LineCap::Butt => butt_cap,
         LineCap::Square => square_cap,
         LineCap::Round => round_cap,
+        LineCap::Roundish => roundish_cap,
         LineCap::RoundInverted => round_inverted_cap,
         LineCap::Triangle => triangle_cap,
         LineCap::TriangleInverted => triangle_inverted_cap,

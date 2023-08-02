@@ -763,7 +763,7 @@ fn paint_scene(
                 offsets: (-50.0, -60.0-o),
                 miter_limit: 0.5,
                 line_join: LineJoin::Miter,
-                start_cap: LineCap::TriangleInverted,
+                start_cap: LineCap::Round,
                 end_cap: LineCap::Round,
                 add_empty_caps: true,
                 .. Default::default()
