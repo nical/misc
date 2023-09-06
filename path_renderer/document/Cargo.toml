@@ -1,0 +1,11 @@
+[package]
+name = "document"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+workspace = ".."
+
+[dependencies]
+core = { path = "../core" }
+lyon = "1.0.0"
+shared_vector = "0.4.4"
