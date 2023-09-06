@@ -1,5 +1,5 @@
 use core::{
-    canvas::{RendererId, Canvas, CanvasRenderer, RenderPassState, DrawHelper, SurfaceState, SubPass},
+    canvas::{RendererId, Context, CanvasRenderer, RenderPassState, DrawHelper, SurfaceFeatures, SubPass},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
         DynBufferRange, Shaders, GpuStoreHandle
@@ -31,7 +31,7 @@ core::bitflags::bitflags! {
 
 pub struct Batch {
     pattern: BuiltPattern,
-    surface: SurfaceState,
+    surface: SurfaceFeatures,
     vbo_range: Option<DynBufferRange>,
     opaque: bool,
     edge_aa: bool,
@@ -53,17 +53,17 @@ impl RectangleRenderer {
         }
     }
 
-    pub fn begin_frame(&mut self, _canvas: &Canvas) {
+    pub fn begin_frame(&mut self, _canvas: &Context) {
         self.batches.clear();
     }
 
-    pub fn supports_surface(&self, _surface: SurfaceState) -> bool {
+    pub fn supports_surface(&self, _surface: SurfaceFeatures) -> bool {
         true
     }
 
     pub fn fill_rect(
         &mut self,
-        canvas: &mut Canvas,
+        canvas: &mut Context,
         local_rect: &LocalRect,
         mut aa: Aa,
         pattern: BuiltPattern,
@@ -73,7 +73,7 @@ impl RectangleRenderer {
         let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = canvas.surface.current_state();
+        let surface = canvas.surface.current_features();
 
         if surface.msaa {
             aa = Aa::NONE;
@@ -150,7 +150,7 @@ impl RectangleRenderer {
         });
     }
 
-    pub fn prepare(&mut self, _canvas: &Canvas) {
+    pub fn prepare(&mut self, _canvas: &Context) {
         if self.batches.is_empty() {
             return;
         }

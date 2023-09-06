@@ -37,6 +37,7 @@ pub mod units {
     pub type SurfaceVector = Vector2D<f32, SurfaceSpace>;
     pub type SurfaceSize = Size2D<f32, SurfaceSpace>;
     pub type SurfaceIntSize = Size2D<i32, SurfaceSpace>;
+    pub type SurfaceIntRect = Box2D<i32, SurfaceSpace>;
 
     pub type LocalRect = Box2D<f32, LocalSpace>;
     pub type LocalPoint = Point2D<f32, LocalSpace>;

@@ -1,16 +1,16 @@
 // TODO: this module lumps together a bunch of structural concepts some of which
 // are poorly named and/or belong elsewhere.
 
-use lyon::geom::euclid::default::{Size2D};
-use crate::path::{FillRule};
+use crate::path::FillRule;
 use crate::batching::{Batcher, BatchId, SurfaceIndex};
 use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode};
+use crate::gpu::Shaders;
 use crate::resources::{GpuResources, CommonGpuResources, ResourcesHandle, AsAny};
-use crate::transform::{Transforms};
+use crate::transform::Transforms;
+use crate::units::SurfaceIntSize;
 use crate::{Color, u32_range, usize_range, BindingResolver};
-use crate::pattern::{BindingsId};
-use std::{ops::Range};
-use crate::gpu::{Shaders};
+use crate::pattern::BindingsId;
+use std::ops::Range;
 
 pub type ZIndex = u32;
 
@@ -56,7 +56,7 @@ pub type RenderPassId = u32;
 struct RenderPass {
     pre_passes: Range<u32>,
     sub_passes: Range<u32>,
-    surface: SurfaceState,
+    surface: SurfaceFeatures,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -66,7 +66,7 @@ struct RenderPass {
 struct RenderPassSlice<'a> {
     pre_passes: &'a [PrePass],
     sub_passes: &'a [SubPass],
-    surface: SurfaceState,
+    surface: SurfaceFeatures,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -82,7 +82,7 @@ pub struct RenderPassesRequirements {
 }
 
 impl RenderPassesRequirements {
-    fn add_pass(&mut self, pass: SurfaceState) {
+    fn add_pass(&mut self, pass: SurfaceFeatures) {
         self.msaa |= pass.msaa;
         self.msaa_depth_stencil |= pass.msaa && (pass.depth || pass.stencil);
         self.depth_stencil |= !pass.msaa && (pass.depth || pass.stencil);
@@ -111,7 +111,7 @@ impl RenderPasses {
         self.passes.is_empty()
     }
 
-    pub fn build(&mut self, surface: &SurfaceParameters) -> RenderPassesRequirements {
+    fn build(&mut self, surface: &ContextSurface) -> RenderPassesRequirements {
         let mut requirements = RenderPassesRequirements {
             msaa: false,
             depth_stencil: false,
@@ -220,35 +220,30 @@ impl RenderPasses {
     }
 }
 
-// TODO: when building render passes we support transitioning between different surface states. At the moment
-// renderers make a best effort to match the initial surface state read at the beginning of the frame, but it
-// would make more sense to explicitly allow transitioning the surface state or allow renderers to express
-// constraints. The problem with resolving constraints while building the render passes is that the renderers
-// need to know about the presence of an opaque pass earlier.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct SurfaceParameters {
-    states: Vec<SurfaceState>,
-    size: Size2D<u32>,
-    state: SurfaceState,
+pub struct ContextSurface {
+    states: Vec<SurfaceFeatures>,
+    size: SurfaceIntSize,
+    state: SurfaceFeatures,
     clear: Option<Color>,
     /// If true, the main target cannot be sampled (for example a swapchain's target).
     write_only_target: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceState {
+pub struct SurfaceFeatures {
     pub depth: bool,
     pub msaa: bool,
     pub stencil: bool,
 }
 
-impl Default for SurfaceState {
+impl Default for SurfaceFeatures {
     fn default() -> Self {
-        SurfaceState { depth: false, msaa: false, stencil: false }
+        SurfaceFeatures { depth: false, msaa: false, stencil: false }
     }
 }
 
-impl SurfaceState {
+impl SurfaceFeatures {
     pub fn msaa(&self) -> bool { self.msaa }
     pub fn depth(&self) -> bool { self.depth }
     pub fn stencil(&self) -> bool { self.stencil }
@@ -272,10 +267,10 @@ impl SurfaceState {
     }
 }
 
-impl SurfaceParameters {
+impl ContextSurface {
     #[inline]
-    pub fn new(size: Size2D<u32>, state: SurfaceState) -> Self {
-        SurfaceParameters {
+    fn new(size: SurfaceIntSize, state: SurfaceFeatures) -> Self {
+        ContextSurface {
             states: vec![state],
             size,
             state,
@@ -283,14 +278,9 @@ impl SurfaceParameters {
             write_only_target: true,
         }
     }
-    #[inline]
-    pub fn with_clear(mut self, clear: Option<Color>) -> Self {
-        self.clear = clear;
-        self
-    }
 
     #[inline]
-    pub fn size(&self) -> Size2D<u32> {
+    pub fn size(&self) -> SurfaceIntSize {
         self.size
     }
 
@@ -305,18 +295,18 @@ impl SurfaceParameters {
     }
 
     #[inline]
-    pub fn state(&self, surface: SurfaceIndex) -> SurfaceState {
+    pub fn features(&self, surface: SurfaceIndex) -> SurfaceFeatures {
         self.states[surface as usize]
     }
 
-    pub fn current_state(&self) -> SurfaceState {
+    pub fn current_features(&self) -> SurfaceFeatures {
         self.state
     }
 }
 
 pub struct RenderPassState {
     pub output_type: OutputType,
-    pub surface: SurfaceState,
+    pub surface: SurfaceFeatures,
 }
 
 impl RenderPassState {
@@ -336,35 +326,34 @@ impl Default for CanvasParams {
     }
 }
 
-// TODO: canvas isn't a great name for this.
-pub struct Canvas {
+pub struct Context {
     // TODO: maybe split off the push/pop transforms builder thing so that this remains more compatible
     // with a retained scene model as well.
     pub transforms: Transforms,
     pub z_indices: ZIndices,
-    pub surface: SurfaceParameters,
+    pub surface: ContextSurface,
     render_passes: RenderPasses,
     pub params: CanvasParams,
     pub batcher: Batcher,
 }
 
-impl Canvas {
+impl Context {
     pub fn new() -> Self {
-        Canvas {
+        Context {
             transforms: Transforms::default(),
             z_indices: ZIndices::default(),
-            surface: SurfaceParameters::default(),
+            surface: ContextSurface::default(),
             render_passes: RenderPasses::default(),
             params: CanvasParams::default(),
             batcher: Batcher::new(),
         }
     }
 
-    pub fn begin_frame(&mut self, surface: SurfaceParameters) {
+    pub fn begin_frame(&mut self, size: SurfaceIntSize, surface: SurfaceFeatures) {
         self.transforms.clear();
         self.z_indices.clear();
         self.render_passes.clear();
-        self.surface = surface;
+        self.surface = ContextSurface::new(size, surface);
         self.batcher.begin();
     }
 
@@ -373,7 +362,7 @@ impl Canvas {
         self.surface.states.push(self.surface.state);
     }
 
-    pub fn reconfigure_surface(&mut self, state: SurfaceState) {
+    pub fn reconfigure_surface(&mut self, state: SurfaceFeatures) {
         if self.surface.state == state {
             return;
         }

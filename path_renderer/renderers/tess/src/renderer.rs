@@ -4,10 +4,10 @@ use lyon::{
 };
 use core::{
     shape::{PathShape, Circle},
-    canvas::{RendererId, Canvas, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceState, SubPass},
+    canvas::{RendererId, Context, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceFeatures, SubPass},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
-        shader::{ShaderPatternId},
+        shader::ShaderPatternId,
         DynBufferRange, Shaders
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
@@ -29,7 +29,7 @@ pub struct TessellatedMesh {
 
 struct BatchInfo {
     draws: Range<u32>,
-    surface: SurfaceState,
+    surface: SurfaceFeatures,
 }
 
 enum Shape {
@@ -110,7 +110,7 @@ pub struct MeshRenderer {
     draws: Vec<Draw>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
-    shaders: HashMap<(bool, ShaderPatternId, SurfaceState), Option<u32>>,
+    shaders: HashMap<(bool, ShaderPatternId, SurfaceFeatures), Option<u32>>,
 }
 
 impl MeshRenderer {
@@ -132,11 +132,11 @@ impl MeshRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfaceState) -> bool {
+    pub fn supports_surface(&self, _surface: SurfaceFeatures) -> bool {
         true
     }
 
-    pub fn begin_frame(&mut self, canvas: &Canvas) {
+    pub fn begin_frame(&mut self, canvas: &Context) {
         self.draws.clear();
         self.batches.clear();
         self.geometry.vertices.clear();
@@ -146,27 +146,27 @@ impl MeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, path: P, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Context, path: P, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Path(path.into()), pattern);
     }
 
-    pub fn stroke_path(&mut self, canvas: &mut Canvas, path: Path, width: f32, pattern: BuiltPattern) {
+    pub fn stroke_path(&mut self, canvas: &mut Context, path: Path, width: f32, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::StrokePath(path, width), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, canvas: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_mesh(&mut self, canvas: &mut Canvas, mesh: TessellatedMesh, pattern: BuiltPattern) {
+    pub fn fill_mesh(&mut self, canvas: &mut Context, mesh: TessellatedMesh, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Mesh(mesh), pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
         let transform = canvas.transforms.current_id();
         let z_index = canvas.z_indices.push();
 
@@ -179,14 +179,14 @@ impl MeshRenderer {
             BatchFlags::empty(),
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: canvas.surface.current_state(),
+                surface: canvas.surface.current_features(),
             },
         );
-        info.surface = canvas.surface.current_state();
+        info.surface = canvas.surface.current_features();
         commands.push(Fill { shape, pattern, transform, z_index });
     }
 
-    pub fn prepare(&mut self, canvas: &Canvas) {
+    pub fn prepare(&mut self, canvas: &Context) {
         if self.batches.is_empty() {
             return;
         }
@@ -211,7 +211,7 @@ impl MeshRenderer {
                     if key != fill.pattern.shader_and_bindings() {
                         let end = self.geometry.indices.len() as u32;
                         if end > geom_start {
-                            let state = canvas.surface.state(batch_id.surface);
+                            let state = canvas.surface.features(batch_id.surface);
                             self.shaders.entry((true, key.0, state)).or_insert(None);
                             self.draws.push(Draw {
                                 indices: geom_start..end,
@@ -229,7 +229,7 @@ impl MeshRenderer {
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
-                let state = canvas.surface.state(batch_id.surface);
+                let state = canvas.surface.features(batch_id.surface);
                 self.shaders.entry((true, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
@@ -245,7 +245,7 @@ impl MeshRenderer {
                 if key != fill.pattern.shader_and_bindings() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
-                        let state = canvas.surface.state(batch_id.surface);
+                        let state = canvas.surface.features(batch_id.surface);
                         self.shaders.entry((false, key.0, state)).or_insert(None);
                         self.draws.push(Draw {
                             indices: geom_start..end,
@@ -262,7 +262,7 @@ impl MeshRenderer {
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
-                let state = canvas.surface.state(batch_id.surface);
+                let state = canvas.surface.features(batch_id.surface);
                 self.shaders.entry((false, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
@@ -279,7 +279,7 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas) {
+    fn prepare_fill(&mut self, fill: &Fill, canvas: &Context) {
         let transform = canvas.transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;

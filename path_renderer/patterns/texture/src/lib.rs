@@ -1,5 +1,5 @@
 use core::geom::Box2D;
-use core::gpu::{GpuStore};
+use core::gpu::GpuStore;
 use core::gpu::shader::{ShaderPatternId, BindGroupLayoutId, Shaders, Varying, PatternDescriptor, BindGroupLayout, Binding};
 use core::pattern::{BindingsId, BuiltPattern};
 use core::wgpu;

@@ -13,8 +13,8 @@ use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchList},
     canvas::{
-        Canvas, CanvasRenderer, DrawHelper, RenderPassState, RendererId, SubPass,
-        SurfaceState, ZIndex,
+        Context, CanvasRenderer, DrawHelper, RenderPassState, RendererId, SubPass,
+        SurfaceFeatures, ZIndex,
     },
     gpu::{
         shader::{DepthMode, ShaderPatternId, StencilMode, SurfaceConfig},
@@ -134,7 +134,7 @@ pub struct StencilAndCoverRenderer {
     cover_ibo_range: Option<DynBufferRange>,
     enable_msaa: bool,
     opaque_pass: bool,
-    shaders: HashMap<(bool, ShaderPatternId, StencilMode, SurfaceState), Option<u32>>,
+    shaders: HashMap<(bool, ShaderPatternId, StencilMode, SurfaceFeatures), Option<u32>>,
     pub stats: Stats,
 }
 
@@ -168,11 +168,11 @@ impl StencilAndCoverRenderer {
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfaceState) -> bool {
+    pub fn supports_surface(&self, surface: SurfaceFeatures) -> bool {
         surface.stencil
     }
 
-    pub fn begin_frame(&mut self, canvas: &Canvas) {
+    pub fn begin_frame(&mut self, canvas: &Context) {
         self.commands.clear();
         self.draws.clear();
         self.batches.clear();
@@ -189,20 +189,20 @@ impl StencilAndCoverRenderer {
         self.stats = Stats::default();
     }
 
-    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, path: P, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Context, path: P, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: &LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, canvas: &mut Context, rect: &LocalRect, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Rect(*rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Circle(circle), pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_state()));
+    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(canvas.surface.current_features()));
 
         let aabb = canvas
             .transforms
@@ -227,7 +227,7 @@ impl StencilAndCoverRenderer {
             });
     }
 
-    pub fn prepare(&mut self, canvas: &Canvas) {
+    pub fn prepare(&mut self, canvas: &Context) {
         let mut batching = BatchHelper {
             rects: ArrayVec::new(),
             prev_pattern: None,
@@ -245,9 +245,6 @@ impl StencilAndCoverRenderer {
         {
             let (commands, draws) = batches.get_mut(batch_id.index);
 
-            //let surface = range.surface;
-            //let range = range.commands.start as usize .. range.commands.end as usize;
-
             let draws_start = self.draws.len();
 
             for (fill_idx, fill) in commands.iter().enumerate() {
@@ -259,14 +256,12 @@ impl StencilAndCoverRenderer {
             *draws = draws_start..draws_end;
         }
 
-        //self.stats.commands += commands.len() as u32; TODO
-
         self.batches = batches;
     }
 
     fn prepare_fill(
         &mut self,
-        canvas: &Canvas,
+        canvas: &Context,
         fill: &Fill,
         batch: &mut BatchHelper,
         is_last: bool,
@@ -392,7 +387,7 @@ impl StencilAndCoverRenderer {
         }
 
         if is_last || new_cover_batch {
-            let state = canvas.surface.state(surface_idx);
+            let state = canvas.surface.features(surface_idx);
             self.shaders
                 .entry((opaque, fill.pattern.shader, stencil_mode, state))
                 .or_insert(None);

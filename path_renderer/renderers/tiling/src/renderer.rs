@@ -2,7 +2,7 @@ use lyon::geom::euclid::Size2D;
 use core::{
     units::{LocalRect, point},
     shape::{PathShape, Circle},
-    canvas::{Canvas, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceState, ZIndex},
+    canvas::{Context, RenderPasses, SubPass, CanvasRenderer, RendererId, RenderPassState, DrawHelper, SurfaceFeatures, ZIndex},
     resources::{GpuResources, ResourcesHandle, CommonGpuResources},
     pattern::BuiltPattern,
     gpu::{shader::SurfaceConfig, Shaders}, BindingResolver, batching::{BatchId, BatchFlags, BatchList}, u32_range, transform::TransformId,
@@ -92,14 +92,14 @@ impl TileRenderer {
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfaceState) -> bool {
-        surface == SurfaceState { depth: false, stencil: false, msaa: false }
+    pub fn supports_surface(&self, surface: SurfaceFeatures) -> bool {
+        surface == SurfaceFeatures { depth: false, stencil: false, msaa: false }
     }
 
-    pub fn begin_frame(&mut self, canvas: &Canvas) {
+    pub fn begin_frame(&mut self, canvas: &Context) {
         let size = canvas.surface.size();
-        self.tiler.init(&size.to_f32().into());
-        let tiles = (size + Size2D::new(TILE_SIZE-1, TILE_SIZE-1)) / TILE_SIZE;
+        self.tiler.init(&size.to_f32().cast_unit().into());
+        let tiles = (size.to_u32() + Size2D::new(TILE_SIZE-1, TILE_SIZE-1)) / TILE_SIZE;
         self.occlusion_mask.init(tiles.width, tiles.height);
 
         self.batches.clear();
@@ -111,24 +111,24 @@ impl TileRenderer {
         self.current_mask_atlas = std::u32::MAX;
     }
 
-    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Canvas, shape: P, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Context, shape: P, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Path(shape.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Canvas, rect: LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, canvas: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Canvas, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_canvas(&mut self, canvas: &mut Canvas, pattern: BuiltPattern) {
+    pub fn fill_canvas(&mut self, canvas: &mut Context, pattern: BuiltPattern) {
         self.fill_shape(canvas, Shape::Canvas, pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Canvas, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_state()));
+    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(canvas.surface.current_features()));
 
         let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&shape.aabb());
 
@@ -146,7 +146,7 @@ impl TileRenderer {
         });
     }
 
-    pub fn prepare(&mut self, canvas: &Canvas, device: &wgpu::Device) {
+    pub fn prepare(&mut self, canvas: &Context, device: &wgpu::Device) {
         if self.batches.is_empty() {
             return;
         }
@@ -179,7 +179,7 @@ impl TileRenderer {
         self.encoder.finish(reversed);
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Canvas, device: &wgpu::Device) {
+    fn prepare_fill(&mut self, fill: &Fill, canvas: &Context, device: &wgpu::Device) {
         let transform = if fill.transform != TransformId::NONE {
             Some(canvas.transforms.get(fill.transform).matrix().to_untyped())
         } else {

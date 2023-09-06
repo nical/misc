@@ -1,3 +1,4 @@
+use core::stroke::{LineCap, LineJoin};
 use std::sync::Arc;
 
 use core::path::Path;
@@ -23,7 +24,14 @@ pub enum SvgPattern {
     },
 }
 
-pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path>, SvgPattern)>) {
+pub struct Stroke {
+    pub pattern: SvgPattern,
+    pub line_width: f32,
+    pub line_cap: LineCap,
+    pub line_join: LineJoin,
+}
+
+pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>) {
     let opt = usvg::Options::default();
     let rtree = usvg::Tree::from_file(filename, &opt).unwrap();
     let mut paths = Vec::new();
@@ -75,8 +83,8 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path
                 );
             }
             usvg::NodeKind::Path(ref usvg_path) => {
-                let pattern = match usvg_path.fill {
-                    Some(ref fill) => match fill.paint {
+                let fill_pattern = usvg_path.fill.as_ref().map(|fill| {
+                    match fill.paint {
                         usvg::Paint::Color(c) => {
                             SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
                         }
@@ -86,11 +94,39 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path
                                 SvgPattern::Color(FALLBACK_COLOR)
                             })
                         }
-                    },
-                    None => {
-                        continue;
                     }
-                };
+                });
+
+                let stroke_pattern = usvg_path.stroke.as_ref().map(|stroke| {
+                    Stroke {
+                        pattern: match stroke.paint {
+                            usvg::Paint::Color(c) => {
+                                SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
+                            }
+                            usvg::Paint::Link(ref id) => {
+                                gradients.get(id).cloned().unwrap_or_else(|| {
+                                    println!("Could not find pattern {:?}", id);
+                                    SvgPattern::Color(FALLBACK_COLOR)
+                                })
+                            }
+                        },
+                        line_width: stroke.width.value() as f32,
+                        line_cap: match stroke.linecap {
+                            usvg::LineCap::Butt => LineCap::Butt,
+                            usvg::LineCap::Square => LineCap::Square,
+                            usvg::LineCap::Round => LineCap::Round,
+                        },
+                        line_join: match stroke.linejoin {
+                            usvg::LineJoin::Miter => LineJoin::Miter,
+                            usvg::LineJoin::Round => LineJoin::Round,
+                            usvg::LineJoin::Bevel => LineJoin::Bevel,
+                        },
+                    }
+                });
+
+                if fill_pattern.is_none() && stroke_pattern.is_none() {
+                    continue;
+                }
 
                 let mut builder = Path::builder().with_svg();
                 for segment in &usvg_path.segments {
@@ -124,7 +160,7 @@ pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Arc<Path
                 }
                 let path = builder.build();
 
-                paths.push((Arc::new(path), pattern));
+                paths.push((Arc::new(path), fill_pattern, stroke_pattern));
             }
             _ => {}
         }

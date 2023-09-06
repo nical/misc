@@ -1,4 +1,4 @@
-use crate::{gpu::shader::{ShaderPatternId}};
+use crate::gpu::shader::ShaderPatternId;
 
 // TODO: Pattern coordinate system:
 // currently patterns take layout space coordinates which works well for things like gradients which are specified in that space.
