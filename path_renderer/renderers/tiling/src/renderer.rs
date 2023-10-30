@@ -285,11 +285,13 @@ impl TileRenderer {
                 view: &resources.src_color_texture_view,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
                 resolve_target: None,
             })],
             depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
         });
 
         pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
@@ -338,11 +340,13 @@ impl TileRenderer {
                         // We currently rely on clearing with white so that mask tile (0, 0) is entirely
                         // filled. It could be done by rendering the tile instead.
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                     resolve_target: None,
                 })],
                 depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
 
             pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);

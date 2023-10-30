@@ -436,7 +436,7 @@ impl Context {
                 } else {
                     wgpu::LoadOp::Load
                 },
-                store: !pass.msaa_resolve,
+                store: if pass.msaa_resolve { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store }
             };
 
             //println!("{label}: {pass:#?}");
@@ -458,7 +458,7 @@ impl Context {
                         depth_ops: if pass.surface.depth {
                             Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(0.0),
-                                store: false,
+                                store: wgpu::StoreOp::Discard,
                             })
                         } else {
                             None
@@ -466,7 +466,7 @@ impl Context {
                         stencil_ops: if pass.surface.stencil {
                             Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(128),
-                                store: false,
+                                store: wgpu::StoreOp::Discard,
                             })
                         } else {
                             None
@@ -474,7 +474,9 @@ impl Context {
                     })
                 } else {
                     None
-                }
+                },
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
 
             if pass.msaa_blit {

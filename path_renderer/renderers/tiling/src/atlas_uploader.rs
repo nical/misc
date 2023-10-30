@@ -250,11 +250,13 @@ impl MaskUploadCopies {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
-                            store: true,
+                            store: wgpu::StoreOp::Store,
                         }
                     }),
                 ],
                 depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
 
             //println!("upload cpu masks {:?} instances ({} bytes)", batch.instances, (batch.instances.end - batch.instances.start) * BYTES_PER_MASK as u32);
