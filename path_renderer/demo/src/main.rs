@@ -1,4 +1,5 @@
 use core::canvas::*;
+use core::gpu::shader::RenderPipelineBuilder;
 use core::shape::*;
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
@@ -176,6 +177,7 @@ fn main() {
     tiler_config.view_box = view_box;
 
     let mut shaders = Shaders::new();
+    let mut render_pipelines = core::gpu::shader::RenderPipelines::new();
 
     let patterns = Patterns {
         colors: SolidColorRenderer::register(&mut shaders),
@@ -195,15 +197,18 @@ fn main() {
         &mut shaders,
     );
 
+    let mut prep_pipelines = render_pipelines.prepare();
     let tiling_resources = TilingGpuResources::new(
         &mut common_resources,
         &device,
         &mut shaders,
+        &mut prep_pipelines,
         &patterns.textures,
         mask_atlas_size,
         color_atlas_size,
         use_ssaa4,
     );
+    render_pipelines.build(&[&prep_pipelines.finish()], &mut RenderPipelineBuilder(&device, &mut shaders));
 
     let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
 
@@ -226,9 +231,9 @@ fn main() {
         &tiler_config,
         &patterns.textures,
     );
-    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle);
-    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle);
-    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle);
+    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle, &gpu_resources[mesh_handle]);
+    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle, &gpu_resources[stencil_handle]);
+    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle, &gpu_resources[rectangle_handle]);
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
@@ -378,11 +383,16 @@ fn main() {
 
         let frame_build_start = time::precise_time_ns();
 
+        let mut prep_pipelines = render_pipelines.prepare();
+
         canvas.prepare();
-        tiling.prepare(&canvas, &device);
-        meshes.prepare(&canvas);
-        stencil.prepare(&canvas);
-        rectangles.prepare(&canvas);
+        tiling.prepare(&canvas, &mut prep_pipelines, &device);
+        meshes.prepare(&canvas, &mut prep_pipelines);
+        stencil.prepare(&canvas, &mut prep_pipelines);
+        rectangles.prepare(&canvas, &mut prep_pipelines);
+
+        let changes = prep_pipelines.finish();
+        render_pipelines.build(&[&changes], &mut RenderPipelineBuilder(&device, &mut shaders));
 
         let requirements = canvas.build_render_passes(&mut [
             &mut tiling,
@@ -428,9 +438,9 @@ fn main() {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         tiling.upload(&mut gpu_resources, &device, &queue);
-        meshes.upload(&mut gpu_resources, &mut shaders, &device, &queue);
-        stencil.upload(&mut gpu_resources, &mut shaders, &device);
-        rectangles.upload(&mut gpu_resources, &mut shaders, &device, &queue);
+        meshes.upload(&mut gpu_resources, &device, &queue);
+        stencil.upload(&mut gpu_resources, &device);
+        rectangles.upload(&mut gpu_resources, &device, &queue);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
@@ -440,6 +450,7 @@ fn main() {
             &gpu_resources,
             &source_textures,
             &mut shaders,
+            &mut render_pipelines,
             &device,
             common_handle,
             &target,

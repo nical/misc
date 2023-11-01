@@ -961,16 +961,6 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
-dependencies = [
- "autocfg",
- "hashbrown 0.12.3",
-]
-
-[[package]]
-name = "indexmap"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8adf3ddd720272c6ea8bf59463c04e0f93d0bbf7c5439b691bca2987e0270897"
@@ -1272,25 +1262,6 @@ dependencies = [
 
 [[package]]
 name = "naga"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ceaaa4eedaece7e4ec08c55c640ba03dbb73fb812a6570a59bcf1930d0f70e"
-dependencies = [
- "bit-set",
- "bitflags 2.3.3",
- "codespan-reporting",
- "hexf-parse",
- "indexmap 1.9.3",
- "log",
- "num-traits",
- "rustc-hash",
- "termcolor",
- "thiserror",
- "unicode-xid 0.2.3",
-]
-
-[[package]]
-name = "naga"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61d829abac9f5230a85d8cc83ec0879b4c09790208ae25b5ea031ef84562e071"
@@ -1299,7 +1270,7 @@ dependencies = [
  "bitflags 2.3.3",
  "codespan-reporting",
  "hexf-parse",
- "indexmap 2.0.2",
+ "indexmap",
  "log",
  "num-traits",
  "rustc-hash",
@@ -2526,7 +2497,7 @@ dependencies = [
  "flume",
  "js-sys",
  "log",
- "naga 0.14.0",
+ "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle 0.5.0",
@@ -2552,7 +2523,7 @@ dependencies = [
  "bitflags 2.3.3",
  "codespan-reporting",
  "log",
- "naga 0.14.0",
+ "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle 0.5.0",
@@ -2592,7 +2563,7 @@ dependencies = [
  "libloading 0.8.0",
  "log",
  "metal",
- "naga 0.14.0",
+ "naga",
  "objc",
  "once_cell",
  "parking_lot",
@@ -2625,7 +2596,7 @@ dependencies = [
 name = "wgslp"
 version = "0.1.0"
 dependencies = [
- "naga 0.13.0",
+ "naga",
 ]
 
 [[package]]

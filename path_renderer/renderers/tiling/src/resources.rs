@@ -1,5 +1,5 @@
 use core::{gpu::{
-    Shaders, GpuTargetDescriptor, VertexBuilder, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId},
+    Shaders, GpuTargetDescriptor, VertexBuilder, storage_buffer::*, shader::{GeometryDescriptor, VertexAtribute, MaskDescriptor, Varying, BindGroupLayout, Binding, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, BindGroupLayoutId, ShaderPatternId, SurfaceConfig, ShaderMaskId, PrepareRenderPipelines, RenderPipelineKey},
 }, resources::{CommonGpuResources, RendererResources}};
 use crate::{
     encoder::{LineEdge},
@@ -74,6 +74,7 @@ impl TilingGpuResources {
         common: &mut CommonGpuResources,
         device: &wgpu::Device,
         shaders: &mut Shaders,
+        render_pipelines: &mut PrepareRenderPipelines,
         texture: &TextureRenderer,
         mask_atlas_size: u32,
         color_atlas_size: u32,
@@ -136,8 +137,8 @@ impl TilingGpuResources {
         let surface = SurfaceConfig::default();
         for idx in 0..shaders.num_patterns() {
             let pat = ShaderPatternId::from_index(idx);
-            shaders.prepare_pipeline(device, opaque_pipeline, pat, surface);
-            shaders.prepare_pipeline(device, masked_pipeline, pat, surface);    
+            render_pipelines.prepare(RenderPipelineKey::new(opaque_pipeline, pat, surface));
+            render_pipelines.prepare(RenderPipelineKey::new(masked_pipeline, pat, surface));
         }
 
         let edges = StorageBuffer::new::<LineEdge>(

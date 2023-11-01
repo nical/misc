@@ -1,8 +1,11 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::{borrow::Cow};
 use std::collections::HashMap;
 use std::fmt::Write;
 
 use lyon::path::FillRule;
+use wgpu::RenderPipeline;
 use wgslp::preprocessor::{SourceError, Preprocessor, Source};
 
 use super::VertexBuilder;
@@ -73,7 +76,6 @@ pub type BindGroupLayoutId = u16;
 pub struct Shaders {
     sources: ShaderSources,
 
-    pipelines: HashMap<u64, wgpu::RenderPipeline>,
     params: Vec<PipelineDescriptor>,
 
     patterns: Vec<PatternDescriptor>,
@@ -92,7 +94,6 @@ impl Shaders {
         Shaders {
             sources: ShaderSources::new(),
 
-            pipelines: HashMap::with_capacity(256),
             params: Vec::with_capacity(128),
             patterns: Vec::new(),
             masks: Vec::new(),
@@ -212,23 +213,6 @@ impl Shaders {
         self.params.push(params);
 
         id
-    }
-
-    pub fn prepare_pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        pipeline_id: GeneratedPipelineId,
-        pattern: ShaderPatternId,
-        surface: SurfaceConfig,
-    ) {
-        let key = Self::key(pipeline_id, pattern, surface);
-
-        if self.pipelines.contains_key(&key) {
-            return;
-        }
-
-        let pipeline = self.generate_pipeline_variant(device, pipeline_id, pattern, &surface);
-        self.pipelines.insert(key, pipeline);
     }
 
     fn generate_pipeline_variant(
@@ -455,26 +439,16 @@ impl Shaders {
 
         device.create_render_pipeline(&descriptor)
     }
+}
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ShaderIndex(u32);
 
-    pub fn try_get(
-        &self,
-        pipeline_id: GeneratedPipelineId,
-        pattern: ShaderPatternId,
-        surface: SurfaceConfig,
-    ) -> Option<&wgpu::RenderPipeline> {
-        let result = self.pipelines.get(&Self::key(pipeline_id, pattern, surface));
-        if result.is_none() {
-            println!("missing pipeline id={pipeline_id:?} pattern={pattern:?} surface={surface:?}");
-        }
-        //println!("- using pipeline {} with pattern {:?}", self.params[pipeline_id.index()].label, pattern);
-        result
+impl ShaderIndex {
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.0 as usize
     }
-
-    fn key(pipeline_id: GeneratedPipelineId, pattern: ShaderPatternId, variant: SurfaceConfig) -> u64 {
-        variant.as_u8() as u64 | ((pipeline_id.0 as u64) << 16) | (pattern.get() as u64) << 32
-    }
-
 }
 
 struct ShaderSources {
@@ -1068,6 +1042,7 @@ pub enum DepthMode {
     None,
 }
 
+// The surface configuration from the point of view of a draw call.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SurfaceConfig {
     pub msaa: bool,
@@ -1090,6 +1065,23 @@ impl SurfaceConfig {
                 StencilMode::None => 0,
             };
     }
+
+    pub(crate) fn from_u8(val: u8) -> Self {
+        SurfaceConfig {
+            msaa: val & 1 != 0,
+            depth: match val & (2|4) {
+                2 => DepthMode::Enabled,
+                4 => DepthMode::Ignore,
+                _ => DepthMode::None,
+            },
+            stencil: match val & (8|16|32) {
+                8 => StencilMode::EvenOdd,
+                16 => StencilMode::NonZero,
+                32 => StencilMode::Ignore,
+                _ => StencilMode::None,
+            }
+        }
+    }
 }
 
 impl Default for SurfaceConfig {
@@ -1104,4 +1096,33 @@ pub enum Depth {
     None,
     Read,
     ReadWrite,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPipelineKey(u64);
+pub type RenderPipelineIndex = crate::cache::Index<RenderPipelineKey>;
+pub type RenderPipelines = crate::cache::Registry<RenderPipelineKey, wgpu::RenderPipeline>;
+pub type PrepareRenderPipelines = crate::cache::Prepare<RenderPipelineKey>;
+pub struct RenderPipelineBuilder<'l>(pub &'l wgpu::Device, pub &'l mut Shaders);
+
+impl RenderPipelineKey {
+    pub fn new(pipeline: GeneratedPipelineId, pattern: ShaderPatternId, surf: SurfaceConfig) -> Self {
+        Self(surf.as_u8() as u64 | ((pipeline.0 as u64) << 16) | (pattern.get() as u64) << 32)
+    }
+
+    pub fn unpack(&self) -> (GeneratedPipelineId, ShaderPatternId, SurfaceConfig) {
+        let pipeline = GeneratedPipelineId((self.0 >> 16) as u16);
+        let pattern = ShaderPatternId((self.0 >> 32) as u16);
+        let surf = SurfaceConfig::from_u8(self.0 as u8);
+        (pipeline, pattern, surf)
+    }
+}
+
+impl<'l> crate::cache::Build<RenderPipelineKey, wgpu::RenderPipeline> for RenderPipelineBuilder<'l> {
+    fn build(&mut self, key: RenderPipelineKey) -> wgpu::RenderPipeline {
+        let (pipeline, pattern, surface) = key.unpack();
+        self.1.generate_pipeline_variant(self.0, pipeline, pattern, &surface)
+    }
+
+    fn finish(&mut self) {}
 }

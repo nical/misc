@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range};
+use std::ops::Range;
 
 use lyon::{
     geom::{arrayvec::ArrayVec, CubicBezierSegment, QuadraticBezierSegment},
@@ -7,7 +7,7 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{bytemuck, shape::{PathShape, Circle}, batching::SurfaceIndex};
+use core::{bytemuck, shape::{PathShape, Circle}, batching::SurfaceIndex, gpu::shader::{PrepareRenderPipelines, GeneratedPipelineId, RenderPipelineKey, RenderPipelines, RenderPipelineIndex}, canvas::RenderContext};
 use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::wgpu;
 use core::{
@@ -89,10 +89,8 @@ pub enum Draw {
     },
     Cover {
         indices: Range<u32>,
-        stencil_mode: StencilMode,
-        opaque: bool,
-        pattern: ShaderPatternId,
         pattern_inputs: BindingsId,
+        pipeline_idx: RenderPipelineIndex,
     },
 }
 
@@ -134,7 +132,8 @@ pub struct StencilAndCoverRenderer {
     cover_ibo_range: Option<DynBufferRange>,
     enable_msaa: bool,
     opaque_pass: bool,
-    shaders: HashMap<(bool, ShaderPatternId, StencilMode, SurfaceFeatures), Option<u32>>,
+    opaque_cover_pipeline: GeneratedPipelineId,
+    alpha_cover_pipeline: GeneratedPipelineId,
     pub stats: Stats,
 }
 
@@ -143,6 +142,7 @@ impl StencilAndCoverRenderer {
         renderer_id: RendererId,
         common_resources: ResourcesHandle<CommonGpuResources>,
         resources: ResourcesHandle<StencilAndCoverResources>,
+        res: &StencilAndCoverResources,
     ) -> Self {
         StencilAndCoverRenderer {
             commands: Vec::new(),
@@ -159,7 +159,8 @@ impl StencilAndCoverRenderer {
             cover_ibo_range: None,
             enable_msaa: false,
             opaque_pass: false,
-            shaders: HashMap::new(),
+            opaque_cover_pipeline: res.opaque_cover_pipeline,
+            alpha_cover_pipeline: res.alpha_cover_pipeline,
             stats: Stats {
                 commands: 0,
                 stencil_batches: 0,
@@ -227,7 +228,7 @@ impl StencilAndCoverRenderer {
             });
     }
 
-    pub fn prepare(&mut self, canvas: &Context) {
+    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
         let mut batching = BatchHelper {
             rects: ArrayVec::new(),
             prev_pattern: None,
@@ -249,7 +250,7 @@ impl StencilAndCoverRenderer {
 
             for (fill_idx, fill) in commands.iter().enumerate() {
                 let is_last = fill_idx == commands.len() - 1;
-                self.prepare_fill(canvas, fill, &mut batching, is_last, batch_id.surface);
+                self.prepare_fill(canvas, fill, &mut batching, is_last, batch_id.surface, shaders);
             }
 
             let draws_end = self.draws.len();
@@ -266,6 +267,7 @@ impl StencilAndCoverRenderer {
         batch: &mut BatchHelper,
         is_last: bool,
         surface_idx: SurfaceIndex,
+        shaders: &mut PrepareRenderPipelines,
     ) {
         let transform = canvas.transforms.get(fill.transform);
         let opaque = fill.pattern.is_opaque;
@@ -278,6 +280,8 @@ impl StencilAndCoverRenderer {
             //Shape::Canvas => StencilMode::Ignore,
         };
 
+        let state = canvas.surface.features(surface_idx);
+
         let transformed_aabb = transform.matrix().outer_transformed_box(&local_aabb);
 
         let batch_key = (
@@ -286,6 +290,10 @@ impl StencilAndCoverRenderer {
             stencil_mode,
             opaque,
         );
+
+        if batch.prev_pattern.is_none() {
+            batch.prev_pattern = Some(batch_key);
+        }
 
         let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
         let cover_idx_end = self.cover_geometry.indices.len() as u32;
@@ -306,13 +314,28 @@ impl StencilAndCoverRenderer {
         }
         batch.rects.push(transformed_aabb);
 
+        // Flush the previous cover batch if needed.
         if new_cover_batch {
+            let (pattern, pattern_inputs, stencil, opaque) = batch.prev_pattern.unwrap();
+            let surface = SurfaceConfig {
+                msaa: state.msaa,
+                depth: if state.depth {
+                    DepthMode::Ignore // TODO
+                } else {
+                    DepthMode::None
+                },
+                stencil,
+            };
+            let base_pipeline = if opaque {
+                self.opaque_cover_pipeline
+            } else {
+                self.alpha_cover_pipeline
+            };
+            let pipeline_idx = shaders.prepare(RenderPipelineKey::new(base_pipeline, pattern, surface));
             self.draws.push(Draw::Cover {
                 indices: batch.cover_idx_start..cover_idx_end,
-                stencil_mode,
-                opaque,
-                pattern: fill.pattern.shader,
-                pattern_inputs: fill.pattern.bindings,
+                pattern_inputs,
+                pipeline_idx,
             });
             batch.cover_idx_start = cover_idx_end;
             batch.prev_pattern = Some(batch_key);
@@ -351,7 +374,7 @@ impl StencilAndCoverRenderer {
                                 pattern: fill.pattern.data,
                             },
                         )
-                    ).unwrap();    
+                    ).unwrap();
                 }
             }
             _ => {
@@ -361,7 +384,7 @@ impl StencilAndCoverRenderer {
                     fill,
                     &mut self.cover_geometry,
                 );
-            }         
+            }
         }
 
         if is_last {
@@ -375,35 +398,37 @@ impl StencilAndCoverRenderer {
 
             let cover_idx_end = self.cover_geometry.indices.len() as u32;
             if cover_idx_end > batch.cover_idx_start {
+                let surface = SurfaceConfig {
+                    msaa: state.msaa,
+                    depth: if state.depth {
+                        DepthMode::Ignore // TODO
+                    } else {
+                        DepthMode::None
+                    },
+                    stencil: stencil_mode,
+                };
+                let base_pipeline = if opaque {
+                    self.opaque_cover_pipeline
+                } else {
+                    self.alpha_cover_pipeline
+                };
+                let pipeline_idx = shaders.prepare(RenderPipelineKey::new(base_pipeline, fill.pattern.shader, surface));
+
                 self.draws.push(Draw::Cover {
                     indices: batch.cover_idx_start..cover_idx_end,
-                    stencil_mode,
-                    opaque,
-                    pattern: fill.pattern.shader,
                     pattern_inputs: fill.pattern.bindings,
+                    pipeline_idx,
                 });
                 self.stats.cover_batches += 1;
             }
-        }
-
-        if is_last || new_cover_batch {
-            let state = canvas.surface.features(surface_idx);
-            self.shaders
-                .entry((opaque, fill.pattern.shader, stencil_mode, state))
-                .or_insert(None);
         }
     }
 
     pub fn upload(
         &mut self,
         resources: &mut GpuResources,
-        shaders: &mut Shaders,
         device: &wgpu::Device,
     ) {
-        let stencil_res = &resources[self.resources];
-        let opaque_pipeline = stencil_res.opaque_cover_pipeline;
-        let alpha_pipeline = stencil_res.alpha_cover_pipeline;
-
         let res = &mut resources[self.common_resources];
         self.vbo_range = res.vertices.upload(
             device,
@@ -418,27 +443,6 @@ impl StencilAndCoverRenderer {
         self.cover_ibo_range = res
             .indices
             .upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
-
-        for (&(opaque, pattern, stencil, surface), shader_id) in &mut self.shaders {
-            if shader_id.is_none() {
-                let surface = SurfaceConfig {
-                    msaa: surface.msaa,
-                    depth: if surface.depth {
-                        DepthMode::Ignore // TODO
-                    } else {
-                        DepthMode::None
-                    },
-                    stencil,
-                };
-
-                let id = if opaque {
-                    opaque_pipeline
-                } else {
-                    alpha_pipeline
-                };
-                shaders.prepare_pipeline(device, id, pattern, surface);
-            }
-        }
     }
 }
 
@@ -598,13 +602,11 @@ impl CanvasRenderer for StencilAndCoverRenderer {
         &self,
         sub_passes: &[SubPass],
         surface_info: &RenderPassState,
-        shaders: &'resources Shaders,
-        resources: &'resources GpuResources,
-        bindings: &'resources dyn BindingResolver,
+        ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &resources[self.common_resources];
-        let stencil_resources = &resources[self.resources];
+        let common_resources = &ctx.resources[self.common_resources];
+        let stencil_resources = &ctx.resources[self.resources];
 
         let mut helper = DrawHelper::new();
 
@@ -644,28 +646,11 @@ impl CanvasRenderer for StencilAndCoverRenderer {
                     }
                     &Draw::Cover {
                         ref indices,
-                        stencil_mode,
-                        opaque,
-                        pattern,
                         pattern_inputs,
+                        pipeline_idx,
                     } => {
                         // Cover
-                        let surface = SurfaceConfig {
-                            msaa: surface_info.surface.msaa,
-                            depth: if surface_info.surface.depth { DepthMode::Ignore } else { DepthMode::None },
-                            stencil: stencil_mode,
-                        };
-
-                        let pipeline_id = if opaque {
-                            stencil_resources.opaque_cover_pipeline
-                        } else {
-                            stencil_resources.alpha_cover_pipeline
-                        };
-
-                        helper.resolve_and_bind(1, pattern_inputs, bindings, render_pass);
-
-                        // TODO: Take advantage of the fact that we tend to query the same pipeline multiple times in a row.
-                        let pipeline = shaders.try_get(pipeline_id, pattern, surface).unwrap();
+                        helper.resolve_and_bind(1, pattern_inputs, ctx.bindings, render_pass);
 
                         render_pass.set_index_buffer(
                             common_resources
@@ -679,7 +664,10 @@ impl CanvasRenderer for StencilAndCoverRenderer {
                                 .vertices
                                 .get_buffer_slice(self.cover_vbo_range.as_ref().unwrap()),
                         );
+
+                        let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();
                         render_pass.set_pipeline(pipeline);
+
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                     }
                 }

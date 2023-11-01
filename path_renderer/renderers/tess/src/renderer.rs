@@ -4,17 +4,17 @@ use lyon::{
 };
 use core::{
     shape::{PathShape, Circle},
-    canvas::{RendererId, Context, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceFeatures, SubPass},
+    canvas::{RendererId, Context, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceFeatures, SubPass, RenderContext},
     resources::{ResourcesHandle, GpuResources, CommonGpuResources},
     gpu::{
-        shader::ShaderPatternId,
-        DynBufferRange, Shaders
+        shader::{PrepareRenderPipelines, RenderPipelineIndex, GeneratedPipelineId, RenderPipelineKey},
+        DynBufferRange,
     },
     pattern::{BuiltPattern, BindingsId}, usize_range,
     bytemuck,
-    wgpu, BindingResolver, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point}, path::Path,
+    wgpu, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point}, path::Path,
 };
-use std::{ops::Range, collections::HashMap};
+use std::ops::Range;
 
 use super::MeshGpuResources;
 
@@ -91,10 +91,8 @@ impl StrokeVertexConstructor<Vertex> for VertexCtor {
 
 struct Draw {
     indices: Range<u32>,
-    pattern: ShaderPatternId,
     pattern_inputs: BindingsId,
-    // TODO: blend mode.
-    opaque: bool,
+    pipeline_idx: RenderPipelineIndex,
 }
 
 pub struct MeshRenderer {
@@ -110,11 +108,12 @@ pub struct MeshRenderer {
     draws: Vec<Draw>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
-    shaders: HashMap<(bool, ShaderPatternId, SurfaceFeatures), Option<u32>>,
+    opaque_pipeline: GeneratedPipelineId,
+    alpha_pipeline: GeneratedPipelineId,
 }
 
 impl MeshRenderer {
-    pub fn new(renderer_id: RendererId, common_resources: ResourcesHandle<CommonGpuResources>, resources: ResourcesHandle<MeshGpuResources>) -> Self {
+    pub fn new(renderer_id: RendererId, common_resources: ResourcesHandle<CommonGpuResources>, resources: ResourcesHandle<MeshGpuResources>, res: &MeshGpuResources) -> Self {
         MeshRenderer {
             renderer_id,
             common_resources,
@@ -128,7 +127,8 @@ impl MeshRenderer {
             batches: BatchList::new(renderer_id),
             vbo_range: None,
             ibo_range: None,
-            shaders: HashMap::new(),
+            opaque_pipeline: res.opaque_pipeline,
+            alpha_pipeline: res.alpha_pipeline,
         }
     }
 
@@ -186,7 +186,7 @@ impl MeshRenderer {
         commands.push(Fill { shape, pattern, transform, z_index });
     }
 
-    pub fn prepare(&mut self, canvas: &Context) {
+    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -211,13 +211,14 @@ impl MeshRenderer {
                     if key != fill.pattern.shader_and_bindings() {
                         let end = self.geometry.indices.len() as u32;
                         if end > geom_start {
-                            let state = canvas.surface.features(batch_id.surface);
-                            self.shaders.entry((true, key.0, state)).or_insert(None);
                             self.draws.push(Draw {
                                 indices: geom_start..end,
-                                pattern: key.0,
                                 pattern_inputs: key.1,
-                                opaque: true,
+                                pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                                    self.opaque_pipeline,
+                                    key.0,
+                                    surface.surface_config(true, None),
+                                ))
                             });
                         }
                         geom_start = end;
@@ -229,13 +230,14 @@ impl MeshRenderer {
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
-                let state = canvas.surface.features(batch_id.surface);
-                self.shaders.entry((true, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
-                    pattern: key.0,
                     pattern_inputs: key.1,
-                    opaque: true,
+                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                        self.opaque_pipeline,
+                        key.0,
+                        surface.surface_config(true, None),
+                    )),
                 });
             }
             geom_start = end;
@@ -245,13 +247,14 @@ impl MeshRenderer {
                 if key != fill.pattern.shader_and_bindings() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
-                        let state = canvas.surface.features(batch_id.surface);
-                        self.shaders.entry((false, key.0, state)).or_insert(None);
                         self.draws.push(Draw {
                             indices: geom_start..end,
-                            pattern: key.0,
                             pattern_inputs: key.1,
-                            opaque: false,
+                            pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                                self.alpha_pipeline,
+                                key.0,
+                                surface.surface_config(true, None),
+                            )),
                         });
                     }
                     geom_start = end;
@@ -262,13 +265,14 @@ impl MeshRenderer {
 
             let end = self.geometry.indices.len() as u32;
             if end > geom_start {
-                let state = canvas.surface.features(batch_id.surface);
-                self.shaders.entry((false, key.0, state)).or_insert(None);
                 self.draws.push(Draw {
                     indices: geom_start..end,
-                    pattern: key.0,
                     pattern_inputs: key.1,
-                    opaque: false,
+                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                        self.alpha_pipeline,
+                        key.0,
+                        surface.surface_config(true, None),
+                    )),
                 });
             }
 
@@ -377,25 +381,12 @@ impl MeshRenderer {
 
     pub fn upload(&mut self,
         resources: &mut GpuResources,
-        shaders: &mut Shaders,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        let res = &resources[self.resources];
-        let opaque_pipeline = res.opaque_pipeline;
-        let alpha_pipeline = res.alpha_pipeline;
-
         let res = &mut resources[self.common_resources];
         self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
         self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
-
-        for (&(opaque, pattern, surface), shader_id) in &mut self.shaders {
-            if shader_id.is_none() {
-                let surface = surface.surface_config(true, None);
-                let id = if opaque { opaque_pipeline } else { alpha_pipeline };
-                shaders.prepare_pipeline(device, id, pattern, surface);
-            }
-        }
     }
 }
 
@@ -403,33 +394,24 @@ impl CanvasRenderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],
-        surface_info: &RenderPassState,
-        shaders: &'resources Shaders,
-        resources: &'resources GpuResources,
-        bindings: &'resources dyn BindingResolver,
+        _surface_info: &RenderPassState,
+        ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &resources[self.common_resources];
-        let mesh_resources = &resources[self.resources];
+        let common_resources = &ctx.resources[self.common_resources];
 
         render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
         render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
-
-        let surface = surface_info.surface_config(true, None);
 
         let mut helper = DrawHelper::new();
 
         for sub_pass in sub_passes {
             let (_, batch_info) = self.batches.get(sub_pass.internal_index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
-                let pipeline = shaders.try_get(
-                    if draw.opaque { mesh_resources.opaque_pipeline } else { mesh_resources.alpha_pipeline },
-                    draw.pattern,
-                    surface
-                ).unwrap();
+                let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 
-                helper.resolve_and_bind(1, draw.pattern_inputs, bindings, render_pass);
+                helper.resolve_and_bind(1, draw.pattern_inputs, ctx.bindings, render_pass);
 
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);

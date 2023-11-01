@@ -3,7 +3,7 @@
 
 use crate::path::FillRule;
 use crate::batching::{Batcher, BatchId, SurfaceIndex};
-use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode};
+use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode, RenderPipelines};
 use crate::gpu::Shaders;
 use crate::resources::{GpuResources, CommonGpuResources, ResourcesHandle, AsAny};
 use crate::transform::Transforms;
@@ -304,6 +304,7 @@ impl ContextSurface {
     }
 }
 
+// TODO: should this go in RenderContext?
 pub struct RenderPassState {
     pub output_type: OutputType,
     pub surface: SurfaceFeatures,
@@ -385,6 +386,7 @@ impl Context {
         resources: &GpuResources,
         bindings: &dyn BindingResolver,
         shaders: &mut Shaders,
+        render_pipelines: &RenderPipelines,
         _device: &wgpu::Device,
         common_resources: ResourcesHandle<CommonGpuResources>,
         target: &SurfaceResources,
@@ -401,7 +403,7 @@ impl Context {
 
         for pass in self.render_passes.iter() {
             for pre_pass in pass.pre_passes {
-                renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, shaders, resources, bindings, encoder);
+                renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, shaders, render_pipelines, resources, bindings, encoder);
             }
 
             let (view, label) = if pass.surface.msaa {
@@ -503,9 +505,11 @@ impl Context {
                     renderers[renderer as usize].render(
                         &pass.sub_passes[start..idx],
                         &pass_info,
-                        shaders,
-                        resources,
-                        bindings,
+                        RenderContext {
+                            render_pipelines,
+                            bindings,
+                            resources,
+                        },
                         &mut render_pass,
                     );
                     start = idx;
@@ -516,14 +520,22 @@ impl Context {
                 renderers[renderer as usize].render(
                     &pass.sub_passes[start..pass.sub_passes.len()],
                     &pass_info,
-                    shaders,
-                    resources,
-                    bindings,
-                    &mut render_pass,
+                    RenderContext {
+                        render_pipelines,
+                        bindings,
+                        resources,
+                    },
+                &mut render_pass,
                 );
             }
         }
     }
+}
+
+pub struct RenderContext<'l> {
+    pub render_pipelines: &'l RenderPipelines,
+    pub resources: &'l GpuResources,
+    pub bindings: &'l dyn BindingResolver,
 }
 
 pub trait CanvasRenderer: AsAny {
@@ -540,6 +552,7 @@ pub trait CanvasRenderer: AsAny {
         &self,
         _index: u32,
         _shaders: &Shaders,
+        _render_pipelines: &RenderPipelines,
         _renderers: &GpuResources,
         _bindings: &dyn BindingResolver,
         _encoder: &mut wgpu::CommandEncoder,
@@ -549,9 +562,7 @@ pub trait CanvasRenderer: AsAny {
         &self,
         _sub_passes: &[SubPass],
         _pass_info: &RenderPassState,
-        _shaders: &'resources Shaders,
-        _renderers: &'resources GpuResources,
-        _bindings: &'resources dyn BindingResolver,
+        _ctx: RenderContext<'resources>,
         _render_pass: &mut wgpu::RenderPass<'pass>,
     ) {}
 }

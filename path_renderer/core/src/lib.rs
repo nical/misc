@@ -9,6 +9,7 @@ pub mod path;
 pub mod transform;
 pub mod shape;
 pub mod stroke;
+pub mod cache;
 
 pub use lyon::path::math::{Point, point, Vector, vector};
 
