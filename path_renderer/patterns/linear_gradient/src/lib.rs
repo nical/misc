@@ -1,8 +1,8 @@
 use core::geom::traits::Transformation;
 use core::geom::Point;
 
+use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
 use core::gpu::GpuStore;
-use core::gpu::shader::{ShaderPatternId, Shaders, Varying, PatternDescriptor};
 use core::pattern::BuiltPattern;
 use core::Color;
 
@@ -48,15 +48,25 @@ impl LinearGradientRenderer {
     }
 
     pub fn add(&self, gpu_store: &mut GpuStore, gradient: LinearGradient) -> BuiltPattern {
-        let can_stretch_horizontally = gradient.from.x == gradient.to.y || gradient.color0 == gradient.color1;
+        let can_stretch_horizontally =
+            gradient.from.x == gradient.to.y || gradient.color0 == gradient.color1;
         let is_opaque = gradient.color0.is_opaque() && gradient.color1.is_opaque();
         let color0 = gradient.color0.to_f32();
         let color1 = gradient.color1.to_f32();
 
         let handle = gpu_store.push(&[
-            gradient.from.x, gradient.from.y, gradient.to.x, gradient.to.y,
-            color0[0], color0[1], color0[2], color0[3],
-            color1[0], color1[1], color1[2], color1[3],
+            gradient.from.x,
+            gradient.from.y,
+            gradient.to.x,
+            gradient.to.y,
+            color0[0],
+            color0[1],
+            color0[2],
+            color0[3],
+            color1[0],
+            color1[1],
+            color1[2],
+            color1[3],
         ]);
 
         BuiltPattern::new(self.shader, handle.to_u32())

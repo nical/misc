@@ -1,7 +1,10 @@
 use crate::TilePosition;
 use std::ops::Range;
 
-use core::gpu::{Shaders, gpu_store::{DynamicStore, DynBufferRange}};
+use core::gpu::{
+    gpu_store::{DynBufferRange, DynamicStore},
+    Shaders,
+};
 
 use core::bytemuck;
 use core::wgpu;
@@ -15,7 +18,6 @@ pub struct CpuMask {
 
 unsafe impl bytemuck::Pod for CpuMask {}
 unsafe impl bytemuck::Zeroable for CpuMask {}
-
 
 use crate::BYTES_PER_MASK;
 
@@ -42,7 +44,7 @@ struct StagingBuffer {
 
 struct MaskUploadBatch {
     staging_range: Range<u32>, // In bytes.
-    instances: Range<u32>, // In instances.
+    instances: Range<u32>,     // In instances.
     src_index: u32,
     dst_index: u32,
 }
@@ -89,12 +91,19 @@ impl TileAtlasUploader {
         self.staging_buffer_size as u32
     }
 
-    pub fn add_tile(&mut self, device: &wgpu::Device, dst_position: TilePosition, dst_index: u32) -> &mut[u8] {
+    pub fn add_tile(
+        &mut self,
+        device: &wgpu::Device,
+        dst_position: TilePosition,
+        dst_index: u32,
+    ) -> &mut [u8] {
         if dst_index != self.current_dst {
             self.flush_batch();
             self.current_dst = dst_index;
         }
-        if dst_index != self.current_dst || self.staging_buffer_size < self.current_staging_buffer_offset + BYTES_PER_MASK {
+        if dst_index != self.current_dst
+            || self.staging_buffer_size < self.current_staging_buffer_offset + BYTES_PER_MASK
+        {
             self.flush_batch();
             self.allocate_staging_buffer(device);
         }
@@ -105,8 +114,11 @@ impl TileAtlasUploader {
         });
 
         let slice = unsafe {
-            let ptr = self.staging_buffers
-                .last().unwrap().mapped
+            let ptr = self
+                .staging_buffers
+                .last()
+                .unwrap()
+                .mapped
                 .add(self.current_staging_buffer_offset as usize);
             std::slice::from_raw_parts_mut(ptr, BYTES_PER_MASK)
         };
@@ -116,8 +128,15 @@ impl TileAtlasUploader {
         slice
     }
 
-    pub fn write_tile(&mut self, device: &wgpu::Device, data: &[u8], dst_position: TilePosition, dst_index: u32) {
-        self.add_tile(device, dst_position, dst_index).copy_from_slice(data);
+    pub fn write_tile(
+        &mut self,
+        device: &wgpu::Device,
+        data: &[u8],
+        dst_position: TilePosition,
+        dst_index: u32,
+    ) {
+        self.add_tile(device, dst_position, dst_index)
+            .copy_from_slice(data);
     }
 
     pub fn flush_batch(&mut self) {
@@ -134,7 +153,7 @@ impl TileAtlasUploader {
         self.staging_range_start = self.current_staging_buffer_offset as u32;
         self.current_instance_start = end;
 
-        let src_index = self.staging_buffers.len() as u32  - 1;
+        let src_index = self.staging_buffers.len() as u32 - 1;
 
         self.batches.push(MaskUploadBatch {
             staging_range: staging_start..staging_end,
@@ -175,7 +194,8 @@ impl TileAtlasUploader {
     }
 
     pub fn upload_vertices(&mut self, device: &wgpu::Device, vertices: &mut DynamicStore) {
-        self.uploaded_copy_instances_range = vertices.upload(device, bytemuck::cast_slice(&self.copy_instances));
+        self.uploaded_copy_instances_range =
+            vertices.upload(device, bytemuck::cast_slice(&self.copy_instances));
     }
 
     pub fn reset(&mut self) {
@@ -186,7 +206,6 @@ impl TileAtlasUploader {
         self.current_dst = 0;
         self.current_instance_start = 0;
         self.staging_range_start = 0;
-
     }
 }
 
@@ -215,7 +234,6 @@ impl MaskUploadCopies {
         dst: &wgpu::TextureView,
         dst_info: &wgpu::BindGroup,
     ) {
-
         let vbo_range = match uploader.uploaded_copy_instances_range.as_ref() {
             Some(range) => range,
             None => {
@@ -244,16 +262,14 @@ impl MaskUploadCopies {
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Tile atlas upload copy"),
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: dst,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }
-                    }),
-                ],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: dst,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -271,8 +287,6 @@ impl MaskUploadCopies {
     }
 }
 
-
-
 fn create_mask_upload_pipeline(
     device: &wgpu::Device,
     shaders: &mut Shaders,
@@ -285,18 +299,16 @@ fn create_mask_upload_pipeline(
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Mask upload copy"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(65536),
-                },
-                count: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(65536),
             },
-        ],
+            count: None,
+        }],
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -331,13 +343,11 @@ fn create_mask_upload_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: "fs_main",
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::R8Unorm,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -368,12 +378,10 @@ fn create_mask_upload_pipeline(
     let intermediate_buffer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: intermediate_buffer.as_entire_binding(),
-            }
-        ]
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: intermediate_buffer.as_entire_binding(),
+        }],
     });
 
     MaskUploadCopies {

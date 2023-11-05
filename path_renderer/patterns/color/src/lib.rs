@@ -1,5 +1,5 @@
-use core::gpu::shader::{ShaderPatternId, Shaders, Varying, PatternDescriptor};
-use core::{Color, pattern::BuiltPattern};
+use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
+use core::{pattern::BuiltPattern, Color};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColorPattern {

@@ -1,6 +1,9 @@
 use core::geom::Box2D;
+use core::gpu::shader::{
+    BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
+    Varying,
+};
 use core::gpu::GpuStore;
-use core::gpu::shader::{ShaderPatternId, BindGroupLayoutId, Shaders, Varying, PatternDescriptor, BindGroupLayout, Binding};
 use core::pattern::{BindingsId, BuiltPattern};
 use core::wgpu;
 
@@ -24,16 +27,14 @@ impl TextureRenderer {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
-                }
+                },
             }],
         ));
 
         let load_shader = shaders.register_pattern(PatternDescriptor {
             name: "pattern::texture_load".into(),
             source: LOAD_SHADER_SRC.into(),
-            varyings: vec![
-                Varying::float32x2("uv").interpolated(),
-            ],
+            varyings: vec![Varying::float32x2("uv").interpolated()],
             bindings: Some(bind_group_layout),
         });
 
@@ -47,7 +48,11 @@ impl TextureRenderer {
             bindings: Some(bind_group_layout),
         });
 
-        TextureRenderer { load_shader, sample_shader, bind_group_layout }
+        TextureRenderer {
+            load_shader,
+            sample_shader,
+            bind_group_layout,
+        }
     }
 
     pub fn load_pattern_id(&self) -> ShaderPatternId {

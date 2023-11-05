@@ -13,13 +13,18 @@ use crate::gpu::shader::ShaderPatternId;
 //       data if any (for example atlas sample bounds). Glyphs would benefit from having atlas data
 //       in one reusable place. Maybe use only 16 bits for the gpu store handles?
 
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BindingsId(u16);
 impl BindingsId {
     pub const NONE: Self = BindingsId(std::u16::MAX);
-    #[inline] pub fn is_none(&self) -> bool { *self == Self::NONE }
-    #[inline] pub fn is_some(&self) -> bool { *self != Self::NONE }
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        *self == Self::NONE
+    }
+    #[inline]
+    pub fn is_some(&self) -> bool {
+        *self != Self::NONE
+    }
     pub const fn from_index(idx: usize) -> Self {
         debug_assert!(idx < std::u16::MAX as usize - 1);
         BindingsId(idx as u16)
@@ -49,7 +54,14 @@ pub struct BuiltPattern {
 impl BuiltPattern {
     #[inline]
     pub fn new(shader: ShaderPatternId, data: u32) -> Self {
-        BuiltPattern { data, shader, bindings: BindingsId::NONE, is_opaque: false, can_stretch_horizontally: false, favor_prerendering: false }
+        BuiltPattern {
+            data,
+            shader,
+            bindings: BindingsId::NONE,
+            is_opaque: false,
+            can_stretch_horizontally: false,
+            favor_prerendering: false,
+        }
     }
 
     #[inline]
@@ -78,8 +90,7 @@ impl BuiltPattern {
 
     #[inline]
     pub fn batch_key(&self) -> u64 {
-        (self.shader.index() as u64) << 16
-        | (self.bindings.index() as u64)
+        (self.shader.index() as u64) << 16 | (self.bindings.index() as u64)
     }
 
     pub fn shader_and_bindings(&self) -> (ShaderPatternId, BindingsId) {

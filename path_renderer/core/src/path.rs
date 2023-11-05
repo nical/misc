@@ -1,10 +1,12 @@
-use lyon::path::PathSlice;
+use crate::units::{point, vector, LocalRect, Point, Vector};
 use lyon::path::builder::WithSvg;
 use lyon::path::iterator::NoAttributes;
 use lyon::path::path::{Iter, Reversed};
 use lyon::path::traits::Build;
-use lyon::path::{Path as PathInner, path::Builder as BuilderInner, builder::PathBuilder, Attributes, EndpointId};
-use crate::units::{Point, Vector, LocalRect, point, vector};
+use lyon::path::PathSlice;
+use lyon::path::{
+    builder::PathBuilder, path::Builder as BuilderInner, Attributes, EndpointId, Path as PathInner,
+};
 
 pub use lyon::path::FillRule;
 
@@ -28,7 +30,9 @@ impl Path {
         Builder::new()
     }
 
-    pub fn aabb(&self) -> &LocalRect { &self.aabb }
+    pub fn aabb(&self) -> &LocalRect {
+        &self.aabb
+    }
 
     pub fn is_convex(&self) -> bool {
         self.flags | CONVEX != 0
@@ -90,7 +94,7 @@ impl Builder {
         self.aabb.min.y = self.aabb.min.y.min(p.y);
         self.aabb.max.x = self.aabb.max.x.max(p.x);
         self.aabb.max.y = self.aabb.max.y.max(p.y);
-    
+
         let v = p - self.prev;
         let c = self.v0.cross(v);
         if c > 0.0 {
@@ -119,23 +123,14 @@ impl Builder {
         self.builder.line_to(to)
     }
 
-    pub fn quadratic_bezier_to(
-        &mut self,
-        ctrl: Point,
-        to: Point,
-    ) -> EndpointId {
+    pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) -> EndpointId {
         self.segment_to(ctrl);
         self.segment_to(to);
         self.flags |= QUADRATIC_CURVES;
         self.builder.quadratic_bezier_to(ctrl, to)
     }
 
-    pub fn cubic_bezier_to(
-        &mut self,
-        ctrl1: Point,
-        ctrl2: Point,
-        to: Point,
-    ) -> EndpointId {
+    pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) -> EndpointId {
         self.segment_to(ctrl1);
         self.segment_to(ctrl2);
         self.segment_to(to);
@@ -146,8 +141,8 @@ impl Builder {
     pub fn build(self) -> Path {
         let mut flags = self.flags;
         if !((flags & POSITIVE_TURNS != 0) && (flags & NEGATIVE_TURNS != 0)) {
-            // TODO: that's incorrect. A self-intersecting path can be concave with 
-            // only left or write turns. 
+            // TODO: that's incorrect. A self-intersecting path can be concave with
+            // only left or write turns.
             //flags |= CONVEX;
         }
         if self.num_subpaths < 2 {
@@ -162,7 +157,9 @@ impl Builder {
 }
 
 impl PathBuilder for Builder {
-    fn num_attributes(&self) -> usize { 0 }
+    fn num_attributes(&self) -> usize {
+        0
+    }
     fn begin(&mut self, at: Point, _: Attributes<'_>) -> EndpointId {
         self.begin(at)
     }
@@ -175,12 +172,7 @@ impl PathBuilder for Builder {
         self.line_to(to)
     }
 
-    fn quadratic_bezier_to(
-        &mut self,
-        ctrl: Point,
-        to: Point,
-        _: Attributes<'_>
-    ) -> EndpointId {
+    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point, _: Attributes<'_>) -> EndpointId {
         self.quadratic_bezier_to(ctrl, to)
     }
 
@@ -189,7 +181,7 @@ impl PathBuilder for Builder {
         ctrl1: Point,
         ctrl2: Point,
         to: Point,
-        _: Attributes<'_>
+        _: Attributes<'_>,
     ) -> EndpointId {
         self.cubic_bezier_to(ctrl1, ctrl2, to)
     }

@@ -2,11 +2,14 @@ use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
 use crate::{
-    units::{Vector, point, vector, LocalToSurfaceTransform, SurfaceSpace, LocalTransform, LocalSpace, LocalPoint, SurfacePoint, SurfaceVector},
-    gpu::{GpuStoreHandle, GpuStore}
+    gpu::{GpuStore, GpuStoreHandle},
+    units::{
+        point, vector, LocalPoint, LocalSpace, LocalToSurfaceTransform, LocalTransform,
+        SurfacePoint, SurfaceSpace, SurfaceVector, Vector,
+    },
 };
 
-bitflags!{
+bitflags! {
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct TransformFlags: u16 {
@@ -62,7 +65,10 @@ pub struct ScaleOffset {
 impl ScaleOffset {
     #[inline]
     pub fn identity() -> Self {
-        ScaleOffset { scale: vector(1.0, 1.0), offset: vector(0.0, 0.0) }
+        ScaleOffset {
+            scale: vector(1.0, 1.0),
+            offset: vector(0.0, 0.0),
+        }
     }
 
     #[inline]
@@ -74,21 +80,28 @@ impl ScaleOffset {
     pub fn then(&self, other: &Self) -> Self {
         ScaleOffset {
             scale: vector(self.scale.x * other.scale.x, self.scale.y * other.scale.y),
-            offset: vector(self.offset.x * self.scale.x, self.offset.y * self.scale.y) + other.offset,
+            offset: vector(self.offset.x * self.scale.x, self.offset.y * self.scale.y)
+                + other.offset,
         }
     }
 
     #[inline]
     pub fn to_matrix(&self) -> LocalToSurfaceTransform {
         LocalToSurfaceTransform::new(
-            self.scale.x, 0.0,
-            0.0, self.scale.y,
-            self.offset.x, self.offset.y,
+            self.scale.x,
+            0.0,
+            0.0,
+            self.scale.y,
+            self.offset.x,
+            self.offset.y,
         )
     }
 
     pub fn from_matrix(mat: &LocalTransform) -> Self {
-        ScaleOffset { scale: vector(mat.m11, mat.m22), offset: vector(mat.m31, mat.m32) }
+        ScaleOffset {
+            scale: vector(mat.m11, mat.m22),
+            offset: vector(mat.m31, mat.m32),
+        }
     }
 }
 
@@ -110,7 +123,9 @@ impl Transform {
             return None;
         }
 
-        Some(ScaleOffset::from_matrix(&self.transform.with_destination::<LocalSpace>()))
+        Some(ScaleOffset::from_matrix(
+            &self.transform.with_destination::<LocalSpace>(),
+        ))
     }
 
     pub fn matrix(&self) -> &LocalToSurfaceTransform {
@@ -142,7 +157,8 @@ impl Transforms {
 
     pub fn push(&mut self, transform: &LocalTransform) {
         let mut flags = TransformFlags::empty();
-        let is_scale_offset = is_scale_offset(transform) && self.current.flags.contains(TransformFlags::AXIS_ALIGNED);
+        let is_scale_offset =
+            is_scale_offset(transform) && self.current.flags.contains(TransformFlags::AXIS_ALIGNED);
         if is_scale_offset {
             flags |= TransformFlags::AXIS_ALIGNED;
         }
@@ -158,8 +174,12 @@ impl Transforms {
         } else {
             let transform = if is_scale_offset {
                 ScaleOffset::from_matrix(&transform)
-                .then(&ScaleOffset::from_matrix(&self.transforms[self.current_id.index()].transform.with_destination::<LocalSpace>()))
-                .to_matrix()
+                    .then(&ScaleOffset::from_matrix(
+                        &self.transforms[self.current_id.index()]
+                            .transform
+                            .with_destination::<LocalSpace>(),
+                    ))
+                    .to_matrix()
             } else {
                 transform.then(&self.transforms[self.current_id.index()].transform)
             };
@@ -197,7 +217,9 @@ impl Transforms {
 
     pub fn pop(&mut self) {
         assert!(self.current_id != TransformId::ROOT);
-        self.current_id = self.transforms[self.current_id.index()].parent.or(TransformId::ROOT);
+        self.current_id = self.transforms[self.current_id.index()]
+            .parent
+            .or(TransformId::ROOT);
         self.current = self.transforms[self.current_id.index()];
     }
 
@@ -206,13 +228,14 @@ impl Transforms {
             return self.current.gpu_handle;
         }
 
-        let axis_aligned = if self.current.flags.contains(TransformFlags::AXIS_ALIGNED) { 1.0 } else { 0.0 };
+        let axis_aligned = if self.current.flags.contains(TransformFlags::AXIS_ALIGNED) {
+            1.0
+        } else {
+            0.0
+        };
         let t = &self.current.transform;
 
-        let handle = gpu_store.push(&[
-            t.m11, t.m12, t.m21, t.m22,
-            t.m31, t.m32, axis_aligned, 0.0,
-        ]);
+        let handle = gpu_store.push(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
 
         self.current.gpu_handle = handle;
         self.transforms[self.current_id.index()].gpu_handle = handle;

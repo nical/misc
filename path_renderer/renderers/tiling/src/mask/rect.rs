@@ -1,7 +1,14 @@
-use lyon::{geom::Box2D, math::{vector, point}};
+use lyon::{
+    geom::Box2D,
+    math::{point, vector},
+};
 
-use crate::{TilePosition, encoder::{TileEncoder, as_scale_offset}, FillOptions, TileMask, affected_range, TILE_SIZE_F32, Tiler};
 use crate::mask::MaskEncoder;
+use crate::{
+    affected_range,
+    encoder::{as_scale_offset, TileEncoder},
+    FillOptions, TileMask, TilePosition, Tiler, TILE_SIZE_F32,
+};
 use core::pattern::BuiltPattern;
 
 use core::bytemuck;
@@ -59,9 +66,8 @@ pub fn fill_rect(
     path.end(true);
     let path = path.build();
 
-    tiler.fill_path(path.iter(), options, pattern, tile_mask, encoder, device);    
+    tiler.fill_path(path.iter(), options, pattern, tile_mask, encoder, device);
 }
-
 
 pub fn fill_axis_aligned_rect(
     rect: &Box2D<f32>,
@@ -86,11 +92,8 @@ pub fn fill_axis_aligned_rect(
     };
 
     let (row_start, row_end) = affected_range(rect.min.y, rect.max.y, scissor.min.y, scissor.max.y);
-    let (column_start, column_end) = affected_range(
-        rect.min.x, rect.max.x,
-        scissor.min.x,
-        scissor.max.x,
-    );
+    let (column_start, column_end) =
+        affected_range(rect.min.x, rect.max.x, scissor.min.x, scissor.max.x);
     let row_start = row_start as u32;
     let row_end = row_end as u32;
     let column_start = column_start as u32;
@@ -114,7 +117,7 @@ pub fn fill_axis_aligned_rect(
     }
 
     if inverted {
-        let columns = column_start as u32 .. column_end as u32;
+        let columns = column_start as u32..column_end as u32;
         encoder.fill_rows(0..row_start, columns, pattern, tile_mask);
     }
 
@@ -132,14 +135,19 @@ pub fn fill_axis_aligned_rect(
             let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
             let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             let opaque = false;
-            encoder.add_tile(pattern, opaque, TilePosition::new(rect_start_tile, tile_y), tl_mask_tile);
+            encoder.add_tile(
+                pattern,
+                opaque,
+                TilePosition::new(rect_start_tile, tile_y),
+                tl_mask_tile,
+            );
         }
 
         if rect_end_tile > rect_start_tile + 1 {
             let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y);
             let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
 
-            for x in rect_start_tile + 1 .. rect_end_tile {
+            for x in rect_start_tile + 1..rect_end_tile {
                 if tile_mask.test(x, false) {
                     encoder.add_tile(pattern, false, TilePosition::new(x, tile_y), tr_mask_tile);
                 }
@@ -149,7 +157,12 @@ pub fn fill_axis_aligned_rect(
         if need_right_masks {
             let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
             let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
-            encoder.add_tile(pattern, false, TilePosition::new(rect_end_tile, tile_y), tr_mask_tile);
+            encoder.add_tile(
+                pattern,
+                false,
+                TilePosition::new(rect_end_tile, tile_y),
+                tr_mask_tile,
+            );
         }
 
         tile_y += 1
@@ -162,11 +175,21 @@ pub fn fill_axis_aligned_rect(
 
         if need_left_masks && left_mask.is_none() {
             let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
-            left_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted));
+            left_mask = Some(add_rectangle_mask(
+                encoder,
+                rect_encoder,
+                &local_rect,
+                inverted,
+            ));
         }
         if need_right_masks && right_mask.is_none() {
             let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
-            right_mask = Some(add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted));
+            right_mask = Some(add_rectangle_mask(
+                encoder,
+                rect_encoder,
+                &local_rect,
+                inverted,
+            ));
         }
 
         if inverted && column_start < rect_start_tile {
@@ -176,23 +199,33 @@ pub fn fill_axis_aligned_rect(
 
         if let Some(mask) = left_mask {
             if tile_mask.test(rect_start_tile, false) {
-                encoder.add_tile(pattern, false, TilePosition::new(rect_start_tile, tile_y), mask);
+                encoder.add_tile(
+                    pattern,
+                    false,
+                    TilePosition::new(rect_start_tile, tile_y),
+                    mask,
+                );
             }
         }
 
         if !inverted && rect_start_tile + 1 < rect_end_tile {
-            let range = rect_start_tile + 1 .. rect_end_tile;
+            let range = rect_start_tile + 1..rect_end_tile;
             encoder.span(range, tile_y, &mut tile_mask, pattern);
         }
 
         if let Some(mask) = right_mask {
             if tile_mask.test(rect_end_tile, false) {
-                encoder.add_tile(pattern, false, TilePosition::new(rect_end_tile, tile_y), mask);
+                encoder.add_tile(
+                    pattern,
+                    false,
+                    TilePosition::new(rect_end_tile, tile_y),
+                    mask,
+                );
             }
         }
 
         if !inverted && rect_end_tile + 1 < column_end {
-            let range = rect_end_tile + 1 .. column_end;
+            let range = rect_end_tile + 1..column_end;
             encoder.span(range, tile_y, &mut tile_mask, pattern);
         }
 
@@ -212,14 +245,19 @@ pub fn fill_axis_aligned_rect(
             let local_rect = local_tile_rect(&rect, rect_start_tile, tile_y);
             let tl_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
             let opaque = false;
-            encoder.add_tile(pattern, opaque, TilePosition::new(rect_start_tile, tile_y), tl_mask_tile);
+            encoder.add_tile(
+                pattern,
+                opaque,
+                TilePosition::new(rect_start_tile, tile_y),
+                tl_mask_tile,
+            );
         }
 
         if rect_end_tile > rect_start_tile + 1 {
             let local_rect = local_tile_rect(&rect, rect_start_tile + 1, tile_y);
             let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
 
-            for x in rect_start_tile + 1 .. rect_end_tile {
+            for x in rect_start_tile + 1..rect_end_tile {
                 if tile_mask.test(x, false) {
                     encoder.add_tile(pattern, false, TilePosition::new(x, tile_y), tr_mask_tile);
                 }
@@ -229,19 +267,29 @@ pub fn fill_axis_aligned_rect(
         if need_right_masks {
             let local_rect = local_tile_rect(&rect, rect_end_tile, tile_y);
             let tr_mask_tile = add_rectangle_mask(encoder, rect_encoder, &local_rect, inverted);
-            encoder.add_tile(pattern, false, TilePosition::new(rect_end_tile, tile_y), tr_mask_tile);
+            encoder.add_tile(
+                pattern,
+                false,
+                TilePosition::new(rect_end_tile, tile_y),
+                tr_mask_tile,
+            );
         }
 
         tile_y += 1;
     }
 
     if inverted {
-        let columns = column_start as u32 .. column_end as u32;
+        let columns = column_start as u32..column_end as u32;
         encoder.fill_rows(tile_y..row_end as u32, columns, pattern, tile_mask);
     }
 }
 
-pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut MaskEncoder, rect: &Box2D<f32>, inverted: bool) -> TilePosition {
+pub fn add_rectangle_mask(
+    tile_encoder: &mut TileEncoder,
+    rect_encoder: &mut MaskEncoder,
+    rect: &Box2D<f32>,
+    inverted: bool,
+) -> TilePosition {
     let (tile, atlas_index) = tile_encoder.allocate_mask_tile();
 
     // TODO: handle inverted?
@@ -250,15 +298,14 @@ pub fn add_rectangle_mask(tile_encoder: &mut TileEncoder, rect_encoder: &mut Mas
     let one = point(1.0, 1.0);
     let min = ((rect.min / crate::TILE_SIZE_F32).clamp(zero, one) * std::u16::MAX as f32).to_u32();
     let max = ((rect.max / crate::TILE_SIZE_F32).clamp(zero, one) * std::u16::MAX as f32).to_u32();
-    rect_encoder.prerender_mask(atlas_index, RectangleMask {
-        tile,
-        invert: if inverted { 1 } else { 0 },
-        rect: [
-            min.x << 16 | min.y,
-            max.x << 16 | max.y,
-        ]
-    });
+    rect_encoder.prerender_mask(
+        atlas_index,
+        RectangleMask {
+            tile,
+            invert: if inverted { 1 } else { 0 },
+            rect: [min.x << 16 | min.y, max.x << 16 | max.y],
+        },
+    );
 
     tile
 }
-

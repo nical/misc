@@ -1,6 +1,6 @@
 use core::Point;
-use std::{sync::Arc, ops::Deref};
 use lyon::path::commands::PathCommands;
+use std::{ops::Deref, sync::Arc};
 
 use shared_vector::SharedVector;
 
@@ -53,7 +53,6 @@ pub struct Store<T, E> {
     undo: UndoRedo<T>,
 }
 
-
 impl<T: Clone, E> Store<T, E> {
     pub fn new(initial: T, update: Update<T, E>, options: StoreOptions) -> Self {
         Store {
@@ -63,18 +62,15 @@ impl<T: Clone, E> Store<T, E> {
                 importance: 0,
             }),
             update,
-            undo: UndoRedo::new(options.max_undo_depth)
+            undo: UndoRedo::new(options.max_undo_depth),
         }
     }
 
     pub fn apply(&mut self, event: impl Into<Undoable<E>>) {
         let epoch = self.undo.before_update(&self.state);
-        
+
         self.state = Some(State {
-            data: (self.update)(
-                self.state.take().unwrap().data,
-                event.into().event,
-            ),
+            data: (self.update)(self.state.take().unwrap().data, event.into().event),
             epoch,
             importance: 0,
         });
@@ -179,11 +175,13 @@ impl<T: Clone> UndoRedo<T> {
     }
 }
 
-
 #[test]
 fn simple_store() {
     #[derive(Copy, Clone, Debug)]
-    pub enum Event { Inc, Dec }
+    pub enum Event {
+        Inc,
+        Dec,
+    }
 
     fn update(state: i32, event: Event) -> i32 {
         match event {
@@ -220,8 +218,6 @@ fn simple_store() {
     assert_eq!(*store.read(), 1);
 }
 
-
-
 #[derive(Clone, Debug)]
 pub struct Path {
     pub commands: PathCommands,
@@ -238,7 +234,7 @@ pub struct Scene {
     pub endpoints: SharedVector<Point>,
     pub ctrl_points: SharedVector<Point>,
     pub layers: SharedVector<Arc<Layer>>,
-    pub paths: SharedVector<Arc<PathCommands>>
+    pub paths: SharedVector<Arc<PathCommands>>,
 }
 
 #[derive(Clone, Debug)]

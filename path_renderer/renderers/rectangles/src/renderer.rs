@@ -1,14 +1,20 @@
+use crate::{resources::Instance, InstanceFlags};
 use core::{
-    canvas::{RendererId, Context, CanvasRenderer, RenderPassState, DrawHelper, SurfaceFeatures, SubPass, RenderContext},
-    resources::{ResourcesHandle, GpuResources, CommonGpuResources},
+    batching::{BatchFlags, BatchList},
+    bytemuck,
+    canvas::{
+        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        SurfaceFeatures,
+    },
     gpu::{
-        DynBufferRange, Shaders, GpuStoreHandle, shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines, RenderPipelineIndex}
+        shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
+        DynBufferRange, GpuStoreHandle,
     },
     pattern::BuiltPattern,
-    bytemuck,
-    wgpu, BindingResolver, units::LocalRect, batching::{BatchList, BatchFlags},
+    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    units::LocalRect,
+    wgpu,
 };
-use crate::{resources::Instance, InstanceFlags};
 
 use super::RectangleGpuResources;
 
@@ -42,17 +48,21 @@ pub struct Batch {
 
 pub struct RectangleRenderer {
     common_resources: ResourcesHandle<CommonGpuResources>,
-    resources: ResourcesHandle<RectangleGpuResources>,
+    _resources: ResourcesHandle<RectangleGpuResources>,
     batches: BatchList<Instance, Batch>,
     pipelines: crate::resources::Pipelines,
 }
 
 impl RectangleRenderer {
-    pub fn new(renderer_id: RendererId, common_resources: ResourcesHandle<CommonGpuResources>, resources: ResourcesHandle<RectangleGpuResources>, res: &RectangleGpuResources) -> Self {
+    pub fn new(
+        renderer_id: RendererId,
+        common_resources: ResourcesHandle<CommonGpuResources>,
+        resources: ResourcesHandle<RectangleGpuResources>,
+        res: &RectangleGpuResources,
+    ) -> Self {
         RectangleRenderer {
             common_resources,
-            resources,
-
+            _resources: resources,
             batches: BatchList::new(renderer_id),
             pipelines: res.pipelines.clone(),
         }
@@ -75,7 +85,11 @@ impl RectangleRenderer {
         transform_handle: GpuStoreHandle,
     ) {
         let z_index = canvas.z_indices.push();
-        let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&local_rect.cast_unit());
+        let aabb = canvas
+            .transforms
+            .get_current()
+            .matrix()
+            .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
         let surface = canvas.surface.current_features();
@@ -94,13 +108,14 @@ impl RectangleRenderer {
             && aa != Aa::NONE
             && surface.depth
             && aabb.width() > 50.0
-            && aabb.height() > 50.0 {
+            && aabb.height() > 50.0
+        {
             let (commands, _) = self.batches.find_or_add_batch(
                 &mut canvas.batcher,
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::ORDER_INDEPENDENT,
-                &mut|| Batch {
+                &mut || Batch {
                     pattern,
                     surface,
                     opaque: true,
@@ -115,15 +130,14 @@ impl RectangleRenderer {
                 z_index,
                 pattern: pattern.data,
                 flags_transform: transform_handle.to_u32()
-                | (instance_flags | InstanceFlags::AaCenter).bits(),
+                    | (instance_flags | InstanceFlags::AaCenter).bits(),
                 mask: 0,
             });
         }
 
         // Main rect
-        let use_opaque_pass = pattern.is_opaque
-            && (aa == Aa::NONE || surface.msaa)
-            && surface.depth;
+        let use_opaque_pass =
+            pattern.is_opaque && (aa == Aa::NONE || surface.msaa) && surface.depth;
 
         let batch_flags = if use_opaque_pass {
             BatchFlags::ORDER_INDEPENDENT
@@ -136,7 +150,7 @@ impl RectangleRenderer {
             &pattern.batch_key(),
             &aabb,
             batch_flags,
-            &mut|| Batch {
+            &mut || Batch {
                 pattern,
                 surface,
                 opaque: use_opaque_pass,
@@ -163,20 +177,23 @@ impl RectangleRenderer {
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
                 batch.pattern.shader,
-                batch.surface.surface_config(true, None)
+                batch.surface.surface_config(true, None),
             ));
             batch.pipeline_idx = Some(idx);
         }
     }
 
-    pub fn upload(&mut self,
+    pub fn upload(
+        &mut self,
         resources: &mut GpuResources,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
         let common = &mut resources[self.common_resources];
         for (items, batch) in self.batches.iter_mut() {
-            batch.vbo_range = common.vertices.upload(device, bytemuck::cast_slice(&items[..]));
+            batch.vbo_range = common
+                .vertices
+                .upload(device, bytemuck::cast_slice(&items[..]));
         }
     }
 }
@@ -192,20 +209,34 @@ impl CanvasRenderer for RectangleRenderer {
         let common_resources = &ctx.resources[self.common_resources];
 
         let mut helper = DrawHelper::new();
-        render_pass.set_index_buffer(common_resources.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-        render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
+        render_pass.set_index_buffer(
+            common_resources.quad_ibo.slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
+        render_pass.set_bind_group(
+            0,
+            &common_resources.main_target_and_gpu_store_bind_group,
+            &[],
+        );
 
         for sub_pass in sub_passes {
             let (instances, batch) = self.batches.get(sub_pass.internal_index);
 
-            let pipeline = ctx.render_pipelines.get(batch.pipeline_idx.unwrap()).unwrap();
+            let pipeline = ctx
+                .render_pipelines
+                .get(batch.pipeline_idx.unwrap())
+                .unwrap();
 
             helper.resolve_and_bind(1, batch.pattern.bindings, ctx.bindings, render_pass);
 
             render_pass.set_pipeline(pipeline);
-            render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(batch.vbo_range.as_ref().unwrap()));
+            render_pass.set_vertex_buffer(
+                0,
+                common_resources
+                    .vertices
+                    .get_buffer_slice(batch.vbo_range.as_ref().unwrap()),
+            );
             render_pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
         }
     }
 }
-

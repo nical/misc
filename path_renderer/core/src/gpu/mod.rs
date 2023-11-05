@@ -1,13 +1,13 @@
 pub mod gpu_store;
-pub mod storage_buffer;
 pub mod shader;
+pub mod storage_buffer;
 
 pub use gpu_store::*;
 pub use shader::Shaders;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
-use self::shader::{SurfaceConfig, DepthMode, StencilMode};
+use self::shader::{DepthMode, StencilMode, SurfaceConfig};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -20,11 +20,16 @@ pub struct GpuTargetDescriptor {
 
 impl GpuTargetDescriptor {
     pub fn new(w: u32, h: u32) -> Self {
-        let width = w as  f32;
+        let width = w as f32;
         let height = h as f32;
         let inv_width = 1.0 / width;
         let inv_height = 1.0 / height;
-        GpuTargetDescriptor { width, height, inv_width, inv_height }
+        GpuTargetDescriptor {
+            width,
+            height,
+            inv_width,
+            inv_height,
+        }
     }
 }
 
@@ -41,7 +46,12 @@ pub struct VertexBuilder {
 
 impl VertexBuilder {
     pub fn new(step_mode: wgpu::VertexStepMode) -> Self {
-        VertexBuilder { location: 0, offset: 0, attributes: Vec::with_capacity(16), step_mode }
+        VertexBuilder {
+            location: 0,
+            offset: 0,
+            attributes: Vec::with_capacity(16),
+            step_mode,
+        }
     }
 
     pub fn from_slice(step_mode: wgpu::VertexStepMode, formats: &[wgpu::VertexFormat]) -> Self {
@@ -57,7 +67,7 @@ impl VertexBuilder {
         self.attributes.push(wgpu::VertexAttribute {
             format,
             offset: self.offset,
-            shader_location: self.location
+            shader_location: self.location,
         });
         self.offset += format.size();
         self.location += 1;
@@ -170,8 +180,16 @@ impl PipelineDefaults {
     pub fn surface_config(&self, msaa: bool) -> SurfaceConfig {
         SurfaceConfig {
             msaa,
-            depth: if self.depth_buffer { DepthMode::Ignore } else { DepthMode::None },
-            stencil: if self.stencil_buffer { StencilMode::Ignore } else { StencilMode::None },
+            depth: if self.depth_buffer {
+                DepthMode::Ignore
+            } else {
+                DepthMode::None
+            },
+            stencil: if self.stencil_buffer {
+                StencilMode::Ignore
+            } else {
+                StencilMode::None
+            },
         }
     }
 }

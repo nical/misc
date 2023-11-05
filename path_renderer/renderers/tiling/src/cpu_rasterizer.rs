@@ -1,9 +1,9 @@
 use std::f32;
 
-use lyon::geom::QuadraticBezierSegment;
 use lyon::geom::euclid::default::*;
 #[cfg(test)]
 use lyon::geom::euclid::point2;
+use lyon::geom::QuadraticBezierSegment;
 
 /*
 use lyon::path::FillRule;
@@ -172,7 +172,7 @@ pub unsafe fn exec_tile_job(this: *const TileRasterJob) {
 
 pub const TILE_SIZE: usize = 16;
 
-pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
+pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut [f32]) {
     // This function rasterizes a line segment in a winding accumulation buffer using the
     // signed area approach for computing antialiasing described in http://nothings.org/gamedev/rasterize/
     //
@@ -213,7 +213,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
 
     let mut x = top.x;
 
-    for y in y_min .. y_max {
+    for y in y_min..y_max {
         //println!("y = {}", y);
         // y range of the edge overlapping the current row of pixels
         let dy = f32::min((y + 1) as f32, bottom.y) - f32::max(y as f32, top.y);
@@ -225,16 +225,18 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
         // to multiply them both every time.
         let winding_dy = winding * dy;
 
-        let x_range = if next_x > x { x .. next_x } else { next_x .. x };
-        let x_range_snapped = x_range.start.floor() .. x_range.end.ceil();
+        let x_range = if next_x > x { x..next_x } else { next_x..x };
+        let x_range_snapped = x_range.start.floor()..x_range.end.ceil();
         //println!("x range {:?}, dy {:?} dxdy {:?}", x_range, dy, dxdy);
-        let x_range_int = x_range_snapped.start as i32 .. x_range_snapped.end as i32;
+        let x_range_int = x_range_snapped.start as i32..x_range_snapped.end as i32;
 
-        fn row_idx(idx: i32) -> usize { idx.max(0) as usize }
+        fn row_idx(idx: i32) -> usize {
+            idx.max(0) as usize
+        }
 
         //println!(" - x range {:?}", x_range);
 
-        let row = &mut dst[y * TILE_SIZE .. (y + 1) * TILE_SIZE];
+        let row = &mut dst[y * TILE_SIZE..(y + 1) * TILE_SIZE];
 
         //let start_idx = x_range_int.start.max(0).min(15) as usize;
         let start_idx = x_range_int.start;
@@ -310,7 +312,6 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
                     row[row_idx(start_idx + 1)] += winding_dy * (1.0 - cov_left - cov_right);
                 }
             } else if start_idx + 1 < TILE_SIZE as i32 {
-
                 // (B) Second pixel (fully overlapping the edge)
                 let cov_b = inv_dx * (x_left + 0.5);
                 row[row_idx(start_idx + 1)] += winding_dy * (cov_b - cov_left);
@@ -318,7 +319,7 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
                 // (C) Subsequent pixels fully overlapping with the edge on the x axis.
                 // For these the covered area has increased linearly so the coverage difference
                 // is constant.
-                for i in (start_idx + 2) .. (x_range_int_end - 1).min(15) {
+                for i in (start_idx + 2)..(x_range_int_end - 1).min(15) {
                     row[row_idx(i)] += winding_dy * inv_dx;
                 }
 
@@ -339,14 +340,20 @@ pub fn draw_line(from: Point2D<f32>, to: Point2D<f32>, dst: &mut[f32]) {
     }
 }
 
-pub fn draw_curve(from: Point2D<f32>, ctrl: Point2D<f32>, to: Point2D<f32>, tolerance: f32, dst: &mut[f32]) {
+pub fn draw_curve(
+    from: Point2D<f32>,
+    ctrl: Point2D<f32>,
+    to: Point2D<f32>,
+    tolerance: f32,
+    dst: &mut [f32],
+) {
     QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |segment| {
         draw_line(segment.from, segment.to, dst);
     });
 }
 
-// Write the winding numbers for auxiliary (backdrop) edges on the left side of the tile that contribute to the tile. 
-pub fn add_backdrop(y: f32, winding: f32, dst: &mut[f32]) {
+// Write the winding numbers for auxiliary (backdrop) edges on the left side of the tile that contribute to the tile.
+pub fn add_backdrop(y: f32, winding: f32, dst: &mut [f32]) {
     let start = y as usize;
     if start >= dst.len() {
         return;
@@ -381,7 +388,6 @@ pub fn add_backdrop(y: f32, winding: f32, dst: &mut[f32]) {
 //    draw_line(prev, to, dst);
 //}
 
-
 // Also similar to font-rs with an important caveat: we have a backdrop per row and we
 // have to support shapes that aren't closed within the tile (there may be one side of
 // the shape on the tile while the other side overlaps another tile), so we can't do
@@ -393,7 +399,7 @@ pub fn add_backdrop(y: f32, winding: f32, dst: &mut[f32]) {
 // complicated but probably worth it. The mask could be de-interleaved in a shader
 // that copies from staging buffer to the atlas texture).
 
-pub fn accumulate_non_zero(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
+pub fn accumulate_non_zero(src: &[f32], backdrops: &[f32], dst: &mut [u8]) {
     assert!(backdrops.len() >= TILE_SIZE);
     assert!(src.len() >= TILE_SIZE * TILE_SIZE);
     assert!(dst.len() >= TILE_SIZE * TILE_SIZE);
@@ -410,7 +416,7 @@ pub fn accumulate_non_zero(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
     }
 }
 
-pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
+pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut [u8]) {
     assert!(backdrops.len() >= TILE_SIZE);
     assert!(src.len() >= TILE_SIZE * TILE_SIZE);
     assert!(dst.len() >= TILE_SIZE * TILE_SIZE);
@@ -428,7 +434,7 @@ pub fn accumulate_even_odd(src: &[f32], backdrops: &[f32], dst: &mut[u8]) {
     }
 }
 
-use std::sync::atomic::{Ordering, AtomicU32};
+use std::sync::atomic::{AtomicU32, Ordering};
 static DUMP_IDX: AtomicU32 = AtomicU32::new(0);
 pub fn dump_mask_png(w: u32, h: u32, mask: &[u8]) {
     let idx = DUMP_IDX.fetch_add(1, Ordering::Relaxed);
@@ -437,7 +443,7 @@ pub fn dump_mask_png(w: u32, h: u32, mask: &[u8]) {
 }
 
 pub fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
-    let mut bytes = Vec::with_capacity(mask.len()*4 * PIXEL_SIZE * PIXEL_SIZE);
+    let mut bytes = Vec::with_capacity(mask.len() * 4 * PIXEL_SIZE * PIXEL_SIZE);
     const PIXEL_SIZE: usize = 8;
     for y in 0..TILE_SIZE {
         for _ in 0..PIXEL_SIZE {
@@ -455,13 +461,19 @@ pub fn save_mask_png(w: u32, h: u32, mask: &[u8], file_name: &str) {
         }
     }
 
-
     let encoder = image::png::PngEncoder::new(std::fs::File::create(file_name).unwrap());
-    encoder.encode(&bytes, w * PIXEL_SIZE as u32, h * PIXEL_SIZE as u32, image::ColorType::Rgba8).unwrap();
+    encoder
+        .encode(
+            &bytes,
+            w * PIXEL_SIZE as u32,
+            h * PIXEL_SIZE as u32,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
 }
 
 pub fn save_accum_png(w: u32, h: u32, accum: &[f32], backdrops: &[f32], file_name: &str) {
-    let mut bytes = Vec::with_capacity(accum.len()*4);
+    let mut bytes = Vec::with_capacity(accum.len() * 4);
 
     for y in 0..h {
         let mut backdrop = backdrops[y as usize];
@@ -478,35 +490,34 @@ pub fn save_accum_png(w: u32, h: u32, accum: &[f32], backdrops: &[f32], file_nam
     }
 
     let encoder = image::png::PngEncoder::new(std::fs::File::create(file_name).unwrap());
-    encoder.encode(&bytes, w, h, image::ColorType::Rgba8).unwrap();
+    encoder
+        .encode(&bytes, w, h, image::ColorType::Rgba8)
+        .unwrap();
 }
-
 
 #[test]
 fn accum_even_odd_01() {
     let src = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0,-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0,-0.5,-0.5, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.2, 0.6, 0.2, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.6, 0.2, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
     ];
 
     let backdrops = [0.0; TILE_SIZE];
 
-    let mut dst = vec![0; 16*16];
+    let mut dst = vec![0; 16 * 16];
 
     accumulate_even_odd(&src, &backdrops, &mut dst);
 
@@ -516,8 +527,14 @@ fn accum_even_odd_01() {
     assert_eq!(&dst[17..25], &[255; 8]);
     assert_eq!(&dst[25..32], &[0; 7]);
 
-    assert_eq!(&dst[32..48], &[0, 0, 127, 255, 255, 255, 255, 255,   255, 255, 127, 0, 0, 0, 0, 0]);
-    assert_eq!(&dst[48..64], &[0, 0, 51, 204, 255, 255, 255, 255,   255, 255, 255, 255, 255, 255, 255, 255]);
+    assert_eq!(
+        &dst[32..48],
+        &[0, 0, 127, 255, 255, 255, 255, 255, 255, 255, 127, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(
+        &dst[48..64],
+        &[0, 0, 51, 204, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+    );
 }
 
 #[test]
@@ -553,20 +570,21 @@ fn simple_line() {
     //for y in 0..TILE_SIZE {
     //    println!("{:.2?}", &accum[y* TILE_SIZE .. (y+1) * TILE_SIZE]);
     //}
-
 }
 
 // This a rust port of piet's line rasterization routine, just for the sake of
 // understanding and testing the code. There's no reason to run this on the CPU.
-pub fn gpu_fill_line(from: Point2D<f32>, to: Point2D<f32>, pos: Point2D<f32>, winding_num: &mut f32) {
+pub fn gpu_fill_line(
+    from: Point2D<f32>,
+    to: Point2D<f32>,
+    pos: Point2D<f32>,
+    winding_num: &mut f32,
+) {
     let from = from - pos;
     let to = to - pos;
 
     // range of the pixel that is in the bounding box of the edge (at most 1.0 since it's a pixel)
-    let window = Point2D::new(
-        from.y.max(0.0).min(1.0),
-        to.y.max(0.0).min(1.0),
-    );
+    let window = Point2D::new(from.y.max(0.0).min(1.0), to.y.max(0.0).min(1.0));
 
     if (window.x - window.y).abs() < 0.001 {
         // pixel no affected.
@@ -593,9 +611,8 @@ fn gpu_line_test() {
     let mut mask = [0; TILE_SIZE * TILE_SIZE];
 
     let lines = [
-//        (point2(-0.5, 8.0), point2(8.0, 0.0)),
-//        (point2(8.0, 16.0), point2(-0.5, 10.0)),
-
+        //        (point2(-0.5, 8.0), point2(8.0, 0.0)),
+        //        (point2(8.0, 16.0), point2(-0.5, 10.0)),
         (point2(1.0, 1.0), point2(14.0, 2.0)),
         (point2(14.0, 2.0), point2(2.0, 12.0)),
         (point2(2.0, 12.0), point2(1.0, 1.0)),
@@ -632,5 +649,4 @@ fn gpu_line_test() {
     //for y in 0..TILE_SIZE {
     //    println!("{:.2?}", &accum[y* TILE_SIZE .. (y+1) * TILE_SIZE]);
     //}
-
 }

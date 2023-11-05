@@ -1,21 +1,21 @@
 pub mod mask;
 pub mod tiler;
 //pub mod tiler2;
+pub mod atlas_uploader;
+pub mod cpu_rasterizer;
 pub mod encoder;
 pub mod occlusion;
-pub mod resources;
-pub mod cpu_rasterizer;
 pub mod renderer;
-pub mod atlas_uploader;
+pub mod resources;
 
 use core::pattern::BuiltPattern;
 
-pub use tiler::*;
-pub use resources::*;
 pub use occlusion::*;
 pub use renderer::*;
+pub use resources::*;
+pub use tiler::*;
 
-use lyon::geom::euclid::default::{Transform2D};
+use lyon::geom::euclid::default::Transform2D;
 use lyon::path::FillRule;
 
 pub type PatternData = u32;
@@ -37,7 +37,6 @@ When rendering the tiger at 1800x1800 px, according to renderdoc on Intel UHD Gr
   - ~0.48ms alpha tiles
 
 */
-
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TilePosition(u32);
@@ -70,16 +69,28 @@ impl TilePosition {
         self.add_flag();
         self
     }
-    pub fn to_u32(&self) -> u32 { self.0 }
-    pub fn x(&self) -> u32 { (self.0 >> 10) & Self::MASK }
-    pub fn y(&self) -> u32 { (self.0) & Self::MASK }
-    pub fn extension(&self) -> u32 { (self.0 >> 20) & Self::MASK }
+    pub fn to_u32(&self) -> u32 {
+        self.0
+    }
+    pub fn x(&self) -> u32 {
+        (self.0 >> 10) & Self::MASK
+    }
+    pub fn y(&self) -> u32 {
+        (self.0) & Self::MASK
+    }
+    pub fn extension(&self) -> u32 {
+        (self.0 >> 20) & Self::MASK
+    }
 
     // TODO: we have two unused bits and we use one of them to store
     // whether a tile in an indirection buffer is opaque. That's not
     // great.
-    pub fn flag(&self) -> bool { self.0 & 1 << 31 != 0 }
-    pub fn add_flag(&mut self) { self.0 |= 1 << 31 }
+    pub fn flag(&self) -> bool {
+        self.0 & 1 << 31 != 0
+    }
+    pub fn add_flag(&mut self) {
+        self.0 |= 1 << 31
+    }
 }
 
 #[test]
@@ -103,7 +114,11 @@ fn tile_position() {
 }
 
 pub fn tile_visibility(pat: &BuiltPattern) -> TileVisibility {
-    if pat.is_opaque { TileVisibility::Opaque } else { TileVisibility::Alpha }
+    if pat.is_opaque {
+        TileVisibility::Opaque
+    } else {
+        TileVisibility::Alpha
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -114,10 +129,13 @@ pub enum TileVisibility {
 }
 
 impl TileVisibility {
-    pub fn is_empty(self) -> bool { self == TileVisibility::Empty }
-    pub fn is_opaque(self) -> bool { self == TileVisibility::Opaque }
+    pub fn is_empty(self) -> bool {
+        self == TileVisibility::Empty
+    }
+    pub fn is_opaque(self) -> bool {
+        self == TileVisibility::Opaque
+    }
 }
-
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Stats {
@@ -190,8 +208,9 @@ impl<'l> FillOptions<'l> {
         }
     }
 
-    pub fn with_transform<'a>(self, transform: Option<&'a Transform2D<f32>>) -> FillOptions<'a> 
-    where 'l: 'a
+    pub fn with_transform<'a>(self, transform: Option<&'a Transform2D<f32>>) -> FillOptions<'a>
+    where
+        'l: 'a,
     {
         FillOptions {
             fill_rule: self.fill_rule,
@@ -233,5 +252,3 @@ impl<'l> FillOptions<'l> {
         self
     }
 }
-
-

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    path::{Path, FillRule},
-    units::{LocalRect, LocalPoint, point, vector}
+    path::{FillRule, Path},
+    units::{point, vector, LocalPoint, LocalRect},
 };
 
 pub struct PathShape {
@@ -14,7 +14,11 @@ pub struct PathShape {
 
 impl PathShape {
     pub fn new(path: Arc<Path>) -> Self {
-        PathShape { path, fill_rule: FillRule::NonZero, inverted: false }
+        PathShape {
+            path,
+            fill_rule: FillRule::NonZero,
+            inverted: false,
+        }
     }
     pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
         self.fill_rule = fill_rule;
@@ -26,11 +30,11 @@ impl PathShape {
     }
     pub fn aabb(&self) -> LocalRect {
         if self.inverted {
-            use std::f32::{MIN, MAX};
+            use std::f32::{MAX, MIN};
             return LocalRect {
                 min: point(MIN, MIN),
-                max: point(MAX, MAX)
-            }
+                max: point(MAX, MAX),
+            };
         }
 
         *self.path.aabb()
@@ -49,7 +53,6 @@ impl Into<PathShape> for Arc<Path> {
     }
 }
 
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Circle {
     pub center: LocalPoint,
@@ -59,7 +62,11 @@ pub struct Circle {
 
 impl Circle {
     pub fn new(center: LocalPoint, radius: f32) -> Self {
-        Circle { center, radius, inverted: false }
+        Circle {
+            center,
+            radius,
+            inverted: false,
+        }
     }
 
     pub fn inverted(mut self) -> Self {
@@ -69,11 +76,11 @@ impl Circle {
 
     pub fn aabb(&self) -> LocalRect {
         if self.inverted {
-            use std::f32::{MIN, MAX};
+            use std::f32::{MAX, MIN};
             return LocalRect {
                 min: point(MIN, MIN),
                 max: point(MAX, MAX),
-            }                
+            };
         }
         LocalRect {
             min: self.center - vector(self.radius, self.radius),

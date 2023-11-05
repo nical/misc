@@ -1,5 +1,4 @@
-
-use std::ops::{Range, Index, IndexMut};
+use std::ops::{Index, IndexMut, Range};
 
 pub struct Buffer<T> {
     ptr: *mut T,
@@ -7,7 +6,6 @@ pub struct Buffer<T> {
     cap: u32,
     idx: u32,
 }
-
 
 impl<T> Buffer<T> {
     #[inline]
@@ -36,25 +34,33 @@ impl<T> Buffer<T> {
             return None;
         }
 
-        unsafe {
-            Some(&*self.ptr.offset(idx as isize))
-        }
+        unsafe { Some(&*self.ptr.offset(idx as isize)) }
     }
 
     #[inline]
-    pub fn len(&self) -> usize { self.len as usize }
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
 
     #[inline]
-    pub fn capacity(&self) -> usize { self.cap as usize }
+    pub fn capacity(&self) -> usize {
+        self.cap as usize
+    }
 
     #[inline]
-    pub fn remaining_capacity(&self) -> usize { (self.cap - self.len) as usize }
+    pub fn remaining_capacity(&self) -> usize {
+        (self.cap - self.len) as usize
+    }
 
     #[inline]
-    pub fn is_full(&self) -> bool { self.remaining_capacity() == 0 }
+    pub fn is_full(&self) -> bool {
+        self.remaining_capacity() == 0
+    }
 
     #[inline]
-    pub fn index(&self) -> u32 { self.idx }
+    pub fn index(&self) -> u32 {
+        self.idx
+    }
 
     #[inline]
     pub fn push(&mut self, val: T) {
@@ -73,16 +79,25 @@ impl<T> Buffer<T> {
     #[inline]
     pub unsafe fn set_len(&mut self, len: usize) {
         let len = len as u32;
-        assert!(len <= self.cap, "length ({:?}) < capacity ({:?})", len, self.cap);
+        assert!(
+            len <= self.cap,
+            "length ({:?}) < capacity ({:?})",
+            len,
+            self.cap
+        );
 
         self.len = len;
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *const T { self.ptr }
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
 
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut T { self.ptr }
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
 
     pub fn clear(&mut self) {
         unsafe {
@@ -124,18 +139,14 @@ impl<T> Index<usize> for Buffer<T> {
     type Output = T;
     fn index(&self, idx: usize) -> &T {
         assert!(idx < self.len());
-        unsafe {
-            &*self.ptr.offset(idx as isize)
-        }
+        unsafe { &*self.ptr.offset(idx as isize) }
     }
 }
 
 impl<T> IndexMut<usize> for Buffer<T> {
     fn index_mut(&mut self, idx: usize) -> &mut T {
         assert!(idx < self.len());
-        unsafe {
-            &mut *self.ptr.offset(idx as isize)
-        }
+        unsafe { &mut *self.ptr.offset(idx as isize) }
     }
 }
 
@@ -155,14 +166,14 @@ impl<T> IndexMut<Range<usize>> for Buffer<T> {
 impl<T> Index<Range<u32>> for Buffer<T> {
     type Output = [T];
     fn index(&self, range: Range<u32>) -> &[T] {
-        let range = (range.start as usize) .. (range.end as usize);
+        let range = (range.start as usize)..(range.end as usize);
         &self.as_slice()[range]
     }
 }
 
 impl<T> IndexMut<Range<u32>> for Buffer<T> {
     fn index_mut(&mut self, range: Range<u32>) -> &mut [T] {
-        let range = (range.start as usize) .. (range.end as usize);
+        let range = (range.start as usize)..(range.end as usize);
         &mut self.as_mut_slice()[range]
     }
 }
@@ -243,7 +254,11 @@ pub struct UniformBufferPool<T> {
 }
 
 impl<T> UniformBufferPool<T> {
-    pub fn new(buffer_size: u32, device: *const wgpu::Device, bind_group_layout: *const wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        buffer_size: u32,
+        device: *const wgpu::Device,
+        bind_group_layout: *const wgpu::BindGroupLayout,
+    ) -> Self {
         UniformBufferPool {
             available_buffers: Vec::new(),
             used_buffers: Vec::new(),
@@ -270,7 +285,6 @@ impl<T> UniformBufferPool<T> {
     }
 
     pub fn get_buffer(&mut self) -> Buffer<T> {
-
         if self.available_buffers.is_empty() {
             unsafe {
                 let handle = (*self.device).create_buffer(&wgpu::BufferDescriptor {
@@ -283,12 +297,10 @@ impl<T> UniformBufferPool<T> {
                 let bind_group = (*self.device).create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
                     layout: &*self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::Buffer(handle.as_entire_buffer_binding()),
-                        },
-                    ],
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(handle.as_entire_buffer_binding()),
+                    }],
                 });
 
                 let mut buffer = Box::new(GpuBuffer {
@@ -301,7 +313,9 @@ impl<T> UniformBufferPool<T> {
                 // Transmute away the lifetime of the slice and view. We guarantee that the handle won't move or be deleted
                 // before they are dropped.
                 buffer.slice = Some(std::mem::transmute(buffer.handle.slice(..)));
-                buffer.view = Some(std::mem::transmute(buffer.slice.as_mut().unwrap().get_mapped_range_mut()));
+                buffer.view = Some(std::mem::transmute(
+                    buffer.slice.as_mut().unwrap().get_mapped_range_mut(),
+                ));
 
                 self.available_buffers.push(buffer);
             }
@@ -361,7 +375,6 @@ impl<T> Drop for UniformBufferPool<T> {
     }
 }
 
-
 #[test]
 fn buffer_pool() {
     let mut pool: BufferPool<u32> = BufferPool::new(2048);
@@ -391,4 +404,3 @@ fn buffer_pool() {
     pool.return_buffer(b0);
     pool.return_buffer(b1);
 }
-

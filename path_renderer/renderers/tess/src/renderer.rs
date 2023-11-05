@@ -1,18 +1,31 @@
-use lyon::{
-    tessellation::{FillTessellator, FillOptions, VertexBuffers, FillVertexConstructor, BuffersBuilder},
-    path::traits::PathIterator, geom::euclid::vec2, lyon_tessellation::{StrokeOptions, StrokeTessellator, StrokeVertexConstructor}
-};
 use core::{
-    shape::{PathShape, Circle},
-    canvas::{RendererId, Context, CanvasRenderer, ZIndex, RenderPassState, DrawHelper, SurfaceFeatures, SubPass, RenderContext},
-    resources::{ResourcesHandle, GpuResources, CommonGpuResources},
+    batching::{BatchFlags, BatchList},
+    bytemuck,
+    canvas::{
+        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        SurfaceFeatures, ZIndex,
+    },
     gpu::{
-        shader::{PrepareRenderPipelines, RenderPipelineIndex, GeneratedPipelineId, RenderPipelineKey},
+        shader::{
+            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+        },
         DynBufferRange,
     },
-    pattern::{BuiltPattern, BindingsId}, usize_range,
-    bytemuck,
-    wgpu, batching::{BatchFlags, BatchList}, transform::TransformId, units::{LocalPoint, LocalRect, point}, path::Path,
+    path::Path,
+    pattern::{BindingsId, BuiltPattern},
+    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    shape::{Circle, PathShape},
+    transform::TransformId,
+    units::{point, LocalPoint, LocalRect},
+    usize_range, wgpu,
+};
+use lyon::{
+    geom::euclid::vec2,
+    lyon_tessellation::{StrokeOptions, StrokeTessellator, StrokeVertexConstructor},
+    path::traits::PathIterator,
+    tessellation::{
+        BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers,
+    },
 };
 use std::ops::Range;
 
@@ -48,7 +61,7 @@ impl Shape {
             Shape::Rect(rect) => *rect,
             Shape::Circle(circle) => circle.aabb(),
             Shape::Mesh(mesh) => mesh.aabb,
-            Shape::StrokePath(path, width) => path.aabb().inflate(*width, *width)
+            Shape::StrokePath(path, width) => path.aabb().inflate(*width, *width),
         }
     }
 }
@@ -73,19 +86,30 @@ unsafe impl bytemuck::Zeroable for Vertex {}
 unsafe impl bytemuck::Pod for Vertex {}
 
 struct VertexCtor {
-    pattern: u32, z_index: u32,
+    pattern: u32,
+    z_index: u32,
 }
 
 impl FillVertexConstructor<Vertex> for VertexCtor {
     fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> Vertex {
         let (x, y) = vertex.position().to_tuple();
-        Vertex { x, y, z_index: self.z_index, pattern: self.pattern }
+        Vertex {
+            x,
+            y,
+            z_index: self.z_index,
+            pattern: self.pattern,
+        }
     }
 }
 impl StrokeVertexConstructor<Vertex> for VertexCtor {
     fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::StrokeVertex) -> Vertex {
         let (x, y) = vertex.position().to_tuple();
-        Vertex { x, y, z_index: self.z_index, pattern: self.pattern }
+        Vertex {
+            x,
+            y,
+            z_index: self.z_index,
+            pattern: self.pattern,
+        }
     }
 }
 
@@ -98,7 +122,7 @@ struct Draw {
 pub struct MeshRenderer {
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
-    resources: ResourcesHandle<MeshGpuResources>,
+    _resources: ResourcesHandle<MeshGpuResources>,
     tessellator: FillTessellator,
     geometry: VertexBuffers<Vertex, u32>,
     tolerenace: f32,
@@ -113,11 +137,16 @@ pub struct MeshRenderer {
 }
 
 impl MeshRenderer {
-    pub fn new(renderer_id: RendererId, common_resources: ResourcesHandle<CommonGpuResources>, resources: ResourcesHandle<MeshGpuResources>, res: &MeshGpuResources) -> Self {
+    pub fn new(
+        renderer_id: RendererId,
+        common_resources: ResourcesHandle<CommonGpuResources>,
+        resources: ResourcesHandle<MeshGpuResources>,
+        res: &MeshGpuResources,
+    ) -> Self {
         MeshRenderer {
             renderer_id,
             common_resources,
-            resources,
+            _resources: resources,
             tessellator: FillTessellator::new(),
             geometry: VertexBuffers::new(),
             tolerenace: 0.25,
@@ -146,11 +175,22 @@ impl MeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Context, path: P, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(
+        &mut self,
+        canvas: &mut Context,
+        path: P,
+        pattern: BuiltPattern,
+    ) {
         self.fill_shape(canvas, Shape::Path(path.into()), pattern);
     }
 
-    pub fn stroke_path(&mut self, canvas: &mut Context, path: Path, width: f32, pattern: BuiltPattern) {
+    pub fn stroke_path(
+        &mut self,
+        canvas: &mut Context,
+        path: Path,
+        width: f32,
+        pattern: BuiltPattern,
+    ) {
         self.fill_shape(canvas, Shape::StrokePath(path, width), pattern);
     }
 
@@ -162,7 +202,12 @@ impl MeshRenderer {
         self.fill_shape(canvas, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_mesh(&mut self, canvas: &mut Context, mesh: TessellatedMesh, pattern: BuiltPattern) {
+    pub fn fill_mesh(
+        &mut self,
+        canvas: &mut Context,
+        mesh: TessellatedMesh,
+        pattern: BuiltPattern,
+    ) {
         self.fill_shape(canvas, Shape::Mesh(mesh), pattern);
     }
 
@@ -170,7 +215,11 @@ impl MeshRenderer {
         let transform = canvas.transforms.current_id();
         let z_index = canvas.z_indices.push();
 
-        let aabb = canvas.transforms.get_current().matrix().outer_transformed_box(&shape.aabb());
+        let aabb = canvas
+            .transforms
+            .get_current()
+            .matrix()
+            .outer_transformed_box(&shape.aabb());
 
         let (commands, info) = self.batches.find_or_add_batch(
             &mut canvas.batcher,
@@ -183,7 +232,12 @@ impl MeshRenderer {
             },
         );
         info.surface = canvas.surface.current_features();
-        commands.push(Fill { shape, pattern, transform, z_index });
+        commands.push(Fill {
+            shape,
+            pattern,
+            transform,
+            z_index,
+        });
     }
 
     pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
@@ -193,16 +247,23 @@ impl MeshRenderer {
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in canvas.batcher.batches()
+        for batch_id in canvas
+            .batcher
+            .batches()
             .iter()
-            .filter(|batch| batch.renderer == id) {
-
+            .filter(|batch| batch.renderer == id)
+        {
             let (commands, info) = &mut batches.get_mut(batch_id.index);
 
             let surface = info.surface;
 
             let draw_start = self.draws.len() as u32;
-            let mut key = commands.first().as_ref().unwrap().pattern.shader_and_bindings();
+            let mut key = commands
+                .first()
+                .as_ref()
+                .unwrap()
+                .pattern
+                .shader_and_bindings();
 
             // Opaque pass.
             let mut geom_start = self.geometry.indices.len() as u32;
@@ -218,7 +279,7 @@ impl MeshRenderer {
                                     self.opaque_pipeline,
                                     key.0,
                                     surface.surface_config(true, None),
-                                ))
+                                )),
                             });
                         }
                         geom_start = end;
@@ -243,7 +304,10 @@ impl MeshRenderer {
             geom_start = end;
 
             // Blended pass.
-            for fill in commands.iter().filter(|fill| !surface.depth || !fill.pattern.is_opaque) {
+            for fill in commands
+                .iter()
+                .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
+            {
                 if key != fill.pattern.shader_and_bindings() {
                     let end = self.geometry.indices.len() as u32;
                     if end > geom_start {
@@ -276,7 +340,7 @@ impl MeshRenderer {
                 });
             }
 
-            let draws = draw_start .. self.draws.len() as u32;
+            let draws = draw_start..self.draws.len() as u32;
             info.draws = draws;
         }
 
@@ -291,38 +355,44 @@ impl MeshRenderer {
         match &fill.shape {
             Shape::Path(shape) => {
                 let transform = transform.to_untyped();
-                let options = FillOptions::tolerance(self.tolerenace)
-                    .with_fill_rule(shape.fill_rule);
+                let options =
+                    FillOptions::tolerance(self.tolerenace).with_fill_rule(shape.fill_rule);
 
                 // TODO: some way to simplify/discard offscreen geometry, would probably be best
                 // done in the tessellator itself.
-                self.tessellator.tessellate(
-                    shape.path.iter().transformed(&transform),
-                    &options,
-                    &mut BuffersBuilder::new(
-                        &mut self.geometry,
-                        VertexCtor {
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
-                        },
+                self.tessellator
+                    .tessellate(
+                        shape.path.iter().transformed(&transform),
+                        &options,
+                        &mut BuffersBuilder::new(
+                            &mut self.geometry,
+                            VertexCtor {
+                                z_index: fill.z_index,
+                                pattern: fill.pattern.data,
+                            },
+                        ),
                     )
-                ).unwrap();
+                    .unwrap();
             }
             Shape::Circle(circle) => {
                 let options = FillOptions::tolerance(self.tolerenace);
-                self.tessellator.tessellate_circle(
-                    transform.transform_point(circle.center).cast_unit(),
-                    // TODO: that's not quite right if the transform has more than scale+offset
-                    transform.transform_vector(vec2(circle.radius, 0.0)).length(),
-                    &options,
-                    &mut BuffersBuilder::new(
-                        &mut self.geometry,
-                        VertexCtor {
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
-                        },
+                self.tessellator
+                    .tessellate_circle(
+                        transform.transform_point(circle.center).cast_unit(),
+                        // TODO: that's not quite right if the transform has more than scale+offset
+                        transform
+                            .transform_vector(vec2(circle.radius, 0.0))
+                            .length(),
+                        &options,
+                        &mut BuffersBuilder::new(
+                            &mut self.geometry,
+                            VertexCtor {
+                                z_index: fill.z_index,
+                                pattern: fill.pattern.data,
+                            },
+                        ),
                     )
-                ).unwrap();
+                    .unwrap();
             }
             Shape::Mesh(mesh) => {
                 let vtx_offset = self.geometry.vertices.len() as u32;
@@ -346,10 +416,30 @@ impl MeshRenderer {
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                self.geometry.vertices.push(Vertex { x: a.x, y: a.y, z_index, pattern });
-                self.geometry.vertices.push(Vertex { x: b.x, y: b.y, z_index, pattern });
-                self.geometry.vertices.push(Vertex { x: c.x, y: c.y, z_index, pattern });
-                self.geometry.vertices.push(Vertex { x: d.x, y: d.y, z_index, pattern });
+                self.geometry.vertices.push(Vertex {
+                    x: a.x,
+                    y: a.y,
+                    z_index,
+                    pattern,
+                });
+                self.geometry.vertices.push(Vertex {
+                    x: b.x,
+                    y: b.y,
+                    z_index,
+                    pattern,
+                });
+                self.geometry.vertices.push(Vertex {
+                    x: c.x,
+                    y: c.y,
+                    z_index,
+                    pattern,
+                });
+                self.geometry.vertices.push(Vertex {
+                    x: d.x,
+                    y: d.y,
+                    z_index,
+                    pattern,
+                });
                 self.geometry.indices.push(vtx_offset);
                 self.geometry.indices.push(vtx_offset + 1);
                 self.geometry.indices.push(vtx_offset + 2);
@@ -359,34 +449,40 @@ impl MeshRenderer {
             }
             Shape::StrokePath(path, width) => {
                 let transform = transform.to_untyped();
-                let options = StrokeOptions::tolerance(self.tolerenace)
-                    .with_line_width(*width);
+                let options = StrokeOptions::tolerance(self.tolerenace).with_line_width(*width);
 
                 // TODO: some way to simplify/discard offscreen geometry, would probably be best
                 // done in the tessellator itself.
-                StrokeTessellator::new().tessellate(
-                    path.iter().transformed(&transform),
-                    &options,
-                    &mut BuffersBuilder::new(
-                        &mut self.geometry,
-                        VertexCtor {
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
-                        },
+                StrokeTessellator::new()
+                    .tessellate(
+                        path.iter().transformed(&transform),
+                        &options,
+                        &mut BuffersBuilder::new(
+                            &mut self.geometry,
+                            VertexCtor {
+                                z_index: fill.z_index,
+                                pattern: fill.pattern.data,
+                            },
+                        ),
                     )
-                ).unwrap();
+                    .unwrap();
             }
         }
     }
 
-    pub fn upload(&mut self,
+    pub fn upload(
+        &mut self,
         resources: &mut GpuResources,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
         let res = &mut resources[self.common_resources];
-        self.vbo_range = res.vertices.upload(device, bytemuck::cast_slice(&self.geometry.vertices));
-        self.ibo_range = res.indices.upload(device, bytemuck::cast_slice(&self.geometry.indices));
+        self.vbo_range = res
+            .vertices
+            .upload(device, bytemuck::cast_slice(&self.geometry.vertices));
+        self.ibo_range = res
+            .indices
+            .upload(device, bytemuck::cast_slice(&self.geometry.indices));
     }
 }
 
@@ -400,9 +496,23 @@ impl CanvasRenderer for MeshRenderer {
     ) {
         let common_resources = &ctx.resources[self.common_resources];
 
-        render_pass.set_bind_group(0, &common_resources.main_target_and_gpu_store_bind_group, &[]);
-        render_pass.set_index_buffer(common_resources.indices.get_buffer_slice(self.ibo_range.as_ref().unwrap()), wgpu::IndexFormat::Uint32);
-        render_pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(self.vbo_range.as_ref().unwrap()));
+        render_pass.set_bind_group(
+            0,
+            &common_resources.main_target_and_gpu_store_bind_group,
+            &[],
+        );
+        render_pass.set_index_buffer(
+            common_resources
+                .indices
+                .get_buffer_slice(self.ibo_range.as_ref().unwrap()),
+            wgpu::IndexFormat::Uint32,
+        );
+        render_pass.set_vertex_buffer(
+            0,
+            common_resources
+                .vertices
+                .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
+        );
 
         let mut helper = DrawHelper::new();
 
@@ -419,4 +529,3 @@ impl CanvasRenderer for MeshRenderer {
         }
     }
 }
-

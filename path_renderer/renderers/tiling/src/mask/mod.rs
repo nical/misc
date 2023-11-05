@@ -55,14 +55,18 @@ impl MaskEncoder {
         }
 
         if self.pre_passes.len() <= self.current_atlas as usize {
-            self.pre_passes.resize(self.current_atlas as usize + 1, 0..0);
+            self.pre_passes
+                .resize(self.current_atlas as usize + 1, 0..0);
         }
         self.pre_passes[self.current_atlas as usize] = self.masks_start..self.masks_end;
         self.masks_start = self.masks_end;
         self.current_atlas += 1;
     }
 
-    pub fn prerender_mask<T>(&mut self, atlas_index: AtlasIndex, mask: T) where T: bytemuck::Pod {
+    pub fn prerender_mask<T>(&mut self, atlas_index: AtlasIndex, mask: T)
+    where
+        T: bytemuck::Pod,
+    {
         if atlas_index != self.current_atlas {
             self.end_atlas_pre_pass();
             self.current_atlas = atlas_index;
@@ -81,7 +85,10 @@ impl MaskEncoder {
         self.pre_passes.len() > idx && !self.pre_passes[idx].is_empty()
     }
 
-    pub fn buffer_and_instance_ranges(&self, atlas_index: AtlasIndex) -> Option<(&DynBufferRange, Range<u32>)> {
+    pub fn buffer_and_instance_ranges(
+        &self,
+        atlas_index: AtlasIndex,
+    ) -> Option<(&DynBufferRange, Range<u32>)> {
         if !self.has_content(atlas_index) {
             return None;
         }

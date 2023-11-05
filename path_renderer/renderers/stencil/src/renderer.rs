@@ -2,28 +2,37 @@ use std::ops::Range;
 
 use lyon::{
     geom::{arrayvec::ArrayVec, CubicBezierSegment, QuadraticBezierSegment},
-    lyon_tessellation::{VertexBuffers, FillOptions, FillVertexConstructor, FillTessellator, BuffersBuilder},
+    lyon_tessellation::{
+        BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers,
+    },
     path::{traits::PathIterator, PathEvent, PathSlice},
 };
 
 use super::StencilAndCoverResources;
-use core::{bytemuck, shape::{PathShape, Circle}, batching::SurfaceIndex, gpu::shader::{PrepareRenderPipelines, GeneratedPipelineId, RenderPipelineKey, RenderPipelines, RenderPipelineIndex}, canvas::RenderContext};
 use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::wgpu;
 use core::{
+    batching::SurfaceIndex,
+    bytemuck,
+    canvas::RenderContext,
+    gpu::shader::{
+        GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+    },
+    shape::{Circle, PathShape},
+};
+use core::{
     batching::{BatchFlags, BatchList},
     canvas::{
-        Context, CanvasRenderer, DrawHelper, RenderPassState, RendererId, SubPass,
-        SurfaceFeatures, ZIndex,
+        CanvasRenderer, Context, DrawHelper, RenderPassState, RendererId, SubPass, SurfaceFeatures,
+        ZIndex,
     },
     gpu::{
         shader::{DepthMode, ShaderPatternId, StencilMode, SurfaceConfig},
-        DynBufferRange, Shaders,
+        DynBufferRange,
     },
     pattern::{BindingsId, BuiltPattern},
     transform::TransformId,
     units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect},
-    BindingResolver,
 };
 
 #[repr(C)]
@@ -52,13 +61,19 @@ pub struct CoverVertex {
 }
 
 struct VertexCtor {
-    pattern: u32, z_index: u32,
+    pattern: u32,
+    z_index: u32,
 }
 
 impl FillVertexConstructor<CoverVertex> for VertexCtor {
     fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> CoverVertex {
         let (x, y) = vertex.position().to_tuple();
-        CoverVertex { x, y, z_index: self.z_index, pattern: self.pattern }
+        CoverVertex {
+            x,
+            y,
+            z_index: self.z_index,
+            pattern: self.pattern,
+        }
     }
 }
 
@@ -190,7 +205,12 @@ impl StencilAndCoverRenderer {
         self.stats = Stats::default();
     }
 
-    pub fn fill_path<P: Into<PathShape>>(&mut self, canvas: &mut Context, path: P, pattern: BuiltPattern) {
+    pub fn fill_path<P: Into<PathShape>>(
+        &mut self,
+        canvas: &mut Context,
+        path: P,
+        pattern: BuiltPattern,
+    ) {
         self.fill_shape(canvas, Shape::Path(path.into()), pattern);
     }
 
@@ -250,7 +270,14 @@ impl StencilAndCoverRenderer {
 
             for (fill_idx, fill) in commands.iter().enumerate() {
                 let is_last = fill_idx == commands.len() - 1;
-                self.prepare_fill(canvas, fill, &mut batching, is_last, batch_id.surface, shaders);
+                self.prepare_fill(
+                    canvas,
+                    fill,
+                    &mut batching,
+                    is_last,
+                    batch_id.surface,
+                    shaders,
+                );
             }
 
             let draws_end = self.draws.len();
@@ -273,7 +300,7 @@ impl StencilAndCoverRenderer {
         let opaque = fill.pattern.is_opaque;
 
         let local_aabb = fill.shape.aabb();
-        let stencil_mode: StencilMode =  match &fill.shape {
+        let stencil_mode: StencilMode = match &fill.shape {
             Shape::Path(shape) => shape.fill_rule.into(),
             Shape::Rect(_) => StencilMode::Ignore,
             Shape::Circle(_) => StencilMode::Ignore,
@@ -331,7 +358,8 @@ impl StencilAndCoverRenderer {
             } else {
                 self.alpha_cover_pipeline
             };
-            let pipeline_idx = shaders.prepare(RenderPipelineKey::new(base_pipeline, pattern, surface));
+            let pipeline_idx =
+                shaders.prepare(RenderPipelineKey::new(base_pipeline, pattern, surface));
             self.draws.push(Draw::Cover {
                 indices: batch.cover_idx_start..cover_idx_end,
                 pattern_inputs,
@@ -363,18 +391,20 @@ impl StencilAndCoverRenderer {
                     if (t.scale.x - t.scale.y).abs() > 0.001 {
                         todo!();
                     }
-                    FillTessellator::new().tessellate_circle(
-                        t.transform_point(circle.center).cast_unit(),
-                        circle.radius * t.scale.x,
-                        &FillOptions::tolerance(canvas.params.tolerance),
-                        &mut BuffersBuilder::new(
-                            &mut self.cover_geometry,
-                            VertexCtor {
-                                z_index: fill.z_index,
-                                pattern: fill.pattern.data,
-                            },
+                    FillTessellator::new()
+                        .tessellate_circle(
+                            t.transform_point(circle.center).cast_unit(),
+                            circle.radius * t.scale.x,
+                            &FillOptions::tolerance(canvas.params.tolerance),
+                            &mut BuffersBuilder::new(
+                                &mut self.cover_geometry,
+                                VertexCtor {
+                                    z_index: fill.z_index,
+                                    pattern: fill.pattern.data,
+                                },
+                            ),
                         )
-                    ).unwrap();
+                        .unwrap();
                 }
             }
             _ => {
@@ -412,7 +442,11 @@ impl StencilAndCoverRenderer {
                 } else {
                     self.alpha_cover_pipeline
                 };
-                let pipeline_idx = shaders.prepare(RenderPipelineKey::new(base_pipeline, fill.pattern.shader, surface));
+                let pipeline_idx = shaders.prepare(RenderPipelineKey::new(
+                    base_pipeline,
+                    fill.pattern.shader,
+                    surface,
+                ));
 
                 self.draws.push(Draw::Cover {
                     indices: batch.cover_idx_start..cover_idx_end,
@@ -424,11 +458,7 @@ impl StencilAndCoverRenderer {
         }
     }
 
-    pub fn upload(
-        &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
-    ) {
+    pub fn upload(&mut self, resources: &mut GpuResources, device: &wgpu::Device) {
         let res = &mut resources[self.common_resources];
         self.vbo_range = res.vertices.upload(
             device,
@@ -585,10 +615,30 @@ fn generate_cover_geometry(
     let z_index = fill.z_index;
     let pattern = fill.pattern.data;
     let offset = geometry.vertices.len() as u32;
-    geometry.vertices.push(CoverVertex { x: a.x, y: a.y, z_index, pattern });
-    geometry.vertices.push(CoverVertex { x: b.x, y: b.y, z_index, pattern });
-    geometry.vertices.push(CoverVertex { x: c.x, y: c.y, z_index, pattern });
-    geometry.vertices.push(CoverVertex { x: d.x, y: d.y, z_index, pattern });
+    geometry.vertices.push(CoverVertex {
+        x: a.x,
+        y: a.y,
+        z_index,
+        pattern,
+    });
+    geometry.vertices.push(CoverVertex {
+        x: b.x,
+        y: b.y,
+        z_index,
+        pattern,
+    });
+    geometry.vertices.push(CoverVertex {
+        x: c.x,
+        y: c.y,
+        z_index,
+        pattern,
+    });
+    geometry.vertices.push(CoverVertex {
+        x: d.x,
+        y: d.y,
+        z_index,
+        pattern,
+    });
     geometry.indices.push(offset);
     geometry.indices.push(offset + 1);
     geometry.indices.push(offset + 2);

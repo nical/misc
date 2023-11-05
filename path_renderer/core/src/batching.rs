@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use bitflags::bitflags;
+use std::collections::VecDeque;
 
 pub type Rect = crate::units::SurfaceRect;
 
@@ -25,7 +25,6 @@ bitflags! {
         const NO_OVERLAP = 4;
     }
 }
-
 
 struct Batch {
     renderer: RendererId,
@@ -74,7 +73,6 @@ impl BatchRects {
     }
 }
 
-
 pub struct OrderedBatcher {
     lookback: VecDeque<Batch>,
     batches: Vec<BatchId>,
@@ -89,7 +87,6 @@ impl OrderedBatcher {
         rect: &Rect,
         flags: BatchFlags,
     ) -> Option<BatchIndex> {
-        
         let selected = if flags.contains(BatchFlags::NO_OVERLAP) {
             self.find_no_overlap(renderer, key, rect, flags)
         } else {
@@ -209,7 +206,6 @@ impl OrderedBatcher {
     pub fn finish(&mut self) {}
 }
 
-
 struct OrderIndependentBatch {
     renderer: RendererId,
     index: BatchIndex,
@@ -260,7 +256,11 @@ impl OrderIndependentBatcher {
             key: *key,
             rect: *rect,
         });
-        self.batches.push(BatchId { renderer, index, surface: self.pass_idx });
+        self.batches.push(BatchId {
+            renderer,
+            index,
+            surface: self.pass_idx,
+        });
     }
 
     pub fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
@@ -309,16 +309,13 @@ impl OrderIndependentBatcher {
         rect: &Rect,
     ) -> Option<BatchIndex> {
         for batch in self.candidates.iter_mut().rev() {
-            if batch.renderer == renderer
-            && *key == batch.key
-            && !batch.rect.intersects(rect) {
+            if batch.renderer == renderer && *key == batch.key && !batch.rect.intersects(rect) {
                 return Some(batch.index);
             }
         }
 
         return None;
     }
-
 }
 
 pub struct Batcher {
@@ -336,9 +333,11 @@ impl Batcher {
         flags: BatchFlags,
     ) -> Option<BatchIndex> {
         if flags.contains(BatchFlags::ORDER_INDEPENDENT) {
-            self.order_independent.find_compatible_batch(renderer, key, rect, flags)
+            self.order_independent
+                .find_compatible_batch(renderer, key, rect, flags)
         } else {
-            self.ordered.find_compatible_batch(renderer, key, rect, flags)
+            self.ordered
+                .find_compatible_batch(renderer, key, rect, flags)
         }
     }
 
@@ -351,7 +350,8 @@ impl Batcher {
         flags: BatchFlags,
     ) {
         if flags.contains(BatchFlags::ORDER_INDEPENDENT) {
-            self.order_independent.add_batch(renderer, index, key, rect, flags);
+            self.order_independent
+                .add_batch(renderer, index, key, rect, flags);
         } else {
             self.ordered.add_batch(renderer, index, key, rect, flags);
         }
@@ -407,14 +407,14 @@ impl Batcher {
 
     fn flush_batches(&mut self) {
         self.order_independent.batches.reverse();
-        self.batches.extend_from_slice(&self.order_independent.batches);
+        self.batches
+            .extend_from_slice(&self.order_independent.batches);
         self.order_independent.batches.clear();
 
         self.batches.extend_from_slice(&self.ordered.batches);
         self.ordered.batches.clear();
     }
 }
-
 
 /// A helper class for storing batches in a renderer.
 pub struct BatchList<T, I> {
@@ -427,7 +427,7 @@ impl<T, I> BatchList<T, I> {
     pub fn new(renderer: RendererId) -> Self {
         BatchList {
             batches: Vec::new(),
-            renderer
+            renderer,
         }
     }
 
@@ -437,23 +437,18 @@ impl<T, I> BatchList<T, I> {
         batch_key: &BatchKey,
         aabb: &Rect,
         flags: BatchFlags,
-        or_add: &mut impl FnMut() -> I, 
+        or_add: &mut impl FnMut() -> I,
     ) -> (&mut Vec<T>, &mut I) {
         let new_batch_index = self.batches.len() as u32;
-        let batch_index = batcher.find_or_add_batch(
-            self.renderer,
-            new_batch_index,
-            batch_key,
-            aabb,
-            flags,
-        );
+        let batch_index =
+            batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
 
         if batch_index == new_batch_index {
             self.batches.push((Vec::with_capacity(32), or_add()));
         }
 
         let b = &mut self.batches[batch_index as usize];
-        return (&mut b.0, &mut b.1)
+        return (&mut b.0, &mut b.1);
     }
 
     pub fn get(&self, index: BatchIndex) -> (&[T], &I) {
@@ -474,15 +469,22 @@ impl<T, I> BatchList<T, I> {
         self.batches.iter_mut().map(|b| (&mut b.0, &mut b.1))
     }
 
-    pub fn is_empty(&self) -> bool { self.batches.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty()
+    }
 
-    pub fn batch_count(&self) -> usize { self.batches.len() }
+    pub fn batch_count(&self) -> usize {
+        self.batches.len()
+    }
 
     pub fn clear(&mut self) {
         self.batches.clear();
     }
 
     pub fn take(&mut self) -> Self {
-        BatchList { batches: std::mem::take(&mut self.batches), renderer: self.renderer }
+        BatchList {
+            batches: std::mem::take(&mut self.batches),
+            renderer: self.renderer,
+        }
     }
 }

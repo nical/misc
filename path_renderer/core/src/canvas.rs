@@ -1,15 +1,14 @@
 // TODO: this module lumps together a bunch of structural concepts some of which
 // are poorly named and/or belong elsewhere.
 
+use crate::batching::{BatchId, Batcher, SurfaceIndex};
+use crate::gpu::shader::{DepthMode, OutputType, RenderPipelines, StencilMode, SurfaceConfig};
 use crate::path::FillRule;
-use crate::batching::{Batcher, BatchId, SurfaceIndex};
-use crate::gpu::shader::{OutputType, SurfaceConfig, DepthMode, StencilMode, RenderPipelines};
-use crate::gpu::Shaders;
-use crate::resources::{GpuResources, CommonGpuResources, ResourcesHandle, AsAny};
+use crate::pattern::BindingsId;
+use crate::resources::{AsAny, CommonGpuResources, GpuResources, ResourcesHandle};
 use crate::transform::Transforms;
 use crate::units::SurfaceIntSize;
-use crate::{Color, u32_range, usize_range, BindingResolver};
-use crate::pattern::BindingsId;
+use crate::{u32_range, usize_range, BindingResolver, Color};
 use std::ops::Range;
 
 pub type ZIndex = u32;
@@ -34,14 +33,13 @@ impl ZIndices {
         let first = self.next;
         self.next += count as ZIndex;
 
-        first .. self.next
+        first..self.next
     }
 
     pub fn clear(&mut self) {
         self.next = 0;
     }
 }
-
 
 impl Default for ZIndices {
     fn default() -> Self {
@@ -139,8 +137,8 @@ impl RenderPasses {
 
         for (idx, pass) in self.sub_passes.iter().enumerate() {
             let req_bit: u64 = 1 << pass.renderer_id;
-            let flush_pass = pass.surface != current
-                || (pass.require_pre_pass && renderer_bits & req_bit != 0);
+            let flush_pass =
+                pass.surface != current || (pass.require_pre_pass && renderer_bits & req_bit != 0);
             //println!(" - sub pass msaa:{}, changed:{msaa_changed}", pass.use_msaa);
             if flush_pass {
                 // When transitioning from msaa to non-msaa targets, resolve the msaa
@@ -166,7 +164,7 @@ impl RenderPasses {
                 if msaa_blit && disable_msaa_blit_from_main_target {
                     for pass in self.passes.iter_mut().rev() {
                         if pass.surface.msaa {
-                            break
+                            break;
                         }
                         pass.temporary = true;
                     }
@@ -207,16 +205,14 @@ impl RenderPasses {
     }
 
     fn iter(&self) -> impl Iterator<Item = RenderPassSlice> {
-        self.passes.iter().map(|pass|
-            RenderPassSlice {
-                pre_passes: &self.pre_passes[usize_range(pass.pre_passes.clone())],
-                sub_passes: &self.sub_passes[usize_range(pass.sub_passes.clone())],
-                surface: pass.surface,
-                msaa_resolve: pass.msaa_resolve,
-                msaa_blit: pass.msaa_blit,
-                temporary: pass.temporary,
-            }
-        )
+        self.passes.iter().map(|pass| RenderPassSlice {
+            pre_passes: &self.pre_passes[usize_range(pass.pre_passes.clone())],
+            sub_passes: &self.sub_passes[usize_range(pass.sub_passes.clone())],
+            surface: pass.surface,
+            msaa_resolve: pass.msaa_resolve,
+            msaa_blit: pass.msaa_blit,
+            temporary: pass.temporary,
+        })
     }
 }
 
@@ -239,15 +235,27 @@ pub struct SurfaceFeatures {
 
 impl Default for SurfaceFeatures {
     fn default() -> Self {
-        SurfaceFeatures { depth: false, msaa: false, stencil: false }
+        SurfaceFeatures {
+            depth: false,
+            msaa: false,
+            stencil: false,
+        }
     }
 }
 
 impl SurfaceFeatures {
-    pub fn msaa(&self) -> bool { self.msaa }
-    pub fn depth(&self) -> bool { self.depth }
-    pub fn stencil(&self) -> bool { self.stencil }
-    pub fn depth_or_stencil(&self) -> bool { self.depth || self.stencil }
+    pub fn msaa(&self) -> bool {
+        self.msaa
+    }
+    pub fn depth(&self) -> bool {
+        self.depth
+    }
+    pub fn stencil(&self) -> bool {
+        self.stencil
+    }
+    pub fn depth_or_stencil(&self) -> bool {
+        self.depth || self.stencil
+    }
     pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
         SurfaceConfig {
             msaa: self.msaa,
@@ -261,7 +269,9 @@ impl SurfaceFeatures {
                 (None, true) => StencilMode::Ignore,
                 (Some(FillRule::EvenOdd), true) => StencilMode::EvenOdd,
                 (Some(FillRule::NonZero), true) => StencilMode::NonZero,
-                (Some(_), false) => panic!("Attempting to use the stencil buffer on a surface that does not have one"),
+                (Some(_), false) => panic!(
+                    "Attempting to use the stencil buffer on a surface that does not have one"
+                ),
             },
         }
     }
@@ -367,12 +377,16 @@ impl Context {
         if self.surface.state == state {
             return;
         }
-        self.batcher.set_render_pass(self.surface.states.len() as u16);
+        self.batcher
+            .set_render_pass(self.surface.states.len() as u16);
         self.surface.states.push(state);
         self.surface.state = state;
     }
 
-    pub fn build_render_passes(&mut self, renderers: &mut[&mut dyn CanvasRenderer]) -> RenderPassesRequirements {
+    pub fn build_render_passes(
+        &mut self,
+        renderers: &mut [&mut dyn CanvasRenderer],
+    ) -> RenderPassesRequirements {
         for batch in self.batcher.batches() {
             renderers[batch.renderer as usize].add_render_passes(*batch, &mut self.render_passes)
         }
@@ -385,7 +399,6 @@ impl Context {
         renderers: &[&dyn CanvasRenderer],
         resources: &GpuResources,
         bindings: &dyn BindingResolver,
-        shaders: &mut Shaders,
         render_pipelines: &RenderPipelines,
         _device: &wgpu::Device,
         common_resources: ResourcesHandle<CommonGpuResources>,
@@ -394,7 +407,10 @@ impl Context {
     ) {
         let mut need_clear = self.surface.clear.is_some();
         #[cfg(debug_assertions)]
-        if self.surface.clear.is_none() && self.surface.write_only_target && !self.render_passes.is_empty() {
+        if self.surface.clear.is_none()
+            && self.surface.write_only_target
+            && !self.render_passes.is_empty()
+        {
             let first = self.render_passes.iter().next().unwrap();
             if first.surface.msaa || first.temporary {
                 println!("Can't load content if the first pass is a temporary or msaa target");
@@ -403,7 +419,15 @@ impl Context {
 
         for pass in self.render_passes.iter() {
             for pre_pass in pass.pre_passes {
-                renderers[pre_pass.renderer_id as usize].render_pre_pass(pre_pass.internal_index, shaders, render_pipelines, resources, bindings, encoder);
+                renderers[pre_pass.renderer_id as usize].render_pre_pass(
+                    pre_pass.internal_index,
+                    RenderContext {
+                        render_pipelines,
+                        resources,
+                        bindings,
+                    },
+                    encoder,
+                );
             }
 
             let (view, label) = if pass.surface.msaa {
@@ -433,12 +457,19 @@ impl Context {
             let ops = wgpu::Operations {
                 load: if clear {
                     wgpu::LoadOp::Clear(
-                        self.surface.clear.map(Color::to_wgpu).unwrap_or(wgpu::Color::BLACK)
+                        self.surface
+                            .clear
+                            .map(Color::to_wgpu)
+                            .unwrap_or(wgpu::Color::BLACK),
                     )
                 } else {
                     wgpu::LoadOp::Load
                 },
-                store: if pass.msaa_resolve { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store }
+                store: if pass.msaa_resolve {
+                    wgpu::StoreOp::Discard
+                } else {
+                    wgpu::StoreOp::Store
+                },
             };
 
             //println!("{label}: {pass:#?}");
@@ -447,7 +478,11 @@ impl Context {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
-                    resolve_target: if pass.msaa_resolve { Some(&target.main) } else { None },
+                    resolve_target: if pass.msaa_resolve {
+                        Some(&target.main)
+                    } else {
+                        None
+                    },
                     ops,
                 })],
                 depth_stencil_attachment: if pass.surface.depth_or_stencil() {
@@ -456,7 +491,8 @@ impl Context {
                             target.msaa_depth
                         } else {
                             target.depth
-                        }.unwrap(),
+                        }
+                        .unwrap(),
                         depth_ops: if pass.surface.depth {
                             Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(0.0),
@@ -525,7 +561,7 @@ impl Context {
                         bindings,
                         resources,
                     },
-                &mut render_pass,
+                    &mut render_pass,
                 );
             }
         }
@@ -551,12 +587,10 @@ pub trait CanvasRenderer: AsAny {
     fn render_pre_pass(
         &self,
         _index: u32,
-        _shaders: &Shaders,
-        _render_pipelines: &RenderPipelines,
-        _renderers: &GpuResources,
-        _bindings: &dyn BindingResolver,
+        _ctx: RenderContext,
         _encoder: &mut wgpu::CommandEncoder,
-    ) {}
+    ) {
+    }
 
     fn render<'pass, 'resources: 'pass>(
         &self,
@@ -564,7 +598,8 @@ pub trait CanvasRenderer: AsAny {
         _pass_info: &RenderPassState,
         _ctx: RenderContext<'resources>,
         _render_pass: &mut wgpu::RenderPass<'pass>,
-    ) {}
+    ) {
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -598,7 +633,12 @@ pub struct DrawHelper {
 impl DrawHelper {
     pub fn new() -> Self {
         DrawHelper {
-            current_bindings: [BindingsId::NONE, BindingsId::NONE, BindingsId::NONE, BindingsId::NONE],
+            current_bindings: [
+                BindingsId::NONE,
+                BindingsId::NONE,
+                BindingsId::NONE,
+                BindingsId::NONE,
+            ],
         }
     }
 

@@ -6,8 +6,7 @@ use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Varying};
 use core::gpu::{GpuStore, Shaders};
 use core::Color;
 
-use core::pattern::{BuiltPattern};
-
+use core::pattern::BuiltPattern;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Checkerboard {
@@ -33,7 +32,6 @@ impl Checkerboard {
     }
 }
 
-
 impl CheckerboardRenderer {
     pub fn register(shaders: &mut Shaders) -> Self {
         let shader = shaders.register_pattern(PatternDescriptor {
@@ -55,12 +53,19 @@ impl CheckerboardRenderer {
         let color0 = pattern.color0.to_f32();
         let color1 = pattern.color1.to_f32();
         let handle = gpu_store.push(&[
-            color0[0], color0[1], color0[2], color0[3],
-            color1[0], color1[1], color1[2], color1[3],
-            pattern.offset.x, pattern.offset.y,
+            color0[0],
+            color0[1],
+            color0[2],
+            color0[3],
+            color1[0],
+            color1[1],
+            color1[2],
+            color1[3],
+            pattern.offset.x,
+            pattern.offset.y,
             pattern.scale,
         ]);
-    
+
         BuiltPattern::new(self.shader, handle.to_u32())
             .with_opacity(is_opaque)
             .prerender_by_default()

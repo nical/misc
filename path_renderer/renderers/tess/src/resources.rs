@@ -1,8 +1,11 @@
-use core::{
-    gpu::shader::{Shaders, ShaderGeometryId, GeometryDescriptor, VertexAtribute, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, ShaderMaskId},
-    resources::{RendererResources}
-};
 use core::wgpu;
+use core::{
+    gpu::shader::{
+        BlendMode, GeneratedPipelineId, GeometryDescriptor, OutputType, PipelineDescriptor,
+        ShaderGeometryId, ShaderMaskId, Shaders, VertexAtribute,
+    },
+    resources::RendererResources,
+};
 
 pub struct MeshGpuResources {
     pub simple_mesh_geometry: ShaderGeometryId,
@@ -11,10 +14,7 @@ pub struct MeshGpuResources {
 }
 
 impl MeshGpuResources {
-    pub fn new(
-        _device: &wgpu::Device,
-        shaders: &mut Shaders,
-    ) -> Self {
+    pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
         let simple_mesh_geometry = shaders.register_geometry(GeometryDescriptor {
             name: "geometry::simple_mesh".into(),
             source: SIMPLE_MESH_SRC.into(),
@@ -56,16 +56,15 @@ impl MeshGpuResources {
 }
 
 impl RendererResources for MeshGpuResources {
-    fn name(&self) -> &'static str { "MeshGpuResources" }
-
-    fn begin_frame(&mut self) {
+    fn name(&self) -> &'static str {
+        "MeshGpuResources"
     }
 
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {
-    }
+    fn begin_frame(&mut self) {}
 
-    fn end_frame(&mut self) {
-    }
+    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
+
+    fn end_frame(&mut self) {}
 }
 
 const SIMPLE_MESH_SRC: &'static str = "

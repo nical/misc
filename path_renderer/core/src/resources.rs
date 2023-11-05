@@ -1,8 +1,8 @@
-use wgpu::util::DeviceExt;
-use crate::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId};
+use crate::gpu::shader::{BindGroupLayout, BindGroupLayoutId, Binding};
 use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
 use crate::units::SurfaceIntSize;
 use std::{any::Any, marker::PhantomData};
+use wgpu::util::DeviceExt;
 
 pub trait RendererResources: AsAny {
     fn name(&self) -> &'static str;
@@ -17,8 +17,12 @@ pub trait AsAny {
 }
 
 impl<T: 'static> AsAny for T {
-    fn as_any(&self) -> &dyn Any { self as _ }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self as _ }
+    fn as_any(&self) -> &dyn Any {
+        self as _
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self as _
+    }
 }
 
 pub struct ResourcesHandle<T> {
@@ -28,15 +32,22 @@ pub struct ResourcesHandle<T> {
 
 impl<T> ResourcesHandle<T> {
     pub fn new(index: u8) -> Self {
-        ResourcesHandle { index, _marker: PhantomData }
+        ResourcesHandle {
+            index,
+            _marker: PhantomData,
+        }
     }
 
-    pub fn index(&self) -> usize { self.index as usize }
+    pub fn index(&self) -> usize {
+        self.index as usize
+    }
 }
 
 impl<T> Copy for ResourcesHandle<T> {}
 impl<T> Clone for ResourcesHandle<T> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 pub struct GpuResources {
@@ -52,7 +63,7 @@ impl GpuResources {
         }
     }
 
-    pub fn register<T: RendererResources+'static>(&mut self, system: T) -> ResourcesHandle<T> {
+    pub fn register<T: RendererResources + 'static>(&mut self, system: T) -> ResourcesHandle<T> {
         let handle = ResourcesHandle::new(self.next_handle);
         self.next_handle += 1;
 
@@ -65,7 +76,10 @@ impl GpuResources {
         let result: Option<&T> = (*self.systems[handle.index()]).as_any().downcast_ref();
         #[cfg(debug_assertions)]
         if result.is_none() {
-            panic!("Invalid type, got {:?}", self.systems[handle.index()].name());
+            panic!(
+                "Invalid type, got {:?}",
+                self.systems[handle.index()].name()
+            );
         }
         result.unwrap()
     }
@@ -114,7 +128,6 @@ impl<T: 'static> std::ops::IndexMut<ResourcesHandle<T>> for GpuResources {
     }
 }
 
-
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
@@ -140,44 +153,49 @@ impl CommonGpuResources {
         gpu_store: &GpuStore,
         shaders: &mut crate::gpu::Shaders,
     ) -> Self {
-
         let atlas_desc_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
-        let target_and_gpu_store_layout = BindGroupLayout::new(device, "target and gpu store".into(), vec![
-            Binding {
-                name: "render_target".into(),
-                struct_type: "RenderTarget".into(),
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
-                }
-            },
-            Binding {
-                name: "gpu_store_texture".into(),
-                struct_type: "f32".into(),
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    multisampled: false,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                }
-            },
-            Binding {
-                name: "default_sampler".into(),
-                struct_type: String::new(),
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-            },
-    ]);
+        let target_and_gpu_store_layout = BindGroupLayout::new(
+            device,
+            "target and gpu store".into(),
+            vec![
+                Binding {
+                    name: "render_target".into(),
+                    struct_type: "RenderTarget".into(),
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(atlas_desc_buffer_size),
+                    },
+                },
+                Binding {
+                    name: "gpu_store_texture".into(),
+                    struct_type: "f32".into(),
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                },
+                Binding {
+                    name: "default_sampler".into(),
+                    struct_type: String::new(),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                },
+            ],
+        );
 
-        let main_target_descriptor_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Target info"),
-            contents: bytemuck::cast_slice(&[
-                GpuTargetDescriptor::new(target_size.width as u32, target_size.height as u32)
-            ]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let main_target_descriptor_ubo =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Target info"),
+                contents: bytemuck::cast_slice(&[GpuTargetDescriptor::new(
+                    target_size.width as u32,
+                    target_size.height as u32,
+                )]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
         let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -203,53 +221,55 @@ impl CommonGpuResources {
             border_color: None,
         });
 
-        let main_target_and_gpu_store_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Main target & gpu store"),
-            layout: &target_and_gpu_store_layout.handle,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(main_target_descriptor_ubo.as_entire_buffer_binding())
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gpu_store_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&default_sampler),
-                }
-            ],
-        });
+        let main_target_and_gpu_store_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Main target & gpu store"),
+                layout: &target_and_gpu_store_layout.handle,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(
+                            main_target_descriptor_ubo.as_entire_buffer_binding(),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&gpu_store_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&default_sampler),
+                    },
+                ],
+            });
 
         let vertices = DynamicStore::new_vertices(4096 * 32);
         let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
 
-        let msaa_blit_src_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Msaa blit source"),
-            entries: &[
-                // target descriptor
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let msaa_blit_src_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Msaa blit source"),
+                entries: &[
+                    // target descriptor
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
 
         let src = include_str!("./../shaders/msaa_blit.wgsl");
         let color_module = shaders.create_shader_module(device, "msaa-blit", src, &[]);
 
         let msaa_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("color-to-msaa"),
-            bind_group_layouts: &[
-                &msaa_blit_src_bind_group_layout,
-            ],
+            bind_group_layouts: &[&msaa_blit_src_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -272,7 +292,7 @@ impl CommonGpuResources {
             multiview: None,
             multisample: wgpu::MultisampleState {
                 count: shaders.defaults.msaa_sample_count(),
-                .. wgpu::MultisampleState::default()
+                ..wgpu::MultisampleState::default()
             },
         };
 
@@ -288,7 +308,8 @@ impl CommonGpuResources {
 
         let msaa_blit_depth_stencil = device.create_render_pipeline(&descriptor);
 
-        let target_and_gpu_store_layout = shaders.register_bind_group_layout(target_and_gpu_store_layout);
+        let target_and_gpu_store_layout =
+            shaders.register_bind_group_layout(target_and_gpu_store_layout);
 
         shaders.set_base_bindings(target_and_gpu_store_layout);
 
@@ -312,16 +333,20 @@ impl CommonGpuResources {
         queue.write_buffer(
             &self.main_target_descriptor_ubo,
             0,
-            bytemuck::cast_slice(&[GpuTargetDescriptor::new(size.width as u32, size.height as u32)]),
+            bytemuck::cast_slice(&[GpuTargetDescriptor::new(
+                size.width as u32,
+                size.height as u32,
+            )]),
         );
     }
 }
 
 impl RendererResources for CommonGpuResources {
-    fn name(&self) -> &'static str { "CommonGpuResources" }
-
-    fn begin_frame(&mut self) {
+    fn name(&self) -> &'static str {
+        "CommonGpuResources"
     }
+
+    fn begin_frame(&mut self) {}
 
     fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.vertices.unmap(encoder);
@@ -332,6 +357,4 @@ impl RendererResources for CommonGpuResources {
         self.vertices.end_frame();
         self.indices.end_frame();
     }
-
 }
-

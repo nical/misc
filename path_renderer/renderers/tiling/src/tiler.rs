@@ -1,13 +1,15 @@
-use ordered_float::OrderedFloat;
-pub use lyon::path::{PathEvent, FillRule};
-pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
-pub use lyon::geom::euclid;
 pub use lyon::geom;
-use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment};
+pub use lyon::geom::euclid;
+pub use lyon::geom::euclid::default::{Box2D, Size2D, Transform2D};
+use lyon::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
+pub use lyon::path::{FillRule, PathEvent};
+use ordered_float::OrderedFloat;
 
-pub use core::units::{Point, point, Vector, vector};
+use crate::{
+    tile_visibility, FillOptions, Stats, TileMaskRow, TilePosition, TileVisibility, TILE_SIZE_F32,
+};
 use core::pattern::BuiltPattern;
-use crate::{TILE_SIZE_F32, FillOptions, TileMaskRow, TileVisibility, tile_visibility, TilePosition, Stats};
+pub use core::units::{point, vector, Point, Vector};
 
 use crate::encoder::*;
 use crate::occlusion::TileMask;
@@ -64,10 +66,7 @@ impl TilerConfig {
         let w = self.view_box.size().to_u32().width;
         let h = self.view_box.size().to_u32().height;
         let ts = crate::TILE_SIZE;
-        Size2D::new(
-            (w + ts - 1) / ts,
-            (h + ts - 1) / ts,
-        )
+        Size2D::new((w + ts - 1) / ts, (h + ts - 1) / ts)
     }
 }
 
@@ -132,8 +131,18 @@ impl Tiler {
     ) {
         profiling::scope!("tile_path");
 
-        assert!(tile_mask.width() >= self.num_tiles_x, "{} >= {}", tile_mask.width(), self.num_tiles_x);
-        assert!(tile_mask.height() >= self.num_tiles_y as u32, "{} >= {}", tile_mask.height(), self.num_tiles_y,);
+        assert!(
+            tile_mask.width() >= self.num_tiles_x,
+            "{} >= {}",
+            tile_mask.width(),
+            self.num_tiles_x
+        );
+        assert!(
+            tile_mask.height() >= self.num_tiles_y as u32,
+            "{} >= {}",
+            tile_mask.height(),
+            self.num_tiles_y,
+        );
 
         self.set_fill_rule(options.fill_rule, options.inverted);
         self.draw.tolerance = options.tolerance;
@@ -149,14 +158,16 @@ impl Tiler {
     }
 
     fn affected_rows(&self, y_min: f32, y_max: f32) -> (usize, usize) {
-        self.affected_range(
-            y_min, y_max,
-            self.scissor.min.y,
-            self.scissor.max.y,
-        )
+        self.affected_range(y_min, y_max, self.scissor.min.y, self.scissor.max.y)
     }
 
-    fn affected_range(&self, min: f32, max: f32, scissor_min: f32, scissor_max: f32) -> (usize, usize) {
+    fn affected_range(
+        &self,
+        min: f32,
+        max: f32,
+        scissor_min: f32,
+        scissor_max: f32,
+    ) -> (usize, usize) {
         let inv_tile_size = 1.0 / TILE_SIZE_F32;
         let first_row_y = (scissor_min * inv_tile_size).floor();
         let last_row_y = (scissor_max * inv_tile_size).ceil();
@@ -188,7 +199,13 @@ impl Tiler {
         }
     }
 
-    fn end_path(&mut self, encoder: &mut TileEncoder, tile_mask: &mut TileMask, pattern: &BuiltPattern, device: &wgpu::Device) {
+    fn end_path(
+        &mut self,
+        encoder: &mut TileEncoder,
+        tile_mask: &mut TileMask,
+        pattern: &BuiltPattern,
+        device: &wgpu::Device,
+    ) {
         if self.draw.inverted {
             self.first_row = 0;
             self.last_row = self.num_tiles_y as usize;
@@ -286,23 +303,32 @@ impl Tiler {
                             continue;
                         }
                     }
-                    flatten_quad(&segment, self.draw.tolerance, &mut|segment| {
-                    // segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
+                    flatten_quad(&segment, self.draw.tolerance, &mut |segment| {
+                        // segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
                         self.add_line_segment(segment);
                     });
                     from = to;
                 }
-                PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
-                    let segment = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(transform);
+                PathEvent::Cubic {
+                    ctrl1, ctrl2, to, ..
+                } => {
+                    let segment = CubicBezierSegment {
+                        from,
+                        ctrl1,
+                        ctrl2,
+                        to,
+                    }
+                    .transformed(transform);
                     if segment.baseline().to_vector().square_length() < square_tolerance {
                         let center = (segment.from + segment.to.to_vector()) * 0.5;
                         if (segment.ctrl1 - center).square_length() < square_tolerance
-                        && (segment.ctrl2 - center).square_length() < square_tolerance {
+                            && (segment.ctrl2 - center).square_length() < square_tolerance
+                        {
                             continue;
                         }
                     }
-                    flatten_cubic(&segment, self.draw.tolerance, &mut|segment| {
-                    //segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
+                    flatten_cubic(&segment, self.draw.tolerance, &mut |segment| {
+                        //segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
                         self.add_line_segment(segment);
                     });
                     from = to;
@@ -337,7 +363,7 @@ impl Tiler {
 
         if edge.from.y > self.scissor.max.y
             || edge.to.y < self.scissor.min.y
-            || edge.from.x.min(edge.to.x) > self.scissor.max.x 
+            || edge.from.x.min(edge.to.x) > self.scissor.max.x
         {
             return;
         }
@@ -351,10 +377,13 @@ impl Tiler {
         let offset_max = TILE_SIZE_F32;
         let mut row_idx = start_idx as u32;
 
-        for row in &mut self.rows[start_idx .. end_idx] {
+        for row in &mut self.rows[start_idx..end_idx] {
             let y_offset = row_idx as f32 * TILE_SIZE_F32;
 
-            let mut segment = LineSegment { from: edge.from, to: edge.to };
+            let mut segment = LineSegment {
+                from: edge.from,
+                to: edge.to,
+            };
             segment.from.y -= y_offset;
             segment.to.y -= y_offset;
             let range = clip_line_segment_1d(segment.from.y, segment.to.y, offset_min, offset_max);
@@ -366,10 +395,18 @@ impl Tiler {
             // tile's upper side to count backdrop winding numbers. So we do a bit of snapping here to
             // paper over the imprecision of splitting the edge.
             const SNAP: f32 = 0.05;
-            if segment.from.y - offset_min < SNAP { segment.from.y = offset_min };
-            if segment.to.y - offset_min < SNAP { segment.to.y = offset_min };
-            if offset_max - segment.from.y < SNAP { segment.from.y = offset_max };
-            if offset_max - segment.to.y < SNAP { segment.to.y = offset_max };
+            if segment.from.y - offset_min < SNAP {
+                segment.from.y = offset_min
+            };
+            if segment.to.y - offset_min < SNAP {
+                segment.to.y = offset_min
+            };
+            if offset_max - segment.from.y < SNAP {
+                segment.from.y = offset_max
+            };
+            if offset_max - segment.to.y < SNAP {
+                segment.to.y = offset_max
+            };
 
             if winding < 0 {
                 std::mem::swap(&mut segment.from, &mut segment.to);
@@ -397,7 +434,7 @@ impl Tiler {
         pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
         device: &wgpu::Device,
-    )  {
+    ) {
         //println!("--------- row {}", tile_y);
         row.sort_unstable_by(|a, b| a.min_x.cmp(&b.min_x));
 
@@ -405,13 +442,15 @@ impl Tiler {
 
         let inv_tw = 1.0 / TILE_SIZE_F32;
         let tiles_start = (self.scissor.min.x * inv_tw).floor();
-        let tiles_end = self.num_tiles_x.min((self.scissor.max.x * inv_tw).ceil() as u32);
+        let tiles_end = self
+            .num_tiles_x
+            .min((self.scissor.max.x * inv_tw).ceil() as u32);
 
         let tx = tiles_start * TILE_SIZE_F32;
         let ty = tile_y as f32 * TILE_SIZE_F32;
         let output_rect = Box2D {
             min: point(tx, ty),
-            max: point(tx + TILE_SIZE_F32, ty + TILE_SIZE_F32)
+            max: point(tx + TILE_SIZE_F32, ty + TILE_SIZE_F32),
         };
 
         // The inner rect is equivalent to the output rect with an y offset so that
@@ -445,7 +484,12 @@ impl Tiler {
             });
 
             while edge.min_x.0 > tile.rect.max.x {
-                Self::update_active_edges(active_edges, tile.rect.min.x, tile.rect.min.y, &mut tile.backdrop);
+                Self::update_active_edges(
+                    active_edges,
+                    tile.rect.min.x,
+                    tile.rect.min.y,
+                    &mut tile.backdrop,
+                );
             }
 
             current_edge += 1;
@@ -460,14 +504,27 @@ impl Tiler {
             while edge.min_x.0 > tile.rect.max.x && tile.x < tiles_end {
                 if active_edges.is_empty() {
                     let tx = ((edge.min_x.0 / TILE_SIZE_F32) as u32).min(tiles_end);
-                    assert!(tx > tile.x, "next edge {:?} clip {} tile start {:?}", edge, self.scissor.max.x, tile.rect.min.x);
+                    assert!(
+                        tx > tile.x,
+                        "next edge {:?} clip {} tile start {:?}",
+                        edge,
+                        self.scissor.max.x,
+                        tile.rect.min.x
+                    );
                     if self.draw.fill_rule.is_in(tile.backdrop) ^ self.draw.inverted {
                         encoder.span(tile.x..tx, tile.y, coarse_mask, pattern);
                     }
-                    let n = tx-tile.x;
+                    let n = tx - tile.x;
                     self.update_tile_rects(&mut tile, n);
                 } else {
-                    self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, device);
+                    self.masked_tile(
+                        &mut tile,
+                        active_edges,
+                        coarse_mask,
+                        pattern,
+                        encoder,
+                        device,
+                    );
                 }
             }
 
@@ -475,18 +532,29 @@ impl Tiler {
                 break;
             }
 
-            active_edges.alloc().init(ActiveEdge { from: edge.from, to: edge.to });
+            active_edges.alloc().init(ActiveEdge {
+                from: edge.from,
+                to: edge.to,
+            });
             current_edge += 1;
         }
 
         // Continue iterating over tiles until there is no active edge or we are out of the tiling area..
         while tile.x < tiles_end && !active_edges.is_empty() {
-            self.masked_tile(&mut tile, active_edges, coarse_mask, pattern, encoder, device);
+            self.masked_tile(
+                &mut tile,
+                active_edges,
+                coarse_mask,
+                pattern,
+                encoder,
+                device,
+            );
         }
 
         if tile.x < tiles_end
             && active_edges.is_empty()
-            && (self.draw.fill_rule.is_in(tile.backdrop) ^ self.draw.inverted) {
+            && (self.draw.fill_rule.is_in(tile.backdrop) ^ self.draw.inverted)
+        {
             encoder.span(tile.x..tiles_end, tile.y, coarse_mask, pattern);
         }
     }
@@ -527,12 +595,17 @@ impl Tiler {
             active_edges,
             tile.rect.min.x,
             tile.rect.min.y,
-            &mut tile.backdrop
+            &mut tile.backdrop,
         );
     }
 
     #[inline]
-    fn update_active_edges(active_edges: &mut Vec<ActiveEdge>, left_x: f32, tile_y: f32, backdrop: &mut i16) {
+    fn update_active_edges(
+        active_edges: &mut Vec<ActiveEdge>,
+        left_x: f32,
+        tile_y: f32,
+        backdrop: &mut i16,
+    ) {
         // Equivalent to the following snippet but a bit faster and not preserving the
         // edge ordering.
         //
@@ -586,13 +659,12 @@ impl Tiler {
         for tile_y in 0..self.rows.len() as u32 {
             let mut tile_mask = tile_mask.row(tile_y);
 
-            let range = column_start as u32 .. column_end as u32;
+            let range = column_start as u32..column_end as u32;
             encoder.span(range, tile_y, &mut tile_mask, pattern);
         }
     }
 
-    pub fn update_stats(&self, _stats: &mut Stats) {
-    }
+    pub fn update_stats(&self, _stats: &mut Stats) {}
 }
 
 pub type ActiveEdge = LineSegment<f32>;
@@ -618,7 +690,13 @@ impl RowEdge {
 
     #[allow(unused)]
     fn print_svg_offset(&self, offset: Vector) {
-        println!("  <path d=\" M {:?} {:?} L {:?} {:?}\"/>", self.from.x - offset.x, self.from.y - offset.x, self.to.x - offset.x, self.to.y - offset.x);
+        println!(
+            "  <path d=\" M {:?} {:?} L {:?} {:?}\"/>",
+            self.from.x - offset.x,
+            self.from.y - offset.x,
+            self.to.x - offset.x,
+            self.to.y - offset.x
+        );
     }
 }
 
@@ -633,15 +711,10 @@ pub struct TileInfo {
     pub backdrop: i16,
 }
 
-pub fn clip_line_segment_1d(
-    from: f32,
-    to: f32,
-    min: f32,
-    max: f32,
-) -> std::ops::Range<f32> {
+pub fn clip_line_segment_1d(from: f32, to: f32, min: f32, max: f32) -> std::ops::Range<f32> {
     let d = to - from;
     if d == 0.0 {
-        return 0.0 .. 1.0;
+        return 0.0..1.0;
     }
 
     let inv_d = 1.0 / d;
@@ -649,7 +722,7 @@ pub fn clip_line_segment_1d(
     let t0 = ((min - from) * inv_d).max(0.0);
     let t1 = ((max - from) * inv_d).min(1.0);
 
-    t0 .. t1
+    t0..t1
 }
 
 pub fn affected_range(min: f32, max: f32, scissor_min: f32, scissor_max: f32) -> (usize, usize) {
@@ -666,10 +739,9 @@ pub fn affected_range(min: f32, max: f32, scissor_min: f32, scissor_max: f32) ->
     (start_idx, end_idx)
 }
 
-
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F: FnMut(&LineSegment<f32>),
 {
     let mut rem = *curve;
     let mut from = rem.from;
@@ -703,7 +775,7 @@ where
 
 pub fn flatten_quad<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F: FnMut(&LineSegment<f32>),
 {
     let mut rem = *curve;
     let mut from = rem.from;

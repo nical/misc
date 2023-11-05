@@ -1,4 +1,3 @@
-
 // Note:
 // Also tried packing into a vector of u64 with a bit per tile, including a version that
 // caches the current u64 payload, but the naive one-u8-per-tile approach performed better.
@@ -29,21 +28,27 @@ impl TileMask {
         if self.data.len() < w * h {
             self.data = vec![0; w * h];
         } else {
-            self.data[..(w*h)].fill(0);
+            self.data[..(w * h)].fill(0);
         }
         self.width = w;
         self.height = h as u32;
     }
 
-    pub fn width(&self) -> u32 { self.width as u32 }
-    pub fn height(&self) -> u32 { self.height }
+    pub fn width(&self) -> u32 {
+        self.width as u32
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
 
     pub fn row(&mut self, y: u32) -> TileMaskRow {
         if self.data.is_empty() {
-            return TileMaskRow { data: &mut[] };
+            return TileMaskRow { data: &mut [] };
         }
         let offset = y as usize * self.width;
-        TileMaskRow { data: &mut self.data[offset..(offset + self.width)] }
+        TileMaskRow {
+            data: &mut self.data[offset..(offset + self.width)],
+        }
     }
 
     pub fn get(&mut self, x: u32, y: u32) -> bool {
@@ -86,7 +91,10 @@ pub struct TileMaskRow<'l> {
 
 impl<'l> TileMaskRow<'l> {
     pub fn get(&mut self, offset: u32) -> bool {
-        self.data.get(offset as usize).map(|d| *d != 0).unwrap_or(true)
+        self.data
+            .get(offset as usize)
+            .map(|d| *d != 0)
+            .unwrap_or(true)
     }
 
     pub fn write_clip(&mut self, offset: u32) {

@@ -1,12 +1,16 @@
-use core::{
-    gpu::shader::{Shaders, ShaderGeometryId, GeometryDescriptor, VertexAtribute, OutputType, BlendMode, PipelineDescriptor, GeneratedPipelineId, ShaderMaskId, Varying},
-    resources::{RendererResources}, units::LocalRect
-};
-use core::wgpu;
 use core::bitflags::bitflags;
 use core::bytemuck;
+use core::wgpu;
+use core::{
+    gpu::shader::{
+        BlendMode, GeneratedPipelineId, GeometryDescriptor, OutputType, PipelineDescriptor,
+        ShaderGeometryId, ShaderMaskId, Shaders, Varying, VertexAtribute,
+    },
+    resources::RendererResources,
+    units::LocalRect,
+};
 
-bitflags!{
+bitflags! {
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct InstanceFlags: u32 {
@@ -55,14 +59,11 @@ impl Pipelines {
 
 pub struct RectangleGpuResources {
     pub rect_geometry: ShaderGeometryId,
-    pub(crate) pipelines: Pipelines
+    pub(crate) pipelines: Pipelines,
 }
 
 impl RectangleGpuResources {
-    pub fn new(
-        _device: &wgpu::Device,
-        shaders: &mut Shaders,
-    ) -> Self {
+    pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
         let rect_geometry = shaders.register_geometry(GeometryDescriptor {
             name: "geometry::rectangle".into(),
             source: RECTANGLE_SRC.into(),
@@ -74,9 +75,7 @@ impl RectangleGpuResources {
                 VertexAtribute::uint32("mask"),
                 VertexAtribute::uint32("flags"),
             ],
-            varyings: vec![
-                Varying::float32x4("aa_distances"),
-            ],
+            varyings: vec![Varying::float32x4("aa_distances")],
             bindings: None,
         });
 
@@ -125,22 +124,21 @@ impl RectangleGpuResources {
                 alpha_pipeline,
                 opaque_pipeline_no_aa,
                 alpha_pipeline_no_aa,
-            }
+            },
         }
     }
 }
 
 impl RendererResources for RectangleGpuResources {
-    fn name(&self) -> &'static str { "RectangleGpuResources" }
-
-    fn begin_frame(&mut self) {
+    fn name(&self) -> &'static str {
+        "RectangleGpuResources"
     }
 
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {
-    }
+    fn begin_frame(&mut self) {}
 
-    fn end_frame(&mut self) {
-    }
+    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
+
+    fn end_frame(&mut self) {}
 }
 
 const RECTANGLE_SRC: &'static str = "

@@ -9,8 +9,13 @@ pub enum StorageKind {
 }
 
 enum Storage {
-    Buffer { buffer: wgpu::Buffer },
-    Texture { texture: wgpu::Texture, view: wgpu::TextureView },
+    Buffer {
+        buffer: wgpu::Buffer,
+    },
+    Texture {
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    },
 }
 
 pub struct StorageBuffer {
@@ -23,7 +28,12 @@ pub struct StorageBuffer {
 }
 
 impl StorageBuffer {
-    pub fn new<T>(device: &wgpu::Device, label: &'static str, size: u32, kind: StorageKind) -> Self {
+    pub fn new<T>(
+        device: &wgpu::Device,
+        label: &'static str,
+        size: u32,
+        kind: StorageKind,
+    ) -> Self {
         let size_per_element = std::mem::size_of::<T>() as u32;
         let byte_size = size * 4;
         let handle = match kind {
@@ -64,7 +74,7 @@ impl StorageBuffer {
                     mip_level_count: Some(1),
                     array_layer_count: Some(1),
                 });
-        
+
                 Storage::Texture { texture, view }
             }
         };
@@ -92,7 +102,10 @@ impl StorageBuffer {
         let s = self.allocator.len() * self.size_per_element;
         let multiple = BYTES_PER_ROW * 4;
         self.allocated_size = (s + (multiple - 1)) & !(multiple - 1);
-        println!("reallocate {:?} from {} to {} ({})", self.label, p, self.allocated_size, s);
+        println!(
+            "reallocate {:?} from {} to {} ({})",
+            self.label, p, self.allocated_size, s
+        );
 
         match &mut self.handle {
             Storage::Buffer { buffer } => {
@@ -136,11 +149,7 @@ impl StorageBuffer {
     pub fn upload_bytes(&mut self, offset: u32, data: &[u8], queue: &wgpu::Queue) {
         match &self.handle {
             Storage::Buffer { buffer } => {
-                queue.write_buffer(
-                    buffer,
-                    offset as u64,
-                    bytemuck::cast_slice(data),
-                );
+                queue.write_buffer(buffer, offset as u64, bytemuck::cast_slice(data));
             }
             Storage::Texture { texture, .. } => {
                 let w = BYTES_PER_ROW / self.size_per_element;
@@ -167,8 +176,8 @@ impl StorageBuffer {
                             width: FLOAT_TEXTURE_WIDTH,
                             height: full_rows,
                             depth_or_array_layers: 1,
-                        }
-                    );    
+                        },
+                    );
                 }
                 if offset % w != 0 {
                     let rem = data.len() - split;
@@ -193,7 +202,7 @@ impl StorageBuffer {
                             width: rem as u32 / self.size_per_element,
                             height: 1,
                             depth_or_array_layers: 1,
-                        }
+                        },
                     );
                 }
             }
@@ -213,27 +222,23 @@ impl StorageBuffer {
 
     pub fn texture(&self) -> Option<&wgpu::Texture> {
         match &self.handle {
-            Storage::Texture{ texture, .. } => Some(texture),
+            Storage::Texture { texture, .. } => Some(texture),
             _ => None,
         }
     }
 
     pub fn binding_type(&self) -> wgpu::BindingType {
         match &self.handle {
-            Storage::Buffer { .. } => {
-                wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(self.size_per_element as u64),
-                }        
-            }
-            Storage::Texture { .. } => {
-                wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    multisampled: false,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                }
-            }
+            Storage::Buffer { .. } => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(self.size_per_element as u64),
+            },
+            Storage::Texture { .. } => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
         }
     }
 
@@ -242,9 +247,7 @@ impl StorageBuffer {
             Storage::Buffer { buffer } => {
                 wgpu::BindingResource::Buffer(buffer.as_entire_buffer_binding())
             }
-            Storage::Texture { view, .. } => {
-                wgpu::BindingResource::TextureView(view)
-            }
+            Storage::Texture { view, .. } => wgpu::BindingResource::TextureView(view),
         }
     }
 }
@@ -277,12 +280,18 @@ impl BufferBumpAllocator {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BufferRange(pub u32, pub u32);
 impl BufferRange {
-    pub fn start(&self) -> u32 { self.0 }
-    pub fn is_empty(&self) -> bool { self.0 >= self.1 }
-    pub fn to_u32(&self) -> Range<u32> { self.0 .. self.1 }
+    pub fn start(&self) -> u32 {
+        self.0
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0 >= self.1
+    }
+    pub fn to_u32(&self) -> Range<u32> {
+        self.0..self.1
+    }
     pub fn byte_range<Ty>(&self) -> Range<u64> {
         let s = std::mem::size_of::<Ty>() as u64;
-        self.0 as u64 * s .. self.1 as u64 * s
+        self.0 as u64 * s..self.1 as u64 * s
     }
     pub fn byte_offset<Ty>(&self) -> u64 {
         self.0 as u64 * std::mem::size_of::<Ty>() as u64

@@ -16,7 +16,9 @@ impl GpuStoreHandle {
     pub const MASK: u32 = 0xFFFFF;
     pub const INVALID: Self = GpuStoreHandle(Self::MASK);
 
-    pub fn to_u32(self) -> u32 { self.0 }
+    pub fn to_u32(self) -> u32 {
+        self.0
+    }
 }
 
 pub struct GpuStore {
@@ -62,7 +64,7 @@ impl GpuStore {
             self.data.resize(self.data.len() * 2, 0.0);
         }
 
-        self.data[self.offset .. self.offset + data.len()].copy_from_slice(data);
+        self.data[self.offset..self.offset + data.len()].copy_from_slice(data);
 
         let handle = GpuStoreHandle(self.offset as u32 / 4);
         self.offset += size;
@@ -117,7 +119,7 @@ impl GpuStore {
                 width: GPU_STORE_WIDTH,
                 height: rows as u32,
                 depth_or_array_layers: 1,
-            }
+            },
         );
     }
 
@@ -125,7 +127,11 @@ impl GpuStore {
         &self.texture
     }
 
-    pub fn bind_group_layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+    pub fn bind_group_layout_entry(
+        &self,
+        binding: u32,
+        visibility: wgpu::ShaderStages,
+    ) -> wgpu::BindGroupLayoutEntry {
         wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -171,7 +177,7 @@ pub struct DynBufferRange {
 
 impl DynBufferRange {
     pub fn address_range(&self) -> Range<BufferAddress> {
-        self.range.start as BufferAddress .. self.range.end as BufferAddress
+        self.range.start as BufferAddress..self.range.end as BufferAddress
     }
 }
 
@@ -210,7 +216,11 @@ impl DynamicStore {
 
     // Note: Using GPU-store for float-only data is better since it can fall back to textures.
     pub fn new_storage(buffer_size: u32) -> Self {
-        Self::new(buffer_size, wgpu::BufferUsages::STORAGE, "Dynamic storage buffer")
+        Self::new(
+            buffer_size,
+            wgpu::BufferUsages::STORAGE,
+            "Dynamic storage buffer",
+        )
     }
 
     pub fn upload(&mut self, device: &wgpu::Device, data: &[u8]) -> Option<DynBufferRange> {
@@ -229,16 +239,16 @@ impl DynamicStore {
 
         let selected_buffer = match selected_buffer {
             Some(idx) => idx,
-            None => {
-                self.add_staging_buffer(device, len as BufferAddress)
-            }
+            None => self.add_staging_buffer(device, len as BufferAddress),
         };
 
         let staging = &mut self.staging[selected_buffer];
 
         let start = staging.offset as BufferAddress;
         let end = start + data.len() as BufferAddress;
-        staging.handle.slice(start..end)
+        staging
+            .handle
+            .slice(start..end)
             .get_mapped_range_mut()
             .copy_from_slice(data);
 
@@ -246,7 +256,9 @@ impl DynamicStore {
 
         // Fill the hole with zeroes in case it is write-combined memory.
         if end > aligned_end {
-            staging.handle.slice(end..aligned_end)
+            staging
+                .handle
+                .slice(end..aligned_end)
                 .get_mapped_range_mut()
                 .fill(0);
         }
@@ -255,14 +267,20 @@ impl DynamicStore {
 
         Some(DynBufferRange {
             buffer_index: selected_buffer as u32,
-            range: (start as u32) .. (end as u32),
+            range: (start as u32)..(end as u32),
         })
     }
 
-    fn add_staging_buffer(&mut self, device: &wgpu::Device, requested_size: BufferAddress) -> usize {
+    fn add_staging_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        requested_size: BufferAddress,
+    ) -> usize {
         // If we are requesting a buffer larger than the default size, dump vbos to force re-creating one.
         // TODO: that's obviously not great, but is intended to be rare.
-        if requested_size > self.buffer_size as BufferAddress && self.vbos.len() > self.staging.len() {
+        if requested_size > self.buffer_size as BufferAddress
+            && self.vbos.len() > self.staging.len()
+        {
             self.vbos.truncate(self.staging.len());
         }
 
@@ -326,7 +344,8 @@ impl DynamicStore {
     }
 
     pub fn get_buffer_slice(&self, range: &DynBufferRange) -> wgpu::BufferSlice {
-        self.get_buffer(range.buffer_index).slice(range.address_range())
+        self.get_buffer(range.buffer_index)
+            .slice(range.address_range())
     }
 }
 

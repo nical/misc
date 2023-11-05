@@ -1,26 +1,26 @@
+pub mod buffer;
 pub mod canvas;
 pub mod gpu;
-pub mod buffer;
 //pub mod flatten_simd;
+pub mod batching;
+pub mod cache;
+pub mod path;
 pub mod pattern;
 pub mod resources;
-pub mod batching;
-pub mod path;
-pub mod transform;
 pub mod shape;
 pub mod stroke;
-pub mod cache;
+pub mod transform;
 
-pub use lyon::path::math::{Point, point, Vector, vector};
+pub use lyon::path::math::{point, vector, Point, Vector};
 
-use pattern::BindingsId;
-pub use wgpu;
+pub use bitflags;
 pub use bytemuck;
 pub use lyon::geom;
-pub use bitflags;
+use pattern::BindingsId;
+pub use wgpu;
 
 pub mod units {
-    use lyon::geom::euclid::{self, Box2D, Point2D, Vector2D, Size2D};
+    use lyon::geom::euclid::{self, Box2D, Point2D, Size2D, Vector2D};
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
     pub struct LocalSpace;
@@ -48,8 +48,8 @@ pub mod units {
     pub type LocalToSurfaceTransform = euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
     pub type LocalTransform = euclid::Transform2D<f32, LocalSpace, LocalSpace>;
 
-    pub use euclid::vec2 as vector;
     pub use euclid::point2 as point;
+    pub use euclid::vec2 as vector;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -61,21 +61,43 @@ pub struct Color {
 }
 
 impl Color {
-    pub const RED: Self = Color { r: 255, g: 0, b: 0, a: 255 };
-    pub const GREEN: Self = Color { r: 0, g: 255, b: 0, a: 255 };
-    pub const BLUE: Self = Color { r: 0, g: 0, b: 255, a: 255 };
-    pub const BLACK: Self = Color { r: 0, g: 0, b: 0, a: 255 };
-    pub const WHITE: Self = Color { r: 255, g: 255, b: 255, a: 255 };
+    pub const RED: Self = Color {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const GREEN: Self = Color {
+        r: 0,
+        g: 255,
+        b: 0,
+        a: 255,
+    };
+    pub const BLUE: Self = Color {
+        r: 0,
+        g: 0,
+        b: 255,
+        a: 255,
+    };
+    pub const BLACK: Self = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const WHITE: Self = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
 
     pub fn is_opaque(self) -> bool {
         self.a == 255
     }
 
     pub fn to_u32(self) -> u32 {
-        (self.r as u32) << 24
-    | (self.g as u32) << 16
-        | (self.b as u32) << 8
-        | self.a as u32
+        (self.r as u32) << 24 | (self.g as u32) << 16 | (self.b as u32) << 8 | self.a as u32
     }
 
     pub fn to_f32(self) -> [f32; 4] {
@@ -96,13 +118,17 @@ impl Color {
         }
     }
 
-    pub fn new(r: u8, g: u8, b: u8, a:u8) -> Self {
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Color { r, g, b, a }
     }
 
-    pub fn linear_to_srgb(r: u8, g: u8, b: u8, a:u8) -> Self {
+    pub fn linear_to_srgb(r: u8, g: u8, b: u8, a: u8) -> Self {
         fn f(linear: f32) -> f32 {
-            if linear <= 0.0031308 { linear * 12.92}  else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
+            if linear <= 0.0031308 {
+                linear * 12.92
+            } else {
+                1.055 * linear.powf(1.0 / 2.4) - 0.055
+            }
         }
         let r = (f(r as f32 / 255.0) * 255.0) as u8;
         let g = (f(g as f32 / 255.0) * 255.0) as u8;
@@ -111,9 +137,13 @@ impl Color {
         Color { r, g, b, a }
     }
 
-    pub fn srgb_to_linear(r: u8, g: u8, b: u8, a:u8) -> Self {
+    pub fn srgb_to_linear(r: u8, g: u8, b: u8, a: u8) -> Self {
         fn f(srgb: f32) -> f32 {
-            if srgb <= 0.04045 { srgb * 12.92}  else { ((srgb + 0.055) / 1.055).powf(2.4) }
+            if srgb <= 0.04045 {
+                srgb * 12.92
+            } else {
+                ((srgb + 0.055) / 1.055).powf(2.4)
+            }
         }
         let r = (f(r as f32 / 255.0) * 255.0) as u8;
         let g = (f(g as f32 / 255.0) * 255.0) as u8;
@@ -126,12 +156,12 @@ impl Color {
 use std::ops::Range;
 #[inline]
 pub fn u32_range(r: Range<usize>) -> Range<u32> {
-    r.start as u32 .. r.end as u32
+    r.start as u32..r.end as u32
 }
 
 #[inline]
 pub fn usize_range(r: Range<u32>) -> Range<usize> {
-    r.start as usize .. r.end as usize
+    r.start as usize..r.end as usize
 }
 
 pub trait BindingResolver {
@@ -139,5 +169,7 @@ pub trait BindingResolver {
 }
 
 impl BindingResolver for () {
-    fn resolve(&self, _: BindingsId) -> Option<&wgpu::BindGroup> { None }
+    fn resolve(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
+        None
+    }
 }

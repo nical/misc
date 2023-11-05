@@ -1,10 +1,10 @@
 use core::canvas::*;
 use core::gpu::shader::RenderPipelineBuilder;
-use core::shape::*;
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::BindingsId;
 use core::resources::{CommonGpuResources, GpuResources};
+use core::shape::*;
 use core::stroke::*;
 use core::units::{
     point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize,
@@ -208,7 +208,10 @@ fn main() {
         color_atlas_size,
         use_ssaa4,
     );
-    render_pipelines.build(&[&prep_pipelines.finish()], &mut RenderPipelineBuilder(&device, &mut shaders));
+    render_pipelines.build(
+        &[&prep_pipelines.finish()],
+        &mut RenderPipelineBuilder(&device, &mut shaders),
+    );
 
     let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
 
@@ -232,8 +235,18 @@ fn main() {
         &patterns.textures,
     );
     let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle, &gpu_resources[mesh_handle]);
-    let mut stencil = StencilAndCoverRenderer::new(2, common_handle, stencil_handle, &gpu_resources[stencil_handle]);
-    let mut rectangles = RectangleRenderer::new(3, common_handle, rectangle_handle, &gpu_resources[rectangle_handle]);
+    let mut stencil = StencilAndCoverRenderer::new(
+        2,
+        common_handle,
+        stencil_handle,
+        &gpu_resources[stencil_handle],
+    );
+    let mut rectangles = RectangleRenderer::new(
+        3,
+        common_handle,
+        rectangle_handle,
+        &gpu_resources[rectangle_handle],
+    );
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
@@ -323,13 +336,17 @@ fn main() {
             format: Some(shaders.defaults.color_format()),
             ..wgpu::TextureViewDescriptor::default()
         });
-        let size = SurfaceIntSize::new(
-            scene.window_size.width,
-            scene.window_size.height,
-        );
+        let size = SurfaceIntSize::new(scene.window_size.width, scene.window_size.height);
 
         gpu_store.clear();
-        canvas.begin_frame(size, SurfaceFeatures { depth: false, msaa: false, stencil: false, });
+        canvas.begin_frame(
+            size,
+            SurfaceFeatures {
+                depth: false,
+                msaa: false,
+                stencil: false,
+            },
+        );
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
@@ -392,7 +409,10 @@ fn main() {
         rectangles.prepare(&canvas, &mut prep_pipelines);
 
         let changes = prep_pipelines.finish();
-        render_pipelines.build(&[&changes], &mut RenderPipelineBuilder(&device, &mut shaders));
+        render_pipelines.build(
+            &[&changes],
+            &mut RenderPipelineBuilder(&device, &mut shaders),
+        );
 
         let requirements = canvas.build_render_passes(&mut [
             &mut tiling,
@@ -449,7 +469,6 @@ fn main() {
             &[&tiling, &meshes, &stencil, &rectangles],
             &gpu_resources,
             &source_textures,
-            &mut shaders,
             &mut render_pipelines,
             &device,
             common_handle,
@@ -649,7 +668,7 @@ fn paint_scene(
                         start_cap: stroke.line_cap,
                         end_cap: stroke.line_cap,
                         add_empty_caps: true,
-                        .. Default::default()
+                        ..Default::default()
                     },
                 );
                 for evt in path.iter() {
@@ -659,16 +678,16 @@ fn paint_scene(
             let stroked_path = stroked_path.build();
             let path = PathShape::new(Arc::new(stroked_path));
             match selected_renderer {
-               TILING => {
-                   tiling.fill_path(ctx, path, pattern);
-               }
-               TESS => {
-                   meshes.fill_path(ctx, path, pattern);
-               }
-               STENCIL => {
-                   stencil.fill_path(ctx, path, pattern);
-               }
-               _ => unimplemented!(),
+                TILING => {
+                    tiling.fill_path(ctx, path, pattern);
+                }
+                TESS => {
+                    meshes.fill_path(ctx, path, pattern);
+                }
+                STENCIL => {
+                    stencil.fill_path(ctx, path, pattern);
+                }
+                _ => unimplemented!(),
             }
         }
     }
@@ -823,16 +842,16 @@ fn paint_scene(
 
     let mut p = Path::builder();
 
-//    p.begin(point(110.0, 110.0));
-//    p.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-//    p.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-//    p.end(false);
-//
-//    p.begin(point(300.0, 100.0));
-//    p.line_to(point(400.0, 100.0));
-//    p.line_to(point(400.0, 200.0));
-//    p.line_to(point(390.0, 250.0));
-//    p.end(true);
+    //    p.begin(point(110.0, 110.0));
+    //    p.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+    //    p.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+    //    p.end(false);
+    //
+    //    p.begin(point(300.0, 100.0));
+    //    p.line_to(point(400.0, 100.0));
+    //    p.line_to(point(400.0, 200.0));
+    //    p.line_to(point(390.0, 250.0));
+    //    p.end(true);
 
     p.begin(point(700.0, 100.0));
     p.quadratic_bezier_to(point(700.0, 330.0), point(900.0, 300.0));
@@ -848,19 +867,18 @@ fn paint_scene(
 
     let mut builder2 = core::path::Path::builder();
     {
-
         let o = transform.m31 * 0.1;
         let mut stroker = StrokeToFillBuilder::new(
             &mut builder2,
             &StrokeOptions {
                 tolerance: 0.25,
-                offsets: (10.0, -10.0-o),
+                offsets: (10.0, -10.0 - o),
                 miter_limit: 0.5,
                 line_join: LineJoin::Round,
                 start_cap: LineCap::TriangleInverted,
                 end_cap: LineCap::TriangleInverted,
                 add_empty_caps: true,
-                .. Default::default()
+                ..Default::default()
             },
         );
 
@@ -870,13 +888,16 @@ fn paint_scene(
     }
 
     if false {
-        let mut offsetter = OffsetBuilder::new(&mut builder2, &OffsetOptions {
-            offset: transform.m31 * 0.1,
-            join: LineJoin::Round,
-            miter_limit: 0.5,
-            tolerance: 0.25,
-            simplify_inner_joins: true,
-        });
+        let mut offsetter = OffsetBuilder::new(
+            &mut builder2,
+            &OffsetOptions {
+                offset: transform.m31 * 0.1,
+                join: LineJoin::Round,
+                miter_limit: 0.5,
+                tolerance: 0.25,
+                simplify_inner_joins: true,
+            },
+        );
 
         offsetter.begin(point(500.0, 500.0));
         offsetter.line_to(point(600.0, 500.0));
@@ -902,8 +923,23 @@ fn paint_scene(
     let offset_path = builder2.build();
     tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
 
-    meshes.stroke_path(ctx, offset_path.clone(), 1.0, patterns.colors.add(Color { r: 100, g: 0, b: 0, a: 255 }));
-    meshes.stroke_path(ctx, path_to_offset.clone(), 1.0, patterns.colors.add(Color::BLACK));
+    meshes.stroke_path(
+        ctx,
+        offset_path.clone(),
+        1.0,
+        patterns.colors.add(Color {
+            r: 100,
+            g: 0,
+            b: 0,
+            a: 255,
+        }),
+    );
+    meshes.stroke_path(
+        ctx,
+        path_to_offset.clone(),
+        1.0,
+        patterns.colors.add(Color::BLACK),
+    );
 
     let mut b = Path::builder();
     b.begin(point(500.0, 500.0));
@@ -920,34 +956,89 @@ fn paint_scene(
     b.end(false);
     meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
-
     let green = patterns.colors.add(Color::GREEN);
     let blue = patterns.colors.add(Color::BLUE);
     let white = patterns.colors.add(Color::WHITE);
     for evt in offset_path.as_slice() {
         match evt {
             PathEvent::Begin { at } => {
-                meshes.fill_circle(ctx, Circle { center: at.cast_unit(), radius: 3.0, inverted: false }, green);
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: at.cast_unit(),
+                        radius: 3.0,
+                        inverted: false,
+                    },
+                    green,
+                );
             }
             PathEvent::Line { to, .. } => {
-                meshes.fill_circle(ctx, Circle { center: to.cast_unit(), radius: 3.0, inverted: false }, green);
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: to.cast_unit(),
+                        radius: 3.0,
+                        inverted: false,
+                    },
+                    green,
+                );
             }
             PathEvent::Quadratic { ctrl, to, .. } => {
-                meshes.fill_circle(ctx, Circle { center: ctrl.cast_unit(), radius: 4.0, inverted: false }, blue);
-                meshes.fill_circle(ctx, Circle { center: to.cast_unit(), radius: 3.0, inverted: false }, white);
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: ctrl.cast_unit(),
+                        radius: 4.0,
+                        inverted: false,
+                    },
+                    blue,
+                );
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: to.cast_unit(),
+                        radius: 3.0,
+                        inverted: false,
+                    },
+                    white,
+                );
             }
-            PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
-                meshes.fill_circle(ctx, Circle { center: ctrl1.cast_unit(), radius: 4.0, inverted: false }, blue);
-                meshes.fill_circle(ctx, Circle { center: ctrl2.cast_unit(), radius: 4.0, inverted: false }, blue);
-                meshes.fill_circle(ctx, Circle { center: to.cast_unit(), radius: 2.0, inverted: false }, white);
+            PathEvent::Cubic {
+                ctrl1, ctrl2, to, ..
+            } => {
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: ctrl1.cast_unit(),
+                        radius: 4.0,
+                        inverted: false,
+                    },
+                    blue,
+                );
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: ctrl2.cast_unit(),
+                        radius: 4.0,
+                        inverted: false,
+                    },
+                    blue,
+                );
+                meshes.fill_circle(
+                    ctx,
+                    Circle {
+                        center: to.cast_unit(),
+                        radius: 2.0,
+                        inverted: false,
+                    },
+                    white,
+                );
             }
             _ => {}
         }
     }
 
-    ctx
-        .transforms
-        .push(&LocalTransform::translation(10.0, 1.0));
+    ctx.transforms.push(&LocalTransform::translation(10.0, 1.0));
     ctx.transforms.pop();
 }
 

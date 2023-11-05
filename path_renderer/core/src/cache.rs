@@ -1,4 +1,9 @@
-use std::{sync::{Arc, Mutex}, collections::HashMap, hash::Hash, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 pub trait Build<Key, Payload> {
     fn build(&mut self, key: Key) -> Payload;
@@ -18,7 +23,9 @@ impl<Key> Index<Key> {
 
 impl<Key> Copy for Index<Key> {}
 impl<Key> Clone for Index<Key> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<Key> std::fmt::Debug for Index<Key> {
@@ -49,7 +56,10 @@ impl<Key, Payload> Registry<Key, Payload> {
         Self::with_capacity(0)
     }
 
-    pub fn prepare(&self) -> Prepare<Key> where Key: Clone {
+    pub fn prepare(&self) -> Prepare<Key>
+    where
+        Key: Clone,
+    {
         Prepare {
             prev: None,
             new_items: Vec::new(),
@@ -63,7 +73,10 @@ impl<Key, Payload> Registry<Key, Payload> {
         self.items[idx.index()].as_ref()
     }
 
-    pub fn look_up(&self, key: Key) -> Option<&Payload> where Key: Hash + Eq {
+    pub fn look_up(&self, key: Key) -> Option<&Payload>
+    where
+        Key: Hash + Eq,
+    {
         if let Some(index) = self.built.get(&key) {
             return self.items[index.index()].as_ref();
         }
@@ -72,14 +85,15 @@ impl<Key, Payload> Registry<Key, Payload> {
     }
 
     pub fn build(&mut self, changes: &[&Changelist<Key>], builder: &mut dyn Build<Key, Payload>)
-    where 
+    where
         Key: Copy + Hash + Eq,
     {
         let mut num_items = 0;
         for c in changes {
             num_items += c.new_items.len();
         }
-        self.items.resize_with(self.items.len() + num_items, || None);
+        self.items
+            .resize_with(self.items.len() + num_items, || None);
 
         let built = Arc::get_mut(&mut self.built).unwrap();
         built.reserve(num_items);
@@ -93,7 +107,6 @@ impl<Key, Payload> Registry<Key, Payload> {
     }
 }
 
-
 pub struct Prepare<Key> {
     prev: Option<(Key, Index<Key>)>,
     built: Arc<HashMap<Key, Index<Key>>>,
@@ -103,10 +116,7 @@ pub struct Prepare<Key> {
 }
 
 impl<Key: Hash + Eq + Copy> Prepare<Key> {
-    pub fn prepare(
-        &mut self, 
-        key: Key,
-    ) -> Index<Key> {
+    pub fn prepare(&mut self, key: Key) -> Index<Key> {
         // First look for the key in the local data.
         if let Some(idx) = self.get_local(key) {
             self.prev = Some((key, idx));
@@ -118,7 +128,7 @@ impl<Key: Hash + Eq + Copy> Prepare<Key> {
         let mut is_new = false;
         let is_new_ref = &mut is_new;
         let idx = {
-            let guard = &mut*self.shared.lock().unwrap();
+            let guard = &mut *self.shared.lock().unwrap();
             let next_id = &mut guard.next_id;
             let elements = &mut guard.items;
             *elements.entry(key).or_insert_with(move || {
@@ -140,10 +150,7 @@ impl<Key: Hash + Eq + Copy> Prepare<Key> {
         idx
     }
 
-    fn get_local(
-        &self,
-        key: Key,
-    ) -> Option<Index<Key>> {
+    fn get_local(&self, key: Key) -> Option<Index<Key>> {
         if let Some((prev_key, idx)) = self.prev {
             if prev_key == key {
                 return Some(idx);
@@ -176,7 +183,9 @@ impl<Key: Hash + Eq + Copy> Prepare<Key> {
     }
 
     pub fn finish(self) -> Changelist<Key> {
-        Changelist { new_items: self.new_items }
+        Changelist {
+            new_items: self.new_items,
+        }
     }
 }
 
@@ -189,7 +198,6 @@ impl<Key> Prepare<Key> {
 pub struct Changelist<Key> {
     new_items: Vec<(Key, Index<Key>)>,
 }
-
 
 struct Shared<Key> {
     items: HashMap<Key, Index<Key>>,

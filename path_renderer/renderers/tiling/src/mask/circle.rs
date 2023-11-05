@@ -1,10 +1,13 @@
 use lyon::{geom::Box2D, path::Winding};
 
-use crate::{TilePosition, encoder::{TileEncoder, as_scale_offset}, TileVisibility, FillOptions, TileMask, Tiler, tile_visibility};
-use crate::tiler::affected_range;
 use super::MaskEncoder;
+use crate::tiler::affected_range;
+use crate::{
+    encoder::{as_scale_offset, TileEncoder},
+    tile_visibility, FillOptions, TileMask, TilePosition, TileVisibility, Tiler,
+};
 use core::pattern::BuiltPattern;
-use core::units::{LocalPoint, Point, point, vector};
+use core::units::{point, vector, LocalPoint, Point};
 
 use core::bytemuck;
 use core::wgpu;
@@ -22,15 +25,25 @@ unsafe impl bytemuck::Zeroable for CircleMask {}
 
 const TILE_SIZE: f32 = crate::TILE_SIZE as f32;
 
-pub fn add_cricle_mask(tile_encoder: &mut TileEncoder, circle_masks: &mut MaskEncoder, center: Point, radius: f32, inverted: bool) -> TilePosition {
+pub fn add_cricle_mask(
+    tile_encoder: &mut TileEncoder,
+    circle_masks: &mut MaskEncoder,
+    center: Point,
+    radius: f32,
+    inverted: bool,
+) -> TilePosition {
     let (mut tile, atlas_index) = tile_encoder.allocate_mask_tile();
     if inverted {
         tile.add_flag();
     }
-    circle_masks.prerender_mask(atlas_index, CircleMask {
-        tile, radius,
-        center: center.to_array()
-    });
+    circle_masks.prerender_mask(
+        atlas_index,
+        CircleMask {
+            tile,
+            radius,
+            center: center.to_array(),
+        },
+    );
 
     tile
 }
@@ -77,14 +90,7 @@ pub fn fill_circle(
         path.add_circle(center.cast_unit(), radius, Winding::Positive);
         let path = path.build();
 
-        tiler.fill_path(
-            path.iter(),
-            options,
-            pattern,
-            tile_mask,
-            encoder,
-            device,
-        );
+        tiler.fill_path(path.iter(), options, pattern, tile_mask, encoder, device);
     }
 }
 
@@ -109,11 +115,7 @@ fn fill_transformed_circle(
         y_max = scissor.max.y;
     }
     let (row_start, row_end) = affected_range(y_min, y_max, scissor.min.y, scissor.max.y);
-    let (column_start, column_end) = affected_range(
-        x_min, x_max,
-        scissor.min.x,
-        scissor.max.x,
-    );
+    let (column_start, column_end) = affected_range(x_min, x_max, scissor.min.x, scissor.max.x);
     let row_start = row_start as u32;
     let row_end = row_end as u32;
     let column_start = column_start as u32;
@@ -171,7 +173,8 @@ fn fill_transformed_circle(
 
             let tile_offset = vector(tx as f32, tile_y as f32) * TILE_SIZE;
             let center = center - tile_offset;
-            let mask_id = add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
+            let mask_id =
+                add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
 
             let tile_position = TilePosition::new(tx, tile_y);
 
@@ -192,7 +195,7 @@ fn fill_transformed_circle(
                 }
             }
 
-            if !inverted  {
+            if !inverted {
                 assert!(first_full_tile < tile_x);
                 let range = first_full_tile..tile_x;
                 encoder.span(range, tile_y, &mut tile_mask, pattern);
@@ -223,7 +226,8 @@ fn fill_transformed_circle(
 
             let tile_offset = vector(tx as f32, tile_y as f32) * TILE_SIZE;
             let center = center - tile_offset;
-            let mask_id = add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
+            let mask_id =
+                add_cricle_mask(encoder, circle_masks, center.cast_unit(), radius, inverted);
 
             let tile_position = TilePosition::new(tx, tile_y);
 
