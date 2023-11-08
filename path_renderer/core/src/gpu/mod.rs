@@ -7,7 +7,7 @@ pub use shader::Shaders;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
-use self::shader::{DepthMode, StencilMode, SurfaceConfig};
+use crate::canvas::{DepthMode, StencilMode, SurfaceDrawConfig};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -177,8 +177,8 @@ impl PipelineDefaults {
         self.msaa_samples
     }
 
-    pub fn surface_config(&self, msaa: bool) -> SurfaceConfig {
-        SurfaceConfig {
+    pub fn surface_config(&self, msaa: bool) -> SurfaceDrawConfig {
+        SurfaceDrawConfig {
             msaa,
             depth: if self.depth_buffer {
                 DepthMode::Ignore
@@ -190,6 +190,7 @@ impl PipelineDefaults {
             } else {
                 StencilMode::None
             },
+            kind: crate::SurfaceKind::Color,
         }
     }
 }

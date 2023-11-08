@@ -1,14 +1,16 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TileMask, Tiler, TilerConfig, TILE_SIZE};
-use core::bytemuck;
+use core::{bytemuck, SurfaceKind};
+use core::canvas::SurfaceDrawConfig;
+use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId};
 use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchId, BatchList},
     canvas::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RenderPasses,
-        RendererId, SubPass, SurfaceFeatures, ZIndex,
+        RendererId, SubPass, SurfacePassConfig, ZIndex,
     },
-    gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines, SurfaceConfig},
+    gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines},
     pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::{Circle, PathShape},
@@ -50,11 +52,16 @@ impl Shape {
     }
 }
 
+struct BatchInfo {
+    passes: Range<u32>,
+    surface: SurfacePassConfig,
+}
+
 pub struct TileRenderer {
     pub encoder: TileEncoder,
     pub tiler: Tiler,
     pub occlusion_mask: TileMask,
-    batches: BatchList<Fill, Range<u32>>,
+    batches: BatchList<Fill, BatchInfo>,
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TilingGpuResources>,
@@ -62,6 +69,13 @@ pub struct TileRenderer {
     masks: TilingMasks,
     current_mask_atlas: u32,
     current_color_atlas: u32,
+    atlas_batch_pipelines: Vec<RenderPipelineIndex>,
+    opaque_batch_pipelines: Vec<RenderPipelineIndex>,
+    alpha_batch_pipelines: Vec<RenderPipelineIndex>,
+    opaque_prerendered_pipelines: Vec<RenderPipelineIndex>,
+    opaque_pipeline: GeneratedPipelineId,
+    masked_pipeline: GeneratedPipelineId,
+    texture_load_pattern: ShaderPatternId,
 }
 
 struct TilingMasks {
@@ -74,6 +88,8 @@ impl TileRenderer {
         renderer_id: RendererId,
         common_resources_id: ResourcesHandle<CommonGpuResources>,
         resources_id: ResourcesHandle<TilingGpuResources>,
+        res: &TilingGpuResources,
+        textures: &TextureRenderer,
         config: &TilerConfig,
         texture_load: &TextureRenderer,
     ) -> Self {
@@ -95,16 +111,18 @@ impl TileRenderer {
             },
             current_color_atlas: std::u32::MAX,
             current_mask_atlas: std::u32::MAX,
+            atlas_batch_pipelines: Vec::new(),
+            opaque_batch_pipelines: Vec::new(),
+            alpha_batch_pipelines: Vec::new(),
+            opaque_prerendered_pipelines: Vec::new(),
+            opaque_pipeline: res.opaque_pipeline,
+            masked_pipeline: res.masked_pipeline,
+            texture_load_pattern: textures.load_pattern_id()
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfaceFeatures) -> bool {
-        surface
-            == SurfaceFeatures {
-                depth: false,
-                stencil: false,
-                msaa: false,
-            }
+    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
+        surface.kind == SurfaceKind::Color
     }
 
     pub fn begin_frame(&mut self, canvas: &Context) {
@@ -120,6 +138,10 @@ impl TileRenderer {
         self.occlusion_mask.clear();
         self.current_color_atlas = std::u32::MAX;
         self.current_mask_atlas = std::u32::MAX;
+        self.atlas_batch_pipelines.clear();
+        self.opaque_batch_pipelines.clear();
+        self.alpha_batch_pipelines.clear();
+        self.opaque_prerendered_pipelines.clear();
     }
 
     pub fn fill_path<P: Into<PathShape>>(
@@ -144,7 +166,7 @@ impl TileRenderer {
     }
 
     fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_features()));
+        debug_assert!(self.supports_surface(canvas.surface.current_config()));
 
         let aabb = canvas
             .transforms
@@ -158,7 +180,7 @@ impl TileRenderer {
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::empty(),
-                &mut || Default::default(),
+                &mut || BatchInfo { passes: 0..0, surface: canvas.surface.current_config() },
             )
             .0
             .push(Fill {
@@ -172,7 +194,7 @@ impl TileRenderer {
     pub fn prepare(
         &mut self,
         canvas: &Context,
-        _shaders: &mut PrepareRenderPipelines,
+        shaders: &mut PrepareRenderPipelines,
         device: &wgpu::Device,
     ) {
         if self.batches.is_empty() {
@@ -191,14 +213,15 @@ impl TileRenderer {
         {
             let passes_start = self.encoder.render_passes.len();
             let (commands, info) = batches.get_mut(batch_id.index);
+            let surface = info.surface.draw_config(false, None);
             for fill in commands.iter().rev() {
-                self.prepare_fill(fill, canvas, device);
+                self.prepare_fill(fill, &surface, canvas, device);
             }
             self.encoder.split_sub_pass();
             let passes_end = self.encoder.render_passes.len();
             let passes = passes_start..passes_end;
             self.encoder.render_passes[passes.clone()].reverse();
-            *info = u32_range(passes);
+            info.passes = u32_range(passes);
         }
 
         self.batches = batches;
@@ -208,9 +231,53 @@ impl TileRenderer {
 
         let reversed = true;
         self.encoder.finish(reversed);
+
+        // TODO: Here we go through batches and prepare the shaders. It would make
+        // more sense to do that while producing the batches, however it is a bit
+        // inconvenient to have to carry around the PreparePipelines everywhere in
+        // the tile encoder.
+        for batch in &self.encoder.atlas_pattern_batches {
+            self.atlas_batch_pipelines.push(
+                shaders.prepare(RenderPipelineKey::new(
+                    self.opaque_pipeline,
+                    batch.pattern,
+                    SurfaceDrawConfig::color()
+                ))
+            );
+        }
+
+        for batch in &self.encoder.opaque_batches {
+            self.opaque_batch_pipelines.push(
+                shaders.prepare(RenderPipelineKey::new(
+                    self.opaque_pipeline,
+                    batch.pattern,
+                    batch.surface,
+                ))
+            );
+        }
+
+        for batch in &self.encoder.alpha_batches {
+            self.alpha_batch_pipelines.push(
+                shaders.prepare(RenderPipelineKey::new(
+                    self.masked_pipeline,
+                    batch.pattern,
+                    batch.surface,
+                ))
+            );
+        }
+
+        for pass in &self.encoder.render_passes {
+            self.opaque_prerendered_pipelines.push(
+                shaders.prepare(RenderPipelineKey::new(
+                    self.opaque_pipeline,
+                    self.texture_load_pattern,
+                    pass.surface,
+                ))
+            )
+        }
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Context, device: &wgpu::Device) {
+    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, canvas: &Context, device: &wgpu::Device) {
         let transform = if fill.transform != TransformId::NONE {
             Some(canvas.transforms.get(fill.transform).matrix().to_untyped())
         } else {
@@ -220,6 +287,7 @@ impl TileRenderer {
         let prerender = fill.pattern.favor_prerendering;
 
         self.encoder.current_z_index = fill.z_index;
+        self.encoder.current_surface = *surface;
         match &fill.shape {
             Shape::Path(shape) => {
                 let options = FillOptions::new()
@@ -355,16 +423,13 @@ impl TileRenderer {
             &[],
         );
 
-        for batch in self.encoder.get_color_atlas_batches(color_atlas_index) {
+        let batch_range = self.encoder.color_atlas_passes[color_atlas_index as usize].clone();
+        let batches = &self.encoder.atlas_pattern_batches[batch_range.clone()];
+        let pipelines = &self.atlas_batch_pipelines[batch_range];
+        for (batch, pipeline_idx) in batches.iter().zip(pipelines) {
             let pattern = &self.encoder.patterns[batch.pattern.index()];
             if let Some(buffer_range) = &pattern.prerendered_vbo_range {
-                let pipeline = render_pipelines
-                    .look_up(RenderPipelineKey::new(
-                        resources.opaque_pipeline,
-                        batch.pattern,
-                        SurfaceConfig::default(),
-                    ))
-                    .unwrap();
+                let pipeline = render_pipelines.get(*pipeline_idx).unwrap();
 
                 // We could try to avoid redundant bindings.
                 if batch.pattern_inputs.is_some() {
@@ -484,18 +549,14 @@ impl TileRenderer {
             let render_pass = &self.encoder.render_passes[sub_pass.internal_index as usize];
 
             if !render_pass.opaque_batches.is_empty() {
-                for batch in &self.encoder.opaque_batches[render_pass.opaque_batches.clone()] {
+                let batches = &self.encoder.opaque_batches[render_pass.opaque_batches.clone()];
+                let pipelines = &self.opaque_batch_pipelines[render_pass.opaque_batches.clone()];
+                for (batch, pipeline_idx) in batches.iter().zip(pipelines) {
                     if let Some(range) = &self
                         .encoder
                         .get_opaque_batch_vertices(batch.pattern.index())
                     {
-                        let pipeline = render_pipelines
-                            .look_up(RenderPipelineKey::new(
-                                resources.opaque_pipeline,
-                                batch.pattern,
-                                SurfaceConfig::default(),
-                            ))
-                            .unwrap();
+                        let pipeline = render_pipelines.get(*pipeline_idx).unwrap();
 
                         helper.resolve_and_bind(1, batch.pattern_inputs, bindings, pass);
 
@@ -514,7 +575,7 @@ impl TileRenderer {
                     .look_up(RenderPipelineKey::new(
                         resources.opaque_pipeline,
                         resources.texture.load_pattern_id(),
-                        SurfaceConfig::default(),
+                        SurfaceDrawConfig::default(),
                     ))
                     .unwrap();
 
@@ -538,14 +599,10 @@ impl TileRenderer {
                 pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
                 helper.reset_binding(1);
 
-                for batch in &self.encoder.alpha_batches[render_pass.alpha_batches.clone()] {
-                    let pipeline = render_pipelines
-                        .look_up(RenderPipelineKey::new(
-                            resources.masked_pipeline,
-                            batch.pattern,
-                            SurfaceConfig::default(),
-                        ))
-                        .unwrap();
+                let batches = &self.encoder.alpha_batches[render_pass.alpha_batches.clone()];
+                let pipelines = &self.alpha_batch_pipelines[render_pass.alpha_batches.clone()];
+                for (batch, pipeline_idx) in batches.iter().zip(pipelines) {
+                    let pipeline = render_pipelines.get(*pipeline_idx).unwrap();
 
                     if batch.pattern_inputs == SRC_COLOR_ATLAS_BINDING {
                         helper.bind(
@@ -568,8 +625,8 @@ impl TileRenderer {
 
 impl CanvasRenderer for TileRenderer {
     fn add_render_passes(&mut self, batch_id: BatchId, render_passes: &mut RenderPasses) {
-        let (_, passes) = self.batches.get(batch_id.index);
-        for pass_idx in passes.clone() {
+        let (_, info) = self.batches.get(batch_id.index);
+        for pass_idx in info.passes.clone() {
             let pass = &mut self.encoder.render_passes[pass_idx as usize];
 
             pass.color_pre_pass = self.current_color_atlas != pass.color_atlas_index;

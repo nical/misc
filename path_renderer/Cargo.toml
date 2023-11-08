@@ -5,6 +5,7 @@ members = [
     "renderers/stencil",
     "renderers/tiling",
     "renderers/rectangles",
+    "renderers/wpf",
     "patterns/color",
     "patterns/linear_gradient",
     "patterns/checkerboard",

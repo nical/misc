@@ -16,7 +16,7 @@ pub use core::units::{point, vector, Point, Vector};
 use pattern_texture::TextureRenderer;
 
 use copyless::VecHelper;
-use core::bytemuck;
+use core::{bytemuck, SurfaceDrawConfig};
 use core::wgpu;
 
 pub const SRC_COLOR_ATLAS_BINDING: BindingsId = BindingsId::from_index(65000);
@@ -332,6 +332,7 @@ pub struct RenderPass {
     pub z_index: u32,
     pub mask_pre_pass: bool,
     pub color_pre_pass: bool,
+    pub surface: SurfaceDrawConfig,
 }
 
 #[derive(Debug)]
@@ -339,6 +340,7 @@ pub struct Batch {
     pub tiles: Range<u32>,
     pub pattern: ShaderPatternId,
     pub pattern_inputs: BindingsId,
+    pub surface: SurfaceDrawConfig,
 }
 
 #[derive(Default, Debug)]
@@ -399,6 +401,7 @@ pub struct TileEncoder {
     masks_texture_index: AtlasIndex,
     color_texture_index: AtlasIndex,
     pub current_z_index: u32,
+    pub current_surface: SurfaceDrawConfig,
     tile_atlas_pattern: ShaderPatternId,
 
     reversed: bool,
@@ -452,6 +455,7 @@ impl TileEncoder {
             masks_texture_index: 0,
             color_texture_index: 0,
             current_z_index: 0,
+            current_surface: SurfaceDrawConfig::color(),
             tile_atlas_pattern: atlas_shader.load_pattern_id(),
 
             mask_uploader: TileAtlasUploader::new(config.staging_buffer_size),
@@ -708,6 +712,7 @@ impl TileEncoder {
                 z_index: self.current_z_index,
                 mask_pre_pass: false,
                 color_pre_pass: false,
+                surface: self.current_surface,
             });
             self.alpha_batches_start = alpha_batches_end;
             self.opaque_batches_start = opaque_batches_end;
@@ -727,6 +732,7 @@ impl TileEncoder {
                     pattern: ShaderPatternId::from_index(idx),
                     pattern_inputs: BindingsId::NONE, // TODO
                     tiles,
+                    surface: self.current_surface,
                 });
             }
             let atlas_batches_end = self.atlas_pattern_batches.len();
@@ -758,6 +764,7 @@ impl TileEncoder {
                 tiles: self.alpha_tiles_start..alpha_tiles_end,
                 pattern: pattern.shader,
                 pattern_inputs: pattern.bindings,
+                surface: self.current_surface,
             });
             self.alpha_tiles_start = alpha_tiles_end;
         }
@@ -774,6 +781,7 @@ impl TileEncoder {
             tiles: pattern.opaque_start..opaque_end,
             pattern: pattern_id,
             pattern_inputs: pattern.current_opaque_binding,
+            surface: self.current_surface,
         });
 
         pattern.opaque_start = opaque_end;
@@ -790,6 +798,7 @@ impl TileEncoder {
                 tiles: pattern.opaque_start..opaque_end,
                 pattern: ShaderPatternId::from_index(pattern_idx),
                 pattern_inputs: pattern.current_opaque_binding,
+                surface: self.current_surface,
             });
 
             pattern.opaque_start = opaque_end;

@@ -2,7 +2,7 @@
 // are poorly named and/or belong elsewhere.
 
 use crate::batching::{BatchId, Batcher, SurfaceIndex};
-use crate::gpu::shader::{DepthMode, OutputType, RenderPipelines, StencilMode, SurfaceConfig};
+use crate::gpu::shader::RenderPipelines;
 use crate::path::FillRule;
 use crate::pattern::BindingsId;
 use crate::resources::{AsAny, CommonGpuResources, GpuResources, ResourcesHandle};
@@ -54,7 +54,7 @@ pub type RenderPassId = u32;
 struct RenderPass {
     pre_passes: Range<u32>,
     sub_passes: Range<u32>,
-    surface: SurfaceFeatures,
+    surface: SurfacePassConfig,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -64,7 +64,7 @@ struct RenderPass {
 struct RenderPassSlice<'a> {
     pre_passes: &'a [PrePass],
     sub_passes: &'a [SubPass],
-    surface: SurfaceFeatures,
+    surface: SurfacePassConfig,
     msaa_resolve: bool,
     msaa_blit: bool,
     temporary: bool,
@@ -80,7 +80,7 @@ pub struct RenderPassesRequirements {
 }
 
 impl RenderPassesRequirements {
-    fn add_pass(&mut self, pass: SurfaceFeatures) {
+    fn add_pass(&mut self, pass: SurfacePassConfig) {
         self.msaa |= pass.msaa;
         self.msaa_depth_stencil |= pass.msaa && (pass.depth || pass.stencil);
         self.depth_stencil |= !pass.msaa && (pass.depth || pass.stencil);
@@ -218,32 +218,170 @@ impl RenderPasses {
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ContextSurface {
-    states: Vec<SurfaceFeatures>,
+    states: Vec<SurfacePassConfig>,
     size: SurfaceIntSize,
-    state: SurfaceFeatures,
+    state: SurfacePassConfig,
     clear: Option<Color>,
     /// If true, the main target cannot be sampled (for example a swapchain's target).
     write_only_target: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceFeatures {
-    pub depth: bool,
-    pub msaa: bool,
-    pub stencil: bool,
+pub enum StencilMode {
+    EvenOdd,
+    NonZero,
+    Ignore,
+    None,
 }
 
-impl Default for SurfaceFeatures {
-    fn default() -> Self {
-        SurfaceFeatures {
-            depth: false,
-            msaa: false,
-            stencil: false,
+impl From<FillRule> for StencilMode {
+    fn from(fill_rule: FillRule) -> Self {
+        match fill_rule {
+            FillRule::EvenOdd => StencilMode::EvenOdd,
+            FillRule::NonZero => StencilMode::NonZero,
         }
     }
 }
 
-impl SurfaceFeatures {
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DepthMode {
+    Enabled,
+    Ignore,
+    None,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceKind {
+    Color,
+    Alpha,
+    // TODO: HDRColor, color spaces?
+}
+
+// The surface parameters for draw calls.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SurfaceDrawConfig {
+    pub msaa: bool,
+    pub depth: DepthMode,
+    pub stencil: StencilMode,
+    pub kind: SurfaceKind,
+}
+
+impl SurfaceDrawConfig {
+    pub(crate) fn hash(&self) -> u8 {
+        return if self.msaa { 1 } else { 0 }
+            + (match self.depth {
+                DepthMode::Enabled => 1,
+                DepthMode::Ignore => 2,
+                DepthMode::None => 0,
+            } << 1)
+            + (match self.stencil {
+                StencilMode::EvenOdd => 1,
+                StencilMode::NonZero => 2,
+                StencilMode::Ignore => 3,
+                StencilMode::None => 0,
+            } << 3)
+            + (match self.kind {
+                SurfaceKind::Color => 0,
+                SurfaceKind::Alpha => 1,
+            } << 6);
+    }
+
+    pub(crate) fn from_hash(val: u8) -> Self {
+        SurfaceDrawConfig {
+            msaa: val & 1 != 0,
+            depth: match (val >> 1) & 3 {
+                1 => DepthMode::Enabled,
+                2 => DepthMode::Ignore,
+                _ => DepthMode::None,
+            },
+            stencil: match (val >> 3) & 3 {
+                1 => StencilMode::EvenOdd,
+                2 => StencilMode::NonZero,
+                3 => StencilMode::Ignore,
+                _ => StencilMode::None,
+            },
+            kind: match (val >> 6) & 1 {
+                0 => SurfaceKind::Color,
+                _ => SurfaceKind::Alpha,
+            }
+        }
+    }
+
+    pub fn color() -> Self {
+        SurfaceDrawConfig {
+            msaa: false,
+            depth: DepthMode::None,
+            stencil: StencilMode::None,
+            kind: SurfaceKind::Color,
+        }
+    }
+
+    pub fn alpha() -> Self {
+        SurfaceDrawConfig {
+            msaa: false,
+            depth: DepthMode::None,
+            stencil: StencilMode::None,
+            kind: SurfaceKind::Color,
+        }
+    }
+
+    pub fn with_msaa(mut self, msaa: bool) -> Self {
+        self.msaa = msaa;
+        self
+    }
+
+    pub fn with_stencil(mut self, stencil: StencilMode) -> Self {
+        self.stencil = stencil;
+        self
+    }
+
+    pub fn with_depth(mut self, depth: DepthMode) -> Self {
+        self.depth = depth;
+        self
+    }
+}
+
+impl Default for SurfaceDrawConfig {
+    fn default() -> Self {
+        SurfaceDrawConfig::color()
+    }
+}
+
+#[test]
+fn surface_draw_config() {
+    for msaa in [true, false] {
+        for depth in [DepthMode::Enabled, DepthMode::Ignore, DepthMode::None] {
+            for stencil in [StencilMode::EvenOdd, StencilMode::NonZero, StencilMode::Ignore, StencilMode::None] {
+                for kind in [SurfaceKind::Color, SurfaceKind::Alpha] {
+                    let surface = SurfaceDrawConfig { msaa, depth, stencil, kind};
+                    assert_eq!(SurfaceDrawConfig::from_hash(surface.hash()), surface);
+                }                
+            }
+        }
+    }
+}
+
+/// The surface parameters for render passes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SurfacePassConfig {
+    pub depth: bool,
+    pub msaa: bool,
+    pub stencil: bool,
+    pub kind: SurfaceKind,
+}
+
+impl Default for SurfacePassConfig {
+    fn default() -> Self {
+        SurfacePassConfig {
+            depth: false,
+            msaa: false,
+            stencil: false,
+            kind: SurfaceKind::Color,
+        }
+    }
+}
+
+impl SurfacePassConfig {
     pub fn msaa(&self) -> bool {
         self.msaa
     }
@@ -256,8 +394,8 @@ impl SurfaceFeatures {
     pub fn depth_or_stencil(&self) -> bool {
         self.depth || self.stencil
     }
-    pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
-        SurfaceConfig {
+    pub fn draw_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceDrawConfig {
+        SurfaceDrawConfig {
             msaa: self.msaa,
             depth: match (use_depth, self.depth) {
                 (true, true) => DepthMode::Enabled,
@@ -273,13 +411,47 @@ impl SurfaceFeatures {
                     "Attempting to use the stencil buffer on a surface that does not have one"
                 ),
             },
+            kind: self.kind,
         }
+    }
+
+    pub fn color() -> Self {
+        SurfacePassConfig {
+            msaa: false,
+            depth: false,
+            stencil: false,
+            kind: SurfaceKind::Color,
+        }
+    }
+
+    pub fn alpha() -> Self {
+        SurfacePassConfig {
+            msaa: false,
+            depth: false,
+            stencil: false,
+            kind: SurfaceKind::Color,
+        }
+    }
+
+    pub fn with_msaa(mut self, msaa: bool) -> Self {
+        self.msaa = msaa;
+        self
+    }
+
+    pub fn with_stencil(mut self, stencil: bool) -> Self {
+        self.stencil = stencil;
+        self
+    }
+
+    pub fn with_depth(mut self, depth: bool) -> Self {
+        self.depth = depth;
+        self
     }
 }
 
 impl ContextSurface {
     #[inline]
-    fn new(size: SurfaceIntSize, state: SurfaceFeatures) -> Self {
+    fn new(size: SurfaceIntSize, state: SurfacePassConfig) -> Self {
         ContextSurface {
             states: vec![state],
             size,
@@ -305,25 +477,26 @@ impl ContextSurface {
     }
 
     #[inline]
-    pub fn features(&self, surface: SurfaceIndex) -> SurfaceFeatures {
+    pub fn get_config(&self, surface: SurfaceIndex) -> SurfacePassConfig {
         self.states[surface as usize]
     }
 
-    pub fn current_features(&self) -> SurfaceFeatures {
+    pub fn current_config(&self) -> SurfacePassConfig {
         self.state
     }
 }
 
 // TODO: should this go in RenderContext?
+/// Information about the current render pass.
 pub struct RenderPassState {
-    pub output_type: OutputType,
-    pub surface: SurfaceFeatures,
+    pub output_type: SurfaceKind,
+    pub surface: SurfacePassConfig,
 }
 
 impl RenderPassState {
     #[inline]
-    pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceConfig {
-        self.surface.surface_config(use_depth, stencil)
+    pub fn surface_config(&self, use_depth: bool, stencil: Option<FillRule>) -> SurfaceDrawConfig {
+        self.surface.draw_config(use_depth, stencil)
     }
 }
 
@@ -360,7 +533,7 @@ impl Context {
         }
     }
 
-    pub fn begin_frame(&mut self, size: SurfaceIntSize, surface: SurfaceFeatures) {
+    pub fn begin_frame(&mut self, size: SurfaceIntSize, surface: SurfacePassConfig) {
         self.transforms.clear();
         self.z_indices.clear();
         self.render_passes.clear();
@@ -373,7 +546,7 @@ impl Context {
         self.surface.states.push(self.surface.state);
     }
 
-    pub fn reconfigure_surface(&mut self, state: SurfaceFeatures) {
+    pub fn reconfigure_surface(&mut self, state: SurfacePassConfig) {
         if self.surface.state == state {
             return;
         }
@@ -530,7 +703,7 @@ impl Context {
             }
 
             let pass_info = RenderPassState {
-                output_type: OutputType::Color,
+                output_type: SurfaceKind::Color,
                 surface: pass.surface,
             };
 
@@ -568,6 +741,7 @@ impl Context {
     }
 }
 
+/// Parameters for the canvas renderers
 pub struct RenderContext<'l> {
     pub render_pipelines: &'l RenderPipelines,
     pub resources: &'l GpuResources,
@@ -602,14 +776,20 @@ pub trait CanvasRenderer: AsAny {
     }
 }
 
+/// A bock of commands from a specific renderer within a render pass.
 #[derive(Copy, Clone, Debug)]
 pub struct SubPass {
     pub renderer_id: RendererId,
+    // This index is provided by the render in `add_render_pass` and passed back
+    // to it in `render`. It can be anything, it is usually a batch index.
     pub internal_index: u32,
     pub require_pre_pass: bool,
+    // Used when generating the render passes to decide when to split render
+    // passes. It can be obtained from the batch id.
     pub surface: SurfaceIndex,
 }
 
+/// Work a renderer can schedule before a render pass.
 #[derive(Debug)]
 pub struct PrePass {
     pub renderer_id: RendererId,

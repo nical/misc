@@ -3,7 +3,7 @@ use core::bytemuck;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, GeometryDescriptor, OutputType, PipelineDescriptor,
+        BlendMode, GeneratedPipelineId, GeometryDescriptor, PipelineDescriptor,
         ShaderGeometryId, ShaderMaskId, Shaders, Varying, VertexAtribute,
     },
     resources::RendererResources,
@@ -84,7 +84,6 @@ impl RectangleGpuResources {
             geometry: rect_geometry,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::None,
             shader_defines: vec!["EDGE_AA"],
         });
@@ -93,7 +92,6 @@ impl RectangleGpuResources {
             geometry: rect_geometry,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
         });
@@ -103,7 +101,6 @@ impl RectangleGpuResources {
             geometry: rect_geometry,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
@@ -112,7 +109,6 @@ impl RectangleGpuResources {
             geometry: rect_geometry,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS"],
         });

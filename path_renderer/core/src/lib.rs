@@ -52,6 +52,10 @@ pub mod units {
     pub use euclid::vec2 as vector;
 }
 
+pub use crate::canvas::{
+    SurfaceDrawConfig, SurfacePassConfig, SurfaceKind, StencilMode, DepthMode,
+};
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color {
     pub r: u8,

@@ -1,7 +1,7 @@
 use core::wgpu;
 use core::{
     gpu::{
-        shader::{BlendMode, GeneratedPipelineId, OutputType, PipelineDescriptor, ShaderMaskId},
+        shader::{BlendMode, GeneratedPipelineId, PipelineDescriptor, ShaderMaskId},
         Shaders, VertexBuilder,
     },
     resources::{CommonGpuResources, RendererResources},
@@ -111,7 +111,6 @@ impl StencilAndCoverResources {
             geometry: cover_geom,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
@@ -120,7 +119,6 @@ impl StencilAndCoverResources {
             geometry: cover_geom,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });

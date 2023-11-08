@@ -4,7 +4,7 @@ use core::{
     bytemuck,
     canvas::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
-        SurfaceFeatures,
+        SurfacePassConfig,
     },
     gpu::{
         shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
@@ -41,7 +41,7 @@ pub struct Batch {
     // TODO: pattern, surface and opauqe are only kept so that we can
     // create the pipeline index later in the prepare pass.
     pattern: BuiltPattern,
-    surface: SurfaceFeatures,
+    surface: SurfacePassConfig,
     opaque: bool,
     pipeline_idx: Option<RenderPipelineIndex>,
 }
@@ -72,7 +72,7 @@ impl RectangleRenderer {
         self.batches.clear();
     }
 
-    pub fn supports_surface(&self, _surface: SurfaceFeatures) -> bool {
+    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
         true
     }
 
@@ -92,7 +92,7 @@ impl RectangleRenderer {
             .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = canvas.surface.current_features();
+        let surface = canvas.surface.current_config();
 
         if surface.msaa {
             aa = Aa::NONE;
@@ -177,7 +177,7 @@ impl RectangleRenderer {
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
                 batch.pattern.shader,
-                batch.surface.surface_config(true, None),
+                batch.surface.draw_config(true, None),
             ));
             batch.pipeline_idx = Some(idx);
         }

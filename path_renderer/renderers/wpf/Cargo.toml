@@ -1,0 +1,12 @@
+[package]
+name = "wpf"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+workspace = "../.."
+
+[dependencies]
+core = { path = "../../core" }
+wpf-gpu-raster = "0.1.0"
+lyon_path = "1.0.0"
+profiling = "1.0.4"

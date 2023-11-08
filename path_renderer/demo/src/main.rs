@@ -16,6 +16,7 @@ use lyon::path::geom::euclid::size2;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
+use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::Duration;
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
@@ -41,6 +42,8 @@ use load_svg::*;
 const TILING: usize = 0;
 const TESS: usize = 1;
 const STENCIL: usize = 2;
+const WPF: usize = 3;
+const RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
 
 fn main() {
     color_backtrace::install();
@@ -197,20 +200,14 @@ fn main() {
         &mut shaders,
     );
 
-    let mut prep_pipelines = render_pipelines.prepare();
     let tiling_resources = TilingGpuResources::new(
         &mut common_resources,
         &device,
         &mut shaders,
-        &mut prep_pipelines,
         &patterns.textures,
         mask_atlas_size,
         color_atlas_size,
         use_ssaa4,
-    );
-    render_pipelines.build(
-        &[&prep_pipelines.finish()],
-        &mut RenderPipelineBuilder(&device, &mut shaders),
     );
 
     let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
@@ -220,17 +217,22 @@ fn main() {
 
     let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
 
+    let wpf_resources = WpfGpuResources::new(&device, &mut shaders);
+
     let mut gpu_resources = GpuResources::new();
     let common_handle = gpu_resources.register(common_resources);
     let tiling_handle = gpu_resources.register(tiling_resources);
     let mesh_handle = gpu_resources.register(mesh_resources);
     let stencil_handle = gpu_resources.register(stencil_resources);
     let rectangle_handle = gpu_resources.register(rectangle_resources);
+    let wpf_handle = gpu_resources.register(wpf_resources);
 
     let mut tiling = TileRenderer::new(
         0,
         common_handle,
         tiling_handle,
+        &gpu_resources[tiling_handle],
+        &patterns.textures,
         &tiler_config,
         &patterns.textures,
     );
@@ -246,6 +248,13 @@ fn main() {
         common_handle,
         rectangle_handle,
         &gpu_resources[rectangle_handle],
+    );
+
+    let mut wpf = WpfMeshRenderer::new(
+        4,
+        common_handle,
+        wpf_handle,
+        &gpu_resources[wpf_handle],
     );
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -280,9 +289,10 @@ fn main() {
         size_changed: true,
         render: true,
         selected_renderer: 0,
+        msaa: MsaaMode::Auto,
     };
 
-    update_title(&window, scene.selected_renderer);
+    update_title(&window, scene.selected_renderer, scene.msaa);
 
     let mut depth_texture = None;
     let mut msaa_texture = None;
@@ -341,16 +351,18 @@ fn main() {
         gpu_store.clear();
         canvas.begin_frame(
             size,
-            SurfaceFeatures {
+            SurfacePassConfig {
                 depth: false,
-                msaa: false,
+                msaa: if scene.msaa == MsaaMode::Enabled { true } else { false },
                 stencil: false,
+                kind: SurfaceKind::Color,
             },
         );
         tiling.begin_frame(&canvas);
         meshes.begin_frame(&canvas);
         stencil.begin_frame(&canvas);
         rectangles.begin_frame(&canvas);
+        wpf.begin_frame(&canvas);
 
         gpu_resources.begin_frame();
 
@@ -366,11 +378,13 @@ fn main() {
         paint_scene(
             &paths,
             scene.selected_renderer,
+            scene.msaa,
             &mut canvas,
             &mut tiling,
             &mut meshes,
             &mut stencil,
             &mut rectangles,
+            &mut wpf,
             &patterns,
             &mut gpu_store,
             &transform,
@@ -407,6 +421,7 @@ fn main() {
         meshes.prepare(&canvas, &mut prep_pipelines);
         stencil.prepare(&canvas, &mut prep_pipelines);
         rectangles.prepare(&canvas, &mut prep_pipelines);
+        wpf.prepare(&canvas, &mut prep_pipelines);
 
         let changes = prep_pipelines.finish();
         render_pipelines.build(
@@ -419,6 +434,7 @@ fn main() {
             &mut meshes,
             &mut stencil,
             &mut rectangles,
+            &mut wpf,
         ]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
@@ -461,12 +477,13 @@ fn main() {
         meshes.upload(&mut gpu_resources, &device, &queue);
         stencil.upload(&mut gpu_resources, &device);
         rectangles.upload(&mut gpu_resources, &device, &queue);
+        wpf.upload(&mut gpu_resources, &device, &queue);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
         canvas.render(
-            &[&tiling, &meshes, &stencil, &rectangles],
+            &[&tiling, &meshes, &stencil, &rectangles, &wpf],
             &gpu_resources,
             &source_textures,
             &mut render_pipelines,
@@ -520,11 +537,13 @@ fn main() {
 fn paint_scene(
     paths: &[(Arc<Path>, Option<SvgPattern>, Option<load_svg::Stroke>)],
     selected_renderer: usize,
+    msaa: MsaaMode,
     ctx: &mut Context,
     tiling: &mut TileRenderer,
     meshes: &mut MeshRenderer,
     stencil: &mut StencilAndCoverRenderer,
     rectangles: &mut RectangleRenderer,
+    wpf: &mut WpfMeshRenderer,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
     transform: &LocalTransform,
@@ -580,19 +599,21 @@ fn paint_scene(
         ),
     );
 
-    if selected_renderer == TESS {
-        ctx.reconfigure_surface(SurfaceFeatures {
-            depth: true,
-            msaa: true,
-            stencil: false,
-        });
-    } else if selected_renderer == STENCIL {
-        ctx.reconfigure_surface(SurfaceFeatures {
-            depth: true,
-            msaa: true,
-            stencil: true,
-        });
-    }
+    let msaa_default = match msaa {
+        MsaaMode::Disabled => false,
+        _ => true,
+    };
+    let msaa_tiling = match msaa {
+        MsaaMode::Enabled => true,
+        _ => false,
+    };
+
+    ctx.reconfigure_surface(SurfacePassConfig {
+        depth: selected_renderer != TILING,
+        msaa: if selected_renderer == TILING || selected_renderer == WPF { msaa_tiling } else { msaa_default },
+        stencil: selected_renderer == STENCIL,
+        kind: SurfaceKind::Color,
+    });
 
     for (path, fill, stroke) in paths {
         if let Some(fill) = fill {
@@ -625,6 +646,9 @@ fn paint_scene(
                 }
                 STENCIL => {
                     stencil.fill_path(ctx, path, pattern);
+                }
+                WPF => {
+                    wpf.fill_path(ctx, path, pattern);
                 }
                 _ => unimplemented!(),
             }
@@ -687,15 +711,19 @@ fn paint_scene(
                 STENCIL => {
                     stencil.fill_path(ctx, path, pattern);
                 }
+                WPF => {
+                    wpf.fill_path(ctx, path, pattern);
+                }
                 _ => unimplemented!(),
             }
         }
     }
 
-    ctx.reconfigure_surface(SurfaceFeatures {
+    ctx.reconfigure_surface(SurfacePassConfig {
         depth: true,
-        msaa: false,
+        msaa: msaa_default,
         stencil: true,
+        kind: SurfaceKind::Color,
     });
 
     ctx.transforms
@@ -760,13 +788,12 @@ fn paint_scene(
     );
     ctx.transforms.pop();
 
-    //if selected_renderer != TILING {
-    ctx.reconfigure_surface(SurfaceFeatures {
+    ctx.reconfigure_surface(SurfacePassConfig {
         depth: false,
-        msaa: false,
+        msaa: msaa_tiling,
         stencil: false,
+        kind: SurfaceKind::Color,
     });
-    //}
 
     tiling.fill_circle(
         ctx,
@@ -920,121 +947,123 @@ fn paint_scene(
         offsetter.end(false);
     }
 
-    let offset_path = builder2.build();
-    tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
+    if false {
+        let offset_path = builder2.build();
+        tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
 
-    meshes.stroke_path(
-        ctx,
-        offset_path.clone(),
-        1.0,
-        patterns.colors.add(Color {
-            r: 100,
-            g: 0,
-            b: 0,
-            a: 255,
-        }),
-    );
-    meshes.stroke_path(
-        ctx,
-        path_to_offset.clone(),
-        1.0,
-        patterns.colors.add(Color::BLACK),
-    );
+        meshes.stroke_path(
+            ctx,
+            offset_path.clone(),
+            1.0,
+            patterns.colors.add(Color {
+                r: 100,
+                g: 0,
+                b: 0,
+                a: 255,
+            }),
+        );
+        meshes.stroke_path(
+            ctx,
+            path_to_offset.clone(),
+            1.0,
+            patterns.colors.add(Color::BLACK),
+        );
 
-    let mut b = Path::builder();
-    b.begin(point(500.0, 500.0));
-    b.line_to(point(600.0, 500.0));
-    b.line_to(point(650.0, 400.0));
-    b.line_to(point(700.0, 500.0));
-    b.line_to(point(800.0, 500.0));
-    b.line_to(point(650.0, 600.0));
-    b.end(true);
+        let mut b = Path::builder();
+        b.begin(point(500.0, 500.0));
+        b.line_to(point(600.0, 500.0));
+        b.line_to(point(650.0, 400.0));
+        b.line_to(point(700.0, 500.0));
+        b.line_to(point(800.0, 500.0));
+        b.line_to(point(650.0, 600.0));
+        b.end(true);
 
-    b.begin(point(110.0, 110.0));
-    b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-    b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-    b.end(false);
-    meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+        b.begin(point(110.0, 110.0));
+        b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+        b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+        b.end(false);
+        meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
-    let green = patterns.colors.add(Color::GREEN);
-    let blue = patterns.colors.add(Color::BLUE);
-    let white = patterns.colors.add(Color::WHITE);
-    for evt in offset_path.as_slice() {
-        match evt {
-            PathEvent::Begin { at } => {
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: at.cast_unit(),
-                        radius: 3.0,
-                        inverted: false,
-                    },
-                    green,
-                );
+        let green = patterns.colors.add(Color::GREEN);
+        let blue = patterns.colors.add(Color::BLUE);
+        let white = patterns.colors.add(Color::WHITE);
+        for evt in offset_path.as_slice() {
+            match evt {
+                PathEvent::Begin { at } => {
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: at.cast_unit(),
+                            radius: 3.0,
+                            inverted: false,
+                        },
+                        green,
+                    );
+                }
+                PathEvent::Line { to, .. } => {
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: to.cast_unit(),
+                            radius: 3.0,
+                            inverted: false,
+                        },
+                        green,
+                    );
+                }
+                PathEvent::Quadratic { ctrl, to, .. } => {
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: ctrl.cast_unit(),
+                            radius: 4.0,
+                            inverted: false,
+                        },
+                        blue,
+                    );
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: to.cast_unit(),
+                            radius: 3.0,
+                            inverted: false,
+                        },
+                        white,
+                    );
+                }
+                PathEvent::Cubic {
+                    ctrl1, ctrl2, to, ..
+                } => {
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: ctrl1.cast_unit(),
+                            radius: 4.0,
+                            inverted: false,
+                        },
+                        blue,
+                    );
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: ctrl2.cast_unit(),
+                            radius: 4.0,
+                            inverted: false,
+                        },
+                        blue,
+                    );
+                    meshes.fill_circle(
+                        ctx,
+                        Circle {
+                            center: to.cast_unit(),
+                            radius: 2.0,
+                            inverted: false,
+                        },
+                        white,
+                    );
+                }
+                _ => {}
             }
-            PathEvent::Line { to, .. } => {
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: to.cast_unit(),
-                        radius: 3.0,
-                        inverted: false,
-                    },
-                    green,
-                );
-            }
-            PathEvent::Quadratic { ctrl, to, .. } => {
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: ctrl.cast_unit(),
-                        radius: 4.0,
-                        inverted: false,
-                    },
-                    blue,
-                );
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: to.cast_unit(),
-                        radius: 3.0,
-                        inverted: false,
-                    },
-                    white,
-                );
-            }
-            PathEvent::Cubic {
-                ctrl1, ctrl2, to, ..
-            } => {
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: ctrl1.cast_unit(),
-                        radius: 4.0,
-                        inverted: false,
-                    },
-                    blue,
-                );
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: ctrl2.cast_unit(),
-                        radius: 4.0,
-                        inverted: false,
-                    },
-                    blue,
-                );
-                meshes.fill_circle(
-                    ctx,
-                    Circle {
-                        center: to.cast_unit(),
-                        radius: 2.0,
-                        inverted: false,
-                    },
-                    white,
-                );
-            }
-            _ => {}
         }
     }
 
@@ -1158,6 +1187,13 @@ fn create_render_targets(
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MsaaMode {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
 // Default scene has all values set to zero
 #[derive(Copy, Clone, Debug)]
 pub struct SceneGlobals {
@@ -1170,6 +1206,7 @@ pub struct SceneGlobals {
     pub size_changed: bool,
     pub render: bool,
     pub selected_renderer: usize,
+    pub msaa: MsaaMode,
 }
 
 fn update_inputs(
@@ -1264,15 +1301,23 @@ fn update_inputs(
             }
             VirtualKeyCode::J => {
                 if scene.selected_renderer == 0 {
-                    scene.selected_renderer = 2;
+                    scene.selected_renderer = 3;
                 } else {
                     scene.selected_renderer -= 1;
                 }
-                update_title(window, scene.selected_renderer);
+                update_title(window, scene.selected_renderer, scene.msaa);
             }
             VirtualKeyCode::K => {
-                scene.selected_renderer = (scene.selected_renderer + 1) % 3;
-                update_title(window, scene.selected_renderer);
+                scene.selected_renderer = (scene.selected_renderer + 1) % 4;
+                update_title(window, scene.selected_renderer, scene.msaa);
+            }
+            VirtualKeyCode::M => {
+                scene.msaa = match scene.msaa {
+                    MsaaMode::Auto => MsaaMode::Disabled,
+                    MsaaMode::Disabled => MsaaMode::Enabled,
+                    MsaaMode::Enabled => MsaaMode::Auto,
+                };
+                update_title(window, scene.selected_renderer, scene.msaa);
             }
 
             _key => {}
@@ -1283,10 +1328,7 @@ fn update_inputs(
     }
 
     if r != scene.selected_renderer {
-        println!(
-            "{}",
-            &["tiling", "tessellation", "stencil and cover"][scene.selected_renderer]
-        )
+        println!("{}", RENDERER_STRINGS[scene.selected_renderer]);
     }
 
     scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
@@ -1301,13 +1343,11 @@ fn update_inputs(
     true
 }
 
-fn update_title(window: &Window, selected_renderer: usize) {
-    window.set_title(match selected_renderer {
-        TILING => "demo - tiling",
-        TESS => "demo - tessellation",
-        STENCIL => "demo - stencil_and_colver",
-        _ => "demo",
-    });
+fn update_title(window: &Window, selected_renderer: usize, msaa: MsaaMode) {
+    let title = format!("Demo - renderer: {}, msaa: {msaa:?}",
+        RENDERER_STRINGS[selected_renderer]
+    );
+    window.set_title(&title);
 }
 
 struct Patterns {

@@ -15,9 +15,6 @@ pub use renderer::*;
 pub use resources::*;
 pub use tiler::*;
 
-use lyon::geom::euclid::default::Transform2D;
-use lyon::path::FillRule;
-
 pub type PatternData = u32;
 pub type AtlasIndex = u32;
 

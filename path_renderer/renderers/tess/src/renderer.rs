@@ -3,7 +3,7 @@ use core::{
     bytemuck,
     canvas::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
-        SurfaceFeatures, ZIndex,
+        SurfacePassConfig, ZIndex,
     },
     gpu::{
         shader::{
@@ -42,7 +42,7 @@ pub struct TessellatedMesh {
 
 struct BatchInfo {
     draws: Range<u32>,
-    surface: SurfaceFeatures,
+    surface: SurfacePassConfig,
 }
 
 enum Shape {
@@ -161,7 +161,7 @@ impl MeshRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfaceFeatures) -> bool {
+    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
         true
     }
 
@@ -228,10 +228,10 @@ impl MeshRenderer {
             BatchFlags::empty(),
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: canvas.surface.current_features(),
+                surface: canvas.surface.current_config(),
             },
         );
-        info.surface = canvas.surface.current_features();
+        info.surface = canvas.surface.current_config();
         commands.push(Fill {
             shape,
             pattern,
@@ -278,7 +278,7 @@ impl MeshRenderer {
                                 pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                                     self.opaque_pipeline,
                                     key.0,
-                                    surface.surface_config(true, None),
+                                    surface.draw_config(true, None),
                                 )),
                             });
                         }
@@ -297,7 +297,7 @@ impl MeshRenderer {
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                         self.opaque_pipeline,
                         key.0,
-                        surface.surface_config(true, None),
+                        surface.draw_config(true, None),
                     )),
                 });
             }
@@ -317,7 +317,7 @@ impl MeshRenderer {
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                                 self.alpha_pipeline,
                                 key.0,
-                                surface.surface_config(true, None),
+                                surface.draw_config(true, None),
                             )),
                         });
                     }
@@ -335,7 +335,7 @@ impl MeshRenderer {
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                         self.alpha_pipeline,
                         key.0,
-                        surface.surface_config(true, None),
+                        surface.draw_config(true, None),
                     )),
                 });
             }

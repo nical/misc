@@ -2,11 +2,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use lyon::path::FillRule;
 use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
 use super::VertexBuilder;
-use crate::gpu::PipelineDefaults;
+use crate::{gpu::PipelineDefaults, canvas::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind}};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderPatternId(u16);
@@ -240,7 +239,7 @@ impl Shaders {
         device: &wgpu::Device,
         pipeline_id: GeneratedPipelineId,
         pattern_id: ShaderPatternId,
-        surface: &SurfaceConfig,
+        surface: &SurfaceDrawConfig,
     ) -> wgpu::RenderPipeline {
         let params = &self.params[pipeline_id.index()];
 
@@ -353,9 +352,9 @@ impl Shaders {
         });
 
         let color_target = &[Some(wgpu::ColorTargetState {
-            format: match params.output {
-                OutputType::Color => self.defaults.color_format(),
-                OutputType::Alpha => self.defaults.mask_format(),
+            format: match surface.kind {
+                SurfaceKind::Color => self.defaults.color_format(),
+                SurfaceKind::Alpha => self.defaults.mask_format(),
             },
             blend: match params.blend {
                 BlendMode::None => None,
@@ -1286,15 +1285,8 @@ pub struct PipelineDescriptor {
     pub geometry: ShaderGeometryId,
     pub mask: ShaderMaskId,
     pub user_flags: u8,
-    pub output: OutputType,
     pub blend: BlendMode,
     pub shader_defines: Vec<&'static str>,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum OutputType {
-    Color,
-    Alpha,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -1308,89 +1300,6 @@ pub enum BlendMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum StencilMode {
-    EvenOdd,
-    NonZero,
-    Ignore,
-    None,
-}
-
-impl From<FillRule> for StencilMode {
-    fn from(fill_rule: FillRule) -> Self {
-        match fill_rule {
-            FillRule::EvenOdd => StencilMode::EvenOdd,
-            FillRule::NonZero => StencilMode::NonZero,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DepthMode {
-    Enabled,
-    Ignore,
-    None,
-}
-
-// The surface configuration from the point of view of a draw call.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceConfig {
-    pub msaa: bool,
-    pub depth: DepthMode,
-    pub stencil: StencilMode,
-}
-
-impl SurfaceConfig {
-    pub(crate) fn as_u8(&self) -> u8 {
-        return if self.msaa { 1 } else { 0 }
-            + match self.depth {
-                DepthMode::Enabled => 2,
-                DepthMode::Ignore => 4,
-                DepthMode::None => 0,
-            }
-            + match self.stencil {
-                StencilMode::EvenOdd => 8,
-                StencilMode::NonZero => 16,
-                StencilMode::Ignore => 32,
-                StencilMode::None => 0,
-            };
-    }
-
-    pub(crate) fn from_u8(val: u8) -> Self {
-        SurfaceConfig {
-            msaa: val & 1 != 0,
-            depth: match val & (2 | 4) {
-                2 => DepthMode::Enabled,
-                4 => DepthMode::Ignore,
-                _ => DepthMode::None,
-            },
-            stencil: match val & (8 | 16 | 32) {
-                8 => StencilMode::EvenOdd,
-                16 => StencilMode::NonZero,
-                32 => StencilMode::Ignore,
-                _ => StencilMode::None,
-            },
-        }
-    }
-}
-
-impl Default for SurfaceConfig {
-    fn default() -> Self {
-        SurfaceConfig {
-            msaa: false,
-            depth: DepthMode::None,
-            stencil: StencilMode::None,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Depth {
-    None,
-    Read,
-    ReadWrite,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RenderPipelineKey(u64);
 pub type RenderPipelineIndex = crate::cache::Index<RenderPipelineKey>;
 pub type RenderPipelines = crate::cache::Registry<RenderPipelineKey, wgpu::RenderPipeline>;
@@ -1401,15 +1310,15 @@ impl RenderPipelineKey {
     pub fn new(
         pipeline: GeneratedPipelineId,
         pattern: ShaderPatternId,
-        surf: SurfaceConfig,
+        surf: SurfaceDrawConfig,
     ) -> Self {
-        Self(surf.as_u8() as u64 | ((pipeline.0 as u64) << 16) | (pattern.get() as u64) << 32)
+        Self(surf.hash() as u64 | ((pipeline.0 as u64) << 16) | (pattern.get() as u64) << 32)
     }
 
-    pub fn unpack(&self) -> (GeneratedPipelineId, ShaderPatternId, SurfaceConfig) {
+    pub fn unpack(&self) -> (GeneratedPipelineId, ShaderPatternId, SurfaceDrawConfig) {
         let pipeline = GeneratedPipelineId((self.0 >> 16) as u16);
         let pattern = ShaderPatternId((self.0 >> 32) as u16);
-        let surf = SurfaceConfig::from_u8(self.0 as u8);
+        let surf = SurfaceDrawConfig::from_hash(self.0 as u8);
         (pipeline, pattern, surf)
     }
 }

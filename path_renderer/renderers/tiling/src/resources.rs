@@ -6,9 +6,8 @@ use core::{
     gpu::{
         shader::{
             BindGroupLayout, BindGroupLayoutId, Binding, BlendMode, GeneratedPipelineId,
-            GeometryDescriptor, MaskDescriptor, OutputType, PipelineDescriptor,
-            PrepareRenderPipelines, RenderPipelineKey, ShaderMaskId, ShaderPatternId,
-            SurfaceConfig, Varying, VertexAtribute,
+            GeometryDescriptor, MaskDescriptor, PipelineDescriptor,
+            ShaderMaskId, Varying, VertexAtribute,
         },
         storage_buffer::*,
         GpuTargetDescriptor, Shaders, VertexBuilder,
@@ -79,7 +78,6 @@ impl TilingGpuResources {
         common: &mut CommonGpuResources,
         device: &wgpu::Device,
         shaders: &mut Shaders,
-        render_pipelines: &mut PrepareRenderPipelines,
         texture: &TextureRenderer,
         mask_atlas_size: u32,
         color_atlas_size: u32,
@@ -127,7 +125,6 @@ impl TilingGpuResources {
             geometry: tile_geom_id,
             mask: ShaderMaskId::NONE,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
@@ -137,18 +134,9 @@ impl TilingGpuResources {
             geometry: tile_geom_id,
             mask: fill_mask_id,
             user_flags: 0,
-            output: OutputType::Color,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
-
-        // TODO: build the pipelines lazily
-        let surface = SurfaceConfig::default();
-        for idx in 0..shaders.num_patterns() {
-            let pat = ShaderPatternId::from_index(idx);
-            render_pipelines.prepare(RenderPipelineKey::new(opaque_pipeline, pat, surface));
-            render_pipelines.prepare(RenderPipelineKey::new(masked_pipeline, pat, surface));
-        }
 
         let edges =
             StorageBuffer::new::<LineEdge>(device, "edges", 4096 * 256, StorageKind::Buffer);

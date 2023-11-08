@@ -12,7 +12,6 @@ use super::StencilAndCoverResources;
 use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::wgpu;
 use core::{
-    batching::SurfaceIndex,
     bytemuck,
     canvas::RenderContext,
     gpu::shader::{
@@ -21,13 +20,14 @@ use core::{
     shape::{Circle, PathShape},
 };
 use core::{
+    DepthMode, StencilMode, SurfaceDrawConfig, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
     canvas::{
-        CanvasRenderer, Context, DrawHelper, RenderPassState, RendererId, SubPass, SurfaceFeatures,
+        CanvasRenderer, Context, DrawHelper, RenderPassState, RendererId, SubPass,
         ZIndex,
     },
     gpu::{
-        shader::{DepthMode, ShaderPatternId, StencilMode, SurfaceConfig},
+        shader::ShaderPatternId,
         DynBufferRange,
     },
     pattern::{BindingsId, BuiltPattern},
@@ -184,7 +184,7 @@ impl StencilAndCoverRenderer {
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfaceFeatures) -> bool {
+    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
         surface.stencil
     }
 
@@ -223,7 +223,7 @@ impl StencilAndCoverRenderer {
     }
 
     fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_features()));
+        debug_assert!(self.supports_surface(canvas.surface.current_config()));
 
         let aabb = canvas
             .transforms
@@ -268,6 +268,8 @@ impl StencilAndCoverRenderer {
 
             let draws_start = self.draws.len();
 
+            let surface = canvas.surface.get_config(batch_id.surface);
+
             for (fill_idx, fill) in commands.iter().enumerate() {
                 let is_last = fill_idx == commands.len() - 1;
                 self.prepare_fill(
@@ -275,7 +277,7 @@ impl StencilAndCoverRenderer {
                     fill,
                     &mut batching,
                     is_last,
-                    batch_id.surface,
+                    surface,
                     shaders,
                 );
             }
@@ -293,7 +295,7 @@ impl StencilAndCoverRenderer {
         fill: &Fill,
         batch: &mut BatchHelper,
         is_last: bool,
-        surface_idx: SurfaceIndex,
+        surface: SurfacePassConfig,
         shaders: &mut PrepareRenderPipelines,
     ) {
         let transform = canvas.transforms.get(fill.transform);
@@ -306,8 +308,6 @@ impl StencilAndCoverRenderer {
             Shape::Circle(_) => StencilMode::Ignore,
             //Shape::Canvas => StencilMode::Ignore,
         };
-
-        let state = canvas.surface.features(surface_idx);
 
         let transformed_aabb = transform.matrix().outer_transformed_box(&local_aabb);
 
@@ -344,15 +344,10 @@ impl StencilAndCoverRenderer {
         // Flush the previous cover batch if needed.
         if new_cover_batch {
             let (pattern, pattern_inputs, stencil, opaque) = batch.prev_pattern.unwrap();
-            let surface = SurfaceConfig {
-                msaa: state.msaa,
-                depth: if state.depth {
-                    DepthMode::Ignore // TODO
-                } else {
-                    DepthMode::None
-                },
-                stencil,
-            };
+            // TODO: take advantage of the z-buffer when available to draw opaque shapes
+            // first front-to-back like the mesh renderer.
+            let use_depth = false;
+            let surface = surface.draw_config(use_depth, None).with_stencil(stencil);
             let base_pipeline = if opaque {
                 self.opaque_cover_pipeline
             } else {
@@ -428,14 +423,15 @@ impl StencilAndCoverRenderer {
 
             let cover_idx_end = self.cover_geometry.indices.len() as u32;
             if cover_idx_end > batch.cover_idx_start {
-                let surface = SurfaceConfig {
-                    msaa: state.msaa,
-                    depth: if state.depth {
+                let surface = SurfaceDrawConfig {
+                    msaa: surface.msaa,
+                    depth: if surface.depth {
                         DepthMode::Ignore // TODO
                     } else {
                         DepthMode::None
                     },
                     stencil: stencil_mode,
+                    kind: surface.kind,
                 };
                 let base_pipeline = if opaque {
                     self.opaque_cover_pipeline
