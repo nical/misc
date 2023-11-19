@@ -1,3 +1,4 @@
+use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::{
@@ -68,10 +69,10 @@ impl StencilAndCoverResources {
                 entry_point: "fs_main",
                 targets,
             }),
-            primitive: shaders.defaults.primitive_state(),
+            primitive: PipelineDefaults::primitive_state(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
                         compare: wgpu::CompareFunction::Always,
@@ -102,7 +103,7 @@ impl StencilAndCoverResources {
         };
         let msaa_stencil_pipeline = device.create_render_pipeline(&descriptor);
 
-        // TODO: this crates an implicit dependency to the mesh renderer.
+        // TODO: this creates an implicit dependency to the mesh renderer.
         let cover_geom = shaders.find_geometry("geometry::simple_mesh").unwrap();
 
         // TODO: these pipelines happen to be identical to the mesh renderer's.

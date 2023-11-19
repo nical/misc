@@ -16,6 +16,7 @@ tess = { path = "../renderers/tess" }
 tiling = { path = "../renderers/tiling" }
 stencil = { path = "../renderers/stencil" }
 rectangles = { path = "../renderers/rectangles" }
+msaa_stroke = { path = "../renderers/msaa_stroke" }
 wpf = { path = "../renderers/wpf" }
 
 pattern_color = { path = "../patterns/color" }

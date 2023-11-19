@@ -1,3 +1,4 @@
+use core::gpu::PipelineDefaults;
 use core::gpu::shader::Varying;
 use core::wgpu;
 use core::{
@@ -28,6 +29,7 @@ impl WpfGpuResources {
                 Varying::float32("coverage"),
             ],
             bindings: None,
+            primitive: PipelineDefaults::primitive_state(),
         });
 
         let pipeline = shaders.register_pipeline(PipelineDescriptor {

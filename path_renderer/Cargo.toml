@@ -6,6 +6,7 @@ members = [
     "renderers/tiling",
     "renderers/rectangles",
     "renderers/wpf",
+    "renderers/msaa_stroke",
     "patterns/color",
     "patterns/linear_gradient",
     "patterns/checkerboard",

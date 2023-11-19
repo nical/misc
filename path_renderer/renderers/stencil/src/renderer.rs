@@ -270,7 +270,20 @@ impl StencilAndCoverRenderer {
 
             let surface = canvas.surface.get_config(batch_id.surface);
 
-            for (fill_idx, fill) in commands.iter().enumerate() {
+            if surface.depth {
+                for (fill_idx, fill) in commands.iter().enumerate().rev().filter(|(_, fill)| fill.pattern.is_opaque) {
+                    let is_last = fill_idx == commands.len() - 1;
+                    self.prepare_fill(
+                        canvas,
+                        fill,
+                        &mut batching,
+                        is_last,
+                        surface,
+                        shaders,
+                    );
+                }
+            }
+            for (fill_idx, fill) in commands.iter().enumerate().filter(|(_, fill)| !surface.depth || fill.pattern.is_opaque) {
                 let is_last = fill_idx == commands.len() - 1;
                 self.prepare_fill(
                     canvas,
@@ -325,11 +338,13 @@ impl StencilAndCoverRenderer {
         let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
         let cover_idx_end = self.cover_geometry.indices.len() as u32;
 
+        let rects_full = batch.rects.len() == batch.rects.capacity();
+
         let new_stencil_batch = stencil_idx_end > batch.stencil_idx_start
-            && (batch.rects.capacity() == 0
+            && (rects_full
                 || intersects_batch_rects(&transformed_aabb, &batch.rects));
         let new_cover_batch = cover_idx_end > batch.cover_idx_start
-            && (new_stencil_batch || batch.prev_pattern != Some(batch_key));
+            && (new_stencil_batch || rects_full || batch.prev_pattern != Some(batch_key));
 
         if new_stencil_batch {
             self.draws.push(Draw::Stencil {
@@ -338,7 +353,10 @@ impl StencilAndCoverRenderer {
             batch.stencil_idx_start = stencil_idx_end;
             batch.rects.clear();
             self.stats.stencil_batches += 1;
+        } else if rects_full {
+            batch.rects.clear();
         }
+
         batch.rects.push(transformed_aabb);
 
         // Flush the previous cover batch if needed.
@@ -346,8 +364,7 @@ impl StencilAndCoverRenderer {
             let (pattern, pattern_inputs, stencil, opaque) = batch.prev_pattern.unwrap();
             // TODO: take advantage of the z-buffer when available to draw opaque shapes
             // first front-to-back like the mesh renderer.
-            let use_depth = false;
-            let surface = surface.draw_config(use_depth, None).with_stencil(stencil);
+            let surface = surface.draw_config(true, None).with_stencil(stencil);
             let base_pipeline = if opaque {
                 self.opaque_cover_pipeline
             } else {

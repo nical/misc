@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tess::{MeshGpuResources, MeshRenderer};
+use msaa_stroke::{MsaaStrokeGpuResources, MsaaStrokeRenderer};
 use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
@@ -43,7 +44,11 @@ const TILING: usize = 0;
 const TESS: usize = 1;
 const STENCIL: usize = 2;
 const WPF: usize = 3;
-const RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
+
+const STROKE_TO_FILL: usize = 0;
+const INSTANCED: usize = 1;
+const STROKE_RENDERER_STRINGS: &[&str] = &["stroke-to-fill", "instanced"];
 
 fn main() {
     color_backtrace::install();
@@ -189,7 +194,7 @@ fn main() {
         textures: TextureRenderer::register(&device, &mut shaders),
     };
 
-    let mut canvas = Context::new();
+    let mut ctx = Context::new();
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
@@ -219,6 +224,8 @@ fn main() {
 
     let wpf_resources = WpfGpuResources::new(&device, &mut shaders);
 
+    let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
+
     let mut gpu_resources = GpuResources::new();
     let common_handle = gpu_resources.register(common_resources);
     let tiling_handle = gpu_resources.register(tiling_resources);
@@ -226,6 +233,7 @@ fn main() {
     let stencil_handle = gpu_resources.register(stencil_resources);
     let rectangle_handle = gpu_resources.register(rectangle_resources);
     let wpf_handle = gpu_resources.register(wpf_resources);
+    let stroke_handle = gpu_resources.register(stroke_resources);
 
     let mut tiling = TileRenderer::new(
         0,
@@ -255,6 +263,13 @@ fn main() {
         common_handle,
         wpf_handle,
         &gpu_resources[wpf_handle],
+    );
+
+    let mut stroker = MsaaStrokeRenderer::new(
+        5,
+        common_handle,
+        stroke_handle,
+        &gpu_resources[stroke_handle],
     );
 
     tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -288,11 +303,12 @@ fn main() {
         wireframe: false,
         size_changed: true,
         render: true,
-        selected_renderer: 0,
+        fill_renderer: 0,
+        stroke_renderer: 0,
         msaa: MsaaMode::Auto,
     };
 
-    update_title(&window, scene.selected_renderer, scene.msaa);
+    update_title(&window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
 
     let mut depth_texture = None;
     let mut msaa_texture = None;
@@ -349,7 +365,7 @@ fn main() {
         let size = SurfaceIntSize::new(scene.window_size.width, scene.window_size.height);
 
         gpu_store.clear();
-        canvas.begin_frame(
+        ctx.begin_frame(
             size,
             SurfacePassConfig {
                 depth: false,
@@ -358,11 +374,12 @@ fn main() {
                 kind: SurfaceKind::Color,
             },
         );
-        tiling.begin_frame(&canvas);
-        meshes.begin_frame(&canvas);
-        stencil.begin_frame(&canvas);
-        rectangles.begin_frame(&canvas);
-        wpf.begin_frame(&canvas);
+        tiling.begin_frame(&ctx);
+        meshes.begin_frame(&ctx);
+        stencil.begin_frame(&ctx);
+        rectangles.begin_frame(&ctx);
+        wpf.begin_frame(&ctx);
+        stroker.begin_frame(&ctx);
 
         gpu_resources.begin_frame();
 
@@ -377,21 +394,23 @@ fn main() {
 
         paint_scene(
             &paths,
-            scene.selected_renderer,
+            scene.fill_renderer,
+            scene.stroke_renderer,
             scene.msaa,
-            &mut canvas,
+            &mut ctx,
             &mut tiling,
             &mut meshes,
             &mut stencil,
             &mut rectangles,
             &mut wpf,
+            &mut stroker,
             &patterns,
             &mut gpu_store,
             &transform,
         );
         //canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
         tiling.fill_circle(
-            &mut canvas,
+            &mut ctx,
             Circle {
                 center: point(10.0, 600.0),
                 radius: 100.0,
@@ -416,12 +435,13 @@ fn main() {
 
         let mut prep_pipelines = render_pipelines.prepare();
 
-        canvas.prepare();
-        tiling.prepare(&canvas, &mut prep_pipelines, &device);
-        meshes.prepare(&canvas, &mut prep_pipelines);
-        stencil.prepare(&canvas, &mut prep_pipelines);
-        rectangles.prepare(&canvas, &mut prep_pipelines);
-        wpf.prepare(&canvas, &mut prep_pipelines);
+        ctx.prepare();
+        tiling.prepare(&ctx, &mut prep_pipelines, &device);
+        meshes.prepare(&ctx, &mut prep_pipelines);
+        stencil.prepare(&ctx, &mut prep_pipelines);
+        rectangles.prepare(&ctx, &mut prep_pipelines);
+        wpf.prepare(&ctx, &mut prep_pipelines);
+        stroker.prepare(&ctx, &mut prep_pipelines);
 
         let changes = prep_pipelines.finish();
         render_pipelines.build(
@@ -429,12 +449,13 @@ fn main() {
             &mut RenderPipelineBuilder(&device, &mut shaders),
         );
 
-        let requirements = canvas.build_render_passes(&mut [
+        let requirements = ctx.build_render_passes(&mut [
             &mut tiling,
             &mut meshes,
             &mut stencil,
             &mut rectangles,
             &mut wpf,
+            &mut stroker,
         ]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
@@ -478,12 +499,13 @@ fn main() {
         stencil.upload(&mut gpu_resources, &device);
         rectangles.upload(&mut gpu_resources, &device, &queue);
         wpf.upload(&mut gpu_resources, &device, &queue);
+        stroker.upload(&mut gpu_resources, &shaders, &device, &queue);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        canvas.render(
-            &[&tiling, &meshes, &stencil, &rectangles, &wpf],
+        ctx.render(
+            &[&tiling, &meshes, &stencil, &rectangles, &wpf, &stroker],
             &gpu_resources,
             &source_textures,
             &mut render_pipelines,
@@ -536,7 +558,8 @@ fn main() {
 
 fn paint_scene(
     paths: &[(Arc<Path>, Option<SvgPattern>, Option<load_svg::Stroke>)],
-    selected_renderer: usize,
+    fill_renderer: usize,
+    stroke_renderer: usize,
     msaa: MsaaMode,
     ctx: &mut Context,
     tiling: &mut TileRenderer,
@@ -544,6 +567,7 @@ fn paint_scene(
     stencil: &mut StencilAndCoverRenderer,
     rectangles: &mut RectangleRenderer,
     wpf: &mut WpfMeshRenderer,
+    msaa_stroker: &mut MsaaStrokeRenderer,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
     transform: &LocalTransform,
@@ -609,9 +633,9 @@ fn paint_scene(
     };
 
     ctx.reconfigure_surface(SurfacePassConfig {
-        depth: selected_renderer != TILING,
-        msaa: if selected_renderer == TILING || selected_renderer == WPF { msaa_tiling } else { msaa_default },
-        stencil: selected_renderer == STENCIL,
+        depth: fill_renderer != TILING,
+        msaa: if fill_renderer == TILING || fill_renderer == WPF { msaa_tiling } else { msaa_default },
+        stencil: fill_renderer == STENCIL,
         kind: SurfaceKind::Color,
     });
 
@@ -637,7 +661,7 @@ fn paint_scene(
             };
 
             let path = PathShape::new(path.clone());
-            match selected_renderer {
+            match fill_renderer {
                 TILING => {
                     tiling.fill_path(ctx, path, pattern);
                 }
@@ -656,10 +680,7 @@ fn paint_scene(
 
         if let Some(stroke) = stroke {
             let scale = transform.m11;
-            let mut w = stroke.line_width * 0.5;
-            if w < 0.25 / scale {
-                w = 0.25 / scale;
-            }
+            let width = f32::max(stroke.line_width, 1.0 / scale);
 
             let pattern = match stroke.pattern {
                 SvgPattern::Color(color) => patterns.colors.add(color),
@@ -680,41 +701,52 @@ fn paint_scene(
                 ),
             };
 
-            let mut stroked_path = Path::builder();
-            {
-                let mut stroker = StrokeToFillBuilder::new(
-                    &mut stroked_path,
-                    &StrokeOptions {
-                        tolerance: 0.25 / scale,
-                        offsets: (-w, w),
-                        miter_limit: 0.5,
-                        line_join: stroke.line_join,
-                        start_cap: stroke.line_cap,
-                        end_cap: stroke.line_cap,
-                        add_empty_caps: true,
-                        ..Default::default()
-                    },
-                );
-                for evt in path.iter() {
-                    stroker.path_event(evt, &[]);
+            match stroke_renderer {
+                crate::INSTANCED => {
+                    msaa_stroker.stroke_path(ctx, path.clone(), pattern, width);
                 }
-            }
-            let stroked_path = stroked_path.build();
-            let path = PathShape::new(Arc::new(stroked_path));
-            match selected_renderer {
-                TILING => {
-                    tiling.fill_path(ctx, path, pattern);
+                crate::STROKE_TO_FILL => {
+                    let w = width * 0.5;
+                    let mut stroked_path = Path::builder();
+                    {
+                        let mut stroker = StrokeToFillBuilder::new(
+                            &mut stroked_path,
+                            &StrokeOptions {
+                                tolerance: 0.25 / scale,
+                                offsets: (-w, w),
+                                miter_limit: 0.5,
+                                line_join: stroke.line_join,
+                                start_cap: stroke.line_cap,
+                                end_cap: stroke.line_cap,
+                                add_empty_caps: true,
+                                ..Default::default()
+                            },
+                        );
+                        for evt in path.iter() {
+                            stroker.path_event(evt, &[]);
+                        }
+                    }
+                    let stroked_path = stroked_path.build();
+                    let path = PathShape::new(Arc::new(stroked_path));
+                    match fill_renderer {
+                        TILING => {
+                            tiling.fill_path(ctx, path, pattern);
+                        }
+                        TESS => {
+                            meshes.fill_path(ctx, path, pattern);
+                        }
+                        STENCIL => {
+                            stencil.fill_path(ctx, path, pattern);
+                        }
+                        WPF => {
+                            wpf.fill_path(ctx, path, pattern);
+                        }
+                        _ => unimplemented!(),
+                    }
                 }
-                TESS => {
-                    meshes.fill_path(ctx, path, pattern);
+                _ => {
+                    unimplemented!();
                 }
-                STENCIL => {
-                    stencil.fill_path(ctx, path, pattern);
-                }
-                WPF => {
-                    wpf.fill_path(ctx, path, pattern);
-                }
-                _ => unimplemented!(),
             }
         }
     }
@@ -729,61 +761,43 @@ fn paint_scene(
     ctx.transforms
         .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
     let transform_handle = ctx.transforms.get_current_gpu_handle(gpu_store);
-
+    let gradient = patterns.gradients.add(
+        gpu_store,
+        LinearGradient {
+            from: point(0.0, 700.0),
+            to: point(0.0, 900.0),
+            color0: Color {
+                r: 0,
+                g: 30,
+                b: 100,
+                a: 255,
+            },
+            color1: Color {
+                r: 0,
+                g: 60,
+                b: 250,
+                a: 255,
+            },
+        },
+    );
     rectangles.fill_rect(
         ctx,
         &LocalRect {
-            min: point(500.0, 200.0),
-            max: point(600.0, 400.0),
+            min: point(200.0, 700.0),
+            max: point(300.0, 900.0),
         },
         Aa::ALL,
-        patterns.gradients.add(
-            gpu_store,
-            LinearGradient {
-                from: point(0.0, 200.0),
-                to: point(0.0, 400.0),
-                color0: Color {
-                    r: 0,
-                    g: 30,
-                    b: 100,
-                    a: 255,
-                },
-                color1: Color {
-                    r: 0,
-                    g: 60,
-                    b: 250,
-                    a: 255,
-                },
-            },
-        ),
+        gradient,
         transform_handle,
     );
     rectangles.fill_rect(
         ctx,
         &LocalRect {
-            min: point(610.5, 200.5),
-            max: point(710.5, 400.5),
+            min: point(310.5, 700.5),
+            max: point(410.5, 900.5),
         },
         Aa::LEFT | Aa::RIGHT | Aa::ALL,
-        patterns.gradients.add(
-            gpu_store,
-            LinearGradient {
-                from: point(0.0, 200.0),
-                to: point(0.0, 400.0),
-                color0: Color {
-                    r: 0,
-                    g: 30,
-                    b: 100,
-                    a: 255,
-                },
-                color1: Color {
-                    r: 0,
-                    g: 60,
-                    b: 250,
-                    a: 255,
-                },
-            },
-        ),
+        gradient,
         transform_handle,
     );
     ctx.transforms.pop();
@@ -946,6 +960,15 @@ fn paint_scene(
         offsetter.line_to(point(900.0, 700.0));
         offsetter.end(false);
     }
+
+    //{
+    //    msaa_stroker.stroke_path(
+    //        ctx, 
+    //        path_to_offset.clone(),
+    //        patterns.colors.add(Color { r: 100, g: 0, b: 0, a: 255 }),
+    //        10.0
+    //    );
+    //}    
 
     if false {
         let offset_path = builder2.build();
@@ -1205,7 +1228,8 @@ pub struct SceneGlobals {
     pub wireframe: bool,
     pub size_changed: bool,
     pub render: bool,
-    pub selected_renderer: usize,
+    pub fill_renderer: usize,
+    pub stroke_renderer: usize,
     pub msaa: MsaaMode,
 }
 
@@ -1217,7 +1241,8 @@ fn update_inputs(
 ) -> bool {
     let p = scene.pan;
     let z = scene.zoom;
-    let r = scene.selected_renderer;
+    let r = scene.fill_renderer;
+    let sr = scene.stroke_renderer;
     match event {
         Event::RedrawRequested(_) => {
             scene.render = true;
@@ -1300,16 +1325,20 @@ fn update_inputs(
                 scene.wireframe = !scene.wireframe;
             }
             VirtualKeyCode::J => {
-                if scene.selected_renderer == 0 {
-                    scene.selected_renderer = 3;
+                if scene.fill_renderer == 0 {
+                    scene.fill_renderer = 3;
                 } else {
-                    scene.selected_renderer -= 1;
+                    scene.fill_renderer -= 1;
                 }
-                update_title(window, scene.selected_renderer, scene.msaa);
+                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
             }
             VirtualKeyCode::K => {
-                scene.selected_renderer = (scene.selected_renderer + 1) % 4;
-                update_title(window, scene.selected_renderer, scene.msaa);
+                scene.fill_renderer = (scene.fill_renderer + 1) % 4;
+                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+            }
+            VirtualKeyCode::S => {
+                scene.stroke_renderer = (scene.stroke_renderer + 1) % 2;
+                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
             }
             VirtualKeyCode::M => {
                 scene.msaa = match scene.msaa {
@@ -1317,7 +1346,7 @@ fn update_inputs(
                     MsaaMode::Disabled => MsaaMode::Enabled,
                     MsaaMode::Enabled => MsaaMode::Auto,
                 };
-                update_title(window, scene.selected_renderer, scene.msaa);
+                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
             }
 
             _key => {}
@@ -1327,14 +1356,14 @@ fn update_inputs(
         }
     }
 
-    if r != scene.selected_renderer {
-        println!("{}", RENDERER_STRINGS[scene.selected_renderer]);
+    if r != scene.fill_renderer {
+        println!("{}", FILL_RENDERER_STRINGS[scene.fill_renderer]);
     }
 
     scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
     scene.pan[0] += (scene.target_pan[0] - scene.pan[0]) * 0.15;
     scene.pan[1] += (scene.target_pan[1] - scene.pan[1]) * 0.15;
-    if p != scene.pan || z != scene.zoom || r != scene.selected_renderer {
+    if p != scene.pan || z != scene.zoom || r != scene.fill_renderer {
         window.request_redraw();
     }
 
@@ -1343,9 +1372,10 @@ fn update_inputs(
     true
 }
 
-fn update_title(window: &Window, selected_renderer: usize, msaa: MsaaMode) {
-    let title = format!("Demo - renderer: {}, msaa: {msaa:?}",
-        RENDERER_STRINGS[selected_renderer]
+fn update_title(window: &Window, fill_renderer: usize, stroke_renderer: usize, msaa: MsaaMode) {
+    let title = format!("Demo - fill: {}, stroke: {}, msaa: {msaa:?}",
+        FILL_RENDERER_STRINGS[fill_renderer],
+        STROKE_RENDERER_STRINGS[stroke_renderer],
     );
     window.set_title(&title);
 }

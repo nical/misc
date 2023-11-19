@@ -1,5 +1,5 @@
 use crate::gpu::shader::{BindGroupLayout, BindGroupLayoutId, Binding};
-use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor};
+use crate::gpu::{DynamicStore, GpuStore, GpuTargetDescriptor, PipelineDefaults};
 use crate::units::SurfaceIntSize;
 use std::{any::Any, marker::PhantomData};
 use wgpu::util::DeviceExt;
@@ -287,7 +287,7 @@ impl CommonGpuResources {
                 entry_point: "fs_main",
                 targets,
             }),
-            primitive: shaders.defaults.primitive_state(),
+            primitive: PipelineDefaults::primitive_state(),
             depth_stencil: None,
             multiview: None,
             multisample: wgpu::MultisampleState {

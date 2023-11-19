@@ -1,5 +1,6 @@
 use core::bitflags::bitflags;
 use core::bytemuck;
+use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
@@ -77,6 +78,7 @@ impl RectangleGpuResources {
             ],
             varyings: vec![Varying::float32x4("aa_distances")],
             bindings: None,
+            primitive: PipelineDefaults::primitive_state(),
         });
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {

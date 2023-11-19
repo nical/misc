@@ -1,5 +1,6 @@
 use crate::{atlas_uploader::MaskUploadCopies, encoder::LineEdge, PatternData, TilePosition};
 use core::bytemuck;
+use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::wgpu::util::DeviceExt;
 use core::{
@@ -95,6 +96,7 @@ impl TilingGpuResources {
             instance_attributes: vec![VertexAtribute::uint32x4("instance")],
             varyings: Vec::new(),
             bindings: None,
+            primitive: PipelineDefaults::primitive_state(),
         });
 
         let mask_atlas_bind_group_layout =
@@ -437,7 +439,7 @@ fn create_mask_pipeline(
             entry_point: "fs_main",
             targets,
         }),
-        primitive: shaders.defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -464,7 +466,7 @@ fn create_mask_pipeline(
             entry_point: "fs_main",
             targets: alpha_target,
         }),
-        primitive: shaders.defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
@@ -488,7 +490,7 @@ fn create_mask_pipeline(
             entry_point: "fs_main",
             targets: alpha_target,
         }),
-        primitive: shaders.defaults.primitive_state(),
+        primitive: PipelineDefaults::primitive_state(),
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),

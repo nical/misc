@@ -221,11 +221,16 @@ impl MeshRenderer {
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
+        let mut batch_flags = BatchFlags::empty();
+        if pattern.is_opaque && canvas.surface.current_config().depth {
+            batch_flags |= BatchFlags::ORDER_INDEPENDENT;
+        }
+    
         let (commands, info) = self.batches.find_or_add_batch(
             &mut canvas.batcher,
             &pattern.batch_key(),
             &aabb,
-            BatchFlags::empty(),
+            batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
                 surface: canvas.surface.current_config(),

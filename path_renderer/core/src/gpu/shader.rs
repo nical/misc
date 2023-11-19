@@ -479,7 +479,7 @@ impl Shaders {
                 entry_point: "fs_main",
                 targets: color_target,
             }),
-            primitive: self.defaults.primitive_state(),
+            primitive: geometry.primitive,
             depth_stencil,
             multiview: None,
             multisample,
@@ -978,6 +978,7 @@ pub struct MaskDescriptor {
 
 pub struct GeometryDescriptor {
     pub name: Cow<'static, str>,
+    pub primitive: wgpu::PrimitiveState,
     pub source: Source,
     pub vertex_attributes: Vec<VertexAtribute>,
     pub instance_attributes: Vec<VertexAtribute>,

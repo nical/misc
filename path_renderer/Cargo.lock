@@ -473,6 +473,7 @@ dependencies = [
  "core",
  "futures",
  "lyon",
+ "msaa_stroke",
  "pattern_checkerboard",
  "pattern_color",
  "pattern_linear_gradient",
@@ -1259,6 +1260,15 @@ dependencies = [
  "log",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.36.1",
+]
+
+[[package]]
+name = "msaa_stroke"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "lyon",
+ "profiling",
 ]
 
 [[package]]

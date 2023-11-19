@@ -116,7 +116,7 @@ impl PipelineDefaults {
         }
     }
 
-    pub fn primitive_state(&self) -> wgpu::PrimitiveState {
+    pub fn primitive_state() -> wgpu::PrimitiveState {
         wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             polygon_mode: wgpu::PolygonMode::Fill,

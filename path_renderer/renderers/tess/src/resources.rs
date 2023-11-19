@@ -1,3 +1,4 @@
+use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
@@ -26,6 +27,7 @@ impl MeshGpuResources {
             instance_attributes: Vec::new(),
             varyings: Vec::new(),
             bindings: None,
+            primitive: PipelineDefaults::primitive_state()
         });
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
