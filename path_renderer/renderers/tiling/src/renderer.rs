@@ -1,7 +1,7 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TileMask, Tiler, TilerConfig, TILE_SIZE};
 use core::{bytemuck, SurfaceKind};
-use core::canvas::SurfaceDrawConfig;
+use core::canvas::{SurfaceDrawConfig, FillPath};
 use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId};
 use core::wgpu;
 use core::{
@@ -13,7 +13,7 @@ use core::{
     gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines},
     pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
-    shape::{Circle, PathShape},
+    shape::{Circle, FilledPath},
     transform::TransformId,
     u32_range,
     units::{point, LocalRect},
@@ -32,7 +32,7 @@ struct Fill {
 
 // TODO: the enum prevents other types of shapes from being added externally.
 pub enum Shape {
-    Path(PathShape),
+    Path(FilledPath),
     Rect(LocalRect),
     Circle(Circle),
     Canvas,
@@ -144,7 +144,7 @@ impl TileRenderer {
         self.opaque_prerendered_pipelines.clear();
     }
 
-    pub fn fill_path<P: Into<PathShape>>(
+    pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         canvas: &mut Context,
         shape: P,
@@ -682,4 +682,15 @@ impl CanvasRenderer for TileRenderer {
             render_pass,
         );
     }
+}
+
+impl FillPath for TileRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut Context,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_shape(ctx, Shape::Path(path), pattern);
+    }    
 }

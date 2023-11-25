@@ -9,7 +9,7 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, canvas::FillPath};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -17,7 +17,7 @@ use core::{
     gpu::shader::{
         GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
     },
-    shape::{Circle, PathShape},
+    shape::{Circle, FilledPath},
 };
 use core::{
     DepthMode, StencilMode, SurfaceDrawConfig, SurfacePassConfig,
@@ -81,7 +81,7 @@ unsafe impl bytemuck::Pod for CoverVertex {}
 unsafe impl bytemuck::Zeroable for CoverVertex {}
 
 enum Shape {
-    Path(PathShape),
+    Path(FilledPath),
     Rect(LocalRect),
     Circle(Circle),
 }
@@ -205,7 +205,7 @@ impl StencilAndCoverRenderer {
         self.stats = Stats::default();
     }
 
-    pub fn fill_path<P: Into<PathShape>>(
+    pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         canvas: &mut Context,
         path: P,
@@ -751,4 +751,15 @@ fn intersects_batch_rects(new_rect: &SurfaceRect, batch_rects: &[SurfaceRect]) -
     }
 
     return false;
+}
+
+impl FillPath for StencilAndCoverRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut Context,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_shape(ctx, Shape::Path(path), pattern);
+    }
 }

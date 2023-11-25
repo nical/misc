@@ -3,7 +3,7 @@ use core::{
     bytemuck,
     canvas::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
-        SurfacePassConfig, ZIndex,
+        SurfacePassConfig, ZIndex, FillPath,
     },
     gpu::{
         shader::{
@@ -14,7 +14,7 @@ use core::{
     path::Path,
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
-    shape::{Circle, PathShape},
+    shape::{Circle, FilledPath},
     transform::TransformId,
     units::{point, LocalPoint, LocalRect},
     usize_range, wgpu,
@@ -46,7 +46,7 @@ struct BatchInfo {
 }
 
 enum Shape {
-    Path(PathShape),
+    Path(FilledPath),
     Rect(LocalRect),
     Circle(Circle),
     Mesh(TessellatedMesh),
@@ -175,7 +175,7 @@ impl MeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill_path<P: Into<PathShape>>(
+    pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         canvas: &mut Context,
         path: P,
@@ -225,7 +225,7 @@ impl MeshRenderer {
         if pattern.is_opaque && canvas.surface.current_config().depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
-    
+
         let (commands, info) = self.batches.find_or_add_batch(
             &mut canvas.batcher,
             &pattern.batch_key(),
@@ -532,5 +532,16 @@ impl CanvasRenderer for MeshRenderer {
                 render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);
             }
         }
+    }
+}
+
+impl FillPath for MeshRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut Context,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_shape(ctx, Shape::Path(path), pattern);
     }
 }

@@ -14,7 +14,7 @@ use core::{
     //path::Path,
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
-    shape::PathShape,
+    shape::FilledPath,
     transform::TransformId,
     units::LocalRect,
     usize_range, wgpu, Point,
@@ -36,7 +36,7 @@ struct BatchInfo {
 }
 
 enum Shape {
-    Path(PathShape, f32),
+    Path(FilledPath, f32),
     //Rect(LocalRect, f32),
     //Circle(Circle, f32),
 }
@@ -150,7 +150,7 @@ impl MsaaStrokeRenderer {
         self.ibo_range = None;
     }
 
-    pub fn stroke_path<P: Into<PathShape>>(
+    pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
         canvas: &mut Context,
         path: P,

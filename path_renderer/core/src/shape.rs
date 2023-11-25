@@ -5,16 +5,16 @@ use crate::{
     units::{point, vector, LocalPoint, LocalRect},
 };
 
-pub struct PathShape {
+pub struct FilledPath {
     pub path: Arc<Path>,
     pub fill_rule: FillRule,
     // TODO: maybe move this out of the shape.
     pub inverted: bool,
 }
 
-impl PathShape {
+impl FilledPath {
     pub fn new(path: Arc<Path>) -> Self {
-        PathShape {
+        FilledPath {
             path,
             fill_rule: FillRule::NonZero,
             inverted: false,
@@ -41,15 +41,15 @@ impl PathShape {
     }
 }
 
-impl Into<PathShape> for Path {
-    fn into(self) -> PathShape {
-        PathShape::new(Arc::new(self))
+impl Into<FilledPath> for Path {
+    fn into(self) -> FilledPath {
+        FilledPath::new(Arc::new(self))
     }
 }
 
-impl Into<PathShape> for Arc<Path> {
-    fn into(self) -> PathShape {
-        PathShape::new(self)
+impl Into<FilledPath> for Arc<Path> {
+    fn into(self) -> FilledPath {
+        FilledPath::new(self)
     }
 }
 

@@ -3,7 +3,7 @@ use core::{
     bytemuck,
     canvas::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
-        SurfacePassConfig,
+        SurfacePassConfig, FillPath,
     },
     gpu::{
         shader::{
@@ -13,7 +13,7 @@ use core::{
     },
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
-    shape::PathShape,
+    shape::FilledPath,
     transform::TransformId,
     units::LocalRect,
     usize_range, wgpu,
@@ -45,7 +45,7 @@ struct BatchInfo {
 }
 
 enum Shape {
-    Path(PathShape),
+    Path(FilledPath),
 }
 
 impl Shape {
@@ -120,7 +120,7 @@ impl WpfMeshRenderer {
         self.ibo_range = None;
     }
 
-    pub fn fill_path<P: Into<PathShape>>(
+    pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         canvas: &mut Context,
         path: P,
@@ -302,6 +302,17 @@ impl WpfMeshRenderer {
         self.vbo_range = res
             .vertices
             .upload(device, bytemuck::cast_slice(&self.vertices));
+    }
+}
+
+impl FillPath for WpfMeshRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut Context,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_shape(ctx, Shape::Path(path), pattern);
     }
 }
 

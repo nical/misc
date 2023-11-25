@@ -1,5 +1,5 @@
 use core::canvas::*;
-use core::gpu::shader::RenderPipelineBuilder;
+use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::BindingsId;
@@ -41,7 +41,7 @@ mod load_svg;
 use load_svg::*;
 
 const TILING: usize = 0;
-const TESS: usize = 1;
+//const TESS: usize = 1;
 const STENCIL: usize = 2;
 const WPF: usize = 3;
 const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
@@ -49,6 +49,55 @@ const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
 const STROKE_RENDERER_STRINGS: &[&str] = &["stroke-to-fill", "instanced"];
+
+const NUM_SCENES: u32 = 2;
+
+struct Renderers {
+    tiling: TileRenderer,
+    meshes: MeshRenderer,
+    stencil: StencilAndCoverRenderer,
+    wpf: WpfMeshRenderer,
+    rectangles: RectangleRenderer,
+    msaa_strokes: MsaaStrokeRenderer,
+}
+
+impl Renderers {
+    fn begin_frame(&mut self, ctx: &Context) {
+        self.tiling.begin_frame(ctx);
+        self.meshes.begin_frame(ctx);
+        self.stencil.begin_frame(ctx);
+        self.wpf.begin_frame(ctx);
+        self.rectangles.begin_frame(ctx);
+        self.msaa_strokes.begin_frame(ctx);
+    }
+
+    fn prepare(&mut self, ctx: &Context, prep: &mut PrepareRenderPipelines, device: &wgpu::Device) {
+        self.tiling.prepare(ctx, prep, &device);
+        self.meshes.prepare(ctx, prep);
+        self.stencil.prepare(ctx, prep);
+        self.rectangles.prepare(ctx, prep);
+        self.wpf.prepare(ctx, prep);
+        self.msaa_strokes.prepare(ctx, prep);
+    }
+
+    fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.tiling.upload(gpu_resources, &device, &queue);
+        self.meshes.upload(gpu_resources, &device, &queue);
+        self.stencil.upload(gpu_resources, &device);
+        self.rectangles.upload(gpu_resources, &device, &queue);
+        self.wpf.upload(gpu_resources, &device, &queue);
+        self.msaa_strokes.upload(gpu_resources, &shaders, &device, &queue);
+    }
+
+    fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
+        [
+            &mut self.tiling as &mut dyn FillPath,
+            &mut self.meshes as &mut dyn FillPath,
+            &mut self.stencil as &mut dyn FillPath,
+            &mut self.wpf as &mut dyn FillPath,
+        ][idx]
+    }
+}
 
 fn main() {
     color_backtrace::install();
@@ -235,44 +284,49 @@ fn main() {
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
 
-    let mut tiling = TileRenderer::new(
-        0,
-        common_handle,
-        tiling_handle,
-        &gpu_resources[tiling_handle],
-        &patterns.textures,
-        &tiler_config,
-        &patterns.textures,
-    );
-    let mut meshes = MeshRenderer::new(1, common_handle, mesh_handle, &gpu_resources[mesh_handle]);
-    let mut stencil = StencilAndCoverRenderer::new(
-        2,
-        common_handle,
-        stencil_handle,
-        &gpu_resources[stencil_handle],
-    );
-    let mut rectangles = RectangleRenderer::new(
-        3,
-        common_handle,
-        rectangle_handle,
-        &gpu_resources[rectangle_handle],
-    );
+    let mut renderers = Renderers {
+        tiling: TileRenderer::new(
+            0,
+            common_handle,
+            tiling_handle,
+            &gpu_resources[tiling_handle],
+            &patterns.textures,
+            &tiler_config,
+            &patterns.textures,
+        ),
+        meshes: MeshRenderer::new(
+            1,
+            common_handle,
+            mesh_handle,
+            &gpu_resources[mesh_handle],
+        ),
+        stencil: StencilAndCoverRenderer::new(
+            2,
+            common_handle,
+            stencil_handle,
+            &gpu_resources[stencil_handle],
+        ),
+        rectangles: RectangleRenderer::new(
+            3,
+            common_handle,
+            rectangle_handle,
+            &gpu_resources[rectangle_handle],
+        ),
+        wpf: WpfMeshRenderer::new(
+            4,
+            common_handle,
+            wpf_handle,
+            &gpu_resources[wpf_handle],
+        ),
+        msaa_strokes: MsaaStrokeRenderer::new(
+            5,
+            common_handle,
+            stroke_handle,
+            &gpu_resources[stroke_handle],
+        ),
+    };
 
-    let mut wpf = WpfMeshRenderer::new(
-        4,
-        common_handle,
-        wpf_handle,
-        &gpu_resources[wpf_handle],
-    );
-
-    let mut stroker = MsaaStrokeRenderer::new(
-        5,
-        common_handle,
-        stroke_handle,
-        &gpu_resources[stroke_handle],
-    );
-
-    tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
     let mut source_textures = SourceTextures::new();
 
@@ -294,7 +348,7 @@ fn main() {
 
     window.request_redraw();
 
-    let mut scene = SceneGlobals {
+    let mut demo = Demo {
         zoom: 1.0,
         target_zoom: 1.0,
         pan: [0.0, 0.0],
@@ -306,9 +360,10 @@ fn main() {
         fill_renderer: 0,
         stroke_renderer: 0,
         msaa: MsaaMode::Auto,
+        scene_idx: 0,
     };
 
-    update_title(&window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+    update_title(&window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
 
     let mut depth_texture = None;
     let mut msaa_texture = None;
@@ -322,18 +377,18 @@ fn main() {
     event_loop.run(move |event, _, control_flow| {
         device.poll(wgpu::Maintain::Poll);
 
-        if !update_inputs(event, &window, control_flow, &mut scene) {
+        if !update_inputs(event, &window, control_flow, &mut demo) {
             return;
         }
 
-        if scene.size_changed {
-            scene.size_changed = false;
-            let physical = scene.window_size;
+        if demo.size_changed {
+            demo.size_changed = false;
+            let physical = demo.window_size;
             surface_desc.width = physical.width as u32;
             surface_desc.height = physical.height as u32;
             surface.configure(&device, &surface_desc);
             gpu_resources[common_handle].resize_target(
-                SurfaceIntSize::new(scene.window_size.width, scene.window_size.height),
+                SurfaceIntSize::new(demo.window_size.width, demo.window_size.height),
                 &queue,
             );
 
@@ -343,10 +398,10 @@ fn main() {
             temporary_texture = None;
         }
 
-        if !scene.render {
+        if !demo.render {
             return;
         }
-        scene.render = false;
+        demo.render = false;
 
         let frame = match surface.get_current_texture() {
             Ok(texture) => texture,
@@ -362,86 +417,75 @@ fn main() {
             format: Some(shaders.defaults.color_format()),
             ..wgpu::TextureViewDescriptor::default()
         });
-        let size = SurfaceIntSize::new(scene.window_size.width, scene.window_size.height);
+        let size = SurfaceIntSize::new(demo.window_size.width, demo.window_size.height);
 
         gpu_store.clear();
         ctx.begin_frame(
             size,
             SurfacePassConfig {
                 depth: false,
-                msaa: if scene.msaa == MsaaMode::Enabled { true } else { false },
+                msaa: if demo.msaa == MsaaMode::Enabled { true } else { false },
                 stencil: false,
                 kind: SurfaceKind::Color,
             },
         );
-        tiling.begin_frame(&ctx);
-        meshes.begin_frame(&ctx);
-        stencil.begin_frame(&ctx);
-        rectangles.begin_frame(&ctx);
-        wpf.begin_frame(&ctx);
-        stroker.begin_frame(&ctx);
+
+        renderers.begin_frame(&ctx);
 
         gpu_resources.begin_frame();
 
-        let tx = scene.pan[0].round();
-        let ty = scene.pan[1].round();
+        let tx = demo.pan[0].round();
+        let ty = demo.pan[1].round();
         let hw = (size.width as f32) * 0.5;
         let hh = (size.height as f32) * 0.5;
         let transform = LocalTransform::translation(tx, ty)
             .then_translate(-vector(hw, hh))
-            .then_scale(scene.zoom, scene.zoom)
+            .then_scale(demo.zoom, demo.zoom)
             .then_translate(vector(hw, hh));
 
+        let test_stuff = demo.scene_idx == 0;
         paint_scene(
             &paths,
-            scene.fill_renderer,
-            scene.stroke_renderer,
-            scene.msaa,
+            demo.fill_renderer,
+            demo.stroke_renderer,
+            test_stuff,
+            demo.msaa,
             &mut ctx,
-            &mut tiling,
-            &mut meshes,
-            &mut stencil,
-            &mut rectangles,
-            &mut wpf,
-            &mut stroker,
+            &mut renderers,
             &patterns,
             &mut gpu_store,
             &transform,
         );
-        //canvas.reconfigure_surface(SurfaceState { depth: false, msaa: false, stencil: false });
-        tiling.fill_circle(
-            &mut ctx,
-            Circle {
-                center: point(10.0, 600.0),
-                radius: 100.0,
-                inverted: false,
-            },
-            patterns.textures.sample_rect(
-                &mut gpu_store,
-                image_binding,
-                &Box2D {
-                    min: point(0.0, 0.0),
-                    max: point(800.0, 600.0),
-                },
-                &Box2D {
-                    min: point(-100.0, 500.0),
-                    max: point(700.0, 1100.0),
-                },
-                true,
-            ),
-        );
 
+        if false {
+            renderers.tiling.fill_circle(
+                &mut ctx,
+                Circle {
+                    center: point(10.0, 600.0),
+                    radius: 100.0,
+                    inverted: false,
+                },
+                patterns.textures.sample_rect(
+                    &mut gpu_store,
+                    image_binding,
+                    &Box2D {
+                        min: point(0.0, 0.0),
+                        max: point(800.0, 600.0),
+                    },
+                    &Box2D {
+                        min: point(-100.0, 500.0),
+                        max: point(700.0, 1100.0),
+                    },
+                    true,
+                ),
+            );
+        }
         let frame_build_start = time::precise_time_ns();
 
         let mut prep_pipelines = render_pipelines.prepare();
 
         ctx.prepare();
-        tiling.prepare(&ctx, &mut prep_pipelines, &device);
-        meshes.prepare(&ctx, &mut prep_pipelines);
-        stencil.prepare(&ctx, &mut prep_pipelines);
-        rectangles.prepare(&ctx, &mut prep_pipelines);
-        wpf.prepare(&ctx, &mut prep_pipelines);
-        stroker.prepare(&ctx, &mut prep_pipelines);
+        renderers.prepare(&ctx, &mut prep_pipelines, &device);
 
         let changes = prep_pipelines.finish();
         render_pipelines.build(
@@ -450,12 +494,12 @@ fn main() {
         );
 
         let requirements = ctx.build_render_passes(&mut [
-            &mut tiling,
-            &mut meshes,
-            &mut stencil,
-            &mut rectangles,
-            &mut wpf,
-            &mut stroker,
+            &mut renderers.tiling,
+            &mut renderers.meshes,
+            &mut renderers.stencil,
+            &mut renderers.rectangles,
+            &mut renderers.wpf,
+            &mut renderers.msaa_strokes,
         ]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
@@ -494,18 +538,20 @@ fn main() {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        tiling.upload(&mut gpu_resources, &device, &queue);
-        meshes.upload(&mut gpu_resources, &device, &queue);
-        stencil.upload(&mut gpu_resources, &device);
-        rectangles.upload(&mut gpu_resources, &device, &queue);
-        wpf.upload(&mut gpu_resources, &device, &queue);
-        stroker.upload(&mut gpu_resources, &shaders, &device, &queue);
+        renderers.upload(&mut gpu_resources, &shaders, &device, &queue);
         gpu_store.upload(&device, &queue);
 
         gpu_resources.begin_rendering(&mut encoder);
 
         ctx.render(
-            &[&tiling, &meshes, &stencil, &rectangles, &wpf, &stroker],
+            &[
+                &renderers.tiling,
+                &renderers.meshes,
+                &renderers.stencil,
+                &renderers.rectangles,
+                &renderers.wpf,
+                &renderers.msaa_strokes,
+            ],
             &gpu_resources,
             &source_textures,
             &mut render_pipelines,
@@ -545,7 +591,7 @@ fn main() {
                 rt,
                 pt
             );
-            print_stats(&tiling, &stencil, scene.window_size);
+            print_stats(&renderers, demo.window_size);
         }
 
         gpu_resources.end_frame();
@@ -560,68 +606,68 @@ fn paint_scene(
     paths: &[(Arc<Path>, Option<SvgPattern>, Option<load_svg::Stroke>)],
     fill_renderer: usize,
     stroke_renderer: usize,
+    testing: bool,
     msaa: MsaaMode,
     ctx: &mut Context,
-    tiling: &mut TileRenderer,
-    meshes: &mut MeshRenderer,
-    stencil: &mut StencilAndCoverRenderer,
-    rectangles: &mut RectangleRenderer,
-    wpf: &mut WpfMeshRenderer,
-    msaa_stroker: &mut MsaaStrokeRenderer,
+    renderers: &mut Renderers,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
     transform: &LocalTransform,
 ) {
-    tiling.fill_canvas(
-        ctx,
-        patterns.gradients.add(
-            gpu_store,
-            LinearGradient {
-                from: point(100.0, 100.0),
-                color0: Color {
-                    r: 10,
-                    g: 50,
-                    b: 250,
-                    a: 255,
-                },
-                to: point(100.0, 1500.0),
-                color1: Color {
-                    r: 50,
-                    g: 0,
-                    b: 50,
-                    a: 255,
-                },
-            }
-            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-        ),
-    );
+    if testing {
+        renderers.tiling.fill_canvas(
+            ctx,
+            patterns.gradients.add(
+                gpu_store,
+                LinearGradient {
+                    from: point(100.0, 100.0),
+                    color0: Color {
+                        r: 10,
+                        g: 50,
+                        b: 250,
+                        a: 255,
+                    },
+                    to: point(100.0, 1500.0),
+                    color1: Color {
+                        r: 50,
+                        g: 0,
+                        b: 50,
+                        a: 255,
+                    },
+                }
+                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+            ),
+        );
+    }
 
     ctx.transforms.push(transform);
 
-    tiling.fill_circle(
-        ctx,
-        Circle::new(point(500.0, 500.0), 800.0),
-        patterns.gradients.add(
-            gpu_store,
-            LinearGradient {
-                from: point(100.0, 100.0),
-                color0: Color {
-                    r: 200,
-                    g: 150,
-                    b: 0,
-                    a: 255,
-                },
-                to: point(100.0, 1000.0),
-                color1: Color {
-                    r: 250,
-                    g: 50,
-                    b: 10,
-                    a: 255,
-                },
-            }
-            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-        ),
-    );
+    if testing {
+        renderers.tiling.fill_circle(
+            ctx,
+            Circle::new(point(500.0, 500.0), 800.0),
+            patterns.gradients.add(
+                gpu_store,
+                LinearGradient {
+                    from: point(100.0, 100.0),
+                    color0: Color {
+                        r: 200,
+                        g: 150,
+                        b: 0,
+                        a: 255,
+                    },
+                    to: point(100.0, 1000.0),
+                    color1: Color {
+                        r: 250,
+                        g: 50,
+                        b: 10,
+                        a: 255,
+                    },
+                }
+                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+            ),
+        );
+    }
 
     let msaa_default = match msaa {
         MsaaMode::Disabled => false,
@@ -660,22 +706,8 @@ fn paint_scene(
                 ),
             };
 
-            let path = PathShape::new(path.clone());
-            match fill_renderer {
-                TILING => {
-                    tiling.fill_path(ctx, path, pattern);
-                }
-                TESS => {
-                    meshes.fill_path(ctx, path, pattern);
-                }
-                STENCIL => {
-                    stencil.fill_path(ctx, path, pattern);
-                }
-                WPF => {
-                    wpf.fill_path(ctx, path, pattern);
-                }
-                _ => unimplemented!(),
-            }
+            let path = FilledPath::new(path.clone());
+            renderers.fill(fill_renderer).fill_path(ctx, path, pattern);
         }
 
         if let Some(stroke) = stroke {
@@ -703,7 +735,7 @@ fn paint_scene(
 
             match stroke_renderer {
                 crate::INSTANCED => {
-                    msaa_stroker.stroke_path(ctx, path.clone(), pattern, width);
+                    renderers.msaa_strokes.stroke_path(ctx, path.clone(), pattern, width);
                 }
                 crate::STROKE_TO_FILL => {
                     let w = width * 0.5;
@@ -727,22 +759,8 @@ fn paint_scene(
                         }
                     }
                     let stroked_path = stroked_path.build();
-                    let path = PathShape::new(Arc::new(stroked_path));
-                    match fill_renderer {
-                        TILING => {
-                            tiling.fill_path(ctx, path, pattern);
-                        }
-                        TESS => {
-                            meshes.fill_path(ctx, path, pattern);
-                        }
-                        STENCIL => {
-                            stencil.fill_path(ctx, path, pattern);
-                        }
-                        WPF => {
-                            wpf.fill_path(ctx, path, pattern);
-                        }
-                        _ => unimplemented!(),
-                    }
+                    let path = FilledPath::new(Arc::new(stroked_path));
+                    renderers.fill(fill_renderer).fill_path(ctx, path, pattern);
                 }
                 _ => {
                     unimplemented!();
@@ -751,341 +769,344 @@ fn paint_scene(
         }
     }
 
-    ctx.reconfigure_surface(SurfacePassConfig {
-        depth: true,
-        msaa: msaa_default,
-        stencil: true,
-        kind: SurfaceKind::Color,
-    });
+    if testing {
+        ctx.reconfigure_surface(SurfacePassConfig {
+            depth: true,
+            msaa: msaa_default,
+            stencil: true,
+            kind: SurfaceKind::Color,
+        });
 
-    ctx.transforms
-        .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-    let transform_handle = ctx.transforms.get_current_gpu_handle(gpu_store);
-    let gradient = patterns.gradients.add(
-        gpu_store,
-        LinearGradient {
-            from: point(0.0, 700.0),
-            to: point(0.0, 900.0),
-            color0: Color {
-                r: 0,
-                g: 30,
-                b: 100,
-                a: 255,
-            },
-            color1: Color {
-                r: 0,
-                g: 60,
-                b: 250,
-                a: 255,
-            },
-        },
-    );
-    rectangles.fill_rect(
-        ctx,
-        &LocalRect {
-            min: point(200.0, 700.0),
-            max: point(300.0, 900.0),
-        },
-        Aa::ALL,
-        gradient,
-        transform_handle,
-    );
-    rectangles.fill_rect(
-        ctx,
-        &LocalRect {
-            min: point(310.5, 700.5),
-            max: point(410.5, 900.5),
-        },
-        Aa::LEFT | Aa::RIGHT | Aa::ALL,
-        gradient,
-        transform_handle,
-    );
-    ctx.transforms.pop();
-
-    ctx.reconfigure_surface(SurfacePassConfig {
-        depth: false,
-        msaa: msaa_tiling,
-        stencil: false,
-        kind: SurfaceKind::Color,
-    });
-
-    tiling.fill_circle(
-        ctx,
-        Circle::new(point(500.0, 300.0), 200.0),
-        patterns.gradients.add(
+        ctx.transforms
+            .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+        let transform_handle = ctx.transforms.get_current_gpu_handle(gpu_store);
+        let gradient = patterns.gradients.add(
             gpu_store,
             LinearGradient {
-                from: point(300.0, 100.0),
+                from: point(0.0, 700.0),
+                to: point(0.0, 900.0),
                 color0: Color {
-                    r: 10,
-                    g: 200,
+                    r: 0,
+                    g: 30,
                     b: 100,
-                    a: 100,
+                    a: 255,
                 },
-                to: point(700.0, 100.0),
                 color1: Color {
-                    r: 200,
-                    g: 100,
+                    r: 0,
+                    g: 60,
                     b: 250,
                     a: 255,
                 },
-            }
-            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-        ),
-    );
-
-    let mut builder = core::path::Path::builder();
-    builder.begin(point(0.0, 0.0));
-    builder.line_to(point(50.0, 400.0));
-    builder.line_to(point(450.0, 450.0));
-    builder.line_to(point(400.0, 50.0));
-    builder.end(true);
-
-    tiling.fill_path(
-        ctx,
-        builder.build(),
-        patterns.checkerboards.add(
-            gpu_store,
-            &Checkerboard {
-                color0: Color {
-                    r: 10,
-                    g: 100,
-                    b: 250,
-                    a: 255,
-                },
-                color1: Color::WHITE,
-                scale: 25.0,
-                offset: point(0.0, 0.0),
-            }
-            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-        ),
-    );
-
-    ctx.transforms.pop();
-
-    let black = patterns.colors.add(Color::BLACK);
-    tiling.fill_rect(
-        ctx,
-        LocalRect {
-            min: point(10.0, 10.0),
-            max: point(50.0, 50.0),
-        },
-        black,
-    );
-    tiling.fill_rect(
-        ctx,
-        LocalRect {
-            min: point(60.5, 10.5),
-            max: point(100.5, 50.5),
-        },
-        black,
-    );
-
-    let mut p = Path::builder();
-
-    //    p.begin(point(110.0, 110.0));
-    //    p.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-    //    p.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-    //    p.end(false);
-    //
-    //    p.begin(point(300.0, 100.0));
-    //    p.line_to(point(400.0, 100.0));
-    //    p.line_to(point(400.0, 200.0));
-    //    p.line_to(point(390.0, 250.0));
-    //    p.end(true);
-
-    p.begin(point(700.0, 100.0));
-    p.quadratic_bezier_to(point(700.0, 330.0), point(900.0, 300.0));
-    p.quadratic_bezier_to(point(700.0, 300.0), point(700.0, 500.0));
-    //p.cubic_bezier_to(point(500.0, 100.0), point(500.0, 500.0), point(700.0, 100.0));
-    p.end(false);
-
-    //p.begin(point(600.0, 400.0));
-    //p.end(true);
-    //p.begin(point(700.0, 400.0));
-    //p.end(true);
-    let path_to_offset = p.build();
-
-    let mut builder2 = core::path::Path::builder();
-    {
-        let o = transform.m31 * 0.1;
-        let mut stroker = StrokeToFillBuilder::new(
-            &mut builder2,
-            &StrokeOptions {
-                tolerance: 0.25,
-                offsets: (10.0, -10.0 - o),
-                miter_limit: 0.5,
-                line_join: LineJoin::Round,
-                start_cap: LineCap::TriangleInverted,
-                end_cap: LineCap::TriangleInverted,
-                add_empty_caps: true,
-                ..Default::default()
             },
         );
 
-        for evt in path_to_offset.iter() {
-            stroker.path_event(evt, &[]);
+        renderers.rectangles.fill_rect(
+            ctx,
+            &LocalRect {
+                min: point(200.0, 700.0),
+                max: point(300.0, 900.0),
+            },
+            Aa::ALL,
+            gradient,
+            transform_handle,
+        );
+        renderers.rectangles.fill_rect(
+            ctx,
+            &LocalRect {
+                min: point(310.5, 700.5),
+                max: point(410.5, 900.5),
+            },
+            Aa::LEFT | Aa::RIGHT | Aa::ALL,
+            gradient,
+            transform_handle,
+        );
+        ctx.transforms.pop();
+
+        ctx.reconfigure_surface(SurfacePassConfig {
+            depth: false,
+            msaa: msaa_tiling,
+            stencil: false,
+            kind: SurfaceKind::Color,
+        });
+
+        renderers.tiling.fill_circle(
+            ctx,
+            Circle::new(point(500.0, 300.0), 200.0),
+            patterns.gradients.add(
+                gpu_store,
+                LinearGradient {
+                    from: point(300.0, 100.0),
+                    color0: Color {
+                        r: 10,
+                        g: 200,
+                        b: 100,
+                        a: 100,
+                    },
+                    to: point(700.0, 100.0),
+                    color1: Color {
+                        r: 200,
+                        g: 100,
+                        b: 250,
+                        a: 255,
+                    },
+                }
+                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+            ),
+        );
+
+        let mut builder = core::path::Path::builder();
+        builder.begin(point(600.0, 0.0));
+        builder.line_to(point(650.0, 400.0));
+        builder.line_to(point(1050.0, 450.0));
+        builder.line_to(point(1000.0, 50.0));
+        builder.end(true);
+
+        renderers.tiling.fill_path(
+            ctx,
+            builder.build(),
+            patterns.checkerboards.add(
+                gpu_store,
+                &Checkerboard {
+                    color0: Color {
+                        r: 10,
+                        g: 100,
+                        b: 250,
+                        a: 255,
+                    },
+                    color1: Color::WHITE,
+                    scale: 25.0,
+                    offset: point(0.0, 0.0),
+                }
+                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+            ),
+        );
+
+        ctx.transforms.pop();
+
+        let black = patterns.colors.add(Color::BLACK);
+        renderers.tiling.fill_rect(
+            ctx,
+            LocalRect {
+                min: point(10.0, 10.0),
+                max: point(50.0, 50.0),
+            },
+            black,
+        );
+        renderers.tiling.fill_rect(
+            ctx,
+            LocalRect {
+                min: point(60.5, 10.5),
+                max: point(100.5, 50.5),
+            },
+            black,
+        );
+
+        let mut p = Path::builder();
+
+        //    p.begin(point(110.0, 110.0));
+        //    p.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+        //    p.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+        //    p.end(false);
+        //
+        //    p.begin(point(300.0, 100.0));
+        //    p.line_to(point(400.0, 100.0));
+        //    p.line_to(point(400.0, 200.0));
+        //    p.line_to(point(390.0, 250.0));
+        //    p.end(true);
+
+        p.begin(point(700.0, 100.0));
+        p.quadratic_bezier_to(point(700.0, 330.0), point(900.0, 300.0));
+        p.quadratic_bezier_to(point(700.0, 300.0), point(700.0, 500.0));
+        //p.cubic_bezier_to(point(500.0, 100.0), point(500.0, 500.0), point(700.0, 100.0));
+        p.end(false);
+
+        //p.begin(point(600.0, 400.0));
+        //p.end(true);
+        //p.begin(point(700.0, 400.0));
+        //p.end(true);
+        let path_to_offset = p.build();
+
+        let mut builder2 = core::path::Path::builder();
+        {
+            let o = transform.m31 * 0.1;
+            let mut stroker = StrokeToFillBuilder::new(
+                &mut builder2,
+                &StrokeOptions {
+                    tolerance: 0.25,
+                    offsets: (10.0, -10.0 - o),
+                    miter_limit: 0.5,
+                    line_join: LineJoin::Round,
+                    start_cap: LineCap::TriangleInverted,
+                    end_cap: LineCap::TriangleInverted,
+                    add_empty_caps: true,
+                    ..Default::default()
+                },
+            );
+
+            for evt in path_to_offset.iter() {
+                stroker.path_event(evt, &[]);
+            }
         }
-    }
 
-    if false {
-        let mut offsetter = OffsetBuilder::new(
-            &mut builder2,
-            &OffsetOptions {
-                offset: transform.m31 * 0.1,
-                join: LineJoin::Round,
-                miter_limit: 0.5,
-                tolerance: 0.25,
-                simplify_inner_joins: true,
-            },
-        );
+        if false {
+            let mut offsetter = OffsetBuilder::new(
+                &mut builder2,
+                &OffsetOptions {
+                    offset: transform.m31 * 0.1,
+                    join: LineJoin::Round,
+                    miter_limit: 0.5,
+                    tolerance: 0.25,
+                    simplify_inner_joins: true,
+                },
+            );
 
-        offsetter.begin(point(500.0, 500.0));
-        offsetter.line_to(point(600.0, 500.0));
-        offsetter.line_to(point(650.0, 400.0));
-        offsetter.line_to(point(700.0, 500.0));
-        offsetter.line_to(point(800.0, 500.0));
-        offsetter.line_to(point(650.0, 600.0));
-        offsetter.end(true);
+            offsetter.begin(point(500.0, 500.0));
+            offsetter.line_to(point(600.0, 500.0));
+            offsetter.line_to(point(650.0, 400.0));
+            offsetter.line_to(point(700.0, 500.0));
+            offsetter.line_to(point(800.0, 500.0));
+            offsetter.line_to(point(650.0, 600.0));
+            offsetter.end(true);
 
-        offsetter.begin(point(800.0, 500.0));
-        offsetter.line_to(point(900.0, 500.0));
-        offsetter.line_to(point(900.0, 600.0));
-        offsetter.line_to(point(800.0, 600.0));
-        offsetter.end(true);
+            offsetter.begin(point(800.0, 500.0));
+            offsetter.line_to(point(900.0, 500.0));
+            offsetter.line_to(point(900.0, 600.0));
+            offsetter.line_to(point(800.0, 600.0));
+            offsetter.end(true);
 
-        offsetter.begin(point(800.0, 700.0));
-        offsetter.line_to(point(800.0, 800.0));
-        offsetter.line_to(point(900.0, 800.0));
-        offsetter.line_to(point(900.0, 700.0));
-        offsetter.end(false);
-    }
+            offsetter.begin(point(800.0, 700.0));
+            offsetter.line_to(point(800.0, 800.0));
+            offsetter.line_to(point(900.0, 800.0));
+            offsetter.line_to(point(900.0, 700.0));
+            offsetter.end(false);
+        }
 
-    //{
-    //    msaa_stroker.stroke_path(
-    //        ctx, 
-    //        path_to_offset.clone(),
-    //        patterns.colors.add(Color { r: 100, g: 0, b: 0, a: 255 }),
-    //        10.0
-    //    );
-    //}    
+        //{
+        //    msaa_stroker.stroke_path(
+        //        ctx,
+        //        path_to_offset.clone(),
+        //        patterns.colors.add(Color { r: 100, g: 0, b: 0, a: 255 }),
+        //        10.0
+        //    );
+        //}
 
-    if false {
-        let offset_path = builder2.build();
-        tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
+        if false {
+            let offset_path = builder2.build();
+            renderers.tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
 
-        meshes.stroke_path(
-            ctx,
-            offset_path.clone(),
-            1.0,
-            patterns.colors.add(Color {
-                r: 100,
-                g: 0,
-                b: 0,
-                a: 255,
-            }),
-        );
-        meshes.stroke_path(
-            ctx,
-            path_to_offset.clone(),
-            1.0,
-            patterns.colors.add(Color::BLACK),
-        );
+            renderers.meshes.stroke_path(
+                ctx,
+                offset_path.clone(),
+                1.0,
+                patterns.colors.add(Color {
+                    r: 100,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                }),
+            );
+            renderers.meshes.stroke_path(
+                ctx,
+                path_to_offset.clone(),
+                1.0,
+                patterns.colors.add(Color::BLACK),
+            );
 
-        let mut b = Path::builder();
-        b.begin(point(500.0, 500.0));
-        b.line_to(point(600.0, 500.0));
-        b.line_to(point(650.0, 400.0));
-        b.line_to(point(700.0, 500.0));
-        b.line_to(point(800.0, 500.0));
-        b.line_to(point(650.0, 600.0));
-        b.end(true);
+            let mut b = Path::builder();
+            b.begin(point(500.0, 500.0));
+            b.line_to(point(600.0, 500.0));
+            b.line_to(point(650.0, 400.0));
+            b.line_to(point(700.0, 500.0));
+            b.line_to(point(800.0, 500.0));
+            b.line_to(point(650.0, 600.0));
+            b.end(true);
 
-        b.begin(point(110.0, 110.0));
-        b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-        b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-        b.end(false);
-        meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+            b.begin(point(110.0, 110.0));
+            b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
+            b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
+            b.end(false);
+            renderers.meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
-        let green = patterns.colors.add(Color::GREEN);
-        let blue = patterns.colors.add(Color::BLUE);
-        let white = patterns.colors.add(Color::WHITE);
-        for evt in offset_path.as_slice() {
-            match evt {
-                PathEvent::Begin { at } => {
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: at.cast_unit(),
-                            radius: 3.0,
-                            inverted: false,
-                        },
-                        green,
-                    );
+            let green = patterns.colors.add(Color::GREEN);
+            let blue = patterns.colors.add(Color::BLUE);
+            let white = patterns.colors.add(Color::WHITE);
+            for evt in offset_path.as_slice() {
+                match evt {
+                    PathEvent::Begin { at } => {
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: at.cast_unit(),
+                                radius: 3.0,
+                                inverted: false,
+                            },
+                            green,
+                        );
+                    }
+                    PathEvent::Line { to, .. } => {
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: to.cast_unit(),
+                                radius: 3.0,
+                                inverted: false,
+                            },
+                            green,
+                        );
+                    }
+                    PathEvent::Quadratic { ctrl, to, .. } => {
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: ctrl.cast_unit(),
+                                radius: 4.0,
+                                inverted: false,
+                            },
+                            blue,
+                        );
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: to.cast_unit(),
+                                radius: 3.0,
+                                inverted: false,
+                            },
+                            white,
+                        );
+                    }
+                    PathEvent::Cubic {
+                        ctrl1, ctrl2, to, ..
+                    } => {
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: ctrl1.cast_unit(),
+                                radius: 4.0,
+                                inverted: false,
+                            },
+                            blue,
+                        );
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: ctrl2.cast_unit(),
+                                radius: 4.0,
+                                inverted: false,
+                            },
+                            blue,
+                        );
+                        renderers.meshes.fill_circle(
+                            ctx,
+                            Circle {
+                                center: to.cast_unit(),
+                                radius: 2.0,
+                                inverted: false,
+                            },
+                            white,
+                        );
+                    }
+                    _ => {}
                 }
-                PathEvent::Line { to, .. } => {
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: to.cast_unit(),
-                            radius: 3.0,
-                            inverted: false,
-                        },
-                        green,
-                    );
-                }
-                PathEvent::Quadratic { ctrl, to, .. } => {
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: ctrl.cast_unit(),
-                            radius: 4.0,
-                            inverted: false,
-                        },
-                        blue,
-                    );
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: to.cast_unit(),
-                            radius: 3.0,
-                            inverted: false,
-                        },
-                        white,
-                    );
-                }
-                PathEvent::Cubic {
-                    ctrl1, ctrl2, to, ..
-                } => {
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: ctrl1.cast_unit(),
-                            radius: 4.0,
-                            inverted: false,
-                        },
-                        blue,
-                    );
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: ctrl2.cast_unit(),
-                            radius: 4.0,
-                            inverted: false,
-                        },
-                        blue,
-                    );
-                    meshes.fill_circle(
-                        ctx,
-                        Circle {
-                            center: to.cast_unit(),
-                            radius: 2.0,
-                            inverted: false,
-                        },
-                        white,
-                    );
-                }
-                _ => {}
             }
         }
     }
@@ -1095,14 +1116,13 @@ fn paint_scene(
 }
 
 fn print_stats(
-    tiling: &TileRenderer,
-    stencil: &StencilAndCoverRenderer,
+    renderers:&Renderers,
     window_size: SurfaceIntSize,
 ) {
     let mut stats = Stats::new();
-    tiling.update_stats(&mut stats);
+    renderers.tiling.update_stats(&mut stats);
     println!("Tiling: {:#?}", stats);
-    println!("Stencil-and-cover: {:?}", stencil.stats);
+    println!("Stencil-and-cover: {:?}", renderers.stencil.stats);
     println!("Data:");
     println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
     println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
@@ -1124,7 +1144,7 @@ fn print_stats(
     );
     println!(
         "#edge distributions: {:?}",
-        tiling.encoder.edge_distributions
+        renderers.tiling.encoder.edge_distributions
     );
     println!("\n");
 }
@@ -1219,7 +1239,7 @@ pub enum MsaaMode {
 
 // Default scene has all values set to zero
 #[derive(Copy, Clone, Debug)]
-pub struct SceneGlobals {
+pub struct Demo {
     pub zoom: f32,
     pub target_zoom: f32,
     pub pan: [f32; 2],
@@ -1231,21 +1251,23 @@ pub struct SceneGlobals {
     pub fill_renderer: usize,
     pub stroke_renderer: usize,
     pub msaa: MsaaMode,
+    pub scene_idx: u32,
 }
 
 fn update_inputs(
     event: Event<()>,
     window: &Window,
     control_flow: &mut ControlFlow,
-    scene: &mut SceneGlobals,
+    demo: &mut Demo,
 ) -> bool {
-    let p = scene.pan;
-    let z = scene.zoom;
-    let r = scene.fill_renderer;
-    let sr = scene.stroke_renderer;
+    let p = demo.pan;
+    let z = demo.zoom;
+    let fr = demo.fill_renderer;
+    let sr = demo.stroke_renderer;
+    let mut redraw = false;
     match event {
         Event::RedrawRequested(_) => {
-            scene.render = true;
+            demo.render = true;
         }
         Event::WindowEvent {
             event: WindowEvent::Destroyed,
@@ -1263,9 +1285,9 @@ fn update_inputs(
             ..
         } => {
             let size = SurfaceIntSize::new(size.width as i32, size.height as i32);
-            if scene.window_size != size {
-                scene.window_size = size;
-                scene.size_changed = true
+            if demo.window_size != size {
+                demo.window_size = size;
+                demo.size_changed = true
             }
         }
         Event::WindowEvent {
@@ -1277,13 +1299,13 @@ fn update_inputs(
                 LineDelta(x, y) => (x * 20.0, -y * 20.0),
                 PixelDelta(v) => (-v.x as f32, -v.y as f32),
             };
-            let dx = dx / scene.target_zoom;
-            let dy = dy / scene.target_zoom;
+            let dx = dx / demo.target_zoom;
+            let dy = dy / demo.target_zoom;
             if dx != 0.0 || dy != 0.0 {
-                scene.target_pan[0] -= dx;
-                scene.target_pan[1] -= dy;
-                scene.pan[0] -= dx;
-                scene.pan[1] -= dy;
+                demo.target_pan[0] -= dx;
+                demo.target_pan[1] -= dy;
+                demo.pan[0] -= dx;
+                demo.pan[1] -= dy;
             }
         }
         Event::WindowEvent {
@@ -1304,49 +1326,58 @@ fn update_inputs(
                 return false;
             }
             VirtualKeyCode::PageDown => {
-                scene.target_zoom *= 0.8;
+                demo.target_zoom *= 0.8;
             }
             VirtualKeyCode::PageUp => {
-                scene.target_zoom *= 1.25;
+                demo.target_zoom *= 1.25;
             }
             VirtualKeyCode::Left => {
-                scene.target_pan[0] += 100.0 / scene.target_zoom;
+                demo.target_pan[0] += 100.0 / demo.target_zoom;
             }
             VirtualKeyCode::Right => {
-                scene.target_pan[0] -= 100.0 / scene.target_zoom;
+                demo.target_pan[0] -= 100.0 / demo.target_zoom;
             }
             VirtualKeyCode::Up => {
-                scene.target_pan[1] += 100.0 / scene.target_zoom;
+                demo.target_pan[1] += 100.0 / demo.target_zoom;
             }
             VirtualKeyCode::Down => {
-                scene.target_pan[1] -= 100.0 / scene.target_zoom;
+                demo.target_pan[1] -= 100.0 / demo.target_zoom;
             }
             VirtualKeyCode::W => {
-                scene.wireframe = !scene.wireframe;
-            }
-            VirtualKeyCode::J => {
-                if scene.fill_renderer == 0 {
-                    scene.fill_renderer = 3;
-                } else {
-                    scene.fill_renderer -= 1;
-                }
-                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+                demo.wireframe = !demo.wireframe;
             }
             VirtualKeyCode::K => {
-                scene.fill_renderer = (scene.fill_renderer + 1) % 4;
-                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+                demo.scene_idx = (demo.scene_idx + 1) % NUM_SCENES;
+                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                redraw = true;
+            }
+            VirtualKeyCode::J => {
+                if demo.scene_idx == 0 {
+                    demo.scene_idx = NUM_SCENES - 1;
+                } else {
+                    demo.scene_idx -= 1;
+                }
+                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                redraw = true;
+            }
+            VirtualKeyCode::F => {
+                demo.fill_renderer = (demo.fill_renderer + 1) % 4;
+                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                redraw = true;
             }
             VirtualKeyCode::S => {
-                scene.stroke_renderer = (scene.stroke_renderer + 1) % 2;
-                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+                demo.stroke_renderer = (demo.stroke_renderer + 1) % 2;
+                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                redraw = true;
             }
             VirtualKeyCode::M => {
-                scene.msaa = match scene.msaa {
+                demo.msaa = match demo.msaa {
                     MsaaMode::Auto => MsaaMode::Disabled,
                     MsaaMode::Disabled => MsaaMode::Enabled,
                     MsaaMode::Enabled => MsaaMode::Auto,
                 };
-                update_title(window, scene.fill_renderer, scene.stroke_renderer, scene.msaa);
+                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                redraw = true;
             }
 
             _key => {}
@@ -1356,14 +1387,19 @@ fn update_inputs(
         }
     }
 
-    if r != scene.fill_renderer {
-        println!("{}", FILL_RENDERER_STRINGS[scene.fill_renderer]);
+    if fr != demo.fill_renderer {
+        println!("Fill: {}", FILL_RENDERER_STRINGS[demo.fill_renderer]);
+    }
+    if sr != demo.stroke_renderer {
+        println!("Stroke: {}", STROKE_RENDERER_STRINGS[demo.stroke_renderer]);
     }
 
-    scene.zoom += (scene.target_zoom - scene.zoom) * 0.15;
-    scene.pan[0] += (scene.target_pan[0] - scene.pan[0]) * 0.15;
-    scene.pan[1] += (scene.target_pan[1] - scene.pan[1]) * 0.15;
-    if p != scene.pan || z != scene.zoom || r != scene.fill_renderer {
+    demo.zoom += (demo.target_zoom - demo.zoom) * 0.15;
+    demo.pan[0] += (demo.target_pan[0] - demo.pan[0]) * 0.15;
+    demo.pan[1] += (demo.target_pan[1] - demo.pan[1]) * 0.15;
+    redraw |= p != demo.pan || z != demo.zoom;
+
+    if redraw {
         window.request_redraw();
     }
 

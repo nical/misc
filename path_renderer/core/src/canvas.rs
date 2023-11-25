@@ -4,8 +4,10 @@
 use crate::batching::{BatchId, Batcher, SurfaceIndex};
 use crate::gpu::shader::RenderPipelines;
 use crate::path::FillRule;
-use crate::pattern::BindingsId;
+use crate::pattern::{BindingsId, BuiltPattern};
 use crate::resources::{AsAny, CommonGpuResources, GpuResources, ResourcesHandle};
+use crate::shape::FilledPath;
+use crate::stroke::StrokeOptions;
 use crate::transform::Transforms;
 use crate::units::SurfaceIntSize;
 use crate::{u32_range, usize_range, BindingResolver, Color};
@@ -775,6 +777,15 @@ pub trait CanvasRenderer: AsAny {
     ) {
     }
 }
+
+pub trait FillPath {
+    fn fill_path(&mut self, ctx: &mut Context, path: FilledPath, pattern: BuiltPattern);
+}
+
+pub trait StrokePath {
+    fn stroke_path(&mut self, ctx: &mut Context, path: crate::path::Path, options: StrokeOptions, pattern: BuiltPattern);
+}
+
 
 /// A bock of commands from a specific renderer within a render pass.
 #[derive(Copy, Clone, Debug)]

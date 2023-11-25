@@ -5,6 +5,7 @@ use core::path::Path;
 use core::Color;
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{point, Point};
+use usvg::TreeParsing;
 
 pub const FALLBACK_COLOR: Color = Color {
     r: 0,
@@ -39,79 +40,98 @@ pub fn load_svg(
     Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>,
 ) {
     let opt = usvg::Options::default();
-    let rtree = usvg::Tree::from_file(filename, &opt).unwrap();
+
+    let svg_src = std::fs::read_to_string(filename).unwrap();
+    let rtree = usvg::Tree::from_str(&svg_src, &opt).unwrap();
     let mut paths = Vec::new();
 
     let s = scale_factor;
 
-    let mut gradients = std::collections::HashMap::new();
-
-    let view_box = rtree.svg_node().view_box;
-    for node in rtree.root().descendants() {
+    let view_box = rtree.view_box;
+    for node in rtree.root.descendants() {
         use usvg::NodeExt;
         let t = node.transform();
         let transform = Transform2D::new(
-            t.a as f32, t.b as f32, t.c as f32, t.d as f32, t.e as f32, t.f as f32,
+            t.sx as f32, t.kx as f32, t.ky as f32, t.sy as f32, t.tx as f32, t.ty as f32,
         );
 
         match *node.borrow() {
-            usvg::NodeKind::LinearGradient(ref gradient) => {
-                let color0 = gradient
-                    .base
-                    .stops
-                    .first()
-                    .map(|stop| Color {
-                        r: stop.color.red,
-                        g: stop.color.green,
-                        b: stop.color.blue,
-                        a: (stop.opacity.value() * 255.0) as u8,
-                    })
-                    .unwrap_or(FALLBACK_COLOR);
-                let color1 = gradient
-                    .base
-                    .stops
-                    .last()
-                    .map(|stop| Color {
-                        r: stop.color.red,
-                        g: stop.color.green,
-                        b: stop.color.blue,
-                        a: (stop.opacity.value() * 255.0) as u8,
-                    })
-                    .unwrap_or(FALLBACK_COLOR);
-                gradients.insert(
-                    gradient.id.clone(),
-                    SvgPattern::Gradient {
-                        color0,
-                        color1,
-                        from: point(gradient.x1 as f32, gradient.y1 as f32),
-                        to: point(gradient.x2 as f32, gradient.y2 as f32),
-                    },
-                );
-            }
             usvg::NodeKind::Path(ref usvg_path) => {
-                let fill_pattern = usvg_path.fill.as_ref().map(|fill| match fill.paint {
+                let fill_pattern = usvg_path.fill.as_ref().map(|fill| match &fill.paint {
                     usvg::Paint::Color(c) => {
                         SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
                     }
-                    usvg::Paint::Link(ref id) => gradients.get(id).cloned().unwrap_or_else(|| {
-                        println!("Could not find pattern {:?}", id);
-                        SvgPattern::Color(FALLBACK_COLOR)
-                    }),
+                    usvg::Paint::LinearGradient(gradient) => {
+                        let color0 = gradient
+                            .base
+                            .stops
+                            .first()
+                            .map(|stop| Color {
+                                r: stop.color.red,
+                                g: stop.color.green,
+                                b: stop.color.blue,
+                                a: (stop.opacity.get() * 255.0) as u8,
+                            })
+                            .unwrap_or(FALLBACK_COLOR);
+                        let color1 = gradient
+                            .base
+                            .stops
+                            .last()
+                            .map(|stop| Color {
+                                r: stop.color.red,
+                                g: stop.color.green,
+                                b: stop.color.blue,
+                                a: (stop.opacity.get() * 255.0) as u8,
+                            })
+                            .unwrap_or(FALLBACK_COLOR);
+                        SvgPattern::Gradient {
+                            color0,
+                            color1,
+                            from: point(gradient.x1 as f32, gradient.y1 as f32),
+                            to: point(gradient.x2 as f32, gradient.y2 as f32),
+                        }
+                    }
+                    _ => SvgPattern::Color(FALLBACK_COLOR),
                 });
 
                 let stroke_pattern = usvg_path.stroke.as_ref().map(|stroke| Stroke {
-                    pattern: match stroke.paint {
+                    pattern: match &stroke.paint {
                         usvg::Paint::Color(c) => {
                             SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
                         }
-                        usvg::Paint::Link(ref id) => {
-                            gradients.get(id).cloned().unwrap_or_else(|| {
-                                println!("Could not find pattern {:?}", id);
-                                SvgPattern::Color(FALLBACK_COLOR)
-                            })
+                        usvg::Paint::LinearGradient(gradient) => {
+                            let color0 = gradient
+                                .base
+                                .stops
+                                .first()
+                                .map(|stop| Color {
+                                    r: stop.color.red,
+                                    g: stop.color.green,
+                                    b: stop.color.blue,
+                                    a: (stop.opacity.get() * 255.0) as u8,
+                                })
+                                .unwrap_or(FALLBACK_COLOR);
+                            let color1 = gradient
+                                .base
+                                .stops
+                                .last()
+                                .map(|stop| Color {
+                                    r: stop.color.red,
+                                    g: stop.color.green,
+                                    b: stop.color.blue,
+                                    a: (stop.opacity.get() * 255.0) as u8,
+                                })
+                                .unwrap_or(FALLBACK_COLOR);
+                            SvgPattern::Gradient {
+                                color0,
+                                color1,
+                                from: point(gradient.x1 as f32, gradient.y1 as f32),
+                                to: point(gradient.x2 as f32, gradient.y2 as f32),
+                            }
                         }
+                        _ => SvgPattern::Color(FALLBACK_COLOR),
                     },
-                    line_width: stroke.width.value() as f32,
+                    line_width: stroke.width.get() as f32,
                     line_cap: match stroke.linecap {
                         usvg::LineCap::Butt => LineCap::Butt,
                         usvg::LineCap::Square => LineCap::Square,
@@ -119,6 +139,7 @@ pub fn load_svg(
                     },
                     line_join: match stroke.linejoin {
                         usvg::LineJoin::Miter => LineJoin::Miter,
+                        usvg::LineJoin::MiterClip => LineJoin::MiterClip,
                         usvg::LineJoin::Round => LineJoin::Round,
                         usvg::LineJoin::Bevel => LineJoin::Bevel,
                     },
@@ -129,31 +150,31 @@ pub fn load_svg(
                 }
 
                 let mut builder = Path::builder().with_svg();
-                for segment in &usvg_path.segments {
-                    match *segment {
-                        usvg::PathSegment::MoveTo { x, y } => {
+                for segment in usvg_path.data.segments() {
+                    use usvg::tiny_skia_path::PathSegment;
+                    match segment {
+                        PathSegment::MoveTo(p) => {
                             builder
-                                .move_to(transform.transform_point(point(x as f32, y as f32)) * s);
+                                .move_to(transform.transform_point(point(p.x, p.y)) * s);
                         }
-                        usvg::PathSegment::LineTo { x, y } => {
+                        PathSegment::LineTo(p) => {
                             builder
-                                .line_to(transform.transform_point(point(x as f32, y as f32)) * s);
+                                .line_to(transform.transform_point(point(p.x, p.y)) * s);
                         }
-                        usvg::PathSegment::CurveTo {
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            x,
-                            y,
-                        } => {
-                            builder.cubic_bezier_to(
-                                transform.transform_point(point(x1 as f32, y1 as f32)) * s,
-                                transform.transform_point(point(x2 as f32, y2 as f32)) * s,
-                                transform.transform_point(point(x as f32, y as f32)) * s,
+                        PathSegment::QuadTo (ctrl, to) => {
+                            builder.quadratic_bezier_to(
+                                transform.transform_point(point(ctrl.x, ctrl.y)) * s,
+                                transform.transform_point(point(to.x, to.y)) * s,
                             );
                         }
-                        usvg::PathSegment::ClosePath => {
+                        PathSegment::CubicTo (ctrl1, ctrl2, to) => {
+                            builder.cubic_bezier_to(
+                                transform.transform_point(point(ctrl1.x, ctrl1.y)) * s,
+                                transform.transform_point(point(ctrl2.x, ctrl2.y)) * s,
+                                transform.transform_point(point(to.x, to.y)) * s,
+                            );
+                        }
+                        PathSegment::Close => {
                             builder.close();
                         }
                     }
@@ -167,10 +188,10 @@ pub fn load_svg(
     }
 
     let vb = Box2D {
-        min: point(view_box.rect.x as f32 * s, view_box.rect.y as f32 * s),
+        min: point(view_box.rect.x() * s, view_box.rect.y() * s),
         max: point(
-            view_box.rect.x as f32 + view_box.rect.width as f32 * s,
-            view_box.rect.y as f32 + view_box.rect.height as f32 * s,
+            view_box.rect.x() + view_box.rect.width() * s,
+            view_box.rect.y() + view_box.rect.height() * s,
         ),
     };
 
