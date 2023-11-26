@@ -7,6 +7,7 @@ fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
     var tile = tiling_decode_instance(instance_data, uv);
     var target_position = canvas_to_target(tile.position);
 
+    // TODO: z_index
     return Geometry(
         target_position,
         tile.pattern_position,

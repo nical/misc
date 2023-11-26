@@ -143,6 +143,7 @@ const RECTANGLE_SRC: &'static str = "
 #import render_target
 #import rect
 #import gpu_store
+#import z_index
 
 const FLAG_AA_TOP: u32      = 1048576u; // 1u << 20u;
 const FLAG_AA_RIGHT: u32    = 2097152u; // 2u << 20u;
@@ -237,7 +238,7 @@ fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u3
     var position = vec4<f32>(
         target_position.x,
         target_position.y,
-        f32(z_index) / 8192.0,
+        z_index_to_f32(z_index),
         1.0,
     );
 

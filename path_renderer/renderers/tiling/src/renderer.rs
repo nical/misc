@@ -692,5 +692,5 @@ impl FillPath for TileRenderer {
         pattern: BuiltPattern,
     ) {
         self.fill_shape(ctx, Shape::Path(path), pattern);
-    }    
+    }
 }

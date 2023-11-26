@@ -106,6 +106,7 @@ impl RendererResources for MsaaStrokeGpuResources {
 
 const SHADER_SRC: &'static str = "
 #import render_target
+#import z_index
 
 struct PathData {
     transform: vec4f,
@@ -183,7 +184,7 @@ fn geometry_vertex(
     var position = vec4<f32>(
         target_position.x,
         target_position.y,
-        f32(z_index) / 8192.0,
+        z_index_to_f32(z_index),
         1.0,
     );
 

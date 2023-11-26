@@ -69,6 +69,7 @@ impl RendererResources for MeshGpuResources {
 
 const SIMPLE_MESH_SRC: &'static str = "
 #import render_target
+#import z_index
 
 fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern_data: u32) -> Geometry {
     var target_position = canvas_to_target(canvas_position);
@@ -76,7 +77,7 @@ fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, 
     var position = vec4<f32>(
         target_position.x,
         target_position.y,
-        f32(z_index) / 8192.0,
+        z_index_to_f32(z_index),
         1.0,
     );
 

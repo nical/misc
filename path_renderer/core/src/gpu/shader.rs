@@ -513,6 +513,10 @@ impl ShaderSources {
             include_str!("../../shaders/lib/rect.wgsl").into(),
         );
         library.insert(
+            "z_index".into(),
+            include_str!("../../shaders/lib/z_index.wgsl").into(),
+        );
+        library.insert(
             "tiling".into(),
             include_str!("../../shaders/lib/tiling.wgsl").into(),
         );

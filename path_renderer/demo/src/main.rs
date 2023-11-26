@@ -145,7 +145,7 @@ fn main() {
     }
 
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 16;
+    let max_edges_per_gpu_tile = 512;
     let mask_atlas_size: u32 = 2048;
     let color_atlas_size: u32 = 2048;
     let inital_window_size = size2(1200u32, 1000);
@@ -1403,7 +1403,7 @@ fn update_inputs(
         window.request_redraw();
     }
 
-    *control_flow = ControlFlow::Poll;
+    *control_flow = ControlFlow::Wait;
 
     true
 }

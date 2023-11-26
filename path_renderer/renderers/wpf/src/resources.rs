@@ -69,7 +69,7 @@ fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32,
     var position = vec4<f32>(
         target_position.x,
         target_position.y,
-        0.0,
+        0.0, // todo: z_index_to_f32(z_index);
         1.0,
     );
 
