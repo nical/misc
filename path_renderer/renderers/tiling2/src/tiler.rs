@@ -488,15 +488,20 @@ impl Tiler {
                 let tile_last_edge = output.edges.len();
                 let mut solid_tile_x = current_tile.0;
                 if tile_last_edge != tile_first_edge {
-                    debug_assert!(tile_last_edge - tile_first_edge < 512, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
+                    // This limit isn't necessary but it is useful to catch bugs. In practice there should
+                    // never be this many edges in a single tile.
+                    const MAX_EDGES_PER_TILE: usize = 512;
+                    debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
+
                     //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                     output.mask_tiles.push(TileInstance {
                         position: TilePosition::new(current_tile.0 as u32, current_tile.1 as u32),
                         backdrop,
                         first_edge: tile_first_edge as u32,
-                        edge_count: (tile_last_edge - tile_first_edge) as u16,
+                        edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
                         path_index,
                     }.encode());
+
                     tile_first_edge = tile_last_edge;
                     solid_tile_x += 1;
                 }
@@ -506,8 +511,15 @@ impl Tiler {
                     FillRule::NonZero => backdrop != 0,
                 };
 
-                while inside && solid_tile_x < tile.0 && solid_tile_x < self.viewport_tiles.max.x as u16 {
-                    while solid_tile_x < tile.0 && self.occlusion.occluded(solid_tile_x, current_tile.1) {
+                // Fill solid tiles if any, up to the new tile unless it is on a different row.
+                let solid_tile_end = if tile.1 == current_tile.1 {
+                    tile.0
+                } else {
+                    self.viewport_tiles.max.x as u16
+                };
+
+                while inside && solid_tile_x < solid_tile_end && solid_tile_x < self.viewport_tiles.max.x as u16 {
+                    while solid_tile_x < solid_tile_end && self.occlusion.occluded(solid_tile_x, current_tile.1) {
                         assert!((solid_tile_x as i32) < self.viewport_tiles.max.x, "A");
                         //println!("    skip occluded solid tile {solid_tile_x:?}");
                         solid_tile_x += 1;
@@ -517,8 +529,7 @@ impl Tiler {
                     let mut position = TilePosition::new(solid_tile_x as u32, current_tile.1 as u32);
                     solid_tile_x += 1;
 
-                    while solid_tile_x < tile.0  && self.occlusion.test(solid_tile_x, current_tile.1, pattern.is_opaque) {
-                        assert!((solid_tile_x as i32) < self.viewport_tiles.max.x, "B");
+                    while solid_tile_x < solid_tile_end  && self.occlusion.test(solid_tile_x, current_tile.1, pattern.is_opaque) {
                         //println!("    extend solid tile {solid_tile_x:?}");
                         solid_tile_x += 1;
                         position.extend();
