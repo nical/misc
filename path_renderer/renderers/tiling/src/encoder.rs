@@ -25,7 +25,7 @@ fn opaque_span(
     mut x: u32,
     y: u32,
     num_tiles: u32,
-    tile_mask: &mut TileMaskRow,
+    tile_mask: &mut TiledOcclusionBufferRow,
     patterns: &mut Vec<PatternTiles>,
     pattern: &BuiltPattern,
 ) {
@@ -101,7 +101,7 @@ fn alpha_span(
     mut x: u32,
     y: u32,
     num_tiles: u32,
-    tile_mask: &mut TileMaskRow,
+    tile_mask: &mut TiledOcclusionBufferRow,
     pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
@@ -175,7 +175,7 @@ fn stretched_prerendered_span(
     mut x: u32,
     y: u32,
     num_tiles: u32,
-    tile_mask: &mut TileMaskRow,
+    tile_mask: &mut TiledOcclusionBufferRow,
     pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
@@ -268,7 +268,7 @@ fn slow_span(
     x: u32,
     y: u32,
     num_tiles: u32,
-    tile_mask: &mut TileMaskRow,
+    tile_mask: &mut TiledOcclusionBufferRow,
     pattern: &BuiltPattern,
     encoder: &mut TileEncoder,
 ) {
@@ -588,7 +588,7 @@ impl TileEncoder {
         rows: Range<u32>,
         columns: Range<u32>,
         pattern: &BuiltPattern,
-        tile_mask: &mut TileMask,
+        tile_mask: &mut TiledOcclusionBuffer,
     ) {
         for tile_y in rows {
             let mut tile_mask = tile_mask.row(tile_y);
@@ -600,7 +600,7 @@ impl TileEncoder {
         &mut self,
         x: Range<u32>,
         y: u32,
-        tile_mask: &mut TileMaskRow,
+        tile_mask: &mut TiledOcclusionBufferRow,
         pattern: &BuiltPattern,
     ) {
         let num_tiles = x.end - x.start;

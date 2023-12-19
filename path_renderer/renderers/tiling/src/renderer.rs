@@ -1,5 +1,5 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
-use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TileMask, Tiler, TilerConfig, TILE_SIZE};
+use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::{bytemuck, SurfaceKind};
 use core::canvas::{SurfaceDrawConfig, FillPath};
 use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId};
@@ -60,7 +60,7 @@ struct BatchInfo {
 pub struct TileRenderer {
     pub encoder: TileEncoder,
     pub tiler: Tiler,
-    pub occlusion_mask: TileMask,
+    pub occlusion_mask: TiledOcclusionBuffer,
     batches: BatchList<Fill, BatchInfo>,
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
@@ -104,7 +104,7 @@ impl TileRenderer {
             encoder: TileEncoder::new(config, texture_load, 8), // TODO number of patterns
             tiler: Tiler::new(config),
             tolerance: config.tolerance,
-            occlusion_mask: TileMask::new(tiles_x, tiles_y),
+            occlusion_mask: TiledOcclusionBuffer::new(tiles_x, tiles_y),
             masks: TilingMasks {
                 circle_masks: MaskEncoder::new(),
                 rectangle_masks: MaskEncoder::new(),

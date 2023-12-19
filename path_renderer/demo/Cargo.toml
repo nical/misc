@@ -14,6 +14,7 @@ core = { path = "../core" }
 
 tess = { path = "../renderers/tess" }
 tiling = { path = "../renderers/tiling" }
+tiling2 = { path = "../renderers/tiling2" }
 stencil = { path = "../renderers/stencil" }
 rectangles = { path = "../renderers/rectangles" }
 msaa_stroke = { path = "../renderers/msaa_stroke" }

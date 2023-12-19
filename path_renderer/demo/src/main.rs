@@ -44,7 +44,7 @@ const TILING: usize = 0;
 //const TESS: usize = 1;
 const STENCIL: usize = 2;
 const WPF: usize = 3;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf", "tiling2"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -54,6 +54,7 @@ const NUM_SCENES: u32 = 2;
 
 struct Renderers {
     tiling: TileRenderer,
+    tiling2: tiling2::TileRenderer,
     meshes: MeshRenderer,
     stencil: StencilAndCoverRenderer,
     wpf: WpfMeshRenderer,
@@ -64,6 +65,7 @@ struct Renderers {
 impl Renderers {
     fn begin_frame(&mut self, ctx: &Context) {
         self.tiling.begin_frame(ctx);
+        self.tiling2.begin_frame(ctx);
         self.meshes.begin_frame(ctx);
         self.stencil.begin_frame(ctx);
         self.wpf.begin_frame(ctx);
@@ -73,6 +75,7 @@ impl Renderers {
 
     fn prepare(&mut self, ctx: &Context, prep: &mut PrepareRenderPipelines, device: &wgpu::Device) {
         self.tiling.prepare(ctx, prep, &device);
+        self.tiling2.prepare(ctx, prep);
         self.meshes.prepare(ctx, prep);
         self.stencil.prepare(ctx, prep);
         self.rectangles.prepare(ctx, prep);
@@ -82,6 +85,7 @@ impl Renderers {
 
     fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.tiling.upload(gpu_resources, &device, &queue);
+        self.tiling2.upload(gpu_resources, &device, &queue);
         self.meshes.upload(gpu_resources, &device, &queue);
         self.stencil.upload(gpu_resources, &device);
         self.rectangles.upload(gpu_resources, &device, &queue);
@@ -95,6 +99,7 @@ impl Renderers {
             &mut self.meshes as &mut dyn FillPath,
             &mut self.stencil as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
+            &mut self.tiling2 as &mut dyn FillPath,
         ][idx]
     }
 }
@@ -275,6 +280,8 @@ fn main() {
 
     let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
 
+    let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
+
     let mut gpu_resources = GpuResources::new();
     let common_handle = gpu_resources.register(common_resources);
     let tiling_handle = gpu_resources.register(tiling_resources);
@@ -283,6 +290,7 @@ fn main() {
     let rectangle_handle = gpu_resources.register(rectangle_resources);
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
+    let tiling2_handle = gpu_resources.register(tiling2_resources);
 
     let mut renderers = Renderers {
         tiling: TileRenderer::new(
@@ -324,6 +332,12 @@ fn main() {
             stroke_handle,
             &gpu_resources[stroke_handle],
         ),
+        tiling2: tiling2::TileRenderer::new(
+            6,
+            common_handle,
+            tiling2_handle,
+            &gpu_resources[tiling2_handle],
+        )
     };
 
     renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
@@ -341,7 +355,7 @@ fn main() {
         height: window_size.height,
         present_mode: wgpu::PresentMode::AutoVsync,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-        view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
+        view_formats: vec![],
     };
 
     surface.configure(&device, &surface_desc);
@@ -500,6 +514,7 @@ fn main() {
             &mut renderers.rectangles,
             &mut renderers.wpf,
             &mut renderers.msaa_strokes,
+            &mut renderers.tiling2,
         ]);
 
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
@@ -551,6 +566,7 @@ fn main() {
                 &renderers.rectangles,
                 &renderers.wpf,
                 &renderers.msaa_strokes,
+                &renderers.tiling2,
             ],
             &gpu_resources,
             &source_textures,
@@ -1361,12 +1377,12 @@ fn update_inputs(
                 redraw = true;
             }
             VirtualKeyCode::F => {
-                demo.fill_renderer = (demo.fill_renderer + 1) % 4;
+                demo.fill_renderer = (demo.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
                 update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
                 redraw = true;
             }
             VirtualKeyCode::S => {
-                demo.stroke_renderer = (demo.stroke_renderer + 1) % 2;
+                demo.stroke_renderer = (demo.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
                 update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
                 redraw = true;
             }

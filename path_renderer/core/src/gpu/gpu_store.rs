@@ -224,11 +224,15 @@ impl DynamicStore {
     }
 
     pub fn upload(&mut self, device: &wgpu::Device, data: &[u8]) -> Option<DynBufferRange> {
-        if data.is_empty() {
+        self.upload_multiple(device, &[data])
+    }
+
+    pub fn upload_multiple(&mut self, device: &wgpu::Device, data: &[&[u8]]) -> Option<DynBufferRange> {
+        let len: u32 = data.iter().map(|data| data.len() as u32).sum();
+        if len == 0 {
             return None;
         }
 
-        let len = data.len() as u32;
         let mut selected_buffer = None;
         for (idx, buffer) in self.staging.iter().enumerate() {
             if buffer.size >= buffer.offset + len {
@@ -245,12 +249,22 @@ impl DynamicStore {
         let staging = &mut self.staging[selected_buffer];
 
         let start = staging.offset as BufferAddress;
-        let end = start + data.len() as BufferAddress;
-        staging
+        let end = start + len as BufferAddress;
+        let mut mapped = staging
             .handle
             .slice(start..end)
-            .get_mapped_range_mut()
-            .copy_from_slice(data);
+            .get_mapped_range_mut();
+
+        let mut offset = 0;
+        for chunk in data {
+            if chunk.is_empty() {
+                continue;
+            }
+            let len = chunk.len();
+            let end = offset + len;
+            mapped[offset..end].copy_from_slice(chunk);
+            offset = end;
+        } 
 
         let aligned_end = align(end, 64);
 

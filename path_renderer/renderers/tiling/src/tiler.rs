@@ -6,13 +6,13 @@ pub use lyon::path::{FillRule, PathEvent};
 use ordered_float::OrderedFloat;
 
 use crate::{
-    tile_visibility, FillOptions, Stats, TileMaskRow, TilePosition, TileVisibility, TILE_SIZE_F32,
+    tile_visibility, FillOptions, Stats, TiledOcclusionBufferRow, TilePosition, TileVisibility, TILE_SIZE_F32,
 };
 use core::pattern::BuiltPattern;
 pub use core::units::{point, vector, Point, Vector};
 
 use crate::encoder::*;
-use crate::occlusion::TileMask;
+use crate::occlusion::TiledOcclusionBuffer;
 
 use copyless::VecHelper;
 use core::wgpu;
@@ -125,7 +125,7 @@ impl Tiler {
         path: impl Iterator<Item = PathEvent>,
         options: &FillOptions,
         pattern: &BuiltPattern,
-        tile_mask: &mut TileMask,
+        tile_mask: &mut TiledOcclusionBuffer,
         encoder: &mut TileEncoder,
         device: &wgpu::Device,
     ) {
@@ -202,7 +202,7 @@ impl Tiler {
     fn end_path(
         &mut self,
         encoder: &mut TileEncoder,
-        tile_mask: &mut TileMask,
+        tile_mask: &mut TiledOcclusionBuffer,
         pattern: &BuiltPattern,
         device: &wgpu::Device,
     ) {
@@ -430,7 +430,7 @@ impl Tiler {
         tile_y: u32,
         row: &mut [RowEdge],
         active_edges: &mut Vec<ActiveEdge>,
-        coarse_mask: &mut TileMaskRow,
+        coarse_mask: &mut TiledOcclusionBufferRow,
         pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
         device: &wgpu::Device,
@@ -574,7 +574,7 @@ impl Tiler {
         &self,
         tile: &mut TileInfo,
         active_edges: &mut Vec<ActiveEdge>,
-        coarse_mask: &mut TileMaskRow,
+        coarse_mask: &mut TiledOcclusionBufferRow,
         pattern: &BuiltPattern,
         encoder: &mut TileEncoder,
         device: &wgpu::Device,
@@ -644,7 +644,7 @@ impl Tiler {
     pub fn fill_canvas(
         &mut self,
         pattern: &BuiltPattern,
-        tile_mask: &mut TileMask,
+        tile_mask: &mut TiledOcclusionBuffer,
         encoder: &mut TileEncoder,
     ) {
         encoder.begin_path(pattern);

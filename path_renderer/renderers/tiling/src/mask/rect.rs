@@ -7,7 +7,7 @@ use crate::mask::MaskEncoder;
 use crate::{
     affected_range,
     encoder::{as_scale_offset, TileEncoder},
-    FillOptions, TileMask, TilePosition, Tiler, TILE_SIZE_F32,
+    FillOptions, TiledOcclusionBuffer, TilePosition, Tiler, TILE_SIZE_F32,
 };
 use core::pattern::BuiltPattern;
 
@@ -29,7 +29,7 @@ pub fn fill_rect(
     rect: &Box2D<f32>,
     options: &FillOptions,
     pattern: &BuiltPattern,
-    tile_mask: &mut TileMask,
+    tile_mask: &mut TiledOcclusionBuffer,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
     rect_encoder: &mut MaskEncoder,
@@ -74,7 +74,7 @@ pub fn fill_axis_aligned_rect(
     inverted: bool,
     scissor: &Box2D<f32>,
     pattern: &BuiltPattern,
-    tile_mask: &mut TileMask,
+    tile_mask: &mut TiledOcclusionBuffer,
     encoder: &mut TileEncoder,
     rect_encoder: &mut MaskEncoder,
 ) {

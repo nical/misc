@@ -234,6 +234,56 @@ impl Shaders {
         id
     }
 
+    pub fn print_pipeline_variant(
+        &mut self,
+        pipeline_id: GeneratedPipelineId,
+        pattern_id: ShaderPatternId,
+    ) {
+        let params = &self.params[pipeline_id.index()];
+
+        let geometry = &self.geometries[params.geometry.index()];
+        let mask = params.mask.map(|m| &self.masks[m.index()]);
+        let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
+
+        let base_bindings = self
+            .base_bindings
+            .map(|id| &self.bind_group_layouts[id as usize]);
+        let geom_bindings = geometry
+            .bindings
+            .map(|id| &self.bind_group_layouts[id as usize]);
+        let mask_bindings = mask
+            .map(|desc| desc.bindings)
+            .flatten()
+            .map(|id| &self.bind_group_layouts[id as usize]);
+        let pattern_bindings = pattern
+            .map(|desc| desc.bindings)
+            .flatten()
+            .map(|id| &self.bind_group_layouts[id as usize]);
+
+        let src = generate_shader_source(
+            geometry,
+            mask,
+            pattern,
+            base_bindings,
+            geom_bindings,
+            mask_bindings,
+            pattern_bindings,
+        );
+
+        self.sources.preprocessor.reset_defines();
+        for define in &params.shader_defines {
+            self.sources.preprocessor.define(define);
+        }
+
+        let src = self
+            .sources
+            .preprocessor
+            .preprocess("generated module", &src, &mut self.sources.source_library)
+            .unwrap();
+
+        println!("{src}");
+    }
+
     fn generate_pipeline_variant(
         &mut self,
         device: &wgpu::Device,
@@ -656,7 +706,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Uint32,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -664,7 +714,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Uint32x2,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -672,7 +722,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Uint32x3,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -680,7 +730,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Uint32x4,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -688,7 +738,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Sint32,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -696,7 +746,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Sint32x2,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -704,7 +754,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Sint32x3,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]
@@ -712,7 +762,7 @@ impl Varying {
         Varying {
             name: name.into(),
             kind: WgslType::Sint32x4,
-            interpolated: true,
+            interpolated: false,
         }
     }
     #[inline]

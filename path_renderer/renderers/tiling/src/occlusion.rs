@@ -3,15 +3,15 @@
 // caches the current u64 payload, but the naive one-u8-per-tile approach performed better.
 
 #[derive(Clone, Debug)]
-pub struct TileMask {
+pub struct TiledOcclusionBuffer {
     data: Vec<u8>,
     width: usize,
     height: u32,
 }
 
-impl TileMask {
+impl TiledOcclusionBuffer {
     pub fn new(w: u32, h: u32) -> Self {
-        let mut m = TileMask {
+        let mut m = TiledOcclusionBuffer {
             data: Vec::new(),
             width: 0,
             height: 0,
@@ -41,12 +41,12 @@ impl TileMask {
         self.height
     }
 
-    pub fn row(&mut self, y: u32) -> TileMaskRow {
+    pub fn row(&mut self, y: u32) -> TiledOcclusionBufferRow {
         if self.data.is_empty() {
-            return TileMaskRow { data: &mut [] };
+            return TiledOcclusionBufferRow { data: &mut [] };
         }
         let offset = y as usize * self.width;
-        TileMaskRow {
+        TiledOcclusionBufferRow {
             data: &mut self.data[offset..(offset + self.width)],
         }
     }
@@ -85,11 +85,11 @@ impl TileMask {
     }
 }
 
-pub struct TileMaskRow<'l> {
+pub struct TiledOcclusionBufferRow<'l> {
     data: &'l mut [u8],
 }
 
-impl<'l> TileMaskRow<'l> {
+impl<'l> TiledOcclusionBufferRow<'l> {
     pub fn get(&mut self, offset: u32) -> bool {
         self.data
             .get(offset as usize)

@@ -4,7 +4,7 @@ use super::MaskEncoder;
 use crate::tiler::affected_range;
 use crate::{
     encoder::{as_scale_offset, TileEncoder},
-    tile_visibility, FillOptions, TileMask, TilePosition, TileVisibility, Tiler,
+    tile_visibility, FillOptions, TiledOcclusionBuffer, TilePosition, TileVisibility, Tiler,
 };
 use core::pattern::BuiltPattern;
 use core::units::{point, vector, LocalPoint, Point};
@@ -53,7 +53,7 @@ pub fn fill_circle(
     mut radius: f32,
     options: &FillOptions,
     pattern: &BuiltPattern,
-    tile_mask: &mut TileMask,
+    tile_mask: &mut TiledOcclusionBuffer,
     tiler: &mut Tiler,
     encoder: &mut TileEncoder,
     circle_masks: &mut MaskEncoder,
@@ -100,7 +100,7 @@ fn fill_transformed_circle(
     scissor: &Box2D<f32>,
     inverted: bool,
     pattern: &BuiltPattern,
-    tile_mask: &mut TileMask,
+    tile_mask: &mut TiledOcclusionBuffer,
     encoder: &mut TileEncoder,
     circle_masks: &mut MaskEncoder,
 ) {
