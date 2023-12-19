@@ -127,6 +127,7 @@ impl TileRenderer {
 
     pub fn begin_frame(&mut self, canvas: &Context) {
         let size = canvas.surface.size();
+        self.tolerance = canvas.params.tolerance;
         self.tiler.init(&size.to_f32().cast_unit().into());
         let tiles = (size.to_u32() + Size2D::new(TILE_SIZE - 1, TILE_SIZE - 1)) / TILE_SIZE;
         self.occlusion_mask.init(tiles.width, tiles.height);

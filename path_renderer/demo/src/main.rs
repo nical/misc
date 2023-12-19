@@ -44,6 +44,7 @@ const TILING: usize = 0;
 //const TESS: usize = 1;
 const STENCIL: usize = 2;
 const WPF: usize = 3;
+const TILING2: usize = 4;
 const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf", "tiling2"];
 
 const STROKE_TO_FILL: usize = 0;
@@ -248,7 +249,7 @@ fn main() {
         textures: TextureRenderer::register(&device, &mut shaders),
     };
 
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(CanvasParams { tolerance });
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
@@ -696,7 +697,7 @@ fn paint_scene(
 
     ctx.reconfigure_surface(SurfacePassConfig {
         depth: fill_renderer != TILING,
-        msaa: if fill_renderer == TILING || fill_renderer == WPF { msaa_tiling } else { msaa_default },
+        msaa: if fill_renderer == TILING || fill_renderer == TILING2 || fill_renderer == WPF { msaa_tiling } else { msaa_default },
         stencil: fill_renderer == STENCIL,
         kind: SurfaceKind::Color,
     });

@@ -5,7 +5,7 @@ use lyon::{
     lyon_tessellation::{
         BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers,
     },
-    path::{traits::PathIterator, PathEvent, PathSlice},
+    path::{PathEvent, PathSlice},
 };
 
 use super::StencilAndCoverResources;
@@ -121,6 +121,7 @@ pub struct Stats {
     pub commands: u32,
     pub stencil_batches: u32,
     pub cover_batches: u32,
+    pub vertices: u32,
 }
 
 type BatchRects = ArrayVec<SurfaceRect, 16>;
@@ -180,6 +181,7 @@ impl StencilAndCoverRenderer {
                 commands: 0,
                 stencil_batches: 0,
                 cover_batches: 0,
+                vertices: 0,
             },
         }
     }
@@ -236,7 +238,7 @@ impl StencilAndCoverRenderer {
                 &mut canvas.batcher,
                 &0,
                 &aabb,
-                BatchFlags::empty(),
+                BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
                 &mut Default::default,
             )
             .0
@@ -283,7 +285,7 @@ impl StencilAndCoverRenderer {
                     );
                 }
             }
-            for (fill_idx, fill) in commands.iter().enumerate().filter(|(_, fill)| !surface.depth || fill.pattern.is_opaque) {
+            for (fill_idx, fill) in commands.iter().enumerate().filter(|(_, fill)| !surface.depth || !fill.pattern.is_opaque) {
                 let is_last = fill_idx == commands.len() - 1;
                 self.prepare_fill(
                     canvas,
@@ -300,6 +302,7 @@ impl StencilAndCoverRenderer {
         }
 
         self.batches = batches;
+        self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
     }
 
     fn prepare_fill(
@@ -515,10 +518,12 @@ pub fn generate_stencil_geometry(
     // Use the center of the bounding box as the pivot point.
     let pivot = vertex(vertices, aabb.center().cast_unit());
 
-    for evt in path.iter().transformed(transform) {
+    for evt in path.iter() {
         match evt {
             PathEvent::Begin { .. } => {}
             PathEvent::End { last, first, .. } => {
+                let last = transform.transform_point(last);
+                let first = transform.transform_point(first);
                 if skip_edge(&aabb, last, first) {
                     continue;
                 }
@@ -528,6 +533,8 @@ pub fn generate_stencil_geometry(
                 triangle(indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
+                let from = transform.transform_point(from);
+                let to = transform.transform_point(to);
                 if skip_edge(&aabb, from, to) {
                     continue;
                 }
@@ -537,6 +544,9 @@ pub fn generate_stencil_geometry(
                 triangle(indices, pivot, a, b);
             }
             PathEvent::Quadratic { from, ctrl, to } => {
+                let from = transform.transform_point(from);
+                let ctrl = transform.transform_point(ctrl);
+                let to = transform.transform_point(to);
                 let max_x = from.x.max(ctrl.x).max(to.x);
                 let max_y = from.y.max(ctrl.y).max(to.y);
                 if max_x < aabb.min.x || max_y < aabb.min.y {
@@ -573,6 +583,10 @@ pub fn generate_stencil_geometry(
                 ctrl2,
                 to,
             } => {
+                let from = transform.transform_point(from);
+                let ctrl1 = transform.transform_point(ctrl1);
+                let ctrl2 = transform.transform_point(ctrl2);
+                let to = transform.transform_point(to);
                 let max_x = from.x.max(ctrl1.x).max(ctrl2.x).max(to.x);
                 let max_y = from.y.max(ctrl1.y).max(ctrl2.y).max(to.y);
                 if max_x < aabb.min.x || max_y < aabb.min.y {

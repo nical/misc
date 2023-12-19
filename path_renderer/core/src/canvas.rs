@@ -524,13 +524,13 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(params: CanvasParams) -> Self {
         Context {
             transforms: Transforms::default(),
             z_indices: ZIndices::default(),
             surface: ContextSurface::default(),
             render_passes: RenderPasses::default(),
-            params: CanvasParams::default(),
+            params,
             batcher: Batcher::new(),
         }
     }
