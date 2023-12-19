@@ -470,7 +470,7 @@ impl Tiler {
         //}
 
         let mut current_tile = (0, 0);
-        let mut tile_first_edge = 0;
+        let mut tile_first_edge = output.edges.len();
         let mut backdrop: i16 = 0;
 
         for evt in &self.events {
@@ -488,6 +488,7 @@ impl Tiler {
                 let tile_last_edge = output.edges.len();
                 let mut solid_tile_x = current_tile.0;
                 if tile_last_edge != tile_first_edge {
+                    debug_assert!(tile_last_edge - tile_first_edge < 512, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
                     //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                     output.mask_tiles.push(TileInstance {
                         position: TilePosition::new(current_tile.0 as u32, current_tile.1 as u32),

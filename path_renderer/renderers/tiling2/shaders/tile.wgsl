@@ -146,8 +146,11 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
     var winding_number: f32 = f32(backdrop);
 
     var edge_idx = edges.x;
+    // This isn't necessary but to be on the safe side and make sure we don't accidentally
+    // hang from of some corrupted data, restrict the loop to a large-ish number of segments.
+    var end = min(edges.y, edges.x + 512u);
     loop {
-        if (edge_idx >= edges.y) {
+        if (edge_idx >= end) {
             break;
         }
 
@@ -173,9 +176,10 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
 
     var mask = resolve_mask(winding_number, fill_rule);
 
-    if (edges.x != edges.y && (min(uv.x, uv.y) < 1.0 || max(uv.x, uv.y) > 15.0)) {
-        mask = 0.4;
-    }
+    // Debug: uncomment to see the grid in alpha tiles.
+    //if (edges.x != edges.y && (min(uv.x, uv.y) < 1.0 || max(uv.x, uv.y) > 15.0)) {
+    //    mask = 0.4;
+    //}
 
     return mask * opacity;
 }

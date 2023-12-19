@@ -591,7 +591,7 @@ fn main() {
             duration.as_micros() as f64 / 1000.0
         }
 
-        let n = 300;
+        let n = 60;
         frame_idx += 1;
         if frame_idx == n {
             let fbt = ms(frame_build_time) / (n as f64);

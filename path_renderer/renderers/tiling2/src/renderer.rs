@@ -229,12 +229,12 @@ impl TileRenderer {
             return;
         }
 
-        println!("tiling2 stats:\n\tedges: {}({}kb)\n\t{} opaque tiles\n\t{} alpha tiles\n\t",
-            self.tiles.edges.len(),
-            (self.tiles.edges.len() * 4) as f32 / 1000.0,
-            self.tiles.opaque_tiles.len(),
-            self.tiles.mask_tiles.len(),
-        );
+        //println!("tiling2 stats:\n\tedges: {}({}kb)\n\t{} opaque tiles\n\t{} alpha tiles\n\t",
+        //    self.tiles.edges.len(),
+        //    (self.tiles.edges.len() * 4) as f32 / 1000.0,
+        //    self.tiles.opaque_tiles.len(),
+        //    self.tiles.mask_tiles.len(),
+        //);
 
         let res = &mut resources[self.common_resources];
         self.instances = res.vertices.upload_multiple(device,
@@ -361,8 +361,8 @@ impl CanvasRenderer for TileRenderer {
                 let offset = self.tiles.mask_tiles.len() as u32;
                 instances.start += offset;
                 instances.end += offset;
-                //println!("draw opaque instances {instances:?}");
 
+                //println!("draw opaque instances {instances:?}");
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
             }
