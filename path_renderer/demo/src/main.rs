@@ -1,4 +1,4 @@
-use core::canvas::*;
+use core::context::*;
 use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
@@ -632,7 +632,7 @@ fn paint_scene(
     transform: &LocalTransform,
 ) {
     if testing {
-        renderers.tiling.fill_canvas(
+        renderers.tiling.fill_surface(
             ctx,
             patterns.gradients.add(
                 gpu_store,

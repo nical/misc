@@ -5,7 +5,7 @@ use std::fmt::Write;
 use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
 use super::VertexBuilder;
-use crate::{gpu::PipelineDefaults, canvas::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind}};
+use crate::{gpu::PipelineDefaults, context::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind}};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderPatternId(u16);

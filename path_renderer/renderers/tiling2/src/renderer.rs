@@ -1,6 +1,6 @@
 use core::{
     batching::{BatchFlags, BatchList},
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex, FillPath,
     },

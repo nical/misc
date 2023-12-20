@@ -641,7 +641,7 @@ impl Tiler {
         }
     }
 
-    pub fn fill_canvas(
+    pub fn fill_surface(
         &mut self,
         pattern: &BuiltPattern,
         tile_mask: &mut TiledOcclusionBuffer,

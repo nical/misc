@@ -1,5 +1,5 @@
 pub mod buffer;
-pub mod canvas;
+pub mod context;
 pub mod gpu;
 //pub mod flatten_simd;
 pub mod batching;
@@ -52,7 +52,7 @@ pub mod units {
     pub use euclid::vec2 as vector;
 }
 
-pub use crate::canvas::{
+pub use crate::context::{
     SurfaceDrawConfig, SurfacePassConfig, SurfaceKind, StencilMode, DepthMode,
 };
 

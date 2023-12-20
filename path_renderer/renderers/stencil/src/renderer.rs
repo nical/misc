@@ -9,11 +9,11 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, canvas::FillPath};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath};
 use core::wgpu;
 use core::{
     bytemuck,
-    canvas::RenderContext,
+    context::RenderContext,
     gpu::shader::{
         GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
     },
@@ -22,7 +22,7 @@ use core::{
 use core::{
     DepthMode, StencilMode, SurfaceDrawConfig, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderPassState, RendererId, SubPass,
         ZIndex,
     },
@@ -190,7 +190,7 @@ impl StencilAndCoverRenderer {
         surface.stencil
     }
 
-    pub fn begin_frame(&mut self, canvas: &Context) {
+    pub fn begin_frame(&mut self, ctx: &Context) {
         self.commands.clear();
         self.draws.clear();
         self.batches.clear();
@@ -202,32 +202,32 @@ impl StencilAndCoverRenderer {
         self.ibo_range = None;
         self.cover_vbo_range = None;
         self.cover_ibo_range = None;
-        self.enable_msaa = canvas.surface.msaa();
-        self.opaque_pass = canvas.surface.opaque_pass();
+        self.enable_msaa = ctx.surface.msaa();
+        self.opaque_pass = ctx.surface.opaque_pass();
         self.stats = Stats::default();
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Context, rect: &LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Rect(*rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, rect: &LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Rect(*rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Circle(circle), pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_config()));
+    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(ctx.surface.current_config()));
 
-        let aabb = canvas
+        let aabb = ctx
             .transforms
             .get_current()
             .matrix()
@@ -235,7 +235,7 @@ impl StencilAndCoverRenderer {
 
         self.batches
             .find_or_add_batch(
-                &mut canvas.batcher,
+                &mut ctx.batcher,
                 &0,
                 &aabb,
                 BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
@@ -245,12 +245,12 @@ impl StencilAndCoverRenderer {
             .push(Fill {
                 shape,
                 pattern,
-                transform: canvas.transforms.current_id(),
-                z_index: canvas.z_indices.push(),
+                transform: ctx.transforms.current_id(),
+                z_index: ctx.z_indices.push(),
             });
     }
 
-    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
         let mut batching = BatchHelper {
             rects: ArrayVec::new(),
             prev_pattern: None,
@@ -260,7 +260,7 @@ impl StencilAndCoverRenderer {
 
         let mut batches = self.batches.take();
         let id = self.renderer_id;
-        for batch_id in canvas
+        for batch_id in ctx
             .batcher
             .batches()
             .iter()
@@ -270,13 +270,13 @@ impl StencilAndCoverRenderer {
 
             let draws_start = self.draws.len();
 
-            let surface = canvas.surface.get_config(batch_id.surface);
+            let surface = ctx.surface.get_config(batch_id.surface);
 
             if surface.depth {
                 for (fill_idx, fill) in commands.iter().enumerate().rev().filter(|(_, fill)| fill.pattern.is_opaque) {
                     let is_last = fill_idx == commands.len() - 1;
                     self.prepare_fill(
-                        canvas,
+                        ctx,
                         fill,
                         &mut batching,
                         is_last,
@@ -288,7 +288,7 @@ impl StencilAndCoverRenderer {
             for (fill_idx, fill) in commands.iter().enumerate().filter(|(_, fill)| !surface.depth || !fill.pattern.is_opaque) {
                 let is_last = fill_idx == commands.len() - 1;
                 self.prepare_fill(
-                    canvas,
+                    ctx,
                     fill,
                     &mut batching,
                     is_last,
@@ -307,14 +307,14 @@ impl StencilAndCoverRenderer {
 
     fn prepare_fill(
         &mut self,
-        canvas: &Context,
+        ctx: &Context,
         fill: &Fill,
         batch: &mut BatchHelper,
         is_last: bool,
         surface: SurfacePassConfig,
         shaders: &mut PrepareRenderPipelines,
     ) {
-        let transform = canvas.transforms.get(fill.transform);
+        let transform = ctx.transforms.get(fill.transform);
         let opaque = fill.pattern.is_opaque;
 
         let local_aabb = fill.shape.aabb();
@@ -390,7 +390,7 @@ impl StencilAndCoverRenderer {
                 generate_stencil_geometry(
                     shape.path.as_slice(),
                     transform.matrix(),
-                    canvas.params.tolerance,
+                    ctx.params.tolerance,
                     &transformed_aabb,
                     &mut self.stencil_geometry,
                 );
@@ -410,7 +410,7 @@ impl StencilAndCoverRenderer {
                         .tessellate_circle(
                             t.transform_point(circle.center).cast_unit(),
                             circle.radius * t.scale.x,
-                            &FillOptions::tolerance(canvas.params.tolerance),
+                            &FillOptions::tolerance(ctx.params.tolerance),
                             &mut BuffersBuilder::new(
                                 &mut self.cover_geometry,
                                 VertexCtor {

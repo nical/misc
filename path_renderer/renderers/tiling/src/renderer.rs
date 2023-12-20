@@ -1,12 +1,12 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::{bytemuck, SurfaceKind};
-use core::canvas::{SurfaceDrawConfig, FillPath};
+use core::context::{SurfaceDrawConfig, FillPath};
 use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId};
 use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchId, BatchList},
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RenderPasses,
         RendererId, SubPass, SurfacePassConfig, ZIndex,
     },
@@ -35,7 +35,7 @@ pub enum Shape {
     Path(FilledPath),
     Rect(LocalRect),
     Circle(Circle),
-    Canvas,
+    Surface,
 }
 
 impl Shape {
@@ -44,7 +44,7 @@ impl Shape {
             Shape::Path(shape) => shape.aabb(),
             Shape::Rect(rect) => *rect,
             Shape::Circle(circle) => circle.aabb(),
-            Shape::Canvas => LocalRect {
+            Shape::Surface => LocalRect {
                 min: point(std::f32::MIN, std::f32::MIN),
                 max: point(std::f32::MAX, std::f32::MAX),
             },
@@ -125,9 +125,9 @@ impl TileRenderer {
         surface.kind == SurfaceKind::Color
     }
 
-    pub fn begin_frame(&mut self, canvas: &Context) {
-        let size = canvas.surface.size();
-        self.tolerance = canvas.params.tolerance;
+    pub fn begin_frame(&mut self, ctx: &Context) {
+        let size = ctx.surface.size();
+        self.tolerance = ctx.params.tolerance;
         self.tiler.init(&size.to_f32().cast_unit().into());
         let tiles = (size.to_u32() + Size2D::new(TILE_SIZE - 1, TILE_SIZE - 1)) / TILE_SIZE;
         self.occlusion_mask.init(tiles.width, tiles.height);
@@ -147,29 +147,29 @@ impl TileRenderer {
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         shape: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::Path(shape.into()), pattern);
+        self.fill_shape(ctx, Shape::Path(shape.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Rect(rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_canvas(&mut self, canvas: &mut Context, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Canvas, pattern);
+    pub fn fill_surface(&mut self, ctx: &mut Context, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(canvas.surface.current_config()));
+    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(ctx.surface.current_config()));
 
-        let aabb = canvas
+        let aabb = ctx
             .transforms
             .get_current()
             .matrix()
@@ -177,24 +177,24 @@ impl TileRenderer {
 
         self.batches
             .find_or_add_batch(
-                &mut canvas.batcher,
+                &mut ctx.batcher,
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::empty(),
-                &mut || BatchInfo { passes: 0..0, surface: canvas.surface.current_config() },
+                &mut || BatchInfo { passes: 0..0, surface: ctx.surface.current_config() },
             )
             .0
             .push(Fill {
                 shape: shape.into(),
                 pattern,
-                transform: canvas.transforms.current_id(),
-                z_index: canvas.z_indices.push(),
+                transform: ctx.transforms.current_id(),
+                z_index: ctx.z_indices.push(),
             });
     }
 
     pub fn prepare(
         &mut self,
-        canvas: &Context,
+        ctx: &Context,
         shaders: &mut PrepareRenderPipelines,
         device: &wgpu::Device,
     ) {
@@ -205,7 +205,7 @@ impl TileRenderer {
         // Process paths back to front in order to let the occlusion culling logic do its magic.
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in canvas
+        for batch_id in ctx
             .batcher
             .batches()
             .iter()
@@ -216,7 +216,7 @@ impl TileRenderer {
             let (commands, info) = batches.get_mut(batch_id.index);
             let surface = info.surface.draw_config(false, None);
             for fill in commands.iter().rev() {
-                self.prepare_fill(fill, &surface, canvas, device);
+                self.prepare_fill(fill, &surface, ctx, device);
             }
             self.encoder.split_sub_pass();
             let passes_end = self.encoder.render_passes.len();
@@ -278,9 +278,9 @@ impl TileRenderer {
         }
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, canvas: &Context, device: &wgpu::Device) {
+    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, ctx: &Context, device: &wgpu::Device) {
         let transform = if fill.transform != TransformId::NONE {
-            Some(canvas.transforms.get(fill.transform).matrix().to_untyped())
+            Some(ctx.transforms.get(fill.transform).matrix().to_untyped())
         } else {
             None
         };
@@ -340,9 +340,9 @@ impl TileRenderer {
                     device,
                 )
             }
-            Shape::Canvas => {
+            Shape::Surface => {
                 self.tiler
-                    .fill_canvas(&fill.pattern, &mut self.occlusion_mask, &mut self.encoder);
+                    .fill_surface(&fill.pattern, &mut self.occlusion_mask, &mut self.encoder);
             }
         }
     }

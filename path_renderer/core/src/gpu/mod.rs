@@ -7,7 +7,7 @@ pub use shader::Shaders;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
-use crate::canvas::{DepthMode, StencilMode, SurfaceDrawConfig};
+use crate::context::{DepthMode, StencilMode, SurfaceDrawConfig};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]

@@ -1,7 +1,7 @@
 use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, FillPath,
     },
@@ -111,37 +111,37 @@ impl WpfMeshRenderer {
         !surface.msaa
     }
 
-    pub fn begin_frame(&mut self, canvas: &Context) {
+    pub fn begin_frame(&mut self, ctx: &Context) {
         self.vertices.clear();
         self.draws.clear();
         self.batches.clear();
-        self.enable_msaa = canvas.surface.msaa();
+        self.enable_msaa = ctx.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = canvas.transforms.current_id();
-        let _ = canvas.z_indices.push();
+    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        let transform = ctx.transforms.current_id();
+        let _ = ctx.z_indices.push();
 
-        let aabb = canvas
+        let aabb = ctx
             .transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
-        let surface = canvas.surface.current_config();
+        let surface = ctx.surface.current_config();
         let (commands, info) = self.batches.find_or_add_batch(
-            &mut canvas.batcher,
+            &mut ctx.batcher,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
@@ -155,14 +155,14 @@ impl WpfMeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in canvas
+        for batch_id in ctx
             .batcher
             .batches()
             .iter()
@@ -198,7 +198,7 @@ impl WpfMeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, canvas);
+                self.prepare_fill(fill, ctx);
             }
 
             let end = self.vertices.len() as u32;
@@ -221,8 +221,8 @@ impl WpfMeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Context) {
-        let transform = canvas.transforms.get(fill.transform).matrix();
+    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context) {
+        let transform = ctx.transforms.get(fill.transform).matrix();
         let pattern = fill.pattern.data;
 
         match &fill.shape {
@@ -258,9 +258,9 @@ impl WpfMeshRenderer {
                     FillRule::NonZero => FillMode::Winding,
                 });
 
-                let canvas_size = canvas.surface.size();
+                let surface_size = ctx.surface.size();
 
-                let output = self.builder.rasterize_to_tri_list(0, 0, canvas_size.width, canvas_size.height);
+                let output = self.builder.rasterize_to_tri_list(0, 0, surface_size.width, surface_size.height);
 
                 // TODO: wpf-gpu-raster does not have a way to reset the builder to avoid memory allocations.
                 self.builder = PathBuilder::new();

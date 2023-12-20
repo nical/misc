@@ -2,7 +2,7 @@ use crate::{resources::Instance, InstanceFlags};
 use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig,
     },
@@ -68,7 +68,7 @@ impl RectangleRenderer {
         }
     }
 
-    pub fn begin_frame(&mut self, _canvas: &Context) {
+    pub fn begin_frame(&mut self, _ctx: &Context) {
         self.batches.clear();
     }
 
@@ -78,21 +78,21 @@ impl RectangleRenderer {
 
     pub fn fill_rect(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         local_rect: &LocalRect,
         mut aa: Aa,
         pattern: BuiltPattern,
         transform_handle: GpuStoreHandle,
     ) {
-        let z_index = canvas.z_indices.push();
-        let aabb = canvas
+        let z_index = ctx.z_indices.push();
+        let aabb = ctx
             .transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = canvas.surface.current_config();
+        let surface = ctx.surface.current_config();
 
         if surface.msaa {
             aa = Aa::NONE;
@@ -111,7 +111,7 @@ impl RectangleRenderer {
             && aabb.height() > 50.0
         {
             let (commands, _) = self.batches.find_or_add_batch(
-                &mut canvas.batcher,
+                &mut ctx.batcher,
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::ORDER_INDEPENDENT,
@@ -146,7 +146,7 @@ impl RectangleRenderer {
         };
 
         let (commands, batch) = self.batches.find_or_add_batch(
-            &mut canvas.batcher,
+            &mut ctx.batcher,
             &pattern.batch_key(),
             &aabb,
             batch_flags,
@@ -171,7 +171,7 @@ impl RectangleRenderer {
         });
     }
 
-    pub fn prepare(&mut self, _canvas: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, _ctx: &Context, shaders: &mut PrepareRenderPipelines) {
         for (_, batch) in self.batches.iter_mut() {
             let pipeline = self.pipelines.get(batch.opaque, batch.edge_aa);
             let idx = shaders.prepare(RenderPipelineKey::new(

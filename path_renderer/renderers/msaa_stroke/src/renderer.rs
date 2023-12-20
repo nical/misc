@@ -1,7 +1,7 @@
 use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex,
     },
@@ -152,20 +152,20 @@ impl MsaaStrokeRenderer {
 
     pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         path: P,
         pattern: BuiltPattern,
         width: f32,
     ) {
-        self.stroke_shape(canvas, Shape::Path(path.into(), width), pattern);
+        self.stroke_shape(ctx, Shape::Path(path.into(), width), pattern);
     }
 
-//    pub fn stroke_rect(&mut self, canvas: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
-//        self.stroke_shape(canvas, Shape::Rect(rect), pattern);
+//    pub fn stroke_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
+//        self.stroke_shape(ctx, Shape::Rect(rect), pattern);
 //    }
 //
-//    pub fn stroke_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
-//        self.stroke_shape(canvas, Shape::Circle(circle), pattern);
+//    pub fn stroke_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
+//        self.stroke_shape(ctx, Shape::Circle(circle), pattern);
 //    }
 
     fn stroke_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
@@ -201,14 +201,14 @@ impl MsaaStrokeRenderer {
         });
     }
 
-    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in canvas
+        for batch_id in ctx
             .batcher
             .batches()
             .iter()
@@ -254,7 +254,7 @@ impl MsaaStrokeRenderer {
                     key = stroke.pattern.shader_and_bindings();
                     max_segments_per_instance = 1;
                 }
-                self.prepare_stroke(stroke, canvas, &mut max_segments_per_instance);
+                self.prepare_stroke(stroke, ctx, &mut max_segments_per_instance);
                 alpha |= !stroke.pattern.is_opaque; 
             }
 
@@ -284,8 +284,8 @@ impl MsaaStrokeRenderer {
         self.batches = batches;
     }
 
-    fn prepare_stroke(&mut self, shape: &Stroke, canvas: &Context, max_segments_per_instance: &mut u32) {
-        let transform = canvas.transforms.get(shape.transform).matrix();
+    fn prepare_stroke(&mut self, shape: &Stroke, ctx: &Context, max_segments_per_instance: &mut u32) {
+        let transform = ctx.transforms.get(shape.transform).matrix();
         let z_index = shape.z_index;
         let pattern = shape.pattern.data;
 

@@ -1,7 +1,7 @@
 use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
-    canvas::{
+    context::{
         CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex, FillPath,
     },
@@ -165,78 +165,78 @@ impl MeshRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, canvas: &Context) {
+    pub fn begin_frame(&mut self, ctx: &Context) {
         self.draws.clear();
         self.batches.clear();
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
-        self.enable_msaa = canvas.surface.msaa();
+        self.enable_msaa = ctx.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
     }
 
     pub fn stroke_path(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         path: Path,
         width: f32,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::StrokePath(path, width), pattern);
+        self.fill_shape(ctx, Shape::StrokePath(path, width), pattern);
     }
 
-    pub fn fill_rect(&mut self, canvas: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Rect(rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, canvas: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(canvas, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Circle(circle), pattern);
     }
 
     pub fn fill_mesh(
         &mut self,
-        canvas: &mut Context,
+        ctx: &mut Context,
         mesh: TessellatedMesh,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(canvas, Shape::Mesh(mesh), pattern);
+        self.fill_shape(ctx, Shape::Mesh(mesh), pattern);
     }
 
-    fn fill_shape(&mut self, canvas: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = canvas.transforms.current_id();
-        let z_index = canvas.z_indices.push();
+    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+        let transform = ctx.transforms.current_id();
+        let z_index = ctx.z_indices.push();
 
-        let aabb = canvas
+        let aabb = ctx
             .transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && canvas.surface.current_config().depth {
+        if pattern.is_opaque && ctx.surface.current_config().depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 
         let (commands, info) = self.batches.find_or_add_batch(
-            &mut canvas.batcher,
+            &mut ctx.batcher,
             &pattern.batch_key(),
             &aabb,
             batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: canvas.surface.current_config(),
+                surface: ctx.surface.current_config(),
             },
         );
-        info.surface = canvas.surface.current_config();
+        info.surface = ctx.surface.current_config();
         commands.push(Fill {
             shape,
             pattern,
@@ -245,14 +245,14 @@ impl MeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, canvas: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in canvas
+        for batch_id in ctx
             .batcher
             .batches()
             .iter()
@@ -290,7 +290,7 @@ impl MeshRenderer {
                         geom_start = end;
                         key = fill.pattern.shader_and_bindings();
                     }
-                    self.prepare_fill(fill, canvas);
+                    self.prepare_fill(fill, ctx);
                 }
             }
 
@@ -329,7 +329,7 @@ impl MeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, canvas);
+                self.prepare_fill(fill, ctx);
             }
 
             let end = self.geometry.indices.len() as u32;
@@ -352,8 +352,8 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, canvas: &Context) {
-        let transform = canvas.transforms.get(fill.transform).matrix();
+    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context) {
+        let transform = ctx.transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
 
