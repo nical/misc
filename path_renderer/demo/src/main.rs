@@ -118,12 +118,18 @@ fn main() {
     let mut force_vk = false;
     let mut asap = false;
     let mut read_tolerance = false;
+    let mut read_fill = false;
     let mut use_ssaa4 = false;
+    let mut fill_renderer = 0;
     for arg in &args {
         if read_tolerance {
             read_tolerance = false;
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
+        }
+        if read_fill {
+            read_fill = false;
+            fill_renderer = arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len();
         }
         if arg == "--ssaa" {
             use_ssaa4 = true;
@@ -147,6 +153,10 @@ fn main() {
         }
         if arg == "--tolerance" {
             read_tolerance = true;
+        }
+
+        if arg == "--fill" {
+            read_fill = true;
         }
     }
 
@@ -372,7 +382,7 @@ fn main() {
         wireframe: false,
         size_changed: true,
         render: true,
-        fill_renderer: 0,
+        fill_renderer,
         stroke_renderer: 0,
         msaa: MsaaMode::Auto,
         scene_idx: 0,
@@ -632,29 +642,32 @@ fn paint_scene(
     transform: &LocalTransform,
 ) {
     if testing {
-        renderers.tiling.fill_surface(
-            ctx,
-            patterns.gradients.add(
-                gpu_store,
-                LinearGradient {
-                    from: point(100.0, 100.0),
-                    color0: Color {
-                        r: 10,
-                        g: 50,
-                        b: 250,
-                        a: 255,
-                    },
-                    to: point(100.0, 1500.0),
-                    color1: Color {
-                        r: 50,
-                        g: 0,
-                        b: 50,
-                        a: 255,
-                    },
-                }
-                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-            ),
+        let gradient = patterns.gradients.add(
+            gpu_store,
+            LinearGradient {
+                from: point(100.0, 100.0),
+                color0: Color {
+                    r: 10,
+                    g: 50,
+                    b: 250,
+                    a: 255,
+                },
+                to: point(100.0, 1500.0),
+                color1: Color {
+                    r: 50,
+                    g: 0,
+                    b: 50,
+                    a: 255,
+                },
+            }
+            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
         );
+
+        if fill_renderer == TILING2 {
+            renderers.tiling2.fill_surface(ctx, gradient);
+        } else {
+            renderers.tiling.fill_surface(ctx, gradient);
+        }
     }
 
     ctx.transforms.push(transform);

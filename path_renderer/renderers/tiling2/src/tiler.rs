@@ -125,12 +125,12 @@ impl Tiler {
         viewport.max.x = viewport.max.x.max(0);
         viewport.max.y = viewport.max.y.max(0);
         self.viewport = viewport.cast();
-        self.set_scissor(viewport);
+        self.set_scissor_srect(viewport);
 
         self.occlusion.init(self.scissor_tiles.max.x as u32, self.scissor_tiles.max.y as u32);
     }
 
-    pub fn set_scissor(&mut self, i32_scissor: SurfaceIntRect) {
+    pub fn set_scissor_srect(&mut self, i32_scissor: SurfaceIntRect) {
         let mut scissor: SurfaceRect = i32_scissor.cast();
         scissor = scissor.intersection_unchecked(&self.viewport);
         self.scissor = scissor;
@@ -144,6 +144,10 @@ impl Tiler {
                 (scissor.max.y as i32) / TILE_SIZE + (i32_scissor.max.y % TILE_SIZE != 0) as i32,
             ),
         };
+    }
+
+    pub fn get_scissor_rect(&self) -> SurfaceRect {
+        self.scissor
     }
 
     pub fn fill_path(
@@ -584,6 +588,38 @@ impl Tiler {
                 //println!("   * backdrop {winding:?} -> {backdrop:?}");
             }
         }
+    }
+
+    pub fn fill_surface(
+        &mut self,
+        pattern: &BuiltPattern,
+        opacity: f32,
+        z_index: u32,
+        output: &mut TilerOutput,
+    ) {
+        // 16 times the the max number of tiles per axis (1023).
+        let max = 16369.0;
+        let min = -1.0;
+
+        self.tile_segment(&LineSegment { from: point(min, min), to: point(max, min) });
+        self.tile_segment(&LineSegment { from: point(max, min), to: point(max, max) });
+        self.tile_segment(&LineSegment { from: point(max, max), to: point(min, max) });
+        self.tile_segment(&LineSegment { from: point(min, max), to: point(min, min) });
+
+        output.paths.push(PathInfo {
+            z_index,
+            pattern_data: pattern.data,
+            fill_rule: 0,
+            opacity,
+            scissor: [
+                self.scissor.min.x as u32,
+                self.scissor.min.y as u32,
+                self.scissor.max.x as u32,
+                self.scissor.max.y as u32,
+            ],
+        }.encode());
+
+        self.generate_tiles(FillRule::EvenOdd, false, pattern, output);
     }
 }
 

@@ -8,7 +8,7 @@ use core::{
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
     transform::TransformId,
-    units::{LocalRect, SurfaceIntRect},
+    units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
     wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, GeneratedPipelineId}, DynBufferRange}, bytemuck,
 };
 use std::ops::Range;
@@ -29,13 +29,15 @@ struct Draw {
 
 enum Shape {
     Path(FilledPath),
+    Surface,
 }
 
 impl Shape {
-    pub fn aabb(&self) -> LocalRect {
+    pub fn aabb(&self) -> Option<LocalRect> {
         match self {
             // TODO: return the correct aabb for inverted shapes.
-            Shape::Path(shape) => *shape.path.aabb(),
+            Shape::Path(shape) => Some(*shape.path.aabb()),
+            Shape::Surface => None,
         }
     }
 }
@@ -108,15 +110,23 @@ impl TileRenderer {
         self.fill_shape(ctx, Shape::Path(path.into()), pattern);
     }
 
+    pub fn fill_surface(&mut self, ctx: &mut Context, pattern: BuiltPattern) {
+        self.fill_shape(ctx, Shape::Surface, pattern);
+    }
+
     fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
         let transform = ctx.transforms.current_id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = ctx
-            .transforms
-            .get_current()
-            .matrix()
-            .outer_transformed_box(&shape.aabb());
+        let aabb = if let Some(aabb) = shape.aabb() {
+            ctx.transforms
+                .get_current()
+                .matrix()
+                .outer_transformed_box(&aabb)
+        } else {
+            use std::f32::{MIN, MAX};
+            SurfaceRect { min: point(MIN, MIN), max: point(MAX, MAX) }
+        };
 
         let batch_key = pattern.batch_key();
         let (commands, info) = self.batches.find_or_add_batch(
@@ -213,6 +223,10 @@ impl TileRenderer {
                     &fill.pattern,
                     &mut self.tiles,
                 );
+            }
+            Shape::Surface => {
+                let opacity = 1.0; // TODO
+                self.tiler.fill_surface(&fill.pattern, opacity, fill.z_index, &mut self.tiles);
             }
         }
     }
