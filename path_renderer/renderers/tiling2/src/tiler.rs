@@ -1,4 +1,4 @@
-use core::units::{LocalSpace, SurfaceSpace};
+use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect};
 use core::{pattern::BuiltPattern, units::point};
 
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment, Box2D};
@@ -15,9 +15,8 @@ pub struct FillOptions<'l> {
     pub inverted: bool,
     pub z_index: u32,
     pub tolerance: f32,
-    pub merge_tiles: bool,
-    pub prerender_pattern: bool,
     pub transform: Option<&'l Transform>,
+    pub opacity: f32,
 }
 
 impl<'l> FillOptions<'l> {
@@ -27,9 +26,8 @@ impl<'l> FillOptions<'l> {
             inverted: false,
             z_index: 0,
             tolerance: 0.25,
-            merge_tiles: true,
-            prerender_pattern: false,
             transform: None,
+            opacity: 1.0,
         }
     }
 
@@ -39,9 +37,8 @@ impl<'l> FillOptions<'l> {
             inverted: false,
             z_index: 0,
             tolerance: 0.25,
-            merge_tiles: true,
-            prerender_pattern: false,
             transform: Some(transform),
+            opacity: 1.0,
         }
     }
 
@@ -54,9 +51,8 @@ impl<'l> FillOptions<'l> {
             inverted: false,
             z_index: self.z_index,
             tolerance: self.tolerance,
-            merge_tiles: self.merge_tiles,
-            prerender_pattern: self.prerender_pattern,
             transform,
+            opacity: self.opacity,
         }
     }
 
@@ -79,6 +75,11 @@ impl<'l> FillOptions<'l> {
         self.z_index = z_index;
         self
     }
+
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
 }
 
 pub struct Tiler {
@@ -86,8 +87,9 @@ pub struct Tiler {
     tolerance: f32,
     current_tile: (u16, u16),
     current_tile_is_occluded: bool,
-    viewport: Box2D<f32>,
-    viewport_tiles: Box2D<i32>,
+    viewport: SurfaceRect,
+    scissor: SurfaceRect,
+    scissor_tiles: Box2D<i32>,
 
     occlusion: OcclusionBuffer,
     //pub dbg: rerun::RecordingStream,
@@ -100,11 +102,15 @@ impl Tiler {
             tolerance: 0.25,
             current_tile: (0, 0),
             current_tile_is_occluded: false,
-            viewport: Box2D {
+            viewport: SurfaceRect {
                 min: point(0.0, 0.0),
                 max: point(0.0, 0.0),
             },
-            viewport_tiles: Box2D {
+            scissor: SurfaceRect {
+                min: point(0.0, 0.0),
+                max: point(0.0, 0.0),
+            },
+            scissor_tiles: Box2D {
                 min: point(0, 0),
                 max: point(0, 0),
             },
@@ -113,22 +119,31 @@ impl Tiler {
         }
     }
 
-    pub fn begin_frame(&mut self, mut viewport: Box2D<f32>) {
-        viewport.min.x = viewport.min.x.max(0.0);
-        viewport.min.y = viewport.min.y.max(0.0);
-        viewport.max.x = viewport.max.x.max(0.0);
-        viewport.max.y = viewport.max.y.max(0.0);
-        self.viewport = viewport;
-        let i32_viewport = viewport.to_i32();
-        self.viewport_tiles = Box2D {
-            min: i32_viewport.min / TILE_SIZE,
+    pub fn begin_target(&mut self, mut viewport: SurfaceIntRect) {
+        viewport.min.x = viewport.min.x.max(0);
+        viewport.min.y = viewport.min.y.max(0);
+        viewport.max.x = viewport.max.x.max(0);
+        viewport.max.y = viewport.max.y.max(0);
+        self.viewport = viewport.cast();
+        self.set_scissor(viewport);
+
+        self.occlusion.init(self.scissor_tiles.max.x as u32, self.scissor_tiles.max.y as u32);
+    }
+
+    pub fn set_scissor(&mut self, i32_scissor: SurfaceIntRect) {
+        let mut scissor: SurfaceRect = i32_scissor.cast();
+        scissor = scissor.intersection_unchecked(&self.viewport);
+        self.scissor = scissor;
+        self.scissor_tiles = Box2D {
+            min: point(
+                i32_scissor.min.x / TILE_SIZE,
+                i32_scissor.min.y / TILE_SIZE,
+            ),
             max: point(
-                (viewport.max.x as i32) / TILE_SIZE + (i32_viewport.max.x % TILE_SIZE != 0) as i32,
-                (viewport.max.y as i32) / TILE_SIZE + (i32_viewport.max.y % TILE_SIZE != 0) as i32,
+                (scissor.max.x as i32) / TILE_SIZE + (i32_scissor.max.x % TILE_SIZE != 0) as i32,
+                (scissor.max.y as i32) / TILE_SIZE + (i32_scissor.max.y % TILE_SIZE != 0) as i32,
             ),
         };
-
-        self.occlusion.init(self.viewport_tiles.max.x as u32, self.viewport_tiles.max.y as u32);
     }
 
     pub fn fill_path(
@@ -139,6 +154,7 @@ impl Tiler {
         output: &mut TilerOutput,
     ) {
         profiling::scope!("Tiler::fill_path");
+        //println!("fill path viewport {:?}, scissor {:?}, tiles {:?}", self.viewport, self.scissor, self.scissor_tiles);
 
         let identity = Transform2D::identity();
         let transform = options.transform.unwrap_or(&identity);
@@ -154,17 +170,16 @@ impl Tiler {
         }
 
         output.paths.push(PathInfo {
-            //scissor: [
-            //    self.viewport.min.x,
-            //    self.viewport.min.y,
-            //    self.viewport.max.x,
-            //    self.viewport.max.y,
-            //],
             z_index: options.z_index,
             pattern_data: pattern.data,
             fill_rule: encoded_fill_rule,
-            opacity: 255, // TODO
-            scissor: 0, // TODO
+            opacity: options.opacity,
+            scissor: [
+                self.scissor.min.x as u32,
+                self.scissor.min.y as u32,
+                self.scissor.max.x as u32,
+                self.scissor.max.y as u32,
+            ],
         }.encode());
 
         self.generate_tiles(options.fill_rule, options.inverted, pattern, output);
@@ -247,18 +262,18 @@ impl Tiler {
     }
 
     fn tile_segment(&mut self, segment: &LineSegment<f32>) {
-        //println!("\n{segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
+        //println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
         // Cull above and below the viewport
         let min_y = segment.from.y.min(segment.to.y);
         let max_y = segment.from.y.max(segment.to.y);
-        if max_y < self.viewport.min.y || min_y > self.viewport.max.y {
+        if max_y < self.scissor.min.y || min_y > self.scissor.max.y {
             return;
         }
 
         // Cull right of the viewport
         let min_x = segment.from.x.min(segment.to.x);
         let max_x = segment.from.x.max(segment.to.x);
-        if min_x > self.viewport.max.x {
+        if min_x > self.scissor.max.x {
             return;
         }
 
@@ -268,7 +283,7 @@ impl Tiler {
         let dst_ty = f32::floor(segment.to.y * inv_tile_size).floor() as i32;
 
         // Cull left of the viewport
-        if max_x < self.viewport.min.x {
+        if max_x < self.scissor.min.x {
             // Backdrops are still affected by content on the left of the viewport.
             let positive_winding = dst_ty > ty;
             let y_range = if positive_winding {ty..dst_ty } else { dst_ty..ty };
@@ -383,16 +398,15 @@ impl Tiler {
                 let x = (tx + 1).max(0);
                 // No need to clamp y to positive numbers here because the viewport_tiles
                 // check filters out all tiles with negative y.
-                let y = ty;// + step_y.max(0);
-                if y >= self.viewport_tiles.min.y
-                    && y < self.viewport_tiles.max.y
-                    && x < self.viewport_tiles.max.x {
+                if ty >= self.scissor_tiles.min.y
+                    && ty < self.scissor_tiles.max.y
+                    && x < self.scissor_tiles.max.x {
                     //println!(" - backdrop {x} {y} | {}", if h_crossing_0 { 1 } else { -1 });
-                    self.events.push(Event::backdrop(x as u16, y as u16, h_crossing_0));
+                    self.events.push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
                 }
             }
 
-            let in_viewport = self.viewport_tiles.contains(point(tx, ty));
+            let in_viewport = self.scissor_tiles.contains(point(tx, ty));
             if in_viewport {
                 // The viewport can only contain positive coordinates.
                 let tile_x = tx as u16;
@@ -513,14 +527,18 @@ impl Tiler {
 
                 // Fill solid tiles if any, up to the new tile unless it is on a different row.
                 let solid_tile_end = if tile.1 == current_tile.1 {
-                    tile.0
+                    tile.0.min(self.scissor_tiles.max.x as u16)
                 } else {
-                    self.viewport_tiles.max.x as u16
+                    self.scissor_tiles.max.x as u16
                 };
 
-                while inside && solid_tile_x < solid_tile_end && solid_tile_x < self.viewport_tiles.max.x as u16 {
+                if current_tile.1 >= self.scissor_tiles.max.y as u16 {
+                    break;
+                }
+
+                while inside && solid_tile_x < solid_tile_end {
                     while solid_tile_x < solid_tile_end && self.occlusion.occluded(solid_tile_x, current_tile.1) {
-                        assert!((solid_tile_x as i32) < self.viewport_tiles.max.x, "A");
+                        assert!((solid_tile_x as i32) < self.scissor_tiles.max.x, "A");
                         //println!("    skip occluded solid tile {solid_tile_x:?}");
                         solid_tile_x += 1;
                     }
@@ -683,23 +701,28 @@ impl TileInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct PathInfo {
-    //pub scissor: [f32; 4], // TODO: move into another texture
     pub z_index: u32,
     pub pattern_data: u32,
     pub fill_rule: u16,
-    pub opacity: u16,
-    pub scissor: u32,
+    pub opacity: f32,
+
+    // TODO: this can be [u16;4]
+    pub scissor: [u32; 4],
 }
 
-type EncodedPathInfo = [u32; 4];
+pub(crate) type EncodedPathInfo = [u32; 8];
 
 impl PathInfo {
     pub fn encode(&self) -> EncodedPathInfo {
         [
             self.z_index,
             self.pattern_data,
-            (self.fill_rule as u32) << 16 | self.opacity as u32,
-            self.scissor,
+            (self.fill_rule as u32) << 16 | (self.opacity.max(0.0).min(1.0) * 65535.0) as u32,
+            0,
+            self.scissor[0],
+            self.scissor[1],
+            self.scissor[2],
+            self.scissor[3],
         ]
     }
 
@@ -708,8 +731,9 @@ impl PathInfo {
             z_index: data[0],
             pattern_data: data[1],
             fill_rule: (data[2] >> 16) as u16,
-            opacity: (data[2] & 0xFFFF) as u16,
-            scissor: data[3],
+            opacity: (data[2] & 0xFFFF) as f32 / 65535.0,
+
+            scissor: [data[4], data[5], data[6], data[7]],
         }
     }
 }
@@ -718,7 +742,6 @@ impl PathInfo {
 #[test]
 fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
-    assert_eq!(std::mem::size_of::<PathInfo>(), 16);
 }
 
 fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
@@ -879,9 +902,9 @@ fn tiler2_svg() {
     let path = path.build();
 
     let mut tiler = Tiler::new();
-    tiler.begin_frame(Box2D {
-        min: point(0.0, 0.0),
-        max: point(800.0, 600.0),
+    tiler.begin_target(SurfaceIntRect {
+        min: point(0, 0),
+        max: point(800, 600),
     });
 
     let options = FillOptions {
@@ -889,8 +912,7 @@ fn tiler2_svg() {
         inverted: false,
         z_index: 0,
         tolerance: 0.25,
-        merge_tiles: true,
-        prerender_pattern: false,
+        opacity: 1.0,
         transform: None,
     };
 

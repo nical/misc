@@ -1,5 +1,5 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, GeometryDescriptor, PipelineDescriptor, ShaderMaskId, BlendMode, Binding, BindGroupLayout, BindGroupLayoutId, Varying, ShaderPatternId};
+use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, GeometryDescriptor, PipelineDescriptor, ShaderMaskId, BlendMode, Binding, BindGroupLayout, Varying, ShaderPatternId};
 //use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
@@ -12,7 +12,6 @@ pub struct TileGpuResources {
     pub(crate) masked_pipeline: GeneratedPipelineId,
     pub(crate) edge_texture: wgpu::Texture,
     pub(crate) path_texture: wgpu::Texture,
-    pub(crate) bind_group_layout: BindGroupLayoutId,
     pub(crate) bind_group: wgpu::BindGroup,
 }
 
@@ -138,7 +137,6 @@ impl TileGpuResources {
             masked_pipeline,
             edge_texture,
             path_texture,
-            bind_group_layout,
             bind_group,
         }
     }

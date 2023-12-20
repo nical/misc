@@ -8,14 +8,12 @@ use core::{
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
     transform::TransformId,
-    units::LocalRect,
+    units::{LocalRect, SurfaceIntRect},
     wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, GeneratedPipelineId}, DynBufferRange}, bytemuck,
 };
 use std::ops::Range;
 
-use lyon::geom::Box2D;
-
-use crate::{TileGpuResources, tiler::{Tiler, FillOptions, TilerOutput, PathInfo}};
+use crate::{TileGpuResources, tiler::{Tiler, FillOptions, TilerOutput, EncodedPathInfo}};
 
 struct BatchInfo {
     surface: SurfacePassConfig,
@@ -96,7 +94,7 @@ impl TileRenderer {
 
     pub fn begin_frame(&mut self, ctx: &Context) {
         self.batches.clear();
-        self.tiler.begin_frame(Box2D::from_size(ctx.surface.size().cast_unit()).cast());
+        self.tiler.begin_target(SurfaceIntRect::from_size(ctx.surface.size()));
         self.tiles.clear();
         self.instances = None;
     }
@@ -277,17 +275,18 @@ impl TileRenderer {
         );
 
 
-        let paths_per_row = 512;
+        let paths_per_row = 256; // 512 texels with 2 texels per path.
         let rem = paths_per_row - self.tiles.paths.len() % paths_per_row;
         if rem != paths_per_row {
             self.tiles.paths.reserve(rem);
             for _ in 0..rem {
-                self.tiles.paths.push([0, 0, 0, 0]);
+                self.tiles.paths.push([0; 8]);
             }
         }
 
         let rows = (self.tiles.paths.len() / paths_per_row) as u32;
-        let size_of_pathinfo = std::mem::size_of::<PathInfo>() as u32;
+        let size_of_pathinfo = std::mem::size_of::<EncodedPathInfo>() as u32;
+        let size_of_texel = 16;
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &res.path_texture,
@@ -302,7 +301,7 @@ impl TileRenderer {
                 rows_per_image: Some(rows)
             },
             wgpu::Extent3d {
-                width: paths_per_row as u32,
+                width: paths_per_row as u32 * (size_of_pathinfo / size_of_texel),
                 height: rows,
                 depth_or_array_layers: 1,
             },

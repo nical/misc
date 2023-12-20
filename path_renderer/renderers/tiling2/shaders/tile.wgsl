@@ -3,7 +3,7 @@
 #import z_index
 
 struct TileInstance {
-    position: vec2f,
+    rect: vec4f,
     edges: vec2u, // start..end
     backdrop: i32,
     path: u32,
@@ -14,28 +14,30 @@ struct PathInfo {
     opacity: f32,
     pattern_data: u32,
     fill_rule: u32,
-    scissor_idx: u32,
+    scissor: vec4f,
 };
 
 const TILE_SIZE_F32: f32 = 16.0;
 const TILE_COORD_MASK: u32 = 0x3FFu;
-fn tiling_decode_position(encoded: u32, uv: vec2<f32>) -> vec2<f32> {
+fn tiling_decode_rect(encoded: u32) -> vec4<f32> {
     var offset = vec2<f32>(
         f32((encoded >> 10u) & TILE_COORD_MASK),
         f32(encoded & TILE_COORD_MASK),
     );
-    var extended = vec2<f32>(
-        uv.x * f32((encoded >> 20u) & TILE_COORD_MASK),
-        0.0
-    );
+    var extend_x = f32((encoded >> 20u) & TILE_COORD_MASK);
 
-    return (offset + (uv + extended)) * TILE_SIZE_F32;
+    return vec4f(
+        offset.x,
+        offset.y,
+        offset.x + 1.0 + extend_x,
+        offset.y + 1.0,
+    ) * TILE_SIZE_F32;
 }
 
-fn decode_instance(encoded: vec4<u32>, uv: vec2<f32>) -> TileInstance {
+fn decode_instance(encoded: vec4<u32>) -> TileInstance {
     var instance: TileInstance;
 
-    instance.position = tiling_decode_position(encoded.x, uv);
+    instance.rect = tiling_decode_rect(encoded.x);
     var first_edge = encoded.y;
     var num_edges = encoded.z >> 16u;
     instance.edges = vec2u(first_edge, first_edge + num_edges);
@@ -46,36 +48,46 @@ fn decode_instance(encoded: vec4<u32>, uv: vec2<f32>) -> TileInstance {
 }
 
 fn fetch_path(path_idx: u32) -> PathInfo {
-    let path_uv = vec2u(path_idx % 512u, path_idx / 512u);
-    var encoded = textureLoad(path_texture, path_uv, 0);
+    // The path data occupies two u32x4 pixels in the path texture.
+    let idx = path_idx * 2u;
+    let path_uv = vec2u(idx % 512u, idx / 512u);
+    var encoded0 = textureLoad(path_texture, path_uv, 0);
+    var encoded1 = textureLoad(path_texture, path_uv + vec2u(1u, 0u), 0);
 
     var path: PathInfo;
 
-    path.z = z_index_to_f32(encoded.x);
-    path.pattern_data = encoded.y;
-    path.fill_rule = encoded.z >> 16u;
-    // TODO
-    path.opacity = 1.0; //f32(encoded.z & 0xFFFFu) / 255.0;
+    path.z = z_index_to_f32(encoded0.x);
+    path.pattern_data = encoded0.y;
+    path.fill_rule = encoded0.z >> 16u;
+    path.opacity = f32(encoded0.z & 0xFFFFu) / 65535.0;
+
+    path.scissor = vec4f(encoded1);
 
     return path;
 }
 
 fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
     var uv = rect_get_uv(vertex_index);
-    var tile = decode_instance(instance_data, uv);
+    var tile = decode_instance(instance_data);
 
     var path = fetch_path(tile.path);
 
-    var target_position = canvas_to_target(tile.position);
+    // Clip to the scissor rect.
+    var position = mix(tile.rect.xy, tile.rect.zw, uv);
+    position = max(position, path.scissor.xy);
+    position = min(position, path.scissor.zw);
+    uv = (position - tile.rect.xy) / (tile.rect.zw - tile.rect.xy);
+
+    var target_position = canvas_to_target(position);
 
     return Geometry(
         vec4f(target_position.x, target_position.y, path.z, 1.0),
-        tile.position,
+        position,
         path.pattern_data,
         vec2f(0.0, 0.0),
         0u,
 
-        uv * 16.0,
+        uv * TILE_SIZE_F32,
         tile.edges,
         tile.backdrop,
         path.fill_rule,
