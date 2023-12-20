@@ -288,20 +288,29 @@ impl Tiler {
 
         // Cull left of the viewport
         if max_x < self.scissor.min.x {
+            let min_ty = f32::floor(min_y * inv_tile_size).floor() as i32;
+            let max_ty = f32::floor(max_y * inv_tile_size).floor() as i32;
+            let local_min_y = (min_y - min_ty as f32 * TILE_SIZE_F32).max(0.0);
+            let local_max_y = (max_y - max_ty as f32 * TILE_SIZE_F32).max(0.0);
+            let local_min_y_u8 = (local_min_y * inv_tile_size * 255.0).min(255.0) as u8;
+            let local_max_y_u8 = (local_max_y * inv_tile_size * 255.0).min(255.0) as u8;
+
             // Backdrops are still affected by content on the left of the viewport.
-            let positive_winding = dst_ty > ty;
-            let y_range = if positive_winding {ty..dst_ty } else { dst_ty..ty };
-            for y in y_range {
-                let tile_y = (y + 1) as u16;
-                self.events.push(Event::backdrop(0, tile_y, positive_winding));
+            let positive_winding = segment.to.y > segment.from.y;
+            let mut y_range = if positive_winding {ty..dst_ty } else { dst_ty..ty };
+            if local_min_y_u8 != 0 {
+                y_range.start += 1;
+            }
+            if local_max_y_u8 != 0 {
+                y_range.end += 1;
             }
 
-            return;
-        }
+            //println!(" - left backdrops for y range {y_range:?} ({local_min_y_u8})");
 
-        // Skip perfectly horizontal segments since they don't affect the output.
-        // This also removes risks of dividing by zero later.
-        if segment.from.y == segment.to.y {
+            for y in y_range {
+                self.events.push(Event::backdrop(0, y as u16, positive_winding));
+            }
+
             return;
         }
 
@@ -323,8 +332,8 @@ impl Tiler {
 
         // In pixels, local to the current tile.
         let local_x0 = (segment.from.x - tx as f32 * TILE_SIZE_F32).max(0.0);
-        let local_y0 = (segment.from.y - ty as f32 * TILE_SIZE_F32).max(0.0);
         let mut local_x0_u8 = (local_x0 * inv_tile_size * 255.0).min(255.0) as u8;
+        let local_y0 = (segment.from.y - ty as f32 * TILE_SIZE_F32).max(0.0);
         let mut local_y0_u8 = (local_y0 * inv_tile_size * 255.0).min(255.0) as u8;
 
         // TODO: division by zero when the segment is vertical.
@@ -356,7 +365,6 @@ impl Tiler {
             //let tile_x_px = tx as f32 * TILE_SIZE_F32;
             //let tile_y_px = ty as f32 * TILE_SIZE_F32;
             //self.dbg.log(format!("tile-{tx}-{ty}/rect"), &rerun::Boxes2D::from_mins_and_sizes([(tile_x_px, tile_y_px)], [(TILE_SIZE_F32, TILE_SIZE_F32)])).unwrap();
-            //println!("tile {tx} {ty} t_crossing: {t_crossing_x} {t_crossing_y}");
 
             let tcx = t_crossing_x;
             let tcy = t_crossing_y;
@@ -373,7 +381,8 @@ impl Tiler {
                 t_crossing_y += t_delta_y;
                 step_y = dy_sign;
             };
-            //println!(" - tile {tx} {ty}, crossing {tcx} {tcy} -> {t_split}");
+
+            //println!(" * tile {tx} {ty}, crossing {tcx} {tcy} -> {t_split}");
             let t_split = t_split.min(1.0);
             let one_t_split = 1.0 - t_split;
             let x1 = segment.from.x * one_t_split + segment.to.x * t_split;
@@ -405,13 +414,15 @@ impl Tiler {
                 if ty >= self.scissor_tiles.min.y
                     && ty < self.scissor_tiles.max.y
                     && x < self.scissor_tiles.max.x {
-                    //println!(" - backdrop {x} {y} | {}", if h_crossing_0 { 1 } else { -1 });
+                    //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
                     self.events.push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
                 }
             }
 
             let in_viewport = self.scissor_tiles.contains(point(tx, ty));
             if in_viewport {
+                let horizontal = local_y0_u8 == local_y1_u8;
+
                 // The viewport can only contain positive coordinates.
                 let tile_x = tx as u16;
                 let tile_y = ty as u16;
@@ -422,8 +433,8 @@ impl Tiler {
                 }
 
                 if !self.current_tile_is_occluded {
-                    if local_y0_u8 != local_y1_u8 {
-                        //println!(" - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
+                    if !horizontal {
+                        //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
                         self.events.push(Event::edge(
                             tile_x, tile_y,
                             [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
@@ -440,7 +451,7 @@ impl Tiler {
                         } else {
                             [0, local_y1_u8, 0, 255]
                         };
-                        //println!(" - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
+                        //println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
                         self.events.push(Event::edge(tile_x, tile_y, auxiliary_edge));
                     }
                 }
