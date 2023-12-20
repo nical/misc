@@ -1,3 +1,6 @@
+#![allow(unused)]
+//! An empty render that serves as a template for quickly adding new renderers
+
 use core::{
     batching::{BatchFlags, BatchList},
     canvas::{
@@ -46,28 +49,26 @@ struct Draw {
     pipeline_idx: RenderPipelineIndex,
 }
 
-pub struct MeshRenderer {
+pub struct TemplateRenderer {
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
-    _resources: ResourcesHandle<TemplateGpuResources>,
-    tolerenace: f32,
+    resources: ResourcesHandle<TemplateGpuResources>,
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
 }
 
-impl MeshRenderer {
+impl TemplateRenderer {
     pub fn new(
         renderer_id: RendererId,
         common_resources: ResourcesHandle<CommonGpuResources>,
         resources: ResourcesHandle<TemplateGpuResources>,
         res: &TemplateGpuResources,
     ) -> Self {
-        MeshRenderer {
+        TemplateRenderer {
             renderer_id,
             common_resources,
-            _resources: resources,
-            tolerenace: 0.25,
+            resources: resources,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
@@ -78,7 +79,7 @@ impl MeshRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
+    pub fn begin_frame(&mut self, _ctx: &Context) {
         self.draws.clear();
         self.batches.clear();
     }
@@ -144,18 +145,14 @@ impl MeshRenderer {
             let surface = info.surface;
 
             let draw_start = self.draws.len() as u32;
-            let mut key = commands
+            let key = commands
                 .first()
                 .as_ref()
                 .unwrap()
                 .pattern
                 .shader_and_bindings();
 
-
-            for fill in commands
-                .iter()
-                .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
-            {
+            for fill in commands.iter() {
                 if key != fill.pattern.shader_and_bindings() {
                     // self.draws.push(...)
                 }
@@ -177,23 +174,19 @@ impl MeshRenderer {
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
 
-        match &fill.shape {
-            Shape::Path(shape) => {
-            }
-        }
+        // ...
     }
 
     pub fn upload(
         &mut self,
         resources: &mut GpuResources,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
     ) {
-        let res = &mut resources[self.common_resources];
     }
 }
 
-impl CanvasRenderer for MeshRenderer {
+impl CanvasRenderer for TemplateRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],
@@ -225,7 +218,7 @@ impl CanvasRenderer for MeshRenderer {
     }
 }
 
-impl FillPath for MeshRenderer {
+impl FillPath for TemplateRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
