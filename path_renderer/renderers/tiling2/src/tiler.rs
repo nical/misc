@@ -205,6 +205,7 @@ impl Tiler {
         // iterator because we want to skip tiny edges without intorducing gaps.
         let mut from = point(0.0, 0.0);
         let square_tolerance = self.tolerance * self.tolerance;
+
         for evt in path {
             match evt {
                 PathEvent::Begin { at } => {
@@ -324,12 +325,10 @@ impl Tiler {
         let quantized_y0 = (segment.from.y * COORD_SCALE) as i32;
         let quantized_x1 = (segment.to.x * COORD_SCALE) as i32;
         let quantized_y1 = (segment.to.y * COORD_SCALE) as i32;
-        let mut tx = quantized_x0 >> LOCAL_COORD_BITS;
-        let mut ty = quantized_y0 >> LOCAL_COORD_BITS;
+        let src_tx = quantized_x0 >> LOCAL_COORD_BITS;
+        let src_ty = quantized_y0 >> LOCAL_COORD_BITS;
         let dst_tx = quantized_x1 >> LOCAL_COORD_BITS;
         let dst_ty = quantized_y1 >> LOCAL_COORD_BITS;
-        let src_tx = tx;
-        let src_ty = ty;
 
         let dx_sign = (dst_tx - src_tx).signum();
         let dy_sign = (dst_ty - src_ty).signum();
@@ -338,16 +337,42 @@ impl Tiler {
         let mut local_x0_u8 = (quantized_x0.max(0) & LOCAL_COORD_MASK) as u8;
         let mut local_y0_u8 = (quantized_y0.max(0) & LOCAL_COORD_MASK) as u8;
 
-        // TODO: division by zero when the segment is vertical.
+        // Specialzie the simple and rather common case where there is a single
+        // edge in the tile and it does not touch the left ot top sides of the tile.
+        // TODO: It's unclear whether this actually helps.
+        if src_tx == dst_tx && src_ty == dst_ty && local_x0_u8 != 0 && local_y0_u8 != 0 && src_tx >= 0 {
+            let local_x1_u8 = (quantized_x1.max(0) & LOCAL_COORD_MASK) as u8;
+            let local_y1_u8 = (quantized_y1.max(0) & LOCAL_COORD_MASK) as u8;
+            if local_x1_u8 != 0 && local_y1_u8 != 0 {
+                let tile = (src_tx as u16, src_ty as u16);
+                if tile != self.current_tile {
+                    self.current_tile_is_occluded = self.occlusion.occluded(tile.0, tile.1);
+                    self.current_tile = tile;
+                }
+
+                if !self.current_tile_is_occluded {
+                    self.events.push(Event::edge(
+                        tile.0, tile.1,
+                        [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
+                    ));
+                }
+
+                return;
+            }
+        }
+
         let inv_segment_vx = 1.0 / (segment.to.x - segment.from.x);
         let inv_segment_vy = 1.0 / (segment.to.y - segment.from.y);
 
         let next_tile_x = (inv_segment_vx > 0.0) as i32;
         let next_tile_y = (inv_segment_vy > 0.0) as i32;
-        let mut t_crossing_x = (((tx + next_tile_x) as f32 * TILE_SIZE_F32 - segment.from.x) * inv_segment_vx).abs();
-        let mut t_crossing_y = (((ty + next_tile_y) as f32 * TILE_SIZE_F32 - segment.from.y) * inv_segment_vy).abs();
+        let mut t_crossing_x = (((src_tx + next_tile_x) as f32 * TILE_SIZE_F32 - segment.from.x) * inv_segment_vx).abs();
+        let mut t_crossing_y = (((src_ty + next_tile_y) as f32 * TILE_SIZE_F32 - segment.from.y) * inv_segment_vy).abs();
         let t_delta_x = (TILE_SIZE_F32 * inv_segment_vx).abs();
         let t_delta_y = (TILE_SIZE_F32 * inv_segment_vy).abs();
+
+        let mut tx = src_tx;
+        let mut ty = src_ty;
 
         //println!("tiles {tx} {ty} -> {dst_tx} {dst_ty}, sign {dx_sign} {dy_sign},  t_delta {t_delta_x} {t_delta_y} start {local_x0_u8} {local_y0_u8}");
 
