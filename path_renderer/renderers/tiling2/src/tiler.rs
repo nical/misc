@@ -285,7 +285,7 @@ impl Tiler {
         const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
         const LOCAL_COORD_MASK: i32 = 255;
         const LOCAL_COORD_BITS: i32 = 8;
-        const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32; 
+        const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
 
         // In number of tiles
 
@@ -295,8 +295,8 @@ impl Tiler {
             let quantized_max_y = (max_y * COORD_SCALE) as i32;
             let min_ty = quantized_min_y / UNITS_PER_TILE;
             let max_ty = quantized_max_y / UNITS_PER_TILE;
-            let local_min_y_u8 = (quantized_min_y.max(0) & LOCAL_COORD_MASK) as u8;
-            let local_max_y_u8 = (quantized_max_y.max(0) & LOCAL_COORD_MASK) as u8;
+            let local_min_y_u8 = quantized_min_y.max(0) as u8;
+            let local_max_y_u8 = quantized_max_y.max(0) as u8;
 
             // Backdrops are still affected by content on the left of the viewport.
             let positive_winding = segment.to.y > segment.from.y;
@@ -317,6 +317,8 @@ impl Tiler {
             return;
         }
 
+        // DDA-ish walk over the tiles that the edge touches
+
         // In number of tiles
         let quantized_x0 = (segment.from.x * COORD_SCALE) as i32;
         let quantized_y0 = (segment.from.y * COORD_SCALE) as i32;
@@ -328,8 +330,6 @@ impl Tiler {
         let dst_ty = quantized_y1 >> LOCAL_COORD_BITS;
         let src_tx = tx;
         let src_ty = ty;
-
-        // DDA-ish walk over the tiles that the edge touches
 
         let dx_sign = (dst_tx - src_tx).signum();
         let dy_sign = (dst_ty - src_ty).signum();
@@ -375,77 +375,70 @@ impl Tiler {
             let one_t_split = 1.0 - t_split;
             let x1 = segment.from.x * one_t_split + segment.to.x * t_split;
             let y1 = segment.from.y * one_t_split + segment.to.y * t_split;
-            let local_x1_u8 = (((x1 * COORD_SCALE) as i32 - tx * UNITS_PER_TILE).max(0).min(255) & LOCAL_COORD_MASK) as u8;
-            let local_y1_u8 = (((y1 * COORD_SCALE) as i32 - ty * UNITS_PER_TILE).max(0).min(255) & LOCAL_COORD_MASK) as u8;
-
-            let h_crossing_0 = local_y0_u8 == 0;
-            let h_crossing_1 = local_y1_u8 == 0;
-            let v_crossing_0 = local_x0_u8 == 0;
-            let v_crossing_1 = local_x1_u8 == 0;
-            let horizontal = local_y0_u8 == local_y1_u8;
+            let local_x1_u8 = ((x1 * COORD_SCALE) as i32 - tx * UNITS_PER_TILE).max(0).min(255) as u8;
+            let local_y1_u8 = ((y1 * COORD_SCALE) as i32 - ty * UNITS_PER_TILE).max(0).min(255) as u8;
 
             //println!("            local {x1} {y1}| u8: {local_x0_u8} {local_y0_u8} {local_x1_u8} {local_y1_u8}");
             //println!("            crossings: h0 {h_crossing_0} h1 {h_crossing_1} v0 {v_crossing_0} v1 {v_crossing_1}");
-            //if local_x0_u8 == local_x1_u8 && local_y0 == local_y1 {
-            //    println!("empty tiled segment");
-            //}
 
-            let on_left_side = v_crossing_0 && v_crossing_1;
+            // discard all tiles that are above, below or right of the view.
+            let affects_view = ty >= self.scissor_tiles.min.y
+                && ty < self.scissor_tiles.max.y
+                && tx < self.scissor_tiles.max.x;
 
-            // If either but not both endpoints are on the top side of the tile,
-            // deal with an horizontal crossings.
-            if h_crossing_0 ^ h_crossing_1 {
-                let mut x = tx; //(tx + 1).max(0);
-                if !on_left_side {
-                    x += 1;
-                }
-                // The tile's x coordinate could be negative if the segment is partially
-                // out of the viewport.
-                x = x.max(0);
+            if affects_view {
+                let h_crossing_0 = local_y0_u8 == 0;
+                let h_crossing_1 = local_y1_u8 == 0;
+                let v_crossing_0 = local_x0_u8 == 0;
+                let v_crossing_1 = local_x1_u8 == 0;
+                let on_left_side = v_crossing_0 && v_crossing_1;
 
-                // No need to clamp y to positive numbers here because the viewport_tiles
-                // check filters out all tiles with negative y.
-                if ty >= self.scissor_tiles.min.y
-                    && ty < self.scissor_tiles.max.y
-                    && x < self.scissor_tiles.max.x {
-                    //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
+                // If either but not both endpoints are on the top side of the tile,
+                // deal with an horizontal crossings.
+                if h_crossing_0 ^ h_crossing_1 {
+                    // The tile's x coordinate could be negative if the segment is partially
+                    // out of the viewport.
+                    // No need to clamp y to positive numbers here because the viewport_tiles
+                    // check filters out all tiles with negative y.
+                    let x = (tx + (!on_left_side) as i32).max(0);
                     self.events.push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
-                }
-            }
-
-            if !on_left_side && self.scissor_tiles.contains(point(tx, ty)) {
-                // The viewport can only contain positive coordinates.
-                let tile_x = tx as u16;
-                let tile_y = ty as u16;
-    
-                if (tile_x, tile_y) != self.current_tile {
-                    self.current_tile_is_occluded = self.occlusion.occluded(tile_x, tile_y);
-                    self.current_tile = (tile_x, tile_y);
+                    //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
                 }
 
-                if !self.current_tile_is_occluded {
-                    if !horizontal {
-                        //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
-                        self.events.push(Event::edge(
-                            tile_x, tile_y,
-                            [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
-                        ));    
+                if !on_left_side && tx >= self.scissor_tiles.min.x {
+                    // The viewport can only contain positive coordinates.
+                    let tile_x = tx as u16;
+                    let tile_y = ty as u16;
+
+                    if (tile_x, tile_y) != self.current_tile {
+                        self.current_tile_is_occluded = self.occlusion.occluded(tile_x, tile_y);
+                        self.current_tile = (tile_x, tile_y);
                     }
-    
-                    // Whether one of the endpoints is exactly on the top-left corner.
-                    let on_corner0 = v_crossing_0 && h_crossing_0;
-                    let on_corner1 = v_crossing_1 && h_crossing_1;
-                    // Add auxiliary edges when an edge crosses the left side.
-                    // When either (but not both) endpoints lie at the left boundary
-                    // and the segment is not on the top of the tile:
-                    if (v_crossing_0 ^ v_crossing_1) && !(on_corner0 || on_corner1) {
-                        let auxiliary_edge = if v_crossing_0 {
-                            [0, 255, 0, local_y0_u8]
-                        } else {
-                            [0, local_y1_u8, 0, 255]
-                        };
-                        //println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
-                        self.events.push(Event::edge(tile_x, tile_y, auxiliary_edge));
+
+                    if !self.current_tile_is_occluded {
+                        if local_y0_u8 != local_y1_u8 {
+                            //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
+                            self.events.push(Event::edge(
+                                tile_x, tile_y,
+                                [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
+                            ));
+                        }
+
+                        // Whether one of the endpoints is exactly on the top-left corner.
+                        let on_corner0 = v_crossing_0 && h_crossing_0;
+                        let on_corner1 = v_crossing_1 && h_crossing_1;
+                        // Add auxiliary edges when an edge crosses the left side.
+                        // When either (but not both) endpoints lie at the left boundary
+                        // and the segment is not on the top of the tile:
+                        if (v_crossing_0 ^ v_crossing_1) && !(on_corner0 || on_corner1) {
+                            let auxiliary_edge = if v_crossing_0 {
+                                [0, 255, 0, local_y0_u8]
+                            } else {
+                                [0, local_y1_u8, 0, 255]
+                            };
+                            //println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
+                            self.events.push(Event::edge(tile_x, tile_y, auxiliary_edge));
+                        }
                     }
                 }
             }
@@ -561,7 +554,7 @@ impl Tiler {
                         position,
                         backdrop,
                         first_edge: 0,
-                        edge_count: 0, 
+                        edge_count: 0,
                         path_index,
                     }.encode());
                 }
