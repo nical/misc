@@ -194,7 +194,7 @@ impl Tiler {
         path: impl Iterator<Item = PathEvent>,
         transform: &Transform,
     ) {
-        println!("\n\n-------");
+        //println!("\n\n-------");
         profiling::scope!("Tiler::tile_path");
         let transform: &lyon::geom::Transform<f32> = unsafe {
             std::mem::transmute(transform)
@@ -266,7 +266,7 @@ impl Tiler {
     }
 
     fn tile_segment(&mut self, segment: &LineSegment<f32>) {
-        println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
+        //println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
         // Cull above and below the viewport
         let min_y = segment.from.y.min(segment.to.y);
         let max_y = segment.from.y.max(segment.to.y);
@@ -281,23 +281,26 @@ impl Tiler {
             return;
         }
 
-        let inv_tile_size = 1.0 / TILE_SIZE_F32;
+        const UNITS_PER_TILE: i32 = 256;
+        const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
+        const LOCAL_COORD_MASK: i32 = 255;
+        const LOCAL_COORD_BITS: i32 = 8;
+        const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32; 
+
         // In number of tiles
-        let mut ty = f32::floor(segment.from.y * inv_tile_size).floor() as i32;
-        let dst_ty = f32::floor(segment.to.y * inv_tile_size).floor() as i32;
 
         // Cull left of the viewport
         if max_x < self.scissor.min.x {
-            let min_ty = f32::floor(min_y * inv_tile_size).floor() as i32;
-            let max_ty = f32::floor(max_y * inv_tile_size).floor() as i32;
-            let local_min_y = (min_y - min_ty as f32 * TILE_SIZE_F32).max(0.0);
-            let local_max_y = (max_y - max_ty as f32 * TILE_SIZE_F32).max(0.0);
-            let local_min_y_u8 = (local_min_y * inv_tile_size * 255.0).min(255.0) as u8;
-            let local_max_y_u8 = (local_max_y * inv_tile_size * 255.0).min(255.0) as u8;
+            let quantized_min_y = (min_y * COORD_SCALE) as i32;
+            let quantized_max_y = (max_y * COORD_SCALE) as i32;
+            let min_ty = quantized_min_y / UNITS_PER_TILE;
+            let max_ty = quantized_max_y / UNITS_PER_TILE;
+            let local_min_y_u8 = (quantized_min_y.max(0) & LOCAL_COORD_MASK) as u8;
+            let local_max_y_u8 = (quantized_max_y.max(0) & LOCAL_COORD_MASK) as u8;
 
             // Backdrops are still affected by content on the left of the viewport.
             let positive_winding = segment.to.y > segment.from.y;
-            let mut y_range = if positive_winding {ty..dst_ty } else { dst_ty..ty };
+            let mut y_range = min_ty..max_ty;
             if local_min_y_u8 != 0 {
                 y_range.start += 1;
             }
@@ -315,26 +318,25 @@ impl Tiler {
         }
 
         // In number of tiles
-        let mut tx = (segment.from.x * inv_tile_size).floor() as i32;
-        let dst_tx = (segment.to.x * inv_tile_size).floor() as i32;
+        let quantized_x0 = (segment.from.x * COORD_SCALE) as i32;
+        let quantized_y0 = (segment.from.y * COORD_SCALE) as i32;
+        let quantized_x1 = (segment.to.x * COORD_SCALE) as i32;
+        let quantized_y1 = (segment.to.y * COORD_SCALE) as i32;
+        let mut tx = quantized_x0 >> LOCAL_COORD_BITS;
+        let mut ty = quantized_y0 >> LOCAL_COORD_BITS;
+        let dst_tx = quantized_x1 >> LOCAL_COORD_BITS;
+        let dst_ty = quantized_y1 >> LOCAL_COORD_BITS;
         let src_tx = tx;
         let src_ty = ty;
 
-        // TODO: if dst_dx == tx && dst_ty == ty which is not uncommon, we can fast path and
-        // emmit a single segment directly.
-
         // DDA-ish walk over the tiles that the edge touches
 
-        //let dx_sign = (segment.to.x - segment.from.x).signum() as i32;
-        //let dy_sign = (segment.to.y - segment.from.y).signum() as i32;
         let dx_sign = (dst_tx - src_tx).signum();
         let dy_sign = (dst_ty - src_ty).signum();
 
         // In pixels, local to the current tile.
-        let local_x0 = (segment.from.x - tx as f32 * TILE_SIZE_F32).max(0.0);
-        let mut local_x0_u8 = (local_x0 * inv_tile_size * 255.0).min(255.0) as u8;
-        let local_y0 = (segment.from.y - ty as f32 * TILE_SIZE_F32).max(0.0);
-        let mut local_y0_u8 = (local_y0 * inv_tile_size * 255.0).min(255.0) as u8;
+        let mut local_x0_u8 = (quantized_x0.max(0) & LOCAL_COORD_MASK) as u8;
+        let mut local_y0_u8 = (quantized_y0.max(0) & LOCAL_COORD_MASK) as u8;
 
         // TODO: division by zero when the segment is vertical.
         let inv_segment_vx = 1.0 / (segment.to.x - segment.from.x);
@@ -347,24 +349,10 @@ impl Tiler {
         let t_delta_x = (TILE_SIZE_F32 * inv_segment_vx).abs();
         let t_delta_y = (TILE_SIZE_F32 * inv_segment_vy).abs();
 
-        //self.dbg.log(format!("segment-{:?}-{:?}", segment.from.to_tuple(), segment.to.to_tuple()),
-        //    &rerun::LineStrips2D::new(
-        //        [
-        //            [segment.from.to_array(), segment.to.to_array()]
-        //        ].to_vec()
-        //    )
-        //    //.with_labels([format!("sign: {dx_sign} {dy_sign} crossing {t_crossing_x} {t_crossing_y}")])
-        //).unwrap();
+        //println!("tiles {tx} {ty} -> {dst_tx} {dst_ty}, sign {dx_sign} {dy_sign},  t_delta {t_delta_x} {t_delta_y} start {local_x0_u8} {local_y0_u8}");
 
-        println!("tiles {tx} {ty} -> {dst_tx} {dst_ty}, sign {dx_sign} {dy_sign},  t_delta {t_delta_x} {t_delta_y} start {local_x0_u8} {local_y0_u8}");
-
-        //let mut idx = 0;
         loop {
-            //idx += 1;
             //assert!(idx < 100, "{segment:?}, {tx} {ty} ({src_tx} {src_ty} -> {dst_tx} {dst_ty})");
-            //let tile_x_px = tx as f32 * TILE_SIZE_F32;
-            //let tile_y_px = ty as f32 * TILE_SIZE_F32;
-            //self.dbg.log(format!("tile-{tx}-{ty}/rect"), &rerun::Boxes2D::from_mins_and_sizes([(tile_x_px, tile_y_px)], [(TILE_SIZE_F32, TILE_SIZE_F32)])).unwrap();
 
             let tcx = t_crossing_x;
             let tcy = t_crossing_y;
@@ -382,29 +370,22 @@ impl Tiler {
                 step_y = dy_sign;
             };
 
-            println!(" * tile {tx} {ty}, crossing {tcx} {tcy} -> {t_split}");
+            //println!(" * tile {tx} {ty}, crossing {tcx} {tcy} -> {t_split}");
             let t_split = t_split.min(1.0);
             let one_t_split = 1.0 - t_split;
             let x1 = segment.from.x * one_t_split + segment.to.x * t_split;
             let y1 = segment.from.y * one_t_split + segment.to.y * t_split;
-            let local_x1 = (x1 - tx as f32 * TILE_SIZE_F32).max(0.0);
-            let local_y1 = (y1 - ty as f32 * TILE_SIZE_F32).max(0.0);
-            let local_x1_u8 = (local_x1 * (255.0 * inv_tile_size)).min(255.0) as u8;
-            let local_y1_u8 = (local_y1 * (255.0 * inv_tile_size)).min(255.0) as u8;
+            let local_x1_u8 = (((x1 * COORD_SCALE) as i32 - tx * UNITS_PER_TILE).max(0).min(255) & LOCAL_COORD_MASK) as u8;
+            let local_y1_u8 = (((y1 * COORD_SCALE) as i32 - ty * UNITS_PER_TILE).max(0).min(255) & LOCAL_COORD_MASK) as u8;
+
             let h_crossing_0 = local_y0_u8 == 0;
             let h_crossing_1 = local_y1_u8 == 0;
             let v_crossing_0 = local_x0_u8 == 0;
             let v_crossing_1 = local_x1_u8 == 0;
             let horizontal = local_y0_u8 == local_y1_u8;
 
-            //self.dbg.log(format!("tile-{tx}-{ty}/point"),
-            //    &rerun::Points2D::new([(x1, y1)])
-            //        .with_radii([1.0])
-            //        .with_labels([&format!("t={t_split}")[..]])
-            //).unwrap();
-
-            println!("            local {x1} {y1}| u8: {local_x0_u8} {local_y0_u8} {local_x1_u8} {local_y1_u8}");
-            println!("            crossings: h0 {h_crossing_0} h1 {h_crossing_1} v0 {v_crossing_0} v1 {v_crossing_1}");
+            //println!("            local {x1} {y1}| u8: {local_x0_u8} {local_y0_u8} {local_x1_u8} {local_y1_u8}");
+            //println!("            crossings: h0 {h_crossing_0} h1 {h_crossing_1} v0 {v_crossing_0} v1 {v_crossing_1}");
             //if local_x0_u8 == local_x1_u8 && local_y0 == local_y1 {
             //    println!("empty tiled segment");
             //}
@@ -420,14 +401,14 @@ impl Tiler {
                 }
                 // The tile's x coordinate could be negative if the segment is partially
                 // out of the viewport.
-                tx = tx.max(0);
+                x = x.max(0);
 
                 // No need to clamp y to positive numbers here because the viewport_tiles
                 // check filters out all tiles with negative y.
                 if ty >= self.scissor_tiles.min.y
                     && ty < self.scissor_tiles.max.y
                     && x < self.scissor_tiles.max.x {
-                    println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
+                    //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
                     self.events.push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
                 }
             }
@@ -444,23 +425,26 @@ impl Tiler {
 
                 if !self.current_tile_is_occluded {
                     if !horizontal {
-                        println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
+                        //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
                         self.events.push(Event::edge(
                             tile_x, tile_y,
                             [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
                         ));    
                     }
     
+                    // Whether one of the endpoints is exactly on the top-left corner.
+                    let on_corner0 = v_crossing_0 && h_crossing_0;
+                    let on_corner1 = v_crossing_1 && h_crossing_1;
                     // Add auxiliary edges when an edge crosses the left side.
                     // When either (but not both) endpoints lie at the left boundary
                     // and the segment is not on the top of the tile:
-                    if (v_crossing_0 ^ v_crossing_1) && !(h_crossing_0 && h_crossing_1) {
+                    if (v_crossing_0 ^ v_crossing_1) && !(on_corner0 || on_corner1) {
                         let auxiliary_edge = if v_crossing_0 {
                             [0, 255, 0, local_y0_u8]
                         } else {
                             [0, local_y1_u8, 0, 255]
                         };
-                        println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
+                        //println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
                         self.events.push(Event::edge(tile_x, tile_y, auxiliary_edge));
                     }
                 }

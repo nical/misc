@@ -189,9 +189,9 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
     var mask = resolve_mask(winding_number, fill_rule);
 
     // Debug: uncomment to see the grid in alpha tiles.
-    if (edges.x != edges.y && (min(uv.x, uv.y) < 1.0 || max(uv.x, uv.y) > 15.0)) {
-        mask = 0.4;
-    }
+    //if (edges.x != edges.y && (min(uv.x, uv.y) < 1.0 || max(uv.x, uv.y) > 15.0)) {
+    //    mask = 0.4;
+    //}
 
     return mask * opacity;
 }

@@ -1,5 +1,5 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, GeometryDescriptor, PipelineDescriptor, ShaderMaskId, BlendMode, Binding, BindGroupLayout, Varying, ShaderPatternId};
+use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, GeometryDescriptor, PipelineDescriptor, ShaderMaskId, BlendMode, Binding, BindGroupLayout, Varying};
 //use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
@@ -78,8 +78,6 @@ impl TileGpuResources {
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
-
-        shaders.print_pipeline_variant(masked_pipeline, ShaderPatternId::from_index(0));
 
         let default_edge_texture_size = 1024;
         let default_path_texture_size = 512;

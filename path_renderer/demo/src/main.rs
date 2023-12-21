@@ -663,7 +663,7 @@ fn paint_scene(
             .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
         );
 
-        if fill_renderer == TILING2 {
+        if false && fill_renderer == TILING2 {
             renderers.tiling2.fill_surface(ctx, gradient);
         } else {
             renderers.tiling.fill_surface(ctx, gradient);
