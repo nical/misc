@@ -1,4 +1,6 @@
-use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect};
+#![allow(unused)]
+
+use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point};
 use core::{pattern::BuiltPattern, units::point};
 
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment, Box2D};
@@ -163,7 +165,7 @@ impl Tiler {
         let identity = Transform2D::identity();
         let transform = options.transform.unwrap_or(&identity);
 
-        self.tile_path(path, transform);
+        self.tile_path2(path, transform);
 
         let mut encoded_fill_rule = match options.fill_rule {
             FillRule::EvenOdd => 0,
@@ -187,6 +189,111 @@ impl Tiler {
         }.encode());
 
         self.generate_tiles(options.fill_rule, options.inverted, pattern, output);
+    }
+
+    // Similar to tile_path, except that it flattens curves into a buffer before
+    // processing the line segments in bulk, instead of nesting the binning into
+    // the flattening loop.
+    // In its current states it doesn not appear to improve performance althogh
+    // it makes profiles a bit easier to read.
+    fn tile_path2(
+        &mut self,
+        path: impl Iterator<Item = PathEvent>,
+        transform: &Transform,
+    ) {
+        let transform: &lyon::geom::Transform<f32> = unsafe {
+            std::mem::transmute(transform)
+        };
+        self.events.clear();
+
+        // Keep track of from manually instead of using the value provided by the
+        // iterator because we want to skip tiny edges without intorducing gaps.
+        let mut from = point(0.0, 0.0);
+        let square_tolerance = self.tolerance * self.tolerance;
+
+        let mut point_buffer = Vec::with_capacity(512);
+        let mut flattener = Flattener::new(self.tolerance);
+        let mut force_flush = false;
+
+        for evt in path {
+            match evt {
+                PathEvent::Begin { at } => {
+                    point_buffer.push(transform.transform_point(at));
+                    from = at;
+                }
+                PathEvent::End { first, .. } => {
+                    point_buffer.push(transform.transform_point(first));
+                    from = first;
+                    force_flush = true;
+                }
+                PathEvent::Line { to, .. } => {
+                    let segment = LineSegment { from, to }.transformed(transform);
+                    if segment.to_vector().square_length() < square_tolerance {
+                        continue;
+                    }
+                    point_buffer.push(transform.transform_point(to));
+                    from = to;
+                }
+                PathEvent::Quadratic { ctrl, to, .. } => {
+                    let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl - center).square_length() < square_tolerance {
+                            continue;
+                        }
+                    }
+                    flattener.set_quadratic(&segment);
+                    from = to;
+                }
+                PathEvent::Cubic {
+                    ctrl1, ctrl2, to, ..
+                } => {
+                    let segment = CubicBezierSegment {
+                        from,
+                        ctrl1,
+                        ctrl2,
+                        to,
+                    }
+                    .transformed(transform);
+                    if segment.baseline().to_vector().square_length() < square_tolerance {
+                        let center = (segment.from + segment.to.to_vector()) * 0.5;
+                        if (segment.ctrl1 - center).square_length() < square_tolerance
+                            && (segment.ctrl2 - center).square_length() < square_tolerance
+                        {
+                            continue;
+                        }
+                    }
+
+                    flattener.set_cubic(&segment);
+                    from = to;
+                }
+            }
+
+            while force_flush || flattener.flatten(&mut point_buffer) || point_buffer.capacity() - point_buffer.len() == 0 {
+                self.flush(&mut point_buffer, force_flush);
+                force_flush = false;
+            }
+        }
+
+        // TODO: probably don't need this since we always flush at the end of a sub-path.
+        self.flush(&mut point_buffer, true);
+    }
+
+    fn flush(&mut self, point_buffer: &mut Vec<Point>, is_last: bool) {
+        if point_buffer.len() < 2 {
+            return;
+        }
+        let mut iter = point_buffer.iter();
+        let mut from = *iter.next().unwrap();
+        for to in iter {
+            self.tile_segment(&LineSegment { from, to: *to });
+            from = *to;
+        }
+
+        point_buffer.clear();
+        if !is_last {
+            point_buffer.push(from);
+        }
     }
 
     fn tile_path(
@@ -263,7 +370,6 @@ impl Tiler {
                 }
             }
         }
-
     }
 
     fn tile_segment(&mut self, segment: &LineSegment<f32>) {
@@ -791,6 +897,92 @@ impl PathInfo {
 #[test]
 fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
+}
+
+pub struct Flattener {
+    rem: CubicBezierSegment<f32>,
+    tolerance: f32,
+    t0: f32,
+    split: f32,
+    is_cubic: bool,
+    done: bool,
+}
+
+impl Flattener {
+    pub fn new(tolerance: f32) -> Self {
+        Flattener {
+            rem: CubicBezierSegment {
+                from: point(0.0, 0.0),
+                ctrl1: point(0.0, 0.0),
+                ctrl2: point(0.0, 0.0),
+                to: point(0.0, 0.0),
+            },
+            tolerance,
+            t0: 0.0,
+            split: 0.5,
+            is_cubic: true,
+            done: true,
+        }
+    }
+
+    pub fn set_cubic(&mut self, curve: &CubicBezierSegment<f32>) {
+        self.rem = *curve;
+        self.split = 0.5;
+        self.is_cubic = true;
+        self.done = false;
+    }
+
+    pub fn set_quadratic(&mut self, curve: &QuadraticBezierSegment<f32>) {
+        // TODO
+        self.rem = curve.to_cubic();
+        self.is_cubic = true;
+        self.split = 0.5;
+        self.done = false;
+    }
+
+    pub fn flatten(&mut self, output: &mut Vec<Point>) -> bool {
+        if self.is_cubic {
+            return self.flatten_cubic(output);
+        }
+
+        unimplemented!("TODO quadratic bézier");
+    }
+
+    pub fn flatten_cubic(&mut self, output: &mut Vec<Point>) -> bool {
+        if self.done {
+            return false;
+        }
+
+        let mut cap = output.capacity() - output.len();
+        loop {
+            if cap == 0 {
+                return true;
+            }
+
+            if self.rem.is_linear(self.tolerance) {
+                output.push(self.rem.to);
+                self.done = true;
+                return false;
+            }
+
+            loop {
+                let sub = self.rem.before_split(self.split);
+                if sub.is_linear(self.tolerance) {
+                    let t1 = self.t0 + (1.0 - self.t0) * self.split;
+                    output.push(sub.to);
+                    cap -= 1;
+                    self.t0 = t1;
+                    self.rem = self.rem.after_split(self.split);
+                    let next_split = self.split * 2.0;
+                    if next_split < 1.0 {
+                        self.split = next_split;
+                    }
+                    break;
+                }
+                self.split *= 0.5;
+            }
+        }
+    }
 }
 
 fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
