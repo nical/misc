@@ -237,7 +237,7 @@ impl TileRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        if self.tiles.edges.is_empty() {
+        if self.tiles.is_empty() {
             return;
         }
 

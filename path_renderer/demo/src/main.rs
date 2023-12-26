@@ -663,7 +663,7 @@ fn paint_scene(
             .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
         );
 
-        if false && fill_renderer == TILING2 {
+        if fill_renderer == TILING2 {
             renderers.tiling2.fill_surface(ctx, gradient);
         } else {
             renderers.tiling.fill_surface(ctx, gradient);
@@ -672,7 +672,7 @@ fn paint_scene(
 
     ctx.transforms.push(transform);
 
-    if testing {
+    if false && testing {
         renderers.tiling.fill_circle(
             ctx,
             Circle::new(point(500.0, 500.0), 800.0),

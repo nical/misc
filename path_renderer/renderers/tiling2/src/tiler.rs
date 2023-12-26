@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point};
+use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, vector};
 use core::{pattern::BuiltPattern, units::point};
 
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment, Box2D};
@@ -11,6 +11,11 @@ pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpa
 
 const TILE_SIZE_F32: f32 = 16.0;
 const TILE_SIZE: i32 = 16;
+const UNITS_PER_TILE: i32 = 256;
+const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
+const LOCAL_COORD_MASK: i32 = 255;
+const LOCAL_COORD_BITS: i32 = 8;
+const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
 
 pub struct FillOptions<'l> {
     pub fill_rule: FillRule,
@@ -84,8 +89,17 @@ impl<'l> FillOptions<'l> {
     }
 }
 
+#[derive(Copy, Clone)]
+struct TileInfo {
+    tx: i32,
+    ty: i32,
+    occluded: bool,
+    local_x: u8,
+    local_y: u8,
+}
+
 pub struct Tiler {
-    events: Vec<Event>,
+    events: Vec<Vec<Event>>,
     tolerance: f32,
     current_tile: (u16, u16),
     current_tile_is_occluded: bool,
@@ -93,14 +107,26 @@ pub struct Tiler {
     scissor: SurfaceRect,
     scissor_tiles: Box2D<i32>,
 
+    // tile_segment2
+    prev_tile: Option<TileInfo>,
+
+    // tile_segment3
+    prev_tx: i32,
+    prev_ty: i32,
+
     occlusion: OcclusionBuffer,
     //pub dbg: rerun::RecordingStream,
 }
 
+const EVENT_BUCKETS: usize = 8;
+
 impl Tiler {
     pub fn new() -> Self {
+        let mut events = Vec::with_capacity(EVENT_BUCKETS);
+        for _ in 0..EVENT_BUCKETS { events.push(Vec::new())};
+
         Tiler {
-            events: Vec::new(),
+            events,
             tolerance: 0.25,
             current_tile: (0, 0),
             current_tile_is_occluded: false,
@@ -116,9 +142,17 @@ impl Tiler {
                 min: point(0, 0),
                 max: point(0, 0),
             },
+            prev_tile: None,
+            prev_tx: -1,
+            prev_ty: -1,
             occlusion: OcclusionBuffer::new(0, 0),
             //dbg: rerun::RecordingStreamBuilder::new("tiler2").spawn().unwrap(),
         }
+    }
+
+    #[inline(always)]
+    fn events(&mut self, row: usize) -> &mut Vec<Event> {
+        &mut self.events[row % EVENT_BUCKETS]
     }
 
     pub fn begin_target(&mut self, mut viewport: SurfaceIntRect) {
@@ -201,10 +235,13 @@ impl Tiler {
         path: impl Iterator<Item = PathEvent>,
         transform: &Transform,
     ) {
+        //println!("\n\n--------");
         let transform: &lyon::geom::Transform<f32> = unsafe {
             std::mem::transmute(transform)
         };
-        self.events.clear();
+        for array in &mut self.events {
+            array.clear();
+        }
 
         // Keep track of from manually instead of using the value provided by the
         // iterator because we want to skip tiny edges without intorducing gaps.
@@ -214,40 +251,63 @@ impl Tiler {
         let mut point_buffer = Vec::with_capacity(512);
         let mut flattener = Flattener::new(self.tolerance);
         let mut force_flush = false;
+        let mut skipped = None;
 
         for evt in path {
             match evt {
                 PathEvent::Begin { at } => {
+                    //println!("# begin {at:?}");
                     point_buffer.push(transform.transform_point(at));
                     from = at;
                 }
                 PathEvent::End { first, .. } => {
-                    point_buffer.push(transform.transform_point(first));
-                    from = first;
+                    //println!("# end first={first:?}");
+
+                    flattener.set_line(transform.transform_point(first));
                     force_flush = true;
                 }
                 PathEvent::Line { to, .. } => {
+                    //println!("# line to={to:?}");
                     let segment = LineSegment { from, to }.transformed(transform);
+                    let min_y = segment.from.y.min(segment.to.y);
+                    let max_y = segment.from.y.max(segment.to.y);
+                    if min_y > self.scissor.max.y + 1.0 || max_y < self.scissor.min.y - 1.0 {
+                        from = to;
+                        skipped = Some(to);
+                        //println!("skip line segment");
+                        continue;
+                    }
+
                     if segment.to_vector().square_length() < square_tolerance {
                         continue;
                     }
-                    point_buffer.push(transform.transform_point(to));
+
+                    flattener.set_line(transform.transform_point(to));
                     from = to;
                 }
                 PathEvent::Quadratic { ctrl, to, .. } => {
+                    //println!("# quad ctrl= {ctrl:?} to={to:?}");
                     let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
+                    let min_y = segment.from.y.min(segment.ctrl.y).min(segment.to.y);
+                    let max_y = segment.from.y.max(segment.ctrl.y).max(segment.to.y);
+                    if min_y > self.scissor.max.y + 1.0 || max_y < self.scissor.min.y - 1.0 {
+                        from = to;
+                        skipped = Some(to);
+                        //println!("skip quad segment");
+                        continue;
+                    }
                     if segment.baseline().to_vector().square_length() < square_tolerance {
                         let center = (segment.from + segment.to.to_vector()) * 0.5;
                         if (segment.ctrl - center).square_length() < square_tolerance {
                             continue;
                         }
                     }
+
                     flattener.set_quadratic(&segment);
                     from = to;
                 }
-                PathEvent::Cubic {
-                    ctrl1, ctrl2, to, ..
-                } => {
+                PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
+                    //println!("# cubic from={from:?} ctrl1={ctrl1:?} ctrl2={ctrl2:?} to={to:?}");
                     let segment = CubicBezierSegment {
                         from,
                         ctrl1,
@@ -255,6 +315,16 @@ impl Tiler {
                         to,
                     }
                     .transformed(transform);
+
+                    let min_y = segment.from.y.min(segment.ctrl1.y).min(segment.ctrl2.y).min(segment.to.y);
+                    let max_y = segment.from.y.max(segment.ctrl1.y).max(segment.ctrl2.y).max(segment.to.y);
+                    if min_y > self.scissor.max.y + 1.0 || max_y < self.scissor.min.y - 1.0 {
+                        from = to;
+                        skipped = Some(to);
+                        //println!("skip cubic segment");
+                        continue;
+                    }
+
                     if segment.baseline().to_vector().square_length() < square_tolerance {
                         let center = (segment.from + segment.to.to_vector()) * 0.5;
                         if (segment.ctrl1 - center).square_length() < square_tolerance
@@ -269,24 +339,39 @@ impl Tiler {
                 }
             }
 
-            while force_flush || flattener.flatten(&mut point_buffer) || point_buffer.capacity() - point_buffer.len() == 0 {
+
+            if flattener.ty != CurveType::None {
+                if let Some(pos) = skipped {
+                    //println!("push {pos:?} after skipped segment(s)");
+                    point_buffer.push(transform.transform_point(pos));
+                    skipped = None;
+                }
+            }
+
+            while flattener.flatten(&mut point_buffer) || force_flush || point_buffer.capacity() - point_buffer.len() == 0 {
                 self.flush(&mut point_buffer, force_flush);
                 force_flush = false;
             }
         }
 
         // TODO: probably don't need this since we always flush at the end of a sub-path.
-        self.flush(&mut point_buffer, true);
+        //self.flush(&mut point_buffer, true);
     }
 
     fn flush(&mut self, point_buffer: &mut Vec<Point>, is_last: bool) {
         if point_buffer.len() < 2 {
             return;
         }
+        //println!("flush {point_buffer:?}");
         let mut iter = point_buffer.iter();
         let mut from = *iter.next().unwrap();
+
+        let (tx, ty) = self.tile_for_position(from);
+        self.prev_tx = tx;
+        self.prev_ty = ty;
+
         for to in iter {
-            self.tile_segment(&LineSegment { from, to: *to });
+            self.tile_segment3(&LineSegment { from, to: *to });
             from = *to;
         }
 
@@ -306,7 +391,9 @@ impl Tiler {
         let transform: &lyon::geom::Transform<f32> = unsafe {
             std::mem::transmute(transform)
         };
-        self.events.clear();
+        for array in &mut self.events {
+            array.clear();
+        }
 
         // Keep track of from manually instead of using the value provided by the
         // iterator because we want to skip tiny edges without intorducing gaps.
@@ -388,12 +475,6 @@ impl Tiler {
             return;
         }
 
-        const UNITS_PER_TILE: i32 = 256;
-        const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
-        const LOCAL_COORD_MASK: i32 = 255;
-        const LOCAL_COORD_BITS: i32 = 8;
-        const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
-
         // In number of tiles
 
         // Cull left of the viewport
@@ -418,7 +499,7 @@ impl Tiler {
             //println!(" - left backdrops for y range {y_range:?} ({local_min_y_u8})");
 
             for y in y_range {
-                self.events.push(Event::backdrop(0, y as u16, positive_winding));
+                self.events(y as usize).push(Event::backdrop(0, y as u16, positive_winding));
             }
 
             return;
@@ -457,7 +538,7 @@ impl Tiler {
                 }
 
                 if !self.current_tile_is_occluded {
-                    self.events.push(Event::edge(
+                    self.events(tile.1 as usize).push(Event::edge(
                         tile.0, tile.1,
                         [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
                     ));
@@ -532,7 +613,7 @@ impl Tiler {
                     // No need to clamp y to positive numbers here because the viewport_tiles
                     // check filters out all tiles with negative y.
                     let x = (tx + (!on_left_side) as i32).max(0);
-                    self.events.push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
+                    self.events(ty as usize).push(Event::backdrop(x as u16, ty as u16, h_crossing_0));
                     //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
                 }
 
@@ -549,7 +630,7 @@ impl Tiler {
                     if !self.current_tile_is_occluded {
                         if local_y0_u8 != local_y1_u8 {
                             //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
-                            self.events.push(Event::edge(
+                            self.events(tile_y as usize).push(Event::edge(
                                 tile_x, tile_y,
                                 [local_x0_u8, local_y0_u8, local_x1_u8, local_y1_u8]
                             ));
@@ -568,7 +649,7 @@ impl Tiler {
                                 [0, local_y1_u8, 0, 255]
                             };
                             //println!("   - auxiliary edge {tile_x} {tile_y} | {auxiliary_edge:?}");
-                            self.events.push(Event::edge(tile_x, tile_y, auxiliary_edge));
+                            self.events(tile_y as usize).push(Event::edge(tile_x, tile_y, auxiliary_edge));
                         }
                     }
                 }
@@ -586,126 +667,505 @@ impl Tiler {
         }
     }
 
+    fn tile_for_position(&mut self, pos: Point) -> (i32, i32) {
+        let x_i32 = (pos.x * COORD_SCALE) as i32;
+        let y_i32 = (pos.y * COORD_SCALE) as i32;
+        let tx = (x_i32 >> LOCAL_COORD_BITS);
+        let ty = (y_i32 >> LOCAL_COORD_BITS);
+
+        (tx, ty)
+    }
+
+    fn tile_segment3(&mut self, edge: &LineSegment<f32>) {
+        // Leave some margin around this early scissor test so that
+        // we keep track of the previous tile near the boundary of the
+        // scissor rect.
+        let min_y = edge.to.y.min(edge.from.y);
+        let max_y = edge.to.y.max(edge.from.y);
+        let min_x = edge.to.x.min(edge.from.x);
+        if min_y > self.scissor.max.y + 1.0
+            || max_y < self.scissor.min.y - 1.0
+            || min_x > self.scissor.max.x + 1.0
+        {
+            return;
+        }
+
+        let from_i32_x = (edge.from.x * COORD_SCALE) as i32;
+        let from_i32_y = (edge.from.y * COORD_SCALE) as i32;
+        let to_i32_x = (edge.to.x * COORD_SCALE) as i32;
+        let to_i32_y = (edge.to.y * COORD_SCALE) as i32;
+        let src_tx = (from_i32_x >> LOCAL_COORD_BITS);
+        let src_ty = (from_i32_y >> LOCAL_COORD_BITS);
+        let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
+        let dst_ty = (to_i32_y >> LOCAL_COORD_BITS);
+        let scissor_min_tx = self.scissor_tiles.min.x;
+        let scissor_min_ty = self.scissor_tiles.min.y;
+        let scissor_max_tx = self.scissor_tiles.max.x - 1;
+        let scissor_max_ty = self.scissor_tiles.max.y - 1;
+
+        let dx = edge.to.x - edge.from.x;
+        let dy = edge.to.y - edge.from.y;
+        let dx_dy = dx/dy;
+        let dy_dx = 1.0 / dx_dy;
+
+        let x_step = (dst_tx - src_tx).signum();
+        let y_step = (dst_ty - src_ty).signum();
+        let h_tile_side = x_step.max(0);
+        let v_tile_side = y_step.max(0);
+
+        let mut v_x0 = edge.from.x;
+        let mut v_y0 = edge.from.y;
+
+        //println!("\ntile_segment {edge:?}, tiles {src_tx} {src_ty} -> {dst_tx} {dst_ty}, step {x_step} {y_step}");
+
+        // x and y index of the current tile.
+        let mut tx = src_tx;
+        let mut ty = src_ty;
+        loop {
+            let v_y1;
+            let v_x1;
+            let h_dst_tx;
+            if ty == dst_ty {
+                v_y1 = edge.to.y;
+                v_x1 = edge.to.x;
+                h_dst_tx = dst_tx;
+            } else {
+                v_y1 = (ty + v_tile_side) as f32 * TILE_SIZE_F32;
+                v_x1 = v_x0 + dx_dy * (v_y1 - v_y0);
+                h_dst_tx = if x_step == 0 {
+                    dst_tx
+                } else {
+                    (v_x1 * COORD_SCALE) as i32 >> LOCAL_COORD_BITS
+                };
+            }
+
+            let row_occluded = ty < self.scissor_tiles.min.y || ty >= self.scissor_tiles.max.y;
+
+            // When moving to a different row of tiles, add backdrop events.
+            // Note: this rely not only on the input and locals of this function,
+            // but also on the assumption that we correctly keep track of self.prev_ty
+            // inside and outside of this function.
+            if ty != self.prev_ty {
+                let positive = ty > self.prev_ty;
+                let row = ty + (!positive) as i32;
+                if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y {
+                    //println!("    - backdrop {} {row}, positive:{positive}", (tx + 1).max(0));
+                    self.events(row as usize).push(Event::backdrop((tx + 1).max(0) as u16, row as u16, positive));
+                }
+                self.prev_ty = ty;
+            }
+
+            let mut h_x0 = v_x0;
+            let mut h_y0 = v_y0;
+            //println!(" - row {ty}, sub ({v_x0} {v_y0}) -> ({v_x1} {v_y1}), tiles x {tx} {h_dst_tx}");
+
+            let mut events = &mut self.events[ty as usize % EVENT_BUCKETS];
+
+            loop {
+                let h_x1;
+                let h_y1;
+                if tx == h_dst_tx {
+                    h_x1 = v_x1;
+                    h_y1 = v_y1;
+                } else {
+                    assert!(x_step != 0, "tx {tx}, h_dst_tx {h_dst_tx}, src_tx {src_tx} dst_tx {dst_tx}, segment {edge:?}");
+                    h_x1 = (tx + h_tile_side) as f32 * TILE_SIZE_F32;
+                    h_y1 = v_y0 + dy_dx * (h_x1 - v_x0);
+                }
+
+                let occluded = row_occluded || tx < self.scissor_tiles.min.x || tx >= self.scissor_tiles.max.x;
+
+                if !row_occluded {
+                    let offset_y = (ty * UNITS_PER_TILE) as f32;
+                    let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
+
+                    if tx >= self.scissor_tiles.min.x {
+                        let offset_x = (tx * UNITS_PER_TILE) as f32;
+                        let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
+                        let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
+                        let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;
+
+                        if !occluded {
+                            assert!(tx < self.scissor_tiles.max.x);
+                            //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
+                            events.push(Event::edge(
+                                tx as u16, ty as u16,
+                                [local_x0, local_y0, local_x1, local_y1]
+                            ));
+                        }
+                    }
+
+                    // Add an auxiliary edge when crossing a vertical boundary (tile x
+                    // coordinate changes).
+                    if tx != self.prev_tx {
+                        // Note, if the edge is going in the ngative x orientation, then
+                        // we are actually adding an auxiliary edge to the previous tile
+                        // rather than the current one.
+                        let aux_tx = tx.max(self.prev_tx);
+                        let occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
+
+                        if !occluded {
+                            let (y0, y1) = if tx < self.prev_tx {
+                                (local_y0, 255)
+                            } else {
+                                (255, local_y0)
+                            };
+                            //println!("   - auxiliary edge tile {aux_tx} {ty}, y-range {y0} {y1}");
+                            assert!(aux_tx < self.scissor_tiles.max.x);
+                            events.push(Event::edge(
+                                aux_tx as u16, ty as u16,
+                                [0, y0, 0, y1]
+                            ));
+                        }
+                    }
+                }
+
+                self.prev_tx = tx;
+
+                if tx == h_dst_tx {
+                    break;
+                }
+                h_x0 = h_x1;
+                h_y0 = h_y1;
+                tx += x_step;
+            }
+
+            v_x0 = v_x1;
+            v_y0 = v_y1;
+            if ty == dst_ty {
+                break;
+            }
+            ty += y_step;
+        }
+    }
+
+    /*
+    fn tile_segment2(&mut self, segment: &LineSegment<f32>) {
+        //println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
+        // Cull above and below the viewport
+        let min_y = segment.from.y.min(segment.to.y);
+        let max_y = segment.from.y.max(segment.to.y);
+        if max_y < self.scissor.min.y || min_y > self.scissor.max.y {
+            return;
+        }
+
+        // Cull right of the viewport
+        let min_x = segment.from.x.min(segment.to.x);
+        let max_x = segment.from.x.max(segment.to.x);
+        if min_x > self.scissor.max.x {
+            return;
+        }
+
+        // Cull left of the viewport
+        if max_x < self.scissor.min.x {
+            let quantized_min_y = (min_y * COORD_SCALE) as i32;
+            let quantized_max_y = (max_y * COORD_SCALE) as i32;
+            let min_ty = quantized_min_y / UNITS_PER_TILE;
+            let max_ty = quantized_max_y / UNITS_PER_TILE;
+            let local_min_y_u8 = quantized_min_y.max(0) as u8;
+            let local_max_y_u8 = quantized_max_y.max(0) as u8;
+
+            // Backdrops are still affected by content on the left of the viewport.
+            let positive_winding = segment.to.y > segment.from.y;
+            let mut y_range = min_ty..max_ty;
+            if local_min_y_u8 != 0 {
+                y_range.start += 1;
+            }
+            if local_max_y_u8 != 0 {
+                y_range.end += 1;
+            }
+
+            //println!(" - left backdrops for y range {y_range:?} ({local_min_y_u8})");
+
+            for y in y_range {
+                self.events[y as usize % 32].push(Event::backdrop(0, y as u16, positive_winding));
+            }
+
+            return;
+        }
+
+        // DDA-ish walk over the tiles that the edge touches
+
+        let current = self.prev_tile.get_or_insert_with(|| {
+            let quantized_x0 = (segment.from.x * COORD_SCALE) as i32;
+            let quantized_y0 = (segment.from.y * COORD_SCALE) as i32;
+            let tx = quantized_x0 >> LOCAL_COORD_BITS;
+            let ty = quantized_y0 >> LOCAL_COORD_BITS;
+            let mut local_x = (quantized_x0.max(0) & LOCAL_COORD_MASK) as u8;
+            let mut local_y = (quantized_y0.max(0) & LOCAL_COORD_MASK) as u8;
+
+            let occluded = ty < self.scissor_tiles.min.y
+                || ty >= self.scissor_tiles.max.y
+                || tx < self.scissor_tiles.min.x
+                || tx >= self.scissor_tiles.max.x
+                || self.occlusion.occluded(tx as u16, ty as u16);
+
+            TileInfo {
+                tx,
+                ty,
+                occluded,
+                local_x,
+                local_y,
+            }
+        });
+
+        let quantized_x1 = (segment.to.x * COORD_SCALE) as i32;
+        let quantized_y1 = (segment.to.y * COORD_SCALE) as i32;
+        let dst_tx = quantized_x1 >> LOCAL_COORD_BITS;
+        let dst_ty = quantized_y1 >> LOCAL_COORD_BITS;
+
+        let dx_sign = (dst_tx - current.tx).signum();
+        let dy_sign = (dst_ty - current.ty).signum();
+
+        let inv_segment_vx = 1.0 / (segment.to.x - segment.from.x);
+        let inv_segment_vy = 1.0 / (segment.to.y - segment.from.y);
+
+        let next_tile_x = (inv_segment_vx > 0.0) as i32;
+        let next_tile_y = (inv_segment_vy > 0.0) as i32;
+        let mut t_crossing_x = (((current.tx + next_tile_x) as f32 * TILE_SIZE_F32 - segment.from.x) * inv_segment_vx).abs();
+        let mut t_crossing_y = (((current.ty + next_tile_y) as f32 * TILE_SIZE_F32 - segment.from.y) * inv_segment_vy).abs();
+        let t_delta_x = (TILE_SIZE_F32 * inv_segment_vx).abs();
+        let t_delta_y = (TILE_SIZE_F32 * inv_segment_vy).abs();
+
+        let mut tx = current.tx;
+        let mut ty = current.ty;
+
+        //println!("tiles {tx} {ty} -> {dst_tx} {dst_ty}, sign {dx_sign} {dy_sign},  t_delta {t_delta_x} {t_delta_y} start {local_x0_u8} {local_y0_u8}");
+
+        let mut prev_tile_occluded = current.occluded;
+        loop {
+            //assert!(idx < 100, "{segment:?}, {tx} {ty} ({src_tx} {src_ty} -> {dst_tx} {dst_ty})");
+
+            let tcx = t_crossing_x;
+            let tcy = t_crossing_y;
+            let mut t_split = tcx;
+            let mut step_x = 0;
+            let mut step_y = 0;
+            if tcx <= tcy {
+                t_split = t_crossing_x;
+                t_crossing_x += t_delta_x;
+                step_x = dx_sign;
+            }
+
+            if tcy <= tcx {
+                t_split = t_crossing_y;
+                t_crossing_y += t_delta_y;
+                step_y = dy_sign;
+            };
+
+            //println!(" * tile {tx} {ty}, crossing {tcx} {tcy} -> {t_split}");
+            let t_split = t_split.min(1.0);
+            let one_t_split = 1.0 - t_split;
+            let x1 = segment.from.x * one_t_split + segment.to.x * t_split;
+            let y1 = segment.from.y * one_t_split + segment.to.y * t_split;
+            let local_x1_u8 = ((x1 * COORD_SCALE) as i32 - tx * UNITS_PER_TILE).max(0).min(255) as u8;
+            let local_y1_u8 = ((y1 * COORD_SCALE) as i32 - ty * UNITS_PER_TILE).max(0).min(255) as u8;
+
+            //println!("            local {x1} {y1}| u8: {local_x0_u8} {local_y0_u8} {local_x1_u8} {local_y1_u8}");
+            //println!("            crossings: h0 {h_crossing_0} h1 {h_crossing_1} v0 {v_crossing_0} v1 {v_crossing_1}");
+
+            // Discard all tiles that are above, below or right of the view.
+            let affects_view = ty >= self.scissor_tiles.min.y
+                && ty < self.scissor_tiles.max.y
+                && tx < self.scissor_tiles.max.x;
+
+            if affects_view {
+                if current.ty != ty {
+                    // The tile's x coordinate could be negative if the segment is partially
+                    // out of the viewport.
+                    // No need to clamp y to positive numbers here because the viewport_tiles
+                    // check filters out all tiles with negative y.
+                    let positive = current.ty < ty;
+                    let x = (tx + 1).max(0) as u16;
+                    let y = ty as u16 + (!positive) as u16;
+                    self.events.push(Event::backdrop(x, y, positive));
+                    //println!("   - backdrop {x} {ty} | {}", if h_crossing_0 { 1 } else { -1 });
+                }
+
+                if tx >= self.scissor_tiles.min.x {
+                    if !current.occluded {
+                        // If edge is not horizontal, add it.
+                        if current.local_y != local_y1_u8 {
+                            //println!("   - edge {tx} {ty} | {local_x0_u8} {local_y0_u8}  {local_x1_u8} {local_y1_u8} | {x1} {y1}");
+                            self.events.push(Event::edge(
+                                current.tx as u16, current.ty as u16,
+                                [current.local_x, current.local_y, local_x1_u8, local_y1_u8]
+                            ));
+                        }
+
+                        // Add auxiliary edges when an edge crosses the left side.
+                        // When either (but not both) endpoints lie at the left boundary
+                        // and the segment is not on the top of the tile:
+                        if tx != current.tx {
+                            let auxiliary_edge = if tx > current.tx {
+                                [0, 255, 0, current.local_y]
+                            } else {
+                                [0, local_y1_u8, 0, 255]
+                            };
+                            let x = tx as u16 + (tx < current.tx) as u16;
+                            self.events.push(Event::edge(x, ty as u16, auxiliary_edge));
+                        }
+                    }
+                }
+            }
+
+            current.local_x = if step_x > 0 { 0 } else if step_x < 0 { 255 } else { local_x1_u8 };
+            current.local_y = if step_y > 0 { 0 } else if step_y < 0 { 255 } else { local_y1_u8 };
+
+            if step_x != 0 || step_y != 0 {
+                current.tx += step_x;
+                current.ty += step_y;
+                prev_tile_occluded = current.occluded;
+                current.occluded = affects_view
+                    && tx >= self.scissor_tiles.min.x
+                    && self.occlusion.occluded(current.tx as u16, current.ty as u16);
+            } else {
+                break;
+            }
+
+            if t_split >= 1.0 {
+                break;
+            }
+        }
+    }
+*/
     fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, pattern: &BuiltPattern, output: &mut TilerOutput) {
         profiling::scope!("Tiler::generate_tiles");
+        //println!("Tiler::generate_tiles");
 
         let path_index = output.paths.len() as u32 - 1;
 
-        self.events.sort_unstable_by_key(|e| e.sort_key);
-        // Push a dummy backdrop out of view that will cause the current tile to be flushed
-        // at the last iteration without having to replicate the logic out of the loop.
-        self.events.push(Event::backdrop(0, std::u16::MAX, false));
+        for events in &mut self.events {
+            if events.is_empty() {
+                continue;
+            }
 
-        //for e in &self.events {
-        //    let (tx, ty) = e.tile();
-        //    let edge: [u8; 4] = unsafe { std::mem::transmute(e.payload) };
-        //    if e.is_edge() {
-        //        println!("- {tx} {ty} edge {edge:?}");
-        //    } else {
-        //        println!("- {tx} {ty} backdrop {}", if e.payload == 0 { -1 } else { 1 });
-        //    }
-        //}
+            events.sort_unstable_by_key(|e| e.sort_key);
+            // Push a dummy backdrop out of view that will cause the current tile to be flushed
+            // at the last iteration without having to replicate the logic out of the loop.
+            events.push(Event::backdrop(0, std::u16::MAX, false));
 
-        let mut current_tile = (0, 0);
-        let mut tile_first_edge = output.edges.len();
-        let mut backdrop: i16 = 0;
-
-        for evt in &self.events {
-            let tile = evt.tile();
-            //if evt.is_edge() {
-            //    println!("   * edge {tile:?}");
-            //} else {
-            //    println!("   * backdrop {tile:?}");
+            //for e in events.iter() {
+            //    let (tx, ty) = e.tile();
+            //    let edge: [u8; 4] = unsafe { std::mem::transmute(e.payload) };
+            //    if e.is_edge() {
+            //        println!("- {tx} {ty} edge {edge:?}");
+            //    } else {
+            //        println!("- {tx} {ty} backdrop {}", if e.payload == 0 { -1 } else { 1 });
+            //    }
             //}
-            if tile != current_tile {
-                //if tile.1 != current_tile.1 {
-                //    println!("");
+
+            let mut current_tile = (0, 0);
+            let mut tile_first_edge = output.edges.len();
+            let mut backdrop: i16 = 0;
+
+            for evt in events.iter() {
+                let tile = evt.tile();
+                //if evt.is_edge() {
+                //    println!("   * edge {tile:?}");
+                //} else {
+                //    println!("   * backdrop {tile:?}");
                 //}
-                //println!("* new tile {tile:?} (was {current_tile:?}, backdrop: {backdrop:?}");
-                let tile_last_edge = output.edges.len();
-                let mut solid_tile_x = current_tile.0;
-                if tile_last_edge != tile_first_edge {
-                    // This limit isn't necessary but it is useful to catch bugs. In practice there should
-                    // never be this many edges in a single tile.
-                    const MAX_EDGES_PER_TILE: usize = 512;
-                    debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
+                if tile != current_tile {
+                    let mut x = current_tile.0;
+                    let y = current_tile.1;
 
-                    //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
-                    output.mask_tiles.push(TileInstance {
-                        position: TilePosition::new(current_tile.0 as u32, current_tile.1 as u32),
-                        backdrop,
-                        first_edge: tile_first_edge as u32,
-                        edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
-                        path_index,
-                    }.encode());
-
-                    tile_first_edge = tile_last_edge;
-                    solid_tile_x += 1;
-                }
-
-                let inside = inverted ^ match fill_rule {
-                    FillRule::EvenOdd => backdrop % 2 != 0,
-                    FillRule::NonZero => backdrop != 0,
-                };
-
-                // Fill solid tiles if any, up to the new tile unless it is on a different row.
-                let solid_tile_end = if tile.1 == current_tile.1 {
-                    tile.0.min(self.scissor_tiles.max.x as u16)
-                } else {
-                    self.scissor_tiles.max.x as u16
-                };
-
-                if current_tile.1 >= self.scissor_tiles.max.y as u16 {
-                    break;
-                }
-
-                while inside && solid_tile_x < solid_tile_end {
-                    while solid_tile_x < solid_tile_end && self.occlusion.occluded(solid_tile_x, current_tile.1) {
-                        assert!((solid_tile_x as i32) < self.scissor_tiles.max.x, "A");
-                        //println!("    skip occluded solid tile {solid_tile_x:?}");
-                        solid_tile_x += 1;
-                    }
-
-                    //println!("    begin solid tile {solid_tile_x:?}");
-                    let mut position = TilePosition::new(solid_tile_x as u32, current_tile.1 as u32);
-                    solid_tile_x += 1;
-
-                    while solid_tile_x < solid_tile_end  && self.occlusion.test(solid_tile_x, current_tile.1, pattern.is_opaque) {
-                        //println!("    extend solid tile {solid_tile_x:?}");
-                        solid_tile_x += 1;
-                        position.extend();
-                    }
-
-                    let tiles = if pattern.is_opaque {
-                        &mut output.opaque_tiles
+                    let x_end = if tile.1 == y {
+                        tile.0.min(self.scissor_tiles.max.x as u16)
                     } else {
-                        &mut output.mask_tiles
+                        self.scissor_tiles.max.x as u16
                     };
-                    tiles.push(TileInstance {
-                        position,
-                        backdrop,
-                        first_edge: 0,
-                        edge_count: 0,
-                        path_index,
-                    }.encode());
+
+                    //if tile.1 != current_tile.1 {
+                    //    println!("");
+                    //}
+                    //println!("* new tile {tile:?} (was {current_tile:?}, backdrop: {backdrop:?}");
+                    let tile_last_edge = output.edges.len();
+                    if tile_last_edge != tile_first_edge {
+                        // This limit isn't necessary but it is useful to catch bugs. In practice there should
+                        // never be this many edges in a single tile.
+                        const MAX_EDGES_PER_TILE: usize = 512;
+                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
+
+                        if !self.occlusion.occluded(x, y) {
+                            assert!(x < x_end, "trying to push a mask tile out of bounds at {current_tile:?} scissor: {:?}, event is edge: {:?}", self.scissor_tiles, evt.is_edge());
+                            //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
+                            output.mask_tiles.push(TileInstance {
+                                position: TilePosition::new(x as u32, y as u32),
+                                backdrop,
+                                first_edge: tile_first_edge as u32,
+                                edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
+                                path_index,
+                            }.encode());
+                        }
+
+                        tile_first_edge = tile_last_edge;
+                        x += 1;
+                    }
+
+                    let inside = inverted ^ match fill_rule {
+                        FillRule::EvenOdd => backdrop % 2 != 0,
+                        FillRule::NonZero => backdrop != 0,
+                    };
+
+                    // The dummy tile is the only one expected to be outside the visible
+                    // area. No need to fill solid tiles
+                    if y >= self.scissor_tiles.max.y as u16 {
+                        break;
+                    }
+
+                    // Fill solid tiles if any, up to the new tile or the end of the current row.
+                    while inside && x < x_end {
+                        while x < x_end && !self.occlusion.test(x, y, pattern.is_opaque) {
+                            assert!((x as i32) < self.scissor_tiles.max.x, "A");
+                            //println!("    skip occluded solid tile {solid_tile_x:?}");
+                            x += 1;
+                        }
+
+                        if x < x_end {
+                            //println!("    begin solid tile {solid_tile_x:?}");
+                            let mut position = TilePosition::new(x as u32, y as u32);
+                            x += 1;
+
+                            while x < x_end && self.occlusion.test(x, y, pattern.is_opaque) {
+                                //println!("    extend solid tile {solid_tile_x:?}");
+                                x += 1;
+                                position.extend();
+                            }
+
+                            let tiles = if pattern.is_opaque {
+                                &mut output.opaque_tiles
+                            } else {
+                                &mut output.mask_tiles
+                            };
+                            tiles.push(TileInstance {
+                                position,
+                                backdrop,
+                                first_edge: 0,
+                                edge_count: 0,
+                                path_index,
+                            }.encode());
+                        }
+                    }
+
+                    if tile.1 != y {
+                        // We moved to a new row of tiles.
+                        //println!("");
+                        //println!("   * reset backdrop");
+                        backdrop = 0;
+                    }
+                    current_tile = tile;
                 }
 
-                if tile.1 != current_tile.1 {
-                    // We moved to a new row of tiles.
-                    //println!("");
-                    //println!("   * reset backdrop");
-                    backdrop = 0;
+                if evt.is_edge() {
+                    output.edges.push(unsafe { std::mem::transmute(evt.payload) });
+                } else {
+                    let winding = if evt.payload == 0 { -1 } else { 1 };
+                    backdrop += winding;
+                    //println!("   * backdrop {winding:?} -> {backdrop:?}");
                 }
-                current_tile = tile;
             }
 
-            if evt.is_edge() {
-                output.edges.push(unsafe { std::mem::transmute(evt.payload) });
-            } else {
-                let winding = if evt.payload == 0 { -1 } else { 1 };
-                backdrop += winding;
-                //println!("   * backdrop {winding:?} -> {backdrop:?}");
-            }
         }
     }
 
@@ -716,14 +1176,7 @@ impl Tiler {
         z_index: u32,
         output: &mut TilerOutput,
     ) {
-        // 16 times the the max number of tiles per axis (1023).
-        let max = 16369.0;
-        let min = -1.0;
-
-        self.tile_segment(&LineSegment { from: point(min, min), to: point(max, min) });
-        self.tile_segment(&LineSegment { from: point(max, min), to: point(max, max) });
-        self.tile_segment(&LineSegment { from: point(max, max), to: point(min, max) });
-        self.tile_segment(&LineSegment { from: point(min, max), to: point(min, min) });
+        //println!("fill_surface");
 
         output.paths.push(PathInfo {
             z_index,
@@ -737,6 +1190,18 @@ impl Tiler {
                 self.scissor.max.y as u32,
             ],
         }.encode());
+
+        for array in &mut self.events {
+            array.clear();
+        }
+
+        for y in self.scissor_tiles.min.y..self.scissor_tiles.max.y {
+            let x = self.scissor_tiles.max.x as u16;
+            let y = y as  u16;
+            let events = self.events(y as usize);
+            events.push(Event::backdrop(0, y, true));
+            events.push(Event::backdrop(x, y, false));
+        }
 
         self.generate_tiles(FillRule::EvenOdd, false, pattern, output);
     }
@@ -815,6 +1280,12 @@ impl TilerOutput {
         self.edges.clear();
         self.mask_tiles.clear();
         self.opaque_tiles.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+            && self.mask_tiles.is_empty()
+            && self.opaque_tiles.is_empty()
     }
 }
 
@@ -899,13 +1370,20 @@ fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
 }
 
+#[derive(PartialEq)]
+enum CurveType {
+    None,
+    Line,
+    //Quadratic,
+    Cubic,
+}
+
 pub struct Flattener {
     rem: CubicBezierSegment<f32>,
-    tolerance: f32,
+    sq_tolerance: f32,
     t0: f32,
     split: f32,
-    is_cubic: bool,
-    done: bool,
+    ty: CurveType,
 }
 
 impl Flattener {
@@ -917,41 +1395,57 @@ impl Flattener {
                 ctrl2: point(0.0, 0.0),
                 to: point(0.0, 0.0),
             },
-            tolerance,
+            sq_tolerance: tolerance * tolerance,
             t0: 0.0,
             split: 0.5,
-            is_cubic: true,
-            done: true,
+            ty: CurveType::None,
         }
     }
 
     pub fn set_cubic(&mut self, curve: &CubicBezierSegment<f32>) {
         self.rem = *curve;
         self.split = 0.5;
-        self.is_cubic = true;
-        self.done = false;
+        self.ty = CurveType::Cubic;
     }
 
     pub fn set_quadratic(&mut self, curve: &QuadraticBezierSegment<f32>) {
         // TODO
         self.rem = curve.to_cubic();
-        self.is_cubic = true;
+        self.ty = CurveType::Cubic;
         self.split = 0.5;
-        self.done = false;
+    }
+
+    pub fn set_line(&mut self, to: Point) {
+        self.rem.to = to;
+        self.ty = CurveType::Line;
     }
 
     pub fn flatten(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.is_cubic {
-            return self.flatten_cubic(output);
+        match self.ty {
+            CurveType::Cubic => self.flatten_cubic(output),
+            CurveType::Line => self.flatten_line(output),
+            CurveType::None => false,
         }
+    }
 
-        unimplemented!("TODO quadratic bézier");
+    pub fn flatten_line(&mut self, output: &mut Vec<Point>) -> bool {
+        if self.ty == CurveType::Line {
+            //println!("flatten line");
+            self.ty = CurveType::None;
+            output.push(self.rem.to);
+        }
+        return false;
     }
 
     pub fn flatten_cubic(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.done {
+        if self.ty != CurveType::Cubic {
             return false;
         }
+        //println!("flatten cubic");
+
+        // TODO: is_linear assumes from and to aren't at the same position,
+        // (it returns true in this case regardless of the control points).
+        // If it's the case we should force a split.
 
         let mut cap = output.capacity() - output.len();
         loop {
@@ -959,15 +1453,15 @@ impl Flattener {
                 return true;
             }
 
-            if self.rem.is_linear(self.tolerance) {
+            if is_linear(&self.rem, self.sq_tolerance) {
                 output.push(self.rem.to);
-                self.done = true;
+                self.ty = CurveType::None;
                 return false;
             }
 
             loop {
                 let sub = self.rem.before_split(self.split);
-                if sub.is_linear(self.tolerance) {
+                if is_linear(&sub, self.sq_tolerance) {
                     let t1 = self.t0 + (1.0 - self.t0) * self.split;
                     output.push(sub.to);
                     cap -= 1;
@@ -984,6 +1478,23 @@ impl Flattener {
         }
     }
 }
+
+pub fn is_linear(curve: &CubicBezierSegment<f32>, sq_tolerance: f32) -> bool {
+    let baseline = curve.to - curve.from;
+    let v1 = curve.ctrl1 - curve.from;
+    let v2 = curve.ctrl2 - curve.from;
+    let c1 = baseline.cross(v1);
+    let c2 = baseline.cross(v2);
+    let sqlen = baseline.square_length();
+    let d1 = c1 * c1;
+    let d2 = c2 * c2;
+
+    let f2 = 0.5625; // (4/3)^2
+    let threshold = sq_tolerance * sqlen;
+
+    d1 * f2 <= threshold && d2 * f2 <= threshold
+}
+
 
 fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
