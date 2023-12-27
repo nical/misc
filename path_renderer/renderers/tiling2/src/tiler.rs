@@ -29,6 +29,7 @@ struct TileInfo {
 
 pub struct Tiler {
     events: Vec<Vec<Event>>,
+    point_buffer: Vec<Point>,
     tolerance: f32,
     current_tile: (u16, u16),
     current_tile_is_occluded: bool,
@@ -58,6 +59,8 @@ impl Tiler {
             tolerance: 0.25,
             current_tile: (0, 0),
             current_tile_is_occluded: false,
+            point_buffer: Vec::with_capacity(512),
+
             viewport: SurfaceRect {
                 min: point(0.0, 0.0),
                 max: point(0.0, 0.0),
@@ -176,7 +179,7 @@ impl Tiler {
         let mut from = point(0.0, 0.0);
         let square_tolerance = self.tolerance * self.tolerance;
 
-        let mut point_buffer = Vec::with_capacity(512);
+        self.point_buffer.clear();
         let mut flattener = Flattener::new(self.tolerance);
         let mut force_flush = false;
         let mut skipped = None;
@@ -185,7 +188,7 @@ impl Tiler {
             match evt {
                 PathEvent::Begin { at } => {
                     //println!("# begin {at:?}");
-                    point_buffer.push(transform.transform_point(at));
+                    self.point_buffer.push(transform.transform_point(at));
                     from = at;
                 }
                 PathEvent::End { first, .. } => {
@@ -270,24 +273,28 @@ impl Tiler {
             if !flattener.is_done() {
                 if let Some(pos) = skipped {
                     //println!("push {pos:?} after skipped segment(s)");
-                    point_buffer.push(transform.transform_point(pos));
+                    self.point_buffer.push(transform.transform_point(pos));
                     skipped = None;
                 }
             }
 
-            while flattener.flatten(&mut point_buffer) || force_flush || point_buffer.capacity() - point_buffer.len() == 0 {
-                self.flush(&mut point_buffer, occlusion, force_flush);
+            while flattener.flatten(&mut self.point_buffer) || force_flush || self.point_buffer.capacity() - self.point_buffer.len() == 0 {
+                self.flush(occlusion, force_flush);
                 force_flush = false;
             }
         }
     }
 
-    fn flush(&mut self, point_buffer: &mut Vec<Point>, occlusion: &mut OcclusionBuffer, is_last: bool) {
+    fn flush(&mut self, occlusion: &mut OcclusionBuffer, is_last: bool) {
         profiling::scope!("Tiler::flush");
 
-        if point_buffer.len() < 2 {
+        if self.point_buffer.len() < 2 {
             return;
         }
+
+        // borrowck dance.
+        let mut point_buffer = std::mem::take(&mut self.point_buffer);
+
         //println!("flush {point_buffer:?}");
         let mut iter = point_buffer.iter();
         let mut from = *iter.next().unwrap();
@@ -305,6 +312,8 @@ impl Tiler {
         if !is_last {
             point_buffer.push(from);
         }
+
+        self.point_buffer = point_buffer;
     }
 
     fn tile_segment(&mut self, edge: &LineSegment<f32>) {
