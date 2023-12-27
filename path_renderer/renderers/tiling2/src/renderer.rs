@@ -13,7 +13,7 @@ use core::{
 };
 use std::ops::Range;
 
-use crate::{TileGpuResources, tiler::{Tiler, FillOptions, TilerOutput, EncodedPathInfo}};
+use crate::{TileGpuResources, FillOptions, tiler::{Tiler, TilerOutput, EncodedPathInfo}};
 
 struct BatchInfo {
     surface: SurfacePassConfig,
@@ -76,13 +76,7 @@ impl TileRenderer {
             resources: resources,
             tolerance: 0.25,
             tiler: Tiler::new(),
-            tiles: TilerOutput {
-                paths: Vec::new(),
-                edges: Vec::new(),
-                mask_tiles: Vec::new(),
-                opaque_tiles: Vec::new(),
-            },
-
+            tiles: TilerOutput::new(),
             batches: BatchList::new(renderer_id),
             opaque_pipeline: res.opaque_pipeline,
             masked_pipeline: res.masked_pipeline,
@@ -95,8 +89,10 @@ impl TileRenderer {
     }
 
     pub fn begin_frame(&mut self, ctx: &Context) {
+        let size = ctx.surface.size();
         self.batches.clear();
         self.tiler.begin_target(SurfaceIntRect::from_size(ctx.surface.size()));
+        self.tiles.occlusion.init(size.width as u32, size.height as u32);
         self.tiles.clear();
         self.instances = None;
     }

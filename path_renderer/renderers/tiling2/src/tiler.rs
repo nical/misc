@@ -4,10 +4,11 @@ use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, 
 use core::{pattern::BuiltPattern, units::point};
 
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment, Box2D};
-use lyon::lyon_tessellation::FillRule;
 use lyon::{path::PathEvent, geom::euclid::Transform2D};
 
-pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
+use crate::flatten::Flattener;
+use crate::{FillOptions, FillRule, Transform, TilePosition};
+use crate::occlusion::OcclusionBuffer;
 
 const TILE_SIZE_F32: f32 = 16.0;
 const TILE_SIZE: i32 = 16;
@@ -16,78 +17,6 @@ const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
 const LOCAL_COORD_MASK: i32 = 255;
 const LOCAL_COORD_BITS: i32 = 8;
 const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
-
-pub struct FillOptions<'l> {
-    pub fill_rule: FillRule,
-    pub inverted: bool,
-    pub z_index: u32,
-    pub tolerance: f32,
-    pub transform: Option<&'l Transform>,
-    pub opacity: f32,
-}
-
-impl<'l> FillOptions<'l> {
-    pub fn new() -> FillOptions<'static> {
-        FillOptions {
-            fill_rule: FillRule::EvenOdd,
-            inverted: false,
-            z_index: 0,
-            tolerance: 0.25,
-            transform: None,
-            opacity: 1.0,
-        }
-    }
-
-    pub fn transformed<'a>(transform: &'a Transform) -> FillOptions<'a> {
-        FillOptions {
-            fill_rule: FillRule::EvenOdd,
-            inverted: false,
-            z_index: 0,
-            tolerance: 0.25,
-            transform: Some(transform),
-            opacity: 1.0,
-        }
-    }
-
-    pub fn with_transform<'a>(self, transform: Option<&'a Transform>) -> FillOptions<'a>
-    where
-        'l: 'a,
-    {
-        FillOptions {
-            fill_rule: self.fill_rule,
-            inverted: false,
-            z_index: self.z_index,
-            tolerance: self.tolerance,
-            transform,
-            opacity: self.opacity,
-        }
-    }
-
-    pub fn with_fill_rule(mut self, fill_rule: FillRule) -> Self {
-        self.fill_rule = fill_rule;
-        self
-    }
-
-    pub fn with_tolerance(mut self, tolerance: f32) -> Self {
-        self.tolerance = tolerance;
-        self
-    }
-
-    pub fn with_inverted(mut self, inverted: bool) -> Self {
-        self.inverted = inverted;
-        self
-    }
-
-    pub fn with_z_index(mut self, z_index: u32) -> Self {
-        self.z_index = z_index;
-        self
-    }
-
-    pub fn with_opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity;
-        self
-    }
-}
 
 #[derive(Copy, Clone)]
 struct TileInfo {
@@ -110,11 +39,10 @@ pub struct Tiler {
     // tile_segment2
     prev_tile: Option<TileInfo>,
 
-    // tile_segment3
+    // tile_segment
     prev_tx: i32,
     prev_ty: i32,
 
-    occlusion: OcclusionBuffer,
     //pub dbg: rerun::RecordingStream,
 }
 
@@ -145,7 +73,6 @@ impl Tiler {
             prev_tile: None,
             prev_tx: -1,
             prev_ty: -1,
-            occlusion: OcclusionBuffer::new(0, 0),
             //dbg: rerun::RecordingStreamBuilder::new("tiler2").spawn().unwrap(),
         }
     }
@@ -162,8 +89,6 @@ impl Tiler {
         viewport.max.y = viewport.max.y.max(0);
         self.viewport = viewport.cast();
         self.set_scissor_srect(viewport);
-
-        self.occlusion.init(self.scissor_tiles.max.x as u32, self.scissor_tiles.max.y as u32);
     }
 
     pub fn set_scissor_srect(&mut self, i32_scissor: SurfaceIntRect) {
@@ -199,7 +124,7 @@ impl Tiler {
         let identity = Transform2D::identity();
         let transform = options.transform.unwrap_or(&identity);
 
-        self.tile_path2(path, transform);
+        self.tile_path(path, transform, &mut output.occlusion);
 
         let mut encoded_fill_rule = match options.fill_rule {
             FillRule::EvenOdd => 0,
@@ -225,17 +150,20 @@ impl Tiler {
         self.generate_tiles(options.fill_rule, options.inverted, pattern, output);
     }
 
-    // Similar to tile_path, except that it flattens curves into a buffer before
+    // Similar to tile_path_nested, except that it flattens curves into a buffer before
     // processing the line segments in bulk, instead of nesting the binning into
     // the flattening loop.
     // In its current states it doesn not appear to improve performance althogh
     // it makes profiles a bit easier to read.
-    fn tile_path2(
+    fn tile_path(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: &Transform,
+        occlusion: &mut OcclusionBuffer,
     ) {
         //println!("\n\n--------");
+        profiling::scope!("Tiler::tile_path");
+
         let transform: &lyon::geom::Transform<f32> = unsafe {
             std::mem::transmute(transform)
         };
@@ -262,7 +190,6 @@ impl Tiler {
                 }
                 PathEvent::End { first, .. } => {
                     //println!("# end first={first:?}");
-
                     flattener.set_line(transform.transform_point(first));
                     force_flush = true;
                 }
@@ -340,7 +267,7 @@ impl Tiler {
             }
 
 
-            if flattener.ty != CurveType::None {
+            if !flattener.is_done() {
                 if let Some(pos) = skipped {
                     //println!("push {pos:?} after skipped segment(s)");
                     point_buffer.push(transform.transform_point(pos));
@@ -349,16 +276,15 @@ impl Tiler {
             }
 
             while flattener.flatten(&mut point_buffer) || force_flush || point_buffer.capacity() - point_buffer.len() == 0 {
-                self.flush(&mut point_buffer, force_flush);
+                self.flush(&mut point_buffer, occlusion, force_flush);
                 force_flush = false;
             }
         }
-
-        // TODO: probably don't need this since we always flush at the end of a sub-path.
-        //self.flush(&mut point_buffer, true);
     }
 
-    fn flush(&mut self, point_buffer: &mut Vec<Point>, is_last: bool) {
+    fn flush(&mut self, point_buffer: &mut Vec<Point>, occlusion: &mut OcclusionBuffer, is_last: bool) {
+        profiling::scope!("Tiler::flush");
+
         if point_buffer.len() < 2 {
             return;
         }
@@ -371,7 +297,7 @@ impl Tiler {
         self.prev_ty = ty;
 
         for to in iter {
-            self.tile_segment3(&LineSegment { from, to: *to });
+            self.tile_segment(&LineSegment { from, to: *to });
             from = *to;
         }
 
@@ -381,10 +307,175 @@ impl Tiler {
         }
     }
 
-    fn tile_path(
+    fn tile_segment(&mut self, edge: &LineSegment<f32>) {
+        // Leave some margin around this early scissor test so that
+        // we keep track of the previous tile near the boundary of the
+        // scissor rect.
+        let min_y = edge.to.y.min(edge.from.y);
+        let max_y = edge.to.y.max(edge.from.y);
+        let min_x = edge.to.x.min(edge.from.x);
+        if min_y > self.scissor.max.y + 1.0
+            || max_y < self.scissor.min.y - 1.0
+            || min_x > self.scissor.max.x + 1.0
+        {
+            return;
+        }
+
+        let from_i32_x = (edge.from.x * COORD_SCALE) as i32;
+        let from_i32_y = (edge.from.y * COORD_SCALE) as i32;
+        let to_i32_x = (edge.to.x * COORD_SCALE) as i32;
+        let to_i32_y = (edge.to.y * COORD_SCALE) as i32;
+        let src_tx = (from_i32_x >> LOCAL_COORD_BITS);
+        let src_ty = (from_i32_y >> LOCAL_COORD_BITS);
+        let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
+        let dst_ty = (to_i32_y >> LOCAL_COORD_BITS);
+        let scissor_min_tx = self.scissor_tiles.min.x;
+        let scissor_min_ty = self.scissor_tiles.min.y;
+        let scissor_max_tx = self.scissor_tiles.max.x - 1;
+        let scissor_max_ty = self.scissor_tiles.max.y - 1;
+
+        let dx = edge.to.x - edge.from.x;
+        let dy = edge.to.y - edge.from.y;
+        let dx_dy = dx/dy;
+        let dy_dx = 1.0 / dx_dy;
+
+        let x_step = (dst_tx - src_tx).signum();
+        let y_step = (dst_ty - src_ty).signum();
+        let h_tile_side = x_step.max(0);
+        let v_tile_side = y_step.max(0);
+
+        let mut v_x0 = edge.from.x;
+        let mut v_y0 = edge.from.y;
+
+        //println!("\ntile_segment {edge:?}, tiles {src_tx} {src_ty} -> {dst_tx} {dst_ty}, step {x_step} {y_step}");
+
+        // x and y index of the current tile.
+        let mut tx = src_tx;
+        let mut ty = src_ty;
+        loop {
+            let v_y1;
+            let v_x1;
+            let h_dst_tx;
+            if ty == dst_ty {
+                v_y1 = edge.to.y;
+                v_x1 = edge.to.x;
+                h_dst_tx = dst_tx;
+            } else {
+                v_y1 = (ty + v_tile_side) as f32 * TILE_SIZE_F32;
+                v_x1 = v_x0 + dx_dy * (v_y1 - v_y0);
+                h_dst_tx = if x_step == 0 {
+                    dst_tx
+                } else {
+                    (v_x1 * COORD_SCALE) as i32 >> LOCAL_COORD_BITS
+                };
+            }
+
+            let row_occluded = ty < self.scissor_tiles.min.y || ty >= self.scissor_tiles.max.y;
+
+            // When moving to a different row of tiles, add backdrop events.
+            // Note: this relies not only on the input and locals of this function,
+            // but also on the assumption that we correctly keep track of self.prev_ty
+            // inside and outside of this function.
+            if ty != self.prev_ty {
+                let positive = ty > self.prev_ty;
+                let row = ty + (!positive) as i32;
+                if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y {
+                    //println!("    - backdrop {} {row}, positive:{positive}", (tx + 1).max(0));
+                    self.events(row as usize).push(Event::backdrop((tx + 1).max(0) as u16, row as u16, positive));
+                }
+                self.prev_ty = ty;
+            }
+
+            let mut h_x0 = v_x0;
+            let mut h_y0 = v_y0;
+            //println!(" - row {ty}, sub ({v_x0} {v_y0}) -> ({v_x1} {v_y1}), tiles x {tx} {h_dst_tx}");
+
+            let mut events = &mut self.events[ty as usize % EVENT_BUCKETS];
+
+            loop {
+                let h_x1;
+                let h_y1;
+                if tx == h_dst_tx {
+                    h_x1 = v_x1;
+                    h_y1 = v_y1;
+                } else {
+                    debug_assert!(x_step != 0, "tx {tx}, h_dst_tx {h_dst_tx}, src_tx {src_tx} dst_tx {dst_tx}, segment {edge:?}");
+                    h_x1 = (tx + h_tile_side) as f32 * TILE_SIZE_F32;
+                    h_y1 = v_y0 + dy_dx * (h_x1 - v_x0);
+                }
+
+                let occluded = row_occluded || tx < self.scissor_tiles.min.x || tx >= self.scissor_tiles.max.x;
+
+                if !row_occluded {
+                    let offset_y = (ty * UNITS_PER_TILE) as f32;
+                    let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
+
+                    if tx >= self.scissor_tiles.min.x {
+                        let offset_x = (tx * UNITS_PER_TILE) as f32;
+                        let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
+                        let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
+                        let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;
+
+                        if !occluded {
+                            assert!(tx < self.scissor_tiles.max.x);
+                            //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
+                            events.push(Event::edge(
+                                tx as u16, ty as u16,
+                                [local_x0, local_y0, local_x1, local_y1]
+                            ));
+                        }
+                    }
+
+                    // Add an auxiliary edge when crossing a vertical boundary (tile x
+                    // coordinate changes).
+                    if tx != self.prev_tx {
+                        // Note, if the edge is going in the ngative x orientation, then
+                        // we are actually adding an auxiliary edge to the previous tile
+                        // rather than the current one.
+                        let aux_tx = tx.max(self.prev_tx);
+                        let occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
+
+                        if !occluded {
+                            let (y0, y1) = if tx < self.prev_tx {
+                                (local_y0, 255)
+                            } else {
+                                (255, local_y0)
+                            };
+                            //println!("   - auxiliary edge tile {aux_tx} {ty}, y-range {y0} {y1}");
+                            assert!(aux_tx < self.scissor_tiles.max.x);
+                            events.push(Event::edge(
+                                aux_tx as u16, ty as u16,
+                                [0, y0, 0, y1]
+                            ));
+                        }
+                    }
+                }
+
+                self.prev_tx = tx;
+
+                if tx == h_dst_tx {
+                    break;
+                }
+                h_x0 = h_x1;
+                h_y0 = h_y1;
+                tx += x_step;
+            }
+
+            v_x0 = v_x1;
+            v_y0 = v_y1;
+            if ty == dst_ty {
+                break;
+            }
+            ty += y_step;
+        }
+    }
+
+
+    fn tile_path_nested(
         &mut self,
         path: impl Iterator<Item = PathEvent>,
         transform: &Transform,
+        occlusion: &mut OcclusionBuffer,
     ) {
         //println!("\n\n-------");
         profiling::scope!("Tiler::tile_path");
@@ -407,7 +498,7 @@ impl Tiler {
                 }
                 PathEvent::End { first, .. } => {
                     let segment = LineSegment { from, to: first }.transformed(transform);
-                    self.tile_segment(&segment);
+                    self.tile_segment_dda(&segment, occlusion);
                     from = first;
                 }
                 PathEvent::Line { to, .. } => {
@@ -415,7 +506,7 @@ impl Tiler {
                     if segment.to_vector().square_length() < square_tolerance {
                         continue;
                     }
-                    self.tile_segment(&segment);
+                    self.tile_segment_dda(&segment, occlusion);
                     from = to;
                 }
                 PathEvent::Quadratic { ctrl, to, .. } => {
@@ -426,9 +517,9 @@ impl Tiler {
                             continue;
                         }
                     }
-                    flatten_quad(&segment, self.tolerance, &mut |segment| {
+                    crate::flatten::flatten_quad(&segment, self.tolerance, &mut |segment| {
                         // segment.for_each_flattened(self.draw.tolerance, &mut|segment| {
-                        self.tile_segment(segment);
+                        self.tile_segment_dda(segment, occlusion);
                     });
                     from = to;
                 }
@@ -450,8 +541,8 @@ impl Tiler {
                             continue;
                         }
                     }
-                    flatten_cubic(&segment, self.tolerance, &mut |segment| {
-                        self.tile_segment(segment);
+                    crate::flatten::flatten_cubic(&segment, self.tolerance, &mut |segment| {
+                        self.tile_segment_dda(segment, occlusion);
                     });
                     from = to;
                 }
@@ -459,7 +550,7 @@ impl Tiler {
         }
     }
 
-    fn tile_segment(&mut self, segment: &LineSegment<f32>) {
+    fn tile_segment_dda(&mut self, segment: &LineSegment<f32>, occlusion: &mut OcclusionBuffer) {
         //println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
         // Cull above and below the viewport
         let min_y = segment.from.y.min(segment.to.y);
@@ -533,7 +624,7 @@ impl Tiler {
             if local_x1_u8 != 0 && local_y1_u8 != 0 {
                 let tile = (src_tx as u16, src_ty as u16);
                 if tile != self.current_tile {
-                    self.current_tile_is_occluded = self.occlusion.occluded(tile.0, tile.1);
+                    self.current_tile_is_occluded = occlusion.occluded(tile.0, tile.1);
                     self.current_tile = tile;
                 }
 
@@ -623,7 +714,7 @@ impl Tiler {
                     let tile_y = ty as u16;
 
                     if (tile_x, tile_y) != self.current_tile {
-                        self.current_tile_is_occluded = self.occlusion.occluded(tile_x, tile_y);
+                        self.current_tile_is_occluded = occlusion.occluded(tile_x, tile_y);
                         self.current_tile = (tile_x, tile_y);
                     }
 
@@ -676,171 +767,8 @@ impl Tiler {
         (tx, ty)
     }
 
-    fn tile_segment3(&mut self, edge: &LineSegment<f32>) {
-        // Leave some margin around this early scissor test so that
-        // we keep track of the previous tile near the boundary of the
-        // scissor rect.
-        let min_y = edge.to.y.min(edge.from.y);
-        let max_y = edge.to.y.max(edge.from.y);
-        let min_x = edge.to.x.min(edge.from.x);
-        if min_y > self.scissor.max.y + 1.0
-            || max_y < self.scissor.min.y - 1.0
-            || min_x > self.scissor.max.x + 1.0
-        {
-            return;
-        }
-
-        let from_i32_x = (edge.from.x * COORD_SCALE) as i32;
-        let from_i32_y = (edge.from.y * COORD_SCALE) as i32;
-        let to_i32_x = (edge.to.x * COORD_SCALE) as i32;
-        let to_i32_y = (edge.to.y * COORD_SCALE) as i32;
-        let src_tx = (from_i32_x >> LOCAL_COORD_BITS);
-        let src_ty = (from_i32_y >> LOCAL_COORD_BITS);
-        let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
-        let dst_ty = (to_i32_y >> LOCAL_COORD_BITS);
-        let scissor_min_tx = self.scissor_tiles.min.x;
-        let scissor_min_ty = self.scissor_tiles.min.y;
-        let scissor_max_tx = self.scissor_tiles.max.x - 1;
-        let scissor_max_ty = self.scissor_tiles.max.y - 1;
-
-        let dx = edge.to.x - edge.from.x;
-        let dy = edge.to.y - edge.from.y;
-        let dx_dy = dx/dy;
-        let dy_dx = 1.0 / dx_dy;
-
-        let x_step = (dst_tx - src_tx).signum();
-        let y_step = (dst_ty - src_ty).signum();
-        let h_tile_side = x_step.max(0);
-        let v_tile_side = y_step.max(0);
-
-        let mut v_x0 = edge.from.x;
-        let mut v_y0 = edge.from.y;
-
-        //println!("\ntile_segment {edge:?}, tiles {src_tx} {src_ty} -> {dst_tx} {dst_ty}, step {x_step} {y_step}");
-
-        // x and y index of the current tile.
-        let mut tx = src_tx;
-        let mut ty = src_ty;
-        loop {
-            let v_y1;
-            let v_x1;
-            let h_dst_tx;
-            if ty == dst_ty {
-                v_y1 = edge.to.y;
-                v_x1 = edge.to.x;
-                h_dst_tx = dst_tx;
-            } else {
-                v_y1 = (ty + v_tile_side) as f32 * TILE_SIZE_F32;
-                v_x1 = v_x0 + dx_dy * (v_y1 - v_y0);
-                h_dst_tx = if x_step == 0 {
-                    dst_tx
-                } else {
-                    (v_x1 * COORD_SCALE) as i32 >> LOCAL_COORD_BITS
-                };
-            }
-
-            let row_occluded = ty < self.scissor_tiles.min.y || ty >= self.scissor_tiles.max.y;
-
-            // When moving to a different row of tiles, add backdrop events.
-            // Note: this rely not only on the input and locals of this function,
-            // but also on the assumption that we correctly keep track of self.prev_ty
-            // inside and outside of this function.
-            if ty != self.prev_ty {
-                let positive = ty > self.prev_ty;
-                let row = ty + (!positive) as i32;
-                if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y {
-                    //println!("    - backdrop {} {row}, positive:{positive}", (tx + 1).max(0));
-                    self.events(row as usize).push(Event::backdrop((tx + 1).max(0) as u16, row as u16, positive));
-                }
-                self.prev_ty = ty;
-            }
-
-            let mut h_x0 = v_x0;
-            let mut h_y0 = v_y0;
-            //println!(" - row {ty}, sub ({v_x0} {v_y0}) -> ({v_x1} {v_y1}), tiles x {tx} {h_dst_tx}");
-
-            let mut events = &mut self.events[ty as usize % EVENT_BUCKETS];
-
-            loop {
-                let h_x1;
-                let h_y1;
-                if tx == h_dst_tx {
-                    h_x1 = v_x1;
-                    h_y1 = v_y1;
-                } else {
-                    assert!(x_step != 0, "tx {tx}, h_dst_tx {h_dst_tx}, src_tx {src_tx} dst_tx {dst_tx}, segment {edge:?}");
-                    h_x1 = (tx + h_tile_side) as f32 * TILE_SIZE_F32;
-                    h_y1 = v_y0 + dy_dx * (h_x1 - v_x0);
-                }
-
-                let occluded = row_occluded || tx < self.scissor_tiles.min.x || tx >= self.scissor_tiles.max.x;
-
-                if !row_occluded {
-                    let offset_y = (ty * UNITS_PER_TILE) as f32;
-                    let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
-
-                    if tx >= self.scissor_tiles.min.x {
-                        let offset_x = (tx * UNITS_PER_TILE) as f32;
-                        let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
-                        let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
-                        let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;
-
-                        if !occluded {
-                            assert!(tx < self.scissor_tiles.max.x);
-                            //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
-                            events.push(Event::edge(
-                                tx as u16, ty as u16,
-                                [local_x0, local_y0, local_x1, local_y1]
-                            ));
-                        }
-                    }
-
-                    // Add an auxiliary edge when crossing a vertical boundary (tile x
-                    // coordinate changes).
-                    if tx != self.prev_tx {
-                        // Note, if the edge is going in the ngative x orientation, then
-                        // we are actually adding an auxiliary edge to the previous tile
-                        // rather than the current one.
-                        let aux_tx = tx.max(self.prev_tx);
-                        let occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
-
-                        if !occluded {
-                            let (y0, y1) = if tx < self.prev_tx {
-                                (local_y0, 255)
-                            } else {
-                                (255, local_y0)
-                            };
-                            //println!("   - auxiliary edge tile {aux_tx} {ty}, y-range {y0} {y1}");
-                            assert!(aux_tx < self.scissor_tiles.max.x);
-                            events.push(Event::edge(
-                                aux_tx as u16, ty as u16,
-                                [0, y0, 0, y1]
-                            ));
-                        }
-                    }
-                }
-
-                self.prev_tx = tx;
-
-                if tx == h_dst_tx {
-                    break;
-                }
-                h_x0 = h_x1;
-                h_y0 = h_y1;
-                tx += x_step;
-            }
-
-            v_x0 = v_x1;
-            v_y0 = v_y1;
-            if ty == dst_ty {
-                break;
-            }
-            ty += y_step;
-        }
-    }
-
     /*
-    fn tile_segment2(&mut self, segment: &LineSegment<f32>) {
+    fn tile_segment_dda2(&mut self, segment: &LineSegment<f32>) {
         //println!("\nbin {segment:?} ({:?})", segment.to_vector() / TILE_SIZE_F32);
         // Cull above and below the viewport
         let min_y = segment.from.y.min(segment.to.y);
@@ -1087,7 +1015,7 @@ impl Tiler {
                         const MAX_EDGES_PER_TILE: usize = 512;
                         debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
 
-                        if !self.occlusion.occluded(x, y) {
+                        if !output.occlusion.occluded(x, y) {
                             assert!(x < x_end, "trying to push a mask tile out of bounds at {current_tile:?} scissor: {:?}, event is edge: {:?}", self.scissor_tiles, evt.is_edge());
                             //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                             output.mask_tiles.push(TileInstance {
@@ -1116,7 +1044,7 @@ impl Tiler {
 
                     // Fill solid tiles if any, up to the new tile or the end of the current row.
                     while inside && x < x_end {
-                        while x < x_end && !self.occlusion.test(x, y, pattern.is_opaque) {
+                        while x < x_end && !output.occlusion.test(x, y, pattern.is_opaque) {
                             assert!((x as i32) < self.scissor_tiles.max.x, "A");
                             //println!("    skip occluded solid tile {solid_tile_x:?}");
                             x += 1;
@@ -1127,7 +1055,7 @@ impl Tiler {
                             let mut position = TilePosition::new(x as u32, y as u32);
                             x += 1;
 
-                            while x < x_end && self.occlusion.test(x, y, pattern.is_opaque) {
+                            while x < x_end && output.occlusion.test(x, y, pattern.is_opaque) {
                                 //println!("    extend solid tile {solid_tile_x:?}");
                                 x += 1;
                                 position.extend();
@@ -1263,6 +1191,7 @@ pub struct TilerOutput {
     pub edges: Vec<EncodedEdge>,
     pub mask_tiles: Vec<EncodedTileInstance>,
     pub opaque_tiles: Vec<EncodedTileInstance>,
+    pub occlusion: OcclusionBuffer,
 }
 
 impl TilerOutput {
@@ -1272,6 +1201,7 @@ impl TilerOutput {
             edges: Vec::new(),
             mask_tiles: Vec::new(),
             opaque_tiles: Vec::new(),
+            occlusion: OcclusionBuffer::disabled(),
         }
     }
 
@@ -1369,276 +1299,6 @@ impl PathInfo {
 fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
 }
-
-#[derive(PartialEq)]
-enum CurveType {
-    None,
-    Line,
-    //Quadratic,
-    Cubic,
-}
-
-pub struct Flattener {
-    rem: CubicBezierSegment<f32>,
-    sq_tolerance: f32,
-    t0: f32,
-    split: f32,
-    ty: CurveType,
-}
-
-impl Flattener {
-    pub fn new(tolerance: f32) -> Self {
-        Flattener {
-            rem: CubicBezierSegment {
-                from: point(0.0, 0.0),
-                ctrl1: point(0.0, 0.0),
-                ctrl2: point(0.0, 0.0),
-                to: point(0.0, 0.0),
-            },
-            sq_tolerance: tolerance * tolerance,
-            t0: 0.0,
-            split: 0.5,
-            ty: CurveType::None,
-        }
-    }
-
-    pub fn set_cubic(&mut self, curve: &CubicBezierSegment<f32>) {
-        self.rem = *curve;
-        self.split = 0.5;
-        self.ty = CurveType::Cubic;
-    }
-
-    pub fn set_quadratic(&mut self, curve: &QuadraticBezierSegment<f32>) {
-        // TODO
-        self.rem = curve.to_cubic();
-        self.ty = CurveType::Cubic;
-        self.split = 0.5;
-    }
-
-    pub fn set_line(&mut self, to: Point) {
-        self.rem.to = to;
-        self.ty = CurveType::Line;
-    }
-
-    pub fn flatten(&mut self, output: &mut Vec<Point>) -> bool {
-        match self.ty {
-            CurveType::Cubic => self.flatten_cubic(output),
-            CurveType::Line => self.flatten_line(output),
-            CurveType::None => false,
-        }
-    }
-
-    pub fn flatten_line(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.ty == CurveType::Line {
-            //println!("flatten line");
-            self.ty = CurveType::None;
-            output.push(self.rem.to);
-        }
-        return false;
-    }
-
-    pub fn flatten_cubic(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.ty != CurveType::Cubic {
-            return false;
-        }
-        //println!("flatten cubic");
-
-        // TODO: is_linear assumes from and to aren't at the same position,
-        // (it returns true in this case regardless of the control points).
-        // If it's the case we should force a split.
-
-        let mut cap = output.capacity() - output.len();
-        loop {
-            if cap == 0 {
-                return true;
-            }
-
-            if is_linear(&self.rem, self.sq_tolerance) {
-                output.push(self.rem.to);
-                self.ty = CurveType::None;
-                return false;
-            }
-
-            loop {
-                let sub = self.rem.before_split(self.split);
-                if is_linear(&sub, self.sq_tolerance) {
-                    let t1 = self.t0 + (1.0 - self.t0) * self.split;
-                    output.push(sub.to);
-                    cap -= 1;
-                    self.t0 = t1;
-                    self.rem = self.rem.after_split(self.split);
-                    let next_split = self.split * 2.0;
-                    if next_split < 1.0 {
-                        self.split = next_split;
-                    }
-                    break;
-                }
-                self.split *= 0.5;
-            }
-        }
-    }
-}
-
-pub fn is_linear(curve: &CubicBezierSegment<f32>, sq_tolerance: f32) -> bool {
-    let baseline = curve.to - curve.from;
-    let v1 = curve.ctrl1 - curve.from;
-    let v2 = curve.ctrl2 - curve.from;
-    let c1 = baseline.cross(v1);
-    let c2 = baseline.cross(v2);
-    let sqlen = baseline.square_length();
-    let d1 = c1 * c1;
-    let d2 = c2 * c2;
-
-    let f2 = 0.5625; // (4/3)^2
-    let threshold = sq_tolerance * sqlen;
-
-    d1 * f2 <= threshold && d2 * f2 <= threshold
-}
-
-
-fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
-where
-    F: FnMut(&LineSegment<f32>),
-{
-    let mut rem = *curve;
-    let mut from = rem.from;
-    let mut t0 = 0.0;
-
-    let mut split = 0.5;
-    loop {
-        if rem.is_linear(tolerance) {
-            callback(&LineSegment { from, to: rem.to });
-            return;
-        }
-
-        loop {
-            let sub = rem.before_split(split);
-            if sub.is_linear(tolerance) {
-                let t1 = t0 + (1.0 - t0) * split;
-                callback(&LineSegment { from, to: sub.to });
-                from = sub.to;
-                t0 = t1;
-                rem = rem.after_split(split);
-                let next_split = split * 2.0;
-                if next_split < 1.0 {
-                    split = next_split;
-                }
-                break;
-            }
-            split *= 0.5;
-        }
-    }
-}
-
-pub fn flatten_quad<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
-where
-    F: FnMut(&LineSegment<f32>),
-{
-    let mut rem = *curve;
-    let mut from = rem.from;
-    let mut t0 = 0.0;
-
-    let mut split = 0.5;
-    loop {
-        if rem.is_linear(tolerance) {
-            callback(&LineSegment { from, to: rem.to });
-            return;
-        }
-
-        loop {
-            let sub = rem.before_split(split);
-            if sub.is_linear(tolerance) {
-                let t1 = t0 + (1.0 - t0) * split;
-                callback(&LineSegment { from, to: sub.to });
-                from = sub.to;
-                t0 = t1;
-                rem = rem.after_split(split);
-                let next_split = split * 2.0;
-                if next_split < 1.0 {
-                    split = next_split;
-                }
-                break;
-            }
-            split *= 0.5;
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TilePosition(u32);
-
-impl TilePosition {
-    const MASK: u32 = 0x3FF;
-    pub const ZERO: Self = TilePosition(0);
-    pub const INVALID: Self = TilePosition(std::u32::MAX);
-
-    pub fn extended(x: u32, y: u32, extend: u32) -> Self {
-        debug_assert!(x <= Self::MASK);
-        debug_assert!(y <= Self::MASK);
-        debug_assert!(extend <= Self::MASK);
-
-        TilePosition(extend << 20 | x << 10 | y)
-    }
-
-    pub fn new(x: u32, y: u32) -> Self {
-        debug_assert!(x <= Self::MASK);
-        debug_assert!(y <= Self::MASK);
-
-        TilePosition(x << 10 | y)
-    }
-
-    pub fn extend(&mut self) {
-        self.0 += 1 << 20;
-    }
-
-    pub fn with_flag(mut self) -> Self {
-        self.add_flag();
-        self
-    }
-    pub fn to_u32(&self) -> u32 {
-        self.0
-    }
-    pub fn x(&self) -> u32 {
-        (self.0 >> 10) & Self::MASK
-    }
-    pub fn y(&self) -> u32 {
-        (self.0) & Self::MASK
-    }
-    pub fn extension(&self) -> u32 {
-        (self.0 >> 20) & Self::MASK
-    }
-
-    // TODO: we have two unused bits and we use one of them to store
-    // whether a tile in an indirection buffer is opaque. That's not
-    // great.
-    pub fn flag(&self) -> bool {
-        self.0 & 1 << 31 != 0
-    }
-    pub fn add_flag(&mut self) {
-        self.0 |= 1 << 31
-    }
-}
-
-#[test]
-fn tile_position() {
-    let mut p0 = TilePosition::new(1, 2);
-    assert_eq!(p0.x(), 1);
-    assert_eq!(p0.y(), 2);
-    assert_eq!(p0.extension(), 0);
-
-    p0.extend();
-
-    assert_eq!(p0.x(), 1);
-    assert_eq!(p0.y(), 2);
-    assert_eq!(p0.extension(), 1);
-
-    p0.extend();
-
-    assert_eq!(p0.x(), 1);
-    assert_eq!(p0.y(), 2);
-    assert_eq!(p0.extension(), 2);
-}
-
 #[test]
 fn tiler2_svg() {
     use core::path::Builder;
@@ -1677,13 +1337,7 @@ fn tiler2_svg() {
         favor_prerendering: false,
     };
 
-    let mut output = TilerOutput {
-        paths: Vec::new(),
-        edges: Vec::new(),
-        mask_tiles: Vec::new(),
-        //solid_tiles: Vec::new(),
-        opaque_tiles: Vec::new(),
-    };
+    let mut output = TilerOutput::new();
 
     tiler.fill_path(path.iter(), &options, &pattern, &mut output);
 
@@ -1735,89 +1389,3 @@ fn tiler2_svg() {
     //tiler.dbg.flush_blocking();
 }
 
-pub struct OcclusionBuffer {
-    data: Vec<u8>,
-    width: usize,
-    height: u32,
-}
-
-impl OcclusionBuffer {
-    pub fn new(w: u32, h: u32) -> Self {
-        let mut m = OcclusionBuffer {
-            data: Vec::new(),
-            width: 0,
-            height: 0,
-        };
-
-        m.init(w, h);
-
-        m
-    }
-
-    pub fn init(&mut self, w: u32, h: u32) {
-        let w = w as usize;
-        let h = h as usize;
-        if self.data.len() < w * h {
-            self.data = vec![0; w * h];
-        } else {
-            self.data[..(w * h)].fill(0);
-        }
-        self.width = w;
-        self.height = h as u32;
-    }
-
-    pub fn resize(&mut self, w: u32, h: u32) {
-        if w * h <= self.width as u32 * self.height {
-            return;
-        }
-
-        let w = w as usize;
-        let h = h as usize;
-
-        let mut data = vec![0; w * h];
-
-        for y in 0..self.height {
-            let src_start = y as usize * self.width;
-            let src_end = src_start + self.width;
-            let dst_start = y as usize * w;
-            let dst_end = dst_start + self.width;
-            data[dst_start..dst_end].copy_from_slice(&self.data[src_start..src_end]);
-        }
-
-        self.data = data;
-
-        self.width = w;
-        self.height = h as u32;
-    }
-
-    pub fn width(&self) -> u32 {
-        self.width as u32
-    }
-
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    pub fn occluded(&mut self, x: u16, y: u16) -> bool {
-        let offset = x as usize + y as usize * self.width;
-        assert!(offset < self.data.len(), "occlustion.get({x} {y}) out of bounds {} {}", self.width, self.height);
-        self.data[offset] != 0
-    }
-
-    pub fn test(&mut self, x: u16, y: u16, write: bool) -> bool {
-        let offset = x as usize + y as usize * self.width;
-        assert!(offset < self.data.len(), "occlustion.test({x} {y}) out of bounds {} {}", self.width, self.height);
-        let payload = &mut self.data[offset as usize];
-        let result = *payload == 0;
-
-        if write {
-            *payload = 1;
-        }
-
-        result
-    }
-
-    pub fn clear(&mut self) {
-        self.data.fill(0);
-    }
-}
