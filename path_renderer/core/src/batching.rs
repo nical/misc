@@ -142,7 +142,7 @@ impl OrderedBatcher {
     }
 
     pub fn new() -> Self {
-        Self::with_lookback(32)
+        Self::with_lookback(64)
     }
 
     pub fn with_lookback(lookback_limit: usize) -> Self {
