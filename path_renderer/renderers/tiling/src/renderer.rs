@@ -2,7 +2,7 @@ use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingG
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::{bytemuck, SurfaceKind};
 use core::context::{SurfaceDrawConfig, FillPath};
-use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId};
+use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId, BlendMode};
 use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchId, BatchList},
@@ -181,7 +181,10 @@ impl TileRenderer {
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::empty(),
-                &mut || BatchInfo { passes: 0..0, surface: ctx.surface.current_config() },
+                &mut || BatchInfo {
+                    passes: 0..0,
+                    surface: ctx.surface.current_config(),
+                },
             )
             .0
             .push(Fill {
@@ -242,6 +245,7 @@ impl TileRenderer {
                 shaders.prepare(RenderPipelineKey::new(
                     self.opaque_pipeline,
                     batch.pattern,
+                    BlendMode::None,
                     SurfaceDrawConfig::color()
                 ))
             );
@@ -252,6 +256,7 @@ impl TileRenderer {
                 shaders.prepare(RenderPipelineKey::new(
                     self.opaque_pipeline,
                     batch.pattern,
+                    BlendMode::None,
                     batch.surface,
                 ))
             );
@@ -262,6 +267,7 @@ impl TileRenderer {
                 shaders.prepare(RenderPipelineKey::new(
                     self.masked_pipeline,
                     batch.pattern,
+                    BlendMode::PremultipliedAlpha,
                     batch.surface,
                 ))
             );
@@ -272,6 +278,7 @@ impl TileRenderer {
                 shaders.prepare(RenderPipelineKey::new(
                     self.opaque_pipeline,
                     self.texture_load_pattern,
+                    BlendMode::None,
                     pass.surface,
                 ))
             )
@@ -576,6 +583,7 @@ impl TileRenderer {
                     .look_up(RenderPipelineKey::new(
                         resources.opaque_pipeline,
                         resources.texture.load_pattern_id(),
+                        BlendMode::None,
                         SurfaceDrawConfig::default(),
                     ))
                     .unwrap();

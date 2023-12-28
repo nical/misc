@@ -1,5 +1,5 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, BaseShaderDescriptor, PipelineDescriptor, BlendMode, Binding, BindGroupLayout, Varying};
+use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, BaseShaderDescriptor, PipelineDescriptor, Binding, BindGroupLayout, Varying};
 //use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
@@ -65,7 +65,6 @@ impl TileGpuResources {
             label: "tiling2::opaque",
             base: tile_base_id,
             user_flags: 0,
-            blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
 
@@ -73,7 +72,6 @@ impl TileGpuResources {
             label: "tiling2::alpha",
             base: tile_base_id,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 

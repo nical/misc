@@ -38,7 +38,7 @@ core::bitflags::bitflags! {
 pub struct Batch {
     vbo_range: Option<DynBufferRange>,
     edge_aa: bool,
-    // TODO: pattern, surface and opauqe are only kept so that we can
+    // TODO: pattern, surface and opaque are only kept so that we can
     // create the pipeline index later in the prepare pass.
     pattern: BuiltPattern,
     surface: SurfacePassConfig,
@@ -177,6 +177,7 @@ impl RectangleRenderer {
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
                 batch.pattern.shader,
+                batch.pattern.blend_mode,
                 batch.surface.draw_config(true, None),
             ));
             batch.pipeline_idx = Some(idx);

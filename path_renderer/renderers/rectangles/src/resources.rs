@@ -4,7 +4,7 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
         BaseShaderId, Shaders, Varying, VertexAtribute,
     },
     resources::RendererResources,
@@ -85,14 +85,12 @@ impl RectangleGpuResources {
             label: "rectangle(opaque)",
             base: base_shader,
             user_flags: 0,
-            blend: BlendMode::None,
             shader_defines: vec!["EDGE_AA"],
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha)",
             base: base_shader,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
         });
 
@@ -100,14 +98,12 @@ impl RectangleGpuResources {
             label: "rectangle(opaque, no-aa)",
             base: base_shader,
             user_flags: 0,
-            blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha, no-aa)",
             base: base_shader,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS"],
         });
 

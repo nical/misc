@@ -1,4 +1,4 @@
-use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
+use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
 use core::{pattern::BuiltPattern, Color};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,9 +26,11 @@ impl SolidColorRenderer {
     }
 
     pub fn add(&self, color: Color) -> BuiltPattern {
+        let opaque = color.is_opaque();
         BuiltPattern::new(self.shader, color.to_u32())
-            .with_opacity(color.is_opaque())
+            .with_opacity(opaque)
             .with_horizontal_stretching(true)
+            .with_blend_mode(if opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 

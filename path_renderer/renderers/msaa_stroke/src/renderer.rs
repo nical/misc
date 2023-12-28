@@ -7,7 +7,7 @@ use core::{
     },
     gpu::{
         shader::{
-            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
         },
         DynBufferRange, Shaders,
     },
@@ -33,6 +33,7 @@ pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 struct BatchInfo {
     draws: Range<u32>,
     surface: SurfacePassConfig,
+    blend_mode: BlendMode,
 }
 
 enum Shape {
@@ -190,6 +191,7 @@ impl MsaaStrokeRenderer {
             &mut || BatchInfo {
                 draws: 0..0,
                 surface: ctx.surface.current_config(),
+                blend_mode: pattern.blend_mode,
             },
         );
         info.surface = ctx.surface.current_config();
@@ -246,6 +248,7 @@ impl MsaaStrokeRenderer {
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                                 base_pipeline,
                                 key.0,
+                                info.blend_mode,
                                 surface.draw_config(true, None),
                             )),
                         });
@@ -272,6 +275,7 @@ impl MsaaStrokeRenderer {
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                         base_pipeline,
                         key.0,
+                        info.blend_mode,
                         surface.draw_config(true, None),
                     )),
                 });

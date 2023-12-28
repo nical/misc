@@ -1,4 +1,4 @@
-use crate::gpu::shader::ShaderPatternId;
+use crate::gpu::shader::{ShaderPatternId, BlendMode};
 
 // TODO: Pattern coordinate system:
 // currently patterns take layout space coordinates which works well for things like gradients which are specified in that space.
@@ -46,6 +46,8 @@ pub struct BuiltPattern {
     /// Optional Id of a bindgroup to use when emitting the draw call.
     pub bindings: BindingsId,
 
+    pub blend_mode: BlendMode,
+
     pub is_opaque: bool,
     pub can_stretch_horizontally: bool,
     pub favor_prerendering: bool,
@@ -58,10 +60,18 @@ impl BuiltPattern {
             data,
             shader,
             bindings: BindingsId::NONE,
+            blend_mode: BlendMode::PremultipliedAlpha,
             is_opaque: false,
             can_stretch_horizontally: false,
             favor_prerendering: false,
         }
+    }
+
+    #[inline]
+    pub fn with_blend_mode(mut self, mode: BlendMode) -> Self {
+        self.is_opaque &= mode == BlendMode::None;
+        self.blend_mode = mode;
+        self
     }
 
     #[inline]
@@ -90,7 +100,9 @@ impl BuiltPattern {
 
     #[inline]
     pub fn batch_key(&self) -> u64 {
-        (self.shader.index() as u64) << 16 | (self.bindings.index() as u64)
+        ((self.shader.index() as u64) << 16)
+            | ((self.bindings.index() as u64))
+            | ((self.blend_mode as u64) << 32)
     }
 
     pub fn shader_and_bindings(&self) -> (ShaderPatternId, BindingsId) {

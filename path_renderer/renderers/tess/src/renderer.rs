@@ -7,7 +7,7 @@ use core::{
     },
     gpu::{
         shader::{
-            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
         },
         DynBufferRange,
     },
@@ -43,6 +43,7 @@ pub struct TessellatedMesh {
 struct BatchInfo {
     draws: Range<u32>,
     surface: SurfacePassConfig,
+    blend_mode: BlendMode,
 }
 
 enum Shape {
@@ -132,8 +133,7 @@ pub struct MeshRenderer {
     draws: Vec<Draw>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
-    opaque_pipeline: GeneratedPipelineId,
-    alpha_pipeline: GeneratedPipelineId,
+    pipeline: GeneratedPipelineId,
 }
 
 impl MeshRenderer {
@@ -156,8 +156,7 @@ impl MeshRenderer {
             batches: BatchList::new(renderer_id),
             vbo_range: None,
             ibo_range: None,
-            opaque_pipeline: res.opaque_pipeline,
-            alpha_pipeline: res.alpha_pipeline,
+            pipeline: res.pipeline,
         }
     }
 
@@ -234,6 +233,7 @@ impl MeshRenderer {
             &mut || BatchInfo {
                 draws: 0..0,
                 surface: ctx.surface.current_config(),
+                blend_mode: pattern.blend_mode,
             },
         );
         info.surface = ctx.surface.current_config();
@@ -281,8 +281,9 @@ impl MeshRenderer {
                                 indices: geom_start..end,
                                 pattern_inputs: key.1,
                                 pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                    self.opaque_pipeline,
+                                    self.pipeline,
                                     key.0,
+                                    info.blend_mode,
                                     surface.draw_config(true, None),
                                 )),
                             });
@@ -300,8 +301,9 @@ impl MeshRenderer {
                     indices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.opaque_pipeline,
+                        self.pipeline,
                         key.0,
+                        info.blend_mode,
                         surface.draw_config(true, None),
                     )),
                 });
@@ -320,8 +322,9 @@ impl MeshRenderer {
                             indices: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.alpha_pipeline,
+                                self.pipeline,
                                 key.0,
+                                info.blend_mode,
                                 surface.draw_config(true, None),
                             )),
                         });
@@ -338,8 +341,9 @@ impl MeshRenderer {
                     indices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.alpha_pipeline,
+                        self.pipeline,
                         key.0,
+                        info.blend_mode,
                         surface.draw_config(true, None),
                     )),
                 });

@@ -9,7 +9,7 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::ShaderPatternId};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -112,6 +112,7 @@ pub struct BatchInfo {
     pattern_shader: ShaderPatternId,
     pattern_bindings: BindingsId,
     stencil_mode: StencilMode,
+    blend_mode: BlendMode,
 }
 
 struct Fill {
@@ -144,8 +145,7 @@ pub struct StencilAndCoverRenderer {
     cover_ibo_range: Option<DynBufferRange>,
     enable_msaa: bool,
     opaque_pass: bool,
-    opaque_cover_pipeline: GeneratedPipelineId,
-    alpha_cover_pipeline: GeneratedPipelineId,
+    cover_pipeline: GeneratedPipelineId,
     pub stats: Stats,
 }
 
@@ -171,8 +171,7 @@ impl StencilAndCoverRenderer {
             cover_ibo_range: None,
             enable_msaa: false,
             opaque_pass: false,
-            opaque_cover_pipeline: res.opaque_cover_pipeline,
-            alpha_cover_pipeline: res.alpha_cover_pipeline,
+            cover_pipeline: res.cover_pipeline,
             stats: Stats {
                 commands: 0,
                 stencil_batches: 0,
@@ -254,6 +253,7 @@ impl StencilAndCoverRenderer {
                     pattern_shader: pattern.shader,
                     pattern_bindings: pattern.bindings,
                     stencil_mode,
+                    blend_mode: pattern.blend_mode,
                 },
             )
             .0
@@ -283,9 +283,7 @@ impl StencilAndCoverRenderer {
             let stencil_idx_start = self.stencil_geometry.indices.len() as u32;
             let cover_idx_start = self.cover_geometry.indices.len() as u32;
 
-            let mut entirely_opaque = true;
             for fill in commands.iter() {
-                entirely_opaque &= fill.pattern.is_opaque;
                 self.prepare_fill(ctx, fill);
             }
 
@@ -300,13 +298,8 @@ impl StencilAndCoverRenderer {
             // Flush the previous cover batch if needed.
             if cover_idx_end > cover_idx_start {
                 let surface = surface.draw_config(true, None).with_stencil(batch_info.stencil_mode);
-                let base_pipeline = if entirely_opaque {
-                    self.opaque_cover_pipeline
-                } else {
-                    self.alpha_cover_pipeline
-                };
                 let pipeline_idx =
-                    shaders.prepare(RenderPipelineKey::new(base_pipeline, batch_info.pattern_shader, surface));
+                    shaders.prepare(RenderPipelineKey::new(self.cover_pipeline, batch_info.pattern_shader, batch_info.blend_mode, surface));
                 self.draws.push(Draw::Cover {
                     indices: cover_idx_start..cover_idx_end,
                     pattern_inputs: batch_info.pattern_bindings,

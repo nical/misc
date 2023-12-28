@@ -1,7 +1,7 @@
 use core::geom::Box2D;
 use core::gpu::shader::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
-    Varying,
+    Varying, BlendMode,
 };
 use core::gpu::GpuStore;
 use core::pattern::{BindingsId, BuiltPattern};
@@ -69,7 +69,9 @@ impl TextureRenderer {
 
     #[inline]
     pub fn load_direct(&self, is_opaque: bool) -> BuiltPattern {
-        BuiltPattern::new(self.load_shader, 0).with_opacity(is_opaque)
+        BuiltPattern::new(self.load_shader, 0)
+            .with_opacity(is_opaque)
+            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 
     #[inline]
@@ -95,6 +97,7 @@ impl TextureRenderer {
         BuiltPattern::new(self.sample_shader, handle.to_u32())
             .with_bindings(src_texture)
             .with_opacity(is_opaque)
+            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 

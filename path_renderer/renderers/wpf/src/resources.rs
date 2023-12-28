@@ -3,7 +3,7 @@ use core::gpu::shader::Varying;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
@@ -36,7 +36,6 @@ impl WpfGpuResources {
             label: "wpf mesh",
             base: wpf_mesh_base,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 

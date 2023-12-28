@@ -1342,6 +1342,7 @@ fn tiler2_svg() {
         shader: ShaderPatternId::from_index(0),
         bindings: BindingsId::from_index(0),
         is_opaque: true,
+        blend_mode: core::gpu::shader::BlendMode::None,
         can_stretch_horizontally: true,
         favor_prerendering: false,
     };

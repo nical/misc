@@ -1,5 +1,5 @@
 use core::context::*;
-use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines};
+use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::BindingsId;
@@ -800,12 +800,12 @@ fn paint_scene(
     }
 
     if testing {
-        ctx.reconfigure_surface(SurfacePassConfig {
-            depth: true,
-            msaa: msaa_default,
-            stencil: true,
-            kind: SurfaceKind::Color,
-        });
+        //ctx.reconfigure_surface(SurfacePassConfig {
+        //    depth: true,
+        //    msaa: msaa_default,
+        //    stencil: true,
+        //    kind: SurfaceKind::Color,
+        //});
 
         ctx.transforms
             .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
@@ -852,12 +852,12 @@ fn paint_scene(
         );
         ctx.transforms.pop();
 
-        ctx.reconfigure_surface(SurfacePassConfig {
-            depth: false,
-            msaa: msaa_tiling,
-            stencil: false,
-            kind: SurfaceKind::Color,
-        });
+        //ctx.reconfigure_surface(SurfacePassConfig {
+        //    depth: false,
+        //    msaa: msaa_tiling,
+        //    stencil: false,
+        //    kind: SurfaceKind::Color,
+        //});
 
         renderers.tiling.fill_circle(
             ctx,
@@ -891,9 +891,9 @@ fn paint_scene(
         builder.line_to(point(1000.0, 50.0));
         builder.end(true);
 
-        renderers.tiling.fill_path(
+        renderers.fill(fill_renderer).fill_path(
             ctx,
-            builder.build(),
+            builder.build().into(),
             patterns.checkerboards.add(
                 gpu_store,
                 &Checkerboard {
@@ -908,7 +908,7 @@ fn paint_scene(
                     offset: point(0.0, 0.0),
                 }
                 .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
-            ),
+            ).with_blend_mode(BlendMode::Screen),
         );
 
         ctx.transforms.pop();

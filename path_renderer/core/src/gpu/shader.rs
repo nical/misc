@@ -70,6 +70,7 @@ pub struct Shaders {
     bind_group_layouts: Vec<BindGroupLayout>,
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
     // TODO: storing base bindings here and letting the common resources set is not great.
+    // TODO: name clash with base shader's bindings. Rename into global bindings?
     pub base_bindings: Option<BindGroupLayoutId>,
     pub defaults: PipelineDefaults,
 }
@@ -234,11 +235,12 @@ impl Shaders {
         device: &wgpu::Device,
         pipeline_id: GeneratedPipelineId,
         pattern_id: ShaderPatternId,
+        blend_mode: BlendMode,
         surface: &SurfaceDrawConfig,
     ) -> wgpu::RenderPipeline {
         let params = &self.params[pipeline_id.index()];
 
-        let geometry = &self.base_shaders[params.base.index()];
+        let base = &self.base_shaders[params.base.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let module_key = ModuleKey {
@@ -252,7 +254,7 @@ impl Shaders {
             let base_bindings = self
                 .base_bindings
                 .map(|id| &self.bind_group_layouts[id as usize]);
-            let geom_bindings = geometry
+            let geom_bindings = base
                 .bindings
                 .map(|id| &self.bind_group_layouts[id as usize]);
             let pattern_bindings = pattern
@@ -261,7 +263,7 @@ impl Shaders {
                 .map(|id| &self.bind_group_layouts[id as usize]);
 
             let src = generate_shader_source(
-                geometry,
+                base,
                 pattern,
                 base_bindings,
                 geom_bindings,
@@ -283,17 +285,17 @@ impl Shaders {
                 .unwrap();
 
             //println!("==================\n{src}\n=================");
-
+            let label = format!("{}|{}", base.name, pattern.map(|p| &p.name[..]).unwrap_or(""));
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&geometry.name),
+                label: Some(&label),
                 source: wgpu::ShaderSource::Wgsl(src.into()),
             })
         });
 
-        // Increment the ids by 1 so that id zero isn't equal to no id.
+        // Increment the ids by 1 so that id zero isn't equal to any id.
         let mut key = 0u64;
         let mut shift = 0;
-        if let Some(id) = geometry.bindings {
+        if let Some(id) = base.bindings {
             key |= (id as u64 + 1) << shift;
             shift += 16;
         }
@@ -308,7 +310,7 @@ impl Shaders {
             let mut layouts = Vec::new();
             layouts.push(&self.bind_group_layouts[self.base_bindings.unwrap() as usize].handle);
 
-            if let Some(id) = geometry.bindings {
+            if let Some(id) = base.bindings {
                 layouts.push(&self.bind_group_layouts[id as usize].handle);
             }
 
@@ -330,10 +332,108 @@ impl Shaders {
                 SurfaceKind::Color => self.defaults.color_format(),
                 SurfaceKind::Alpha => self.defaults.mask_format(),
             },
-            blend: match params.blend {
+            blend: match blend_mode {
                 BlendMode::None => None,
                 BlendMode::PremultipliedAlpha => {
                     Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+                }
+                BlendMode::Add => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Min => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Min,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Max => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Max,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Multiply => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::Src,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::SrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Screen => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Lighter => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
+                }
+                BlendMode::Exclusion => {
+                    Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::OneMinusDst,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        }
+                    })
                 }
                 _ => todo!(),
             },
@@ -385,7 +485,7 @@ impl Shaders {
                     }
                 };
                 let depth_write_enabled =
-                    surface.depth == DepthMode::Enabled && params.blend == BlendMode::None;
+                    surface.depth == DepthMode::Enabled && blend_mode == BlendMode::None;
                 let depth_compare = if surface.depth == DepthMode::Enabled {
                     wgpu::CompareFunction::Greater
                 } else {
@@ -453,7 +553,7 @@ impl Shaders {
                 entry_point: "fs_main",
                 targets: color_target,
             }),
-            primitive: geometry.primitive,
+            primitive: base.primitive,
             depth_stencil,
             multiview: None,
             multisample,
@@ -1184,18 +1284,22 @@ pub struct PipelineDescriptor {
     pub label: &'static str,
     pub base: BaseShaderId,
     pub user_flags: u8,
-    pub blend: BlendMode,
     pub shader_defines: Vec<&'static str>,
 }
 
+#[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BlendMode {
     None,
     PremultipliedAlpha,
     Add,
     Subtract,
+    Multiply,
     Min,
     Max,
+    Screen,
+    Lighter,
+    Exclusion,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -1209,16 +1313,23 @@ impl RenderPipelineKey {
     pub fn new(
         pipeline: GeneratedPipelineId,
         pattern: ShaderPatternId,
+        blend_mode: BlendMode,
         surf: SurfaceDrawConfig,
     ) -> Self {
-        Self(surf.hash() as u64 | ((pipeline.0 as u64) << 16) | (pattern.get() as u64) << 32)
+        Self(
+            surf.hash() as u64
+            | ((pipeline.0 as u64) << 16)
+            | ((pattern.get() as u64) << 32)
+            | ((blend_mode as u64) << 48)
+        )
     }
 
-    pub fn unpack(&self) -> (GeneratedPipelineId, ShaderPatternId, SurfaceDrawConfig) {
+    pub fn unpack(&self) -> (GeneratedPipelineId, ShaderPatternId, BlendMode, SurfaceDrawConfig) {
         let pipeline = GeneratedPipelineId((self.0 >> 16) as u16);
         let pattern = ShaderPatternId((self.0 >> 32) as u16);
         let surf = SurfaceDrawConfig::from_hash(self.0 as u8);
-        (pipeline, pattern, surf)
+        let blend: BlendMode = unsafe { std::mem::transmute((self.0 >> 48) as u8) };
+        (pipeline, pattern, blend, surf)
     }
 }
 
@@ -1226,9 +1337,9 @@ impl<'l> crate::cache::Build<RenderPipelineKey, wgpu::RenderPipeline>
     for RenderPipelineBuilder<'l>
 {
     fn build(&mut self, key: RenderPipelineKey) -> wgpu::RenderPipeline {
-        let (pipeline, pattern, surface) = key.unpack();
+        let (pipeline, pattern, blend, surface) = key.unpack();
         self.1
-            .generate_pipeline_variant(self.0, pipeline, pattern, &surface)
+            .generate_pipeline_variant(self.0, pipeline, pattern, blend, &surface)
     }
 
     fn finish(&mut self) {}

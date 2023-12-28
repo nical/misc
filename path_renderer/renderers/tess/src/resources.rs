@@ -2,7 +2,7 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
@@ -10,8 +10,7 @@ use core::{
 
 pub struct MeshGpuResources {
     pub simple_mesh_base: BaseShaderId,
-    pub opaque_pipeline: GeneratedPipelineId,
-    pub alpha_pipeline: GeneratedPipelineId,
+    pub pipeline: GeneratedPipelineId,
 }
 
 impl MeshGpuResources {
@@ -30,25 +29,16 @@ impl MeshGpuResources {
             primitive: PipelineDefaults::primitive_state()
         });
 
-        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
+        let pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "mesh(opaque)",
             base: simple_mesh_base,
             user_flags: 0,
-            blend: BlendMode::None,
-            shader_defines: Vec::new(),
-        });
-        let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "mesh(alpha)",
-            base: simple_mesh_base,
-            user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 
         MeshGpuResources {
             simple_mesh_base,
-            opaque_pipeline,
-            alpha_pipeline,
+            pipeline,
         }
     }
 }

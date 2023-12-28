@@ -4,7 +4,7 @@ use core::gpu::storage_buffer::{StorageBuffer, StorageKind};
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
@@ -66,14 +66,12 @@ impl MsaaStrokeGpuResources {
             label: "skel_stroke(opaque)",
             base: curve_geometry,
             user_flags: 0,
-            blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "skel_stroke(alpha)",
             base: curve_geometry,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 

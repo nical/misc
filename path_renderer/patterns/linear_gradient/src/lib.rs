@@ -1,7 +1,7 @@
 use core::geom::traits::Transformation;
 use core::geom::Point;
 
-use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
+use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
 use core::gpu::GpuStore;
 use core::pattern::BuiltPattern;
 use core::Color;
@@ -72,6 +72,7 @@ impl LinearGradientRenderer {
         BuiltPattern::new(self.shader, handle.to_u32())
             .with_opacity(is_opaque)
             .with_horizontal_stretching(can_stretch_horizontally)
+            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 

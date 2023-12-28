@@ -7,7 +7,7 @@ use core::{
     },
     gpu::{
         shader::{
-            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
         },
         DynBufferRange,
     },
@@ -191,6 +191,7 @@ impl WpfMeshRenderer {
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                                 self.pipeline,
                                 key.0,
+                                BlendMode::PremultipliedAlpha,
                                 surface.draw_config(false, None),
                             )),
                         });
@@ -209,6 +210,7 @@ impl WpfMeshRenderer {
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                         self.pipeline,
                         key.0,
+                        BlendMode::PremultipliedAlpha,
                         surface.draw_config(false, None),
                     )),
                 });

@@ -2,7 +2,7 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::{
-        shader::{BlendMode, GeneratedPipelineId, PipelineDescriptor},
+        shader::{GeneratedPipelineId, PipelineDescriptor},
         Shaders, VertexBuilder,
     },
     resources::{CommonGpuResources, RendererResources},
@@ -11,8 +11,7 @@ use core::{
 pub struct StencilAndCoverResources {
     pub stencil_pipeline: wgpu::RenderPipeline,
     pub msaa_stencil_pipeline: wgpu::RenderPipeline,
-    pub opaque_cover_pipeline: GeneratedPipelineId,
-    pub alpha_cover_pipeline: GeneratedPipelineId,
+    pub cover_pipeline: GeneratedPipelineId,
 }
 
 const STENCIL_SHADER_SRC: &'static str = "
@@ -107,26 +106,17 @@ impl StencilAndCoverResources {
         let cover_base_shader = shaders.find_base_shader("geometry::simple_mesh").unwrap();
 
         // TODO: these pipelines happen to be identical to the mesh renderer's.
-        let opaque_cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "cover(opaque)",
+        let cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
+            label: "cover",
             base: cover_base_shader,
             user_flags: 0,
-            blend: BlendMode::None,
-            shader_defines: Vec::new(),
-        });
-        let alpha_cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "cover(alpha)",
-            base: cover_base_shader,
-            user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 
         StencilAndCoverResources {
             stencil_pipeline,
             msaa_stencil_pipeline,
-            opaque_cover_pipeline,
-            alpha_cover_pipeline,
+            cover_pipeline,
         }
     }
 }

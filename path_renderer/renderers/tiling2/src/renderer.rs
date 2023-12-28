@@ -9,7 +9,7 @@ use core::{
     shape::FilledPath,
     transform::TransformId,
     units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
-    wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, GeneratedPipelineId}, DynBufferRange}, bytemuck,
+    wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, GeneratedPipelineId, BlendMode}, DynBufferRange}, bytemuck,
 };
 use std::ops::Range;
 
@@ -181,6 +181,7 @@ impl TileRenderer {
                     pipeline: shaders.prepare(RenderPipelineKey::new(
                         self.opaque_pipeline,
                         info.pattern.shader,
+                        BlendMode::None,
                         draw_config,
                     )),
                 })
@@ -193,6 +194,7 @@ impl TileRenderer {
                     pipeline: shaders.prepare(RenderPipelineKey::new(
                         self.masked_pipeline,
                         info.pattern.shader,
+                        BlendMode::PremultipliedAlpha,
                         draw_config,
                     )),
                 })

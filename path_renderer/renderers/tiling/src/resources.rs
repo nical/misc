@@ -6,7 +6,7 @@ use core::wgpu::util::DeviceExt;
 use core::{
     gpu::{
         shader::{
-            BindGroupLayout, BindGroupLayoutId, Binding, BlendMode, GeneratedPipelineId,
+            BindGroupLayout, BindGroupLayoutId, Binding, GeneratedPipelineId,
             BaseShaderDescriptor, PipelineDescriptor,
             Varying, VertexAtribute,
         },
@@ -165,7 +165,6 @@ impl TilingGpuResources {
             label: "tile(opaque)",
             base: base_opaque_shader,
             user_flags: 0,
-            blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
 
@@ -173,7 +172,6 @@ impl TilingGpuResources {
             label: "tile(alpha)",
             base: base_masked_shader,
             user_flags: 0,
-            blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 
