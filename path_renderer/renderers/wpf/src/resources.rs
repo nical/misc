@@ -3,20 +3,20 @@ use core::gpu::shader::Varying;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, GeometryDescriptor, PipelineDescriptor,
-        ShaderGeometryId, ShaderMaskId, Shaders, VertexAtribute,
+        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
 };
 
 pub struct WpfGpuResources {
-    pub geometry: ShaderGeometryId,
+    pub base_shader: BaseShaderId,
     pub pipeline: GeneratedPipelineId,
 }
 
 impl WpfGpuResources {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let wpf_mesh_geometry = shaders.register_geometry(GeometryDescriptor {
+        let wpf_mesh_base = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::wpf_mesh".into(),
             source: WPF_MESH_SRC.into(),
             vertex_attributes: vec![
@@ -34,15 +34,14 @@ impl WpfGpuResources {
 
         let pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "wpf mesh",
-            geometry: wpf_mesh_geometry,
-            mask: ShaderMaskId::NONE,
+            base: wpf_mesh_base,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 
         WpfGpuResources {
-            geometry: wpf_mesh_geometry,
+            base_shader: wpf_mesh_base,
             pipeline,
         }
     }
@@ -63,7 +62,7 @@ impl RendererResources for WpfGpuResources {
 const WPF_MESH_SRC: &'static str = "
 #import render_target
 
-fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pattern_data: u32) -> Geometry {
+fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pattern_data: u32) -> BaseVertex {
     var target_position = canvas_to_target(canvas_position);
 
     var position = vec4<f32>(
@@ -73,17 +72,13 @@ fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32,
         1.0,
     );
 
-    return Geometry(
+    return BaseVertex(
         position,
         canvas_position,
         pattern_data,
-        // No suport for masks.
-        vec2<f32>(0.0),
-        0u,
         coverage,
     );
 }
 
-fn geometry_fragment(coverage: f32) -> f32 { return coverage; }
-
+fn base_fragment(coverage: f32) -> f32 { return coverage; }
 ";

@@ -66,7 +66,7 @@ fn fetch_path(path_idx: u32) -> PathInfo {
     return path;
 }
 
-fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
+fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
     var uv = rect_get_uv(vertex_index);
     var tile = decode_instance(instance_data);
 
@@ -80,12 +80,10 @@ fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
 
     var target_position = canvas_to_target(position);
 
-    return Geometry(
+    return BaseVertex(
         vec4f(target_position.x, target_position.y, path.z, 1.0),
         position,
         path.pattern_data,
-        vec2f(0.0, 0.0),
-        0u,
 
         uv * TILE_SIZE_F32,
         tile.edges,
@@ -154,7 +152,7 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
     return mask;
 }
 
-fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
+fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
     var winding_number: f32 = f32(backdrop);
 
     var edge_idx = edges.x;

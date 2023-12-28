@@ -1,11 +1,11 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId, Varying};
+use core::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId};
 use core::gpu::storage_buffer::{StorageBuffer, StorageKind};
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, GeometryDescriptor, PipelineDescriptor,
-        ShaderGeometryId, ShaderMaskId, Shaders, VertexAtribute,
+        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
 };
@@ -13,7 +13,7 @@ use core::{
 use crate::PathData;
 
 pub struct MsaaStrokeGpuResources {
-    pub curve_geometry: ShaderGeometryId,
+    pub base_shader: BaseShaderId,
     pub opaque_pipeline: GeneratedPipelineId,
     pub alpha_pipeline: GeneratedPipelineId,
     pub paths: StorageBuffer,
@@ -41,7 +41,7 @@ impl MsaaStrokeGpuResources {
             ]
         ));
 
-        let curve_geometry = shaders.register_geometry(GeometryDescriptor {
+        let curve_geometry = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::skeletal_stroke_curves".into(),
             source: SHADER_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -54,7 +54,7 @@ impl MsaaStrokeGpuResources {
                 VertexAtribute::uint32("path_index"),
                 VertexAtribute::uint32("segment_counts"),
             ],
-            varyings: vec![Varying::float32x4("dbg")],
+            varyings: Vec::new(),
             bindings: Some(bgl),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -64,23 +64,21 @@ impl MsaaStrokeGpuResources {
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "skel_stroke(opaque)",
-            geometry: curve_geometry,
-            mask: ShaderMaskId::NONE,
+            base: curve_geometry,
             user_flags: 0,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "skel_stroke(alpha)",
-            geometry: curve_geometry,
-            mask: ShaderMaskId::NONE,
+            base: curve_geometry,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
         });
 
         MsaaStrokeGpuResources {
-            curve_geometry,
+            base_shader: curve_geometry,
             opaque_pipeline,
             alpha_pipeline,
             paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
@@ -120,7 +118,7 @@ struct PathData {
     pad2: u32,
 };
 
-fn geometry_vertex(
+fn base_vertex(
     vertex_index: u32,
     seg_from: vec2<f32>,
     seg_ctrl1: vec2<f32>,
@@ -129,7 +127,7 @@ fn geometry_vertex(
     prev_ctrl: vec2<f32>,
     path_index: u32,
     segment_counts: u32
-) -> Geometry {
+) -> BaseVertex {
     var join_segments = segment_counts & 0xffffu;
     var curve_segments = segment_counts >> 16u;
     var side = f32(i32(vertex_index % 2u) * 2i - 1i);
@@ -188,19 +186,14 @@ fn geometry_vertex(
         1.0,
     );
 
-    var dbg = vec4f(t, f32(segment_index), f32(z_index), f32(path_index));
- 
-    return Geometry(
+    return BaseVertex(
         position,
         canvas_position,
         path.pattern,
         // No suport for masks.
-        vec2<f32>(0.0),
-        0u,
-        dbg,
     );
 }
 
-fn geometry_fragment(dbg: vec4f) -> f32 { return 1.0; }
+fn base_fragment() -> f32 { return 1.0; }
 
 ";

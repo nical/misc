@@ -14,8 +14,8 @@
  - [x] Simple linear gradient patterns.
  - [x] Support storing gpu data without SSBO
  - [x] inverted fill
- - [ ] Rasterize fill masks directly in the color pass
- - [ ] Try pathfinder's binning algorithm
+ - [x] Rasterize fill masks directly in the color pass
+ - [x] Try pathfinder's binning algorithm
  - [ ] Image patterns.
  - [x] Custom masks
  - [ ] Support rasterizing masks with static loops
@@ -27,10 +27,10 @@
   - Encode rasterized masks in column major (flip it back in the copy shader).
   - do N rows at a time (one per SIMD lane), each with their own prefix sum.
  - [ ] Try a cheaper quad flattening algorithm (knowing we generate few segments most of the time).
- - [ ] Compress the curves sent to the GPU.
+ - [x] Compress the curves sent to the GPU.
  - [ ] Compute shader version for the rasterization and compositing.
  - [ ] See if there are benefits from doing multiple quads per instance.
- - [ ] Axis-aligned rectangular clips.
+ - [x] Axis-aligned rectangular clips.
  - [ ] Clip paths.
  - [ ] GPU tiling (compute shaders).
  - [ ] Support for combining masks

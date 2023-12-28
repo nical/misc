@@ -34,37 +34,11 @@ impl ShaderPatternId {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ShaderMaskId(u16);
-impl ShaderMaskId {
+pub struct BaseShaderId(u16);
+impl BaseShaderId {
     pub fn from_index(idx: usize) -> Self {
         debug_assert!(idx < (u16::MAX - 1) as usize);
-        ShaderMaskId(idx as u16)
-    }
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-    pub fn get(self) -> u16 {
-        self.0
-    }
-    pub fn is_none(self) -> bool {
-        self.0 == u16::MAX
-    }
-    pub const NONE: Self = ShaderMaskId(u16::MAX);
-    fn map<Out>(self, cb: impl Fn(Self) -> Out) -> Option<Out> {
-        if self.is_none() {
-            return None;
-        }
-
-        Some(cb(self))
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ShaderGeometryId(u16);
-impl ShaderGeometryId {
-    pub fn from_index(idx: usize) -> Self {
-        debug_assert!(idx < (u16::MAX - 1) as usize);
-        ShaderGeometryId(idx as u16)
+        BaseShaderId(idx as u16)
     }
     pub fn index(self) -> usize {
         self.0 as usize
@@ -91,8 +65,7 @@ pub struct Shaders {
     params: Vec<PipelineDescriptor>,
 
     patterns: Vec<PatternDescriptor>,
-    masks: Vec<MaskDescriptor>,
-    geometries: Vec<GeometryDescriptor>,
+    base_shaders: Vec<BaseShaderDescriptor>,
     module_cache: HashMap<ModuleKey, wgpu::ShaderModule>,
     bind_group_layouts: Vec<BindGroupLayout>,
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
@@ -108,8 +81,7 @@ impl Shaders {
 
             params: Vec::with_capacity(128),
             patterns: Vec::new(),
-            masks: Vec::new(),
-            geometries: Vec::new(),
+            base_shaders: Vec::new(),
             module_cache: HashMap::new(),
             bind_group_layouts: Vec::new(),
             pipeline_layouts: HashMap::new(),
@@ -158,30 +130,20 @@ impl Shaders {
         id
     }
 
-    pub fn register_mask(&mut self, mask: MaskDescriptor) -> ShaderMaskId {
+    pub fn register_base_shader(&mut self, base: BaseShaderDescriptor) -> BaseShaderId {
         self.sources
             .source_library
-            .insert(mask.name.clone().into(), mask.source.clone());
-        let id = ShaderMaskId::from_index(self.masks.len());
-        self.masks.push(mask);
+            .insert(base.name.clone().into(), base.source.clone());
+        let id = BaseShaderId::from_index(self.base_shaders.len());
+        self.base_shaders.push(base);
 
         id
     }
 
-    pub fn register_geometry(&mut self, geometry: GeometryDescriptor) -> ShaderGeometryId {
-        self.sources
-            .source_library
-            .insert(geometry.name.clone().into(), geometry.source.clone());
-        let id = ShaderGeometryId::from_index(self.geometries.len());
-        self.geometries.push(geometry);
-
-        id
-    }
-
-    pub fn find_geometry(&self, name: &str) -> Option<ShaderGeometryId> {
-        for (idx, pat) in self.geometries.iter().enumerate() {
+    pub fn find_base_shader(&self, name: &str) -> Option<BaseShaderId> {
+        for (idx, pat) in self.base_shaders.iter().enumerate() {
             if &*pat.name == name {
-                return Some(ShaderGeometryId::from_index(idx));
+                return Some(BaseShaderId::from_index(idx));
             }
         }
 
@@ -196,16 +158,6 @@ impl Shaders {
         }
 
         ShaderPatternId::NONE
-    }
-
-    pub fn find_mask(&self, name: &str) -> ShaderMaskId {
-        for (idx, mask) in self.masks.iter().enumerate() {
-            if &*mask.name == name {
-                return ShaderMaskId::from_index(idx);
-            }
-        }
-
-        ShaderMaskId::NONE
     }
 
     pub fn num_patterns(&self) -> usize {
@@ -241,8 +193,7 @@ impl Shaders {
     ) {
         let params = &self.params[pipeline_id.index()];
 
-        let geometry = &self.geometries[params.geometry.index()];
-        let mask = params.mask.map(|m| &self.masks[m.index()]);
+        let geometry = &self.base_shaders[params.base.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let base_bindings = self
@@ -251,10 +202,6 @@ impl Shaders {
         let geom_bindings = geometry
             .bindings
             .map(|id| &self.bind_group_layouts[id as usize]);
-        let mask_bindings = mask
-            .map(|desc| desc.bindings)
-            .flatten()
-            .map(|id| &self.bind_group_layouts[id as usize]);
         let pattern_bindings = pattern
             .map(|desc| desc.bindings)
             .flatten()
@@ -262,11 +209,9 @@ impl Shaders {
 
         let src = generate_shader_source(
             geometry,
-            mask,
             pattern,
             base_bindings,
             geom_bindings,
-            mask_bindings,
             pattern_bindings,
         );
 
@@ -293,13 +238,11 @@ impl Shaders {
     ) -> wgpu::RenderPipeline {
         let params = &self.params[pipeline_id.index()];
 
-        let geometry = &self.geometries[params.geometry.index()];
-        let mask = params.mask.map(|m| &self.masks[m.index()]);
+        let geometry = &self.base_shaders[params.base.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let module_key = ModuleKey {
-            geometry: params.geometry,
-            mask: params.mask,
+            geometry: params.base,
             pattern: pattern_id,
             user_flags: params.user_flags,
             defines: params.shader_defines.clone(),
@@ -312,10 +255,6 @@ impl Shaders {
             let geom_bindings = geometry
                 .bindings
                 .map(|id| &self.bind_group_layouts[id as usize]);
-            let mask_bindings = mask
-                .map(|desc| desc.bindings)
-                .flatten()
-                .map(|id| &self.bind_group_layouts[id as usize]);
             let pattern_bindings = pattern
                 .map(|desc| desc.bindings)
                 .flatten()
@@ -323,11 +262,9 @@ impl Shaders {
 
             let src = generate_shader_source(
                 geometry,
-                mask,
                 pattern,
                 base_bindings,
                 geom_bindings,
-                mask_bindings,
                 pattern_bindings,
             );
 
@@ -361,13 +298,6 @@ impl Shaders {
             shift += 16;
         }
 
-        if let Some(mask) = mask {
-            if let Some(id) = mask.bindings {
-                key |= (id as u64 + 1) << shift;
-                shift += 16;
-            }
-        }
-
         if let Some(pattern) = pattern {
             if let Some(id) = pattern.bindings {
                 key |= (id as u64 + 1) << shift;
@@ -380,12 +310,6 @@ impl Shaders {
 
             if let Some(id) = geometry.bindings {
                 layouts.push(&self.bind_group_layouts[id as usize].handle);
-            }
-
-            if let Some(mask) = mask {
-                if let Some(id) = mask.bindings {
-                    layouts.push(&self.bind_group_layouts[id as usize].handle);
-                }
             }
 
             if let Some(pattern) = pattern {
@@ -500,7 +424,7 @@ impl Shaders {
         let mut vertices = VertexBuilder::new(wgpu::VertexStepMode::Vertex);
         let mut instances = VertexBuilder::new(wgpu::VertexStepMode::Instance);
 
-        let geom = &self.geometries[params.geometry.index()];
+        let geom = &self.base_shaders[params.base.index()];
         for vtx in &geom.vertex_attributes {
             vertices.push(vtx.to_wgpu());
         }
@@ -1023,14 +947,7 @@ pub struct PatternDescriptor {
     pub bindings: Option<BindGroupLayoutId>,
 }
 
-pub struct MaskDescriptor {
-    pub name: Cow<'static, str>,
-    pub source: Source,
-    pub varyings: Vec<Varying>,
-    pub bindings: Option<BindGroupLayoutId>,
-}
-
-pub struct GeometryDescriptor {
+pub struct BaseShaderDescriptor {
     pub name: Cow<'static, str>,
     pub primitive: wgpu::PrimitiveState,
     pub source: Source,
@@ -1041,12 +958,10 @@ pub struct GeometryDescriptor {
 }
 
 pub fn generate_shader_source(
-    geometry: &GeometryDescriptor,
-    mask: Option<&MaskDescriptor>,
+    geometry: &BaseShaderDescriptor,
     pattern: Option<&PatternDescriptor>,
     base_bindings: Option<&BindGroupLayout>,
     geom_bindings: Option<&BindGroupLayout>,
-    mask_bindings: Option<&BindGroupLayout>,
     pattern_bindings: Option<&BindGroupLayout>,
 ) -> String {
     let mut source = String::new();
@@ -1067,20 +982,14 @@ pub fn generate_shader_source(
         bindings.generate_shader_source(group_index, &mut source);
         group_index += 1;
     }
-    if let Some(bindings) = mask_bindings {
-        bindings.generate_shader_source(group_index, &mut source);
-        group_index += 1;
-    }
     if let Some(bindings) = pattern_bindings {
         bindings.generate_shader_source(group_index, &mut source);
     }
 
-    writeln!(source, "struct Geometry {{").unwrap();
+    writeln!(source, "struct BaseVertex {{").unwrap();
     writeln!(source, "    position: vec4<f32>,").unwrap();
     writeln!(source, "    pattern_position: vec2<f32>,").unwrap();
     writeln!(source, "    pattern_data: u32,").unwrap();
-    writeln!(source, "    mask_position: vec2<f32>,").unwrap();
-    writeln!(source, "    mask_data: u32,").unwrap();
     for varying in &geometry.varyings {
         //println!("=====    {}: {},", varying.name, varying.kind.as_str());
         writeln!(source, "    {}: {},", varying.name, varying.kind.as_str()).unwrap();
@@ -1100,15 +1009,6 @@ pub fn generate_shader_source(
     }
 
     writeln!(source, "").unwrap();
-
-    if let Some(mask) = mask {
-        writeln!(source, "struct Mask {{").unwrap();
-        for varying in &mask.varyings {
-            writeln!(source, "    {}: {},", varying.name, varying.kind.as_str()).unwrap();
-        }
-        writeln!(source, "}}").unwrap();
-        writeln!(source, "#import {}", mask.name).unwrap();
-    }
 
     // vertex
 
@@ -1147,23 +1047,6 @@ pub fn generate_shader_source(
             idx += 1;
         }
     }
-    if let Some(mask) = mask {
-        for varying in &mask.varyings {
-            let interpolate = if varying.interpolated {
-                "perspective"
-            } else {
-                "flat"
-            };
-            writeln!(
-                source,
-                "    @location({idx}) @interpolate({interpolate}) mask_{}: {},",
-                varying.name,
-                varying.kind.as_str()
-            )
-            .unwrap();
-            idx += 1;
-        }
-    }
     writeln!(source, "}}").unwrap();
     writeln!(source, "").unwrap();
 
@@ -1192,7 +1075,7 @@ pub fn generate_shader_source(
     }
     writeln!(source, ") -> VertexOutput {{").unwrap();
 
-    writeln!(source, "    var vertex = geometry_vertex(").unwrap();
+    writeln!(source, "    var vertex = base_vertex(").unwrap();
     writeln!(source, "        vertex_index,").unwrap();
     for attrib in &geometry.vertex_attributes {
         writeln!(source, "        vtx_{},", attrib.name).unwrap();
@@ -1209,13 +1092,6 @@ pub fn generate_shader_source(
         )
         .unwrap();
     }
-    if mask.is_some() {
-        writeln!(
-            source,
-            "    var mask = mask_vertex(vertex.mask_position, vertex.mask_data);"
-        )
-        .unwrap();
-    }
 
     writeln!(source, "    return VertexOutput(").unwrap();
     writeln!(source, "        vertex.position,").unwrap();
@@ -1225,11 +1101,6 @@ pub fn generate_shader_source(
     if let Some(pattern) = pattern {
         for varying in &pattern.varyings {
             writeln!(source, "        pattern.{},", varying.name).unwrap();
-        }
-    }
-    if let Some(mask) = mask {
-        for varying in &mask.varyings {
-            writeln!(source, "        mask.{},", varying.name).unwrap();
         }
     }
     writeln!(source, "    );").unwrap();
@@ -1272,27 +1143,10 @@ pub fn generate_shader_source(
             idx += 1;
         }
     }
-    if let Some(mask) = mask {
-        for varying in &mask.varyings {
-            let interpolate = if varying.interpolated {
-                "perspective"
-            } else {
-                "flat"
-            };
-            writeln!(
-                source,
-                "    @location({idx}) @interpolate({interpolate}) mask_{}: {},",
-                varying.name,
-                varying.kind.as_str()
-            )
-            .unwrap();
-            idx += 1;
-        }
-    }
     writeln!(source, ") -> @location(0) vec4<f32> {{").unwrap();
     writeln!(source, "    var color = vec4<f32>(1.0);").unwrap();
 
-    writeln!(source, "    color.a *= geometry_fragment(").unwrap();
+    writeln!(source, "    color.a *= base_fragment(").unwrap();
     for varying in &geometry.varyings {
         writeln!(source, "        geom_{},", varying.name).unwrap();
     }
@@ -1302,14 +1156,6 @@ pub fn generate_shader_source(
         writeln!(source, "    color *= pattern_fragment(Pattern(").unwrap();
         for varying in &pattern.varyings {
             writeln!(source, "        pat_{},", varying.name).unwrap();
-        }
-        writeln!(source, "    ));").unwrap();
-    }
-
-    if let Some(mask) = mask {
-        writeln!(source, "    color.a *= mask_fragment(Mask(").unwrap();
-        for varying in &mask.varyings {
-            writeln!(source, "        mask_{},", varying.name).unwrap();
         }
         writeln!(source, "    ));").unwrap();
     }
@@ -1328,17 +1174,15 @@ pub fn generate_shader_source(
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleKey {
-    pub geometry: ShaderGeometryId,
+    pub geometry: BaseShaderId,
     pub pattern: ShaderPatternId,
-    pub mask: ShaderMaskId,
     pub user_flags: u8,
     pub defines: Vec<&'static str>,
 }
 
 pub struct PipelineDescriptor {
     pub label: &'static str,
-    pub geometry: ShaderGeometryId,
-    pub mask: ShaderMaskId,
+    pub base: BaseShaderId,
     pub user_flags: u8,
     pub blend: BlendMode,
     pub shader_defines: Vec<&'static str>,

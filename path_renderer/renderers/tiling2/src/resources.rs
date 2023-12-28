@@ -1,5 +1,5 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, GeometryDescriptor, PipelineDescriptor, ShaderMaskId, BlendMode, Binding, BindGroupLayout, Varying};
+use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, BaseShaderDescriptor, PipelineDescriptor, BlendMode, Binding, BindGroupLayout, Varying};
 //use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
@@ -45,7 +45,7 @@ impl TileGpuResources {
             ],
         ));
 
-        let tile_geom_id = shaders.register_geometry(GeometryDescriptor {
+        let tile_base_id = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::tile2".into(),
             source: include_str!("../shaders/tile.wgsl").into(),
             vertex_attributes: Vec::new(),
@@ -63,8 +63,7 @@ impl TileGpuResources {
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tiling2::opaque",
-            geometry: tile_geom_id,
-            mask: ShaderMaskId::NONE,
+            base: tile_base_id,
             user_flags: 0,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
@@ -72,8 +71,7 @@ impl TileGpuResources {
 
         let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tiling2::alpha",
-            geometry: tile_geom_id,
-            mask: ShaderMaskId::NONE,
+            base: tile_base_id,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),

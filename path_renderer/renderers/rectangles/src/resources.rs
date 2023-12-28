@@ -4,8 +4,8 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BlendMode, GeneratedPipelineId, GeometryDescriptor, PipelineDescriptor,
-        ShaderGeometryId, ShaderMaskId, Shaders, Varying, VertexAtribute,
+        BlendMode, GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderId, Shaders, Varying, VertexAtribute,
     },
     resources::RendererResources,
     units::LocalRect,
@@ -59,13 +59,13 @@ impl Pipelines {
 }
 
 pub struct RectangleGpuResources {
-    pub rect_geometry: ShaderGeometryId,
+    pub base_shader: BaseShaderId,
     pub(crate) pipelines: Pipelines,
 }
 
 impl RectangleGpuResources {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let rect_geometry = shaders.register_geometry(GeometryDescriptor {
+        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::rectangle".into(),
             source: RECTANGLE_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -83,16 +83,14 @@ impl RectangleGpuResources {
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(opaque)",
-            geometry: rect_geometry,
-            mask: ShaderMaskId::NONE,
+            base: base_shader,
             user_flags: 0,
             blend: BlendMode::None,
             shader_defines: vec!["EDGE_AA"],
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha)",
-            geometry: rect_geometry,
-            mask: ShaderMaskId::NONE,
+            base: base_shader,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
@@ -100,23 +98,21 @@ impl RectangleGpuResources {
 
         let opaque_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(opaque, no-aa)",
-            geometry: rect_geometry,
-            mask: ShaderMaskId::NONE,
+            base: base_shader,
             user_flags: 0,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha, no-aa)",
-            geometry: rect_geometry,
-            mask: ShaderMaskId::NONE,
+            base: base_shader,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: vec!["ALPHA_PASS"],
         });
 
         RectangleGpuResources {
-            rect_geometry,
+            base_shader,
             pipelines: Pipelines {
                 opaque_pipeline,
                 alpha_pipeline,
@@ -182,7 +178,7 @@ fn fetch_transform(address: u32) -> mat3x2<f32> {
     );
 }
 
-fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> Geometry {
+fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> BaseVertex {
 
     let transform_id = transform_flags & 0xFFFFFu;
     let flags = transform_flags & 0xFFF00000u;
@@ -242,17 +238,15 @@ fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u3
         1.0,
     );
 
-    return Geometry(
+    return BaseVertex(
         position,
         local_position,
         pattern,
-        local_position,
-        mask,
         aa_distances,
     );
 }
 
-fn geometry_fragment(aa_distances: vec4<f32>) -> f32 {
+fn base_fragment(aa_distances: vec4<f32>) -> f32 {
     var aa = 1.0;
     #if EDGE_AA {
         #if ALPHA_PASS {

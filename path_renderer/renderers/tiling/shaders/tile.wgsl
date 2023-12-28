@@ -2,13 +2,13 @@
 #import tiling
 #import rect
 
-fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
+fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
     var uv = rect_get_uv(vertex_index);
     var tile = tiling_decode_instance(instance_data, uv);
     var target_position = canvas_to_target(tile.position);
 
     // TODO: z_index
-    return Geometry(
+    return BaseVertex(
         target_position,
         tile.pattern_position,
         tile.pattern_data,
@@ -17,4 +17,4 @@ fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> Geometry {
     );
 }
 
-fn geometry_fragment() -> f32 { return 1.0; }
+fn base_fragment() -> f32 { return 1.0; }

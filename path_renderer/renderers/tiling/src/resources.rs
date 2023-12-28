@@ -7,8 +7,8 @@ use core::{
     gpu::{
         shader::{
             BindGroupLayout, BindGroupLayoutId, Binding, BlendMode, GeneratedPipelineId,
-            GeometryDescriptor, MaskDescriptor, PipelineDescriptor,
-            ShaderMaskId, Varying, VertexAtribute,
+            BaseShaderDescriptor, PipelineDescriptor,
+            Varying, VertexAtribute,
         },
         storage_buffer::*,
         GpuTargetDescriptor, Shaders, VertexBuilder,
@@ -63,16 +63,52 @@ pub struct TilingGpuResources {
     pub texture: TextureRenderer,
 }
 
-const MASK_ATLAS_SRC: &'static str = " 
-fn mask_vertex(mask_pos: vec2<f32>, mask_handle: u32) -> Mask {
-    return Mask(mask_pos);
+const BASE_MASKED_SHADER_SRC: &'static str = "
+#import render_target
+#import tiling
+#import rect
+
+fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
+    var uv = rect_get_uv(vertex_index);
+    var tile = tiling_decode_instance(instance_data, uv);
+    var target_position = canvas_to_target(tile.position);
+
+    // TODO: z_index
+    return BaseVertex(
+        target_position,
+        tile.pattern_position,
+        tile.pattern_data,
+        tile.mask_position,
+    );
 }
 
-fn mask_fragment(mask: Mask) -> f32 {
-    var uv = vec2<i32>(i32(mask.uv.x), i32(mask.uv.y));
+fn base_fragment(mask_uv: vec2f) -> f32 {
+    var uv = vec2<i32>(i32(mask_uv.x), i32(mask_uv.y));
     return textureLoad(mask_atlas_texture, uv, 0).r;
 }
 ";
+
+const BASE_OPAQUE_SHADER_SRC: &'static str = "
+#import render_target
+#import tiling
+#import rect
+
+fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
+    var uv = rect_get_uv(vertex_index);
+    var tile = tiling_decode_instance(instance_data, uv);
+    var target_position = canvas_to_target(tile.position);
+
+    // TODO: z_index
+    return BaseVertex(
+        target_position,
+        tile.pattern_position,
+        tile.pattern_data,
+    );
+}
+
+fn base_fragment() -> f32 { return 1.0; }
+";
+
 
 impl TilingGpuResources {
     pub fn new(
@@ -88,16 +124,6 @@ impl TilingGpuResources {
             "mask::fill".into(),
             include_str!("../shaders/fill.wgsl").into(),
         );
-
-        let tile_geom_id = shaders.register_geometry(GeometryDescriptor {
-            name: "geometry::tile".into(),
-            source: include_str!("../shaders/tile.wgsl").into(),
-            vertex_attributes: Vec::new(),
-            instance_attributes: vec![VertexAtribute::uint32x4("instance")],
-            varyings: Vec::new(),
-            bindings: None,
-            primitive: PipelineDefaults::primitive_state(),
-        });
 
         let mask_atlas_bind_group_layout =
             shaders.register_bind_group_layout(BindGroupLayout::new(
@@ -115,17 +141,29 @@ impl TilingGpuResources {
                 }],
             ));
 
-        let fill_mask_id = shaders.register_mask(MaskDescriptor {
-            name: "mask::tile_atlas".into(),
-            source: MASK_ATLAS_SRC.into(),
-            varyings: vec![Varying::float32x2("uv").interpolated()],
+        let base_masked_shader = shaders.register_base_shader(BaseShaderDescriptor {
+            name: "masked_tile".into(),
+            source: BASE_MASKED_SHADER_SRC.into(),
+            vertex_attributes: Vec::new(),
+            instance_attributes: vec![VertexAtribute::uint32x4("instance")],
+            varyings: vec![Varying::float32x2("mask_uv").interpolated()],
             bindings: Some(mask_atlas_bind_group_layout),
+            primitive: PipelineDefaults::primitive_state(),
+        });
+
+        let base_opaque_shader = shaders.register_base_shader(BaseShaderDescriptor {
+            name: "opaque_tile".into(),
+            source: BASE_OPAQUE_SHADER_SRC.into(),
+            vertex_attributes: Vec::new(),
+            instance_attributes: vec![VertexAtribute::uint32x4("instance")],
+            varyings: Vec::new(),
+            bindings: None,
+            primitive: PipelineDefaults::primitive_state(),
         });
 
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tile(opaque)",
-            geometry: tile_geom_id,
-            mask: ShaderMaskId::NONE,
+            base: base_opaque_shader,
             user_flags: 0,
             blend: BlendMode::None,
             shader_defines: Vec::new(),
@@ -133,8 +171,7 @@ impl TilingGpuResources {
 
         let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tile(alpha)",
-            geometry: tile_geom_id,
-            mask: fill_mask_id,
+            base: base_masked_shader,
             user_flags: 0,
             blend: BlendMode::PremultipliedAlpha,
             shader_defines: Vec::new(),
