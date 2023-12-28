@@ -65,13 +65,11 @@ impl MsaaStrokeGpuResources {
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "skel_stroke(opaque)",
             base: curve_geometry,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "skel_stroke(alpha)",
             base: curve_geometry,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

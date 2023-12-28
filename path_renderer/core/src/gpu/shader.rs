@@ -246,7 +246,6 @@ impl Shaders {
         let module_key = ModuleKey {
             geometry: params.base,
             pattern: pattern_id,
-            user_flags: params.user_flags,
             defines: params.shader_defines.clone(),
         };
 
@@ -1172,14 +1171,12 @@ pub fn generate_shader_source(
 pub struct ModuleKey {
     pub geometry: BaseShaderId,
     pub pattern: ShaderPatternId,
-    pub user_flags: u8,
     pub defines: Vec<&'static str>,
 }
 
 pub struct PipelineDescriptor {
     pub label: &'static str,
     pub base: BaseShaderId,
-    pub user_flags: u8,
     pub shader_defines: Vec<&'static str>,
 }
 

@@ -164,14 +164,12 @@ impl TilingGpuResources {
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tile(opaque)",
             base: base_opaque_shader,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 
         let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tile(alpha)",
             base: base_masked_shader,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

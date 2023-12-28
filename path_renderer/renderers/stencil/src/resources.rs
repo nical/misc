@@ -109,7 +109,6 @@ impl StencilAndCoverResources {
         let cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "cover",
             base: cover_base_shader,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

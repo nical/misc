@@ -64,14 +64,12 @@ impl TileGpuResources {
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tiling2::opaque",
             base: tile_base_id,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 
         let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "tiling2::alpha",
             base: tile_base_id,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

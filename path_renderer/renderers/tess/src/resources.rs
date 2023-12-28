@@ -32,7 +32,6 @@ impl MeshGpuResources {
         let pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "mesh(opaque)",
             base: simple_mesh_base,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

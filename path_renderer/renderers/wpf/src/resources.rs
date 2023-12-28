@@ -35,7 +35,6 @@ impl WpfGpuResources {
         let pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "wpf mesh",
             base: wpf_mesh_base,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
 

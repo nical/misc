@@ -84,26 +84,22 @@ impl RectangleGpuResources {
         let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(opaque)",
             base: base_shader,
-            user_flags: 0,
             shader_defines: vec!["EDGE_AA"],
         });
         let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha)",
             base: base_shader,
-            user_flags: 0,
             shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
         });
 
         let opaque_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(opaque, no-aa)",
             base: base_shader,
-            user_flags: 0,
             shader_defines: Vec::new(),
         });
         let alpha_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
             label: "rectangle(alpha, no-aa)",
             base: base_shader,
-            user_flags: 0,
             shader_defines: vec!["ALPHA_PASS"],
         });
 
