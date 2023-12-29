@@ -7,7 +7,7 @@ use core::{
     },
     gpu::{
         shader::{
-            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
+            PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode, BaseShaderId,
         },
         DynBufferRange, Shaders,
     },
@@ -110,8 +110,7 @@ pub struct MsaaStrokeRenderer {
     draws: Vec<Draw>,
     insatnce_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
-    opaque_pipeline: GeneratedPipelineId,
-    alpha_pipeline: GeneratedPipelineId,
+    base_shader: BaseShaderId,
 }
 
 impl MsaaStrokeRenderer {
@@ -133,8 +132,7 @@ impl MsaaStrokeRenderer {
             batches: BatchList::new(renderer_id),
             insatnce_range: None,
             ibo_range: None,
-            opaque_pipeline: res.opaque_pipeline,
-            alpha_pipeline: res.alpha_pipeline,
+            base_shader: res.base_shader,
         }
     }
 
@@ -231,22 +229,16 @@ impl MsaaStrokeRenderer {
             let mut geom_start = self.curves.len() as u32;
 
             let mut max_segments_per_instance = 1;
-            let mut alpha = false;
             for stroke in commands.iter() {
                 if key != stroke.pattern.shader_and_bindings() {
                     let end = self.curves.len() as u32;
                     if end > geom_start {
-                        let base_pipeline = if alpha {
-                            self.alpha_pipeline
-                        } else {
-                            self.opaque_pipeline
-                        };
                         self.draws.push(Draw {
                             segment_count: max_segments_per_instance,
                             instances: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                base_pipeline,
+                                self.base_shader,
                                 key.0,
                                 info.blend_mode,
                                 surface.draw_config(true, None),
@@ -258,22 +250,16 @@ impl MsaaStrokeRenderer {
                     max_segments_per_instance = 1;
                 }
                 self.prepare_stroke(stroke, ctx, &mut max_segments_per_instance);
-                alpha |= !stroke.pattern.is_opaque; 
             }
 
             let end = self.curves.len() as u32;
             if end > geom_start {
-                let base_pipeline = if alpha {
-                    self.alpha_pipeline
-                } else {
-                    self.opaque_pipeline
-                };
                 self.draws.push(Draw {
                     segment_count: max_segments_per_instance, // TODO
                     instances: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        base_pipeline,
+                        self.base_shader,
                         key.0,
                         info.blend_mode,
                         surface.draw_config(true, None),

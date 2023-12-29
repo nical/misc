@@ -2,7 +2,7 @@ use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingG
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::{bytemuck, SurfaceKind};
 use core::context::{SurfaceDrawConfig, FillPath};
-use core::gpu::shader::{RenderPipelineIndex, GeneratedPipelineId, ShaderPatternId, BlendMode};
+use core::gpu::shader::{RenderPipelineIndex, BaseShaderId, ShaderPatternId, BlendMode};
 use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchId, BatchList},
@@ -73,8 +73,8 @@ pub struct TileRenderer {
     opaque_batch_pipelines: Vec<RenderPipelineIndex>,
     alpha_batch_pipelines: Vec<RenderPipelineIndex>,
     opaque_prerendered_pipelines: Vec<RenderPipelineIndex>,
-    opaque_pipeline: GeneratedPipelineId,
-    masked_pipeline: GeneratedPipelineId,
+    opaque_pipeline: BaseShaderId,
+    masked_pipeline: BaseShaderId,
     texture_load_pattern: ShaderPatternId,
 }
 

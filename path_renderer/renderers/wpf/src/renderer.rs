@@ -7,7 +7,7 @@ use core::{
     },
     gpu::{
         shader::{
-            GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
+            PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode, BaseShaderId,
         },
         DynBufferRange,
     },
@@ -42,6 +42,7 @@ unsafe impl bytemuck::Pod for Vertex {}
 struct BatchInfo {
     draws: Range<u32>,
     surface: SurfacePassConfig,
+    blend_mode: BlendMode,
 }
 
 enum Shape {
@@ -81,7 +82,7 @@ pub struct WpfMeshRenderer {
     draws: Vec<Draw>,
     vbo_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
-    pipeline: GeneratedPipelineId,
+    base_shader: BaseShaderId,
 }
 
 impl WpfMeshRenderer {
@@ -103,7 +104,7 @@ impl WpfMeshRenderer {
             batches: BatchList::new(renderer_id),
             vbo_range: None,
             ibo_range: None,
-            pipeline: res.pipeline,
+            base_shader: res.base_shader,
         }
     }
 
@@ -145,7 +146,11 @@ impl WpfMeshRenderer {
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
-            &mut || BatchInfo { draws: 0..0, surface },
+            &mut || BatchInfo {
+                draws: 0..0,
+                surface,
+                blend_mode: pattern.blend_mode.with_alpha(true),
+            },
         );
         info.surface = surface;
         commands.push(Fill {
@@ -189,9 +194,9 @@ impl WpfMeshRenderer {
                             vertices: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.pipeline,
+                                self.base_shader,
                                 key.0,
-                                BlendMode::PremultipliedAlpha,
+                                info.blend_mode,
                                 surface.draw_config(false, None),
                             )),
                         });
@@ -208,9 +213,9 @@ impl WpfMeshRenderer {
                     vertices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.pipeline,
+                        self.base_shader,
                         key.0,
-                        BlendMode::PremultipliedAlpha,
+                        info.blend_mode,
                         surface.draw_config(false, None),
                     )),
                 });

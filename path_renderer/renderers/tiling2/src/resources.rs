@@ -1,5 +1,5 @@
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{GeneratedPipelineId, VertexAtribute, BaseShaderDescriptor, PipelineDescriptor, Binding, BindGroupLayout, Varying};
+use core::gpu::shader::{BaseShaderId, VertexAtribute, BaseShaderDescriptor, Binding, BindGroupLayout, Varying};
 //use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
@@ -8,8 +8,7 @@ use core::{
 };
 
 pub struct TileGpuResources {
-    pub(crate) opaque_pipeline: GeneratedPipelineId,
-    pub(crate) masked_pipeline: GeneratedPipelineId,
+    pub(crate) base_shader: BaseShaderId,
     pub(crate) edge_texture: wgpu::Texture,
     pub(crate) path_texture: wgpu::Texture,
     pub(crate) bind_group: wgpu::BindGroup,
@@ -45,7 +44,7 @@ impl TileGpuResources {
             ],
         ));
 
-        let tile_base_id = shaders.register_base_shader(BaseShaderDescriptor {
+        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::tile2".into(),
             source: include_str!("../shaders/tile.wgsl").into(),
             vertex_attributes: Vec::new(),
@@ -59,17 +58,6 @@ impl TileGpuResources {
             ],
             bindings: Some(bind_group_layout),
             primitive: PipelineDefaults::primitive_state(),
-        });
-
-        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "tiling2::opaque",
-            base: tile_base_id,
-            shader_defines: Vec::new(),
-        });
-
-        let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "tiling2::alpha",
-            base: tile_base_id,
             shader_defines: Vec::new(),
         });
 
@@ -125,8 +113,7 @@ impl TileGpuResources {
         });
 
         TileGpuResources {
-            opaque_pipeline,
-            masked_pipeline,
+            base_shader,
             edge_texture,
             path_texture,
             bind_group,

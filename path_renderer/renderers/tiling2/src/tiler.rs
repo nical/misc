@@ -420,7 +420,7 @@ impl Tiler {
                     let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
 
                     if tx >= self.scissor_tiles.min.x {
-                        let offset_x = (tx * UNITS_PER_TILE) as f32;
+                        let offset_x = (tx * UNITS_PER_TILE) as f32; // TODO: multiply with overflow.
                         let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
                         let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
                         let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;

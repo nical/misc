@@ -4,7 +4,7 @@ use core::gpu::storage_buffer::{StorageBuffer, StorageKind};
 use core::wgpu;
 use core::{
     gpu::shader::{
-        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
@@ -14,8 +14,6 @@ use crate::PathData;
 
 pub struct MsaaStrokeGpuResources {
     pub base_shader: BaseShaderId,
-    pub opaque_pipeline: GeneratedPipelineId,
-    pub alpha_pipeline: GeneratedPipelineId,
     pub paths: StorageBuffer,
     pub geom_bind_group_layout: BindGroupLayoutId,
     pub geom_bind_group: Option<wgpu::BindGroup>,
@@ -41,7 +39,7 @@ impl MsaaStrokeGpuResources {
             ]
         ));
 
-        let curve_geometry = shaders.register_base_shader(BaseShaderDescriptor {
+        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::skeletal_stroke_curves".into(),
             source: SHADER_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -60,23 +58,11 @@ impl MsaaStrokeGpuResources {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
                 .. PipelineDefaults::primitive_state()
             },
-        });
-
-        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "skel_stroke(opaque)",
-            base: curve_geometry,
-            shader_defines: Vec::new(),
-        });
-        let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "skel_stroke(alpha)",
-            base: curve_geometry,
             shader_defines: Vec::new(),
         });
 
         MsaaStrokeGpuResources {
-            base_shader: curve_geometry,
-            opaque_pipeline,
-            alpha_pipeline,
+            base_shader,
             paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
             geom_bind_group_layout: bgl,
             geom_bind_group: None,

@@ -9,7 +9,7 @@ use core::{
     shape::FilledPath,
     transform::TransformId,
     units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
-    wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, GeneratedPipelineId, BlendMode}, DynBufferRange}, bytemuck,
+    wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, BlendMode, BaseShaderId}, DynBufferRange}, bytemuck,
 };
 use std::ops::Range;
 
@@ -20,6 +20,7 @@ struct BatchInfo {
     pattern: BuiltPattern,
     opaque_draw: Option<Draw>,
     masked_draw: Option<Draw>,
+    blend_mode: BlendMode,
 }
 
 struct Draw {
@@ -58,8 +59,7 @@ pub struct TileRenderer {
     tiles: TilerOutput,
 
     batches: BatchList<Fill, BatchInfo>,
-    opaque_pipeline: GeneratedPipelineId,
-    masked_pipeline: GeneratedPipelineId,
+    base_shader: BaseShaderId,
     instances: Option<DynBufferRange>,
 }
 
@@ -78,8 +78,7 @@ impl TileRenderer {
             tiler: Tiler::new(),
             tiles: TilerOutput::new(),
             batches: BatchList::new(renderer_id),
-            opaque_pipeline: res.opaque_pipeline,
-            masked_pipeline: res.masked_pipeline,
+            base_shader: res.base_shader,
             instances: None,
         }
     }
@@ -135,6 +134,7 @@ impl TileRenderer {
                 pattern,
                 opaque_draw: None,
                 masked_draw: None,
+                blend_mode: pattern.blend_mode,
             },
         );
         info.surface = ctx.surface.current_config();
@@ -179,7 +179,7 @@ impl TileRenderer {
                 info.opaque_draw = Some(Draw {
                     tiles: opaque_tiles_start..opaque_tiles_end,
                     pipeline: shaders.prepare(RenderPipelineKey::new(
-                        self.opaque_pipeline,
+                        self.base_shader,
                         info.pattern.shader,
                         BlendMode::None,
                         draw_config,
@@ -192,9 +192,9 @@ impl TileRenderer {
                 info.masked_draw = Some(Draw {
                     tiles: mask_tiles_start..mask_tiles_end,
                     pipeline: shaders.prepare(RenderPipelineKey::new(
-                        self.masked_pipeline,
+                        self.base_shader,
                         info.pattern.shader,
-                        BlendMode::PremultipliedAlpha,
+                        info.blend_mode.with_alpha(true),
                         draw_config,
                     )),
                 })

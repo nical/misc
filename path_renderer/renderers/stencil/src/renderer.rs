@@ -15,7 +15,7 @@ use core::{
     bytemuck,
     context::RenderContext,
     gpu::shader::{
-        GeneratedPipelineId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+        BaseShaderId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
     },
     shape::{Circle, FilledPath},
 };
@@ -145,7 +145,7 @@ pub struct StencilAndCoverRenderer {
     cover_ibo_range: Option<DynBufferRange>,
     enable_msaa: bool,
     opaque_pass: bool,
-    cover_pipeline: GeneratedPipelineId,
+    cover_pipeline: BaseShaderId,
     pub stats: Stats,
 }
 
@@ -171,7 +171,7 @@ impl StencilAndCoverRenderer {
             cover_ibo_range: None,
             enable_msaa: false,
             opaque_pass: false,
-            cover_pipeline: res.cover_pipeline,
+            cover_pipeline: res.cover_base_shader,
             stats: Stats {
                 commands: 0,
                 stencil_batches: 0,

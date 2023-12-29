@@ -3,7 +3,7 @@ use core::gpu::shader::Varying;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
@@ -11,7 +11,6 @@ use core::{
 
 pub struct WpfGpuResources {
     pub base_shader: BaseShaderId,
-    pub pipeline: GeneratedPipelineId,
 }
 
 impl WpfGpuResources {
@@ -30,17 +29,11 @@ impl WpfGpuResources {
             ],
             bindings: None,
             primitive: PipelineDefaults::primitive_state(),
-        });
-
-        let pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "wpf mesh",
-            base: wpf_mesh_base,
             shader_defines: Vec::new(),
         });
 
         WpfGpuResources {
             base_shader: wpf_mesh_base,
-            pipeline,
         }
     }
 }

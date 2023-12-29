@@ -2,7 +2,7 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::{
-        shader::{GeneratedPipelineId, PipelineDescriptor},
+        shader::BaseShaderId,
         Shaders, VertexBuilder,
     },
     resources::{CommonGpuResources, RendererResources},
@@ -11,7 +11,7 @@ use core::{
 pub struct StencilAndCoverResources {
     pub stencil_pipeline: wgpu::RenderPipeline,
     pub msaa_stencil_pipeline: wgpu::RenderPipeline,
-    pub cover_pipeline: GeneratedPipelineId,
+    pub cover_base_shader: BaseShaderId,
 }
 
 const STENCIL_SHADER_SRC: &'static str = "
@@ -105,17 +105,10 @@ impl StencilAndCoverResources {
         // TODO: this creates an implicit dependency to the mesh renderer.
         let cover_base_shader = shaders.find_base_shader("geometry::simple_mesh").unwrap();
 
-        // TODO: these pipelines happen to be identical to the mesh renderer's.
-        let cover_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "cover",
-            base: cover_base_shader,
-            shader_defines: Vec::new(),
-        });
-
         StencilAndCoverResources {
             stencil_pipeline,
             msaa_stencil_pipeline,
-            cover_pipeline,
+            cover_base_shader,
         }
     }
 }

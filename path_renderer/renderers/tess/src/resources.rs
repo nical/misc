@@ -2,20 +2,19 @@ use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
+        BaseShaderDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
     resources::RendererResources,
 };
 
 pub struct MeshGpuResources {
-    pub simple_mesh_base: BaseShaderId,
-    pub pipeline: GeneratedPipelineId,
+    pub base_shader: BaseShaderId,
 }
 
 impl MeshGpuResources {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let simple_mesh_base = shaders.register_base_shader(BaseShaderDescriptor {
+        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::simple_mesh".into(),
             source: SIMPLE_MESH_SRC.into(),
             vertex_attributes: vec![
@@ -26,18 +25,12 @@ impl MeshGpuResources {
             instance_attributes: Vec::new(),
             varyings: Vec::new(),
             bindings: None,
-            primitive: PipelineDefaults::primitive_state()
-        });
-
-        let pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "mesh(opaque)",
-            base: simple_mesh_base,
+            primitive: PipelineDefaults::primitive_state(),
             shader_defines: Vec::new(),
         });
 
         MeshGpuResources {
-            simple_mesh_base,
-            pipeline,
+            base_shader,
         }
     }
 }

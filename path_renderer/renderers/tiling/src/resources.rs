@@ -6,8 +6,8 @@ use core::wgpu::util::DeviceExt;
 use core::{
     gpu::{
         shader::{
-            BindGroupLayout, BindGroupLayoutId, Binding, GeneratedPipelineId,
-            BaseShaderDescriptor, PipelineDescriptor,
+            BindGroupLayout, BindGroupLayoutId, Binding, BaseShaderId,
+            BaseShaderDescriptor,
             Varying, VertexAtribute,
         },
         storage_buffer::*,
@@ -58,8 +58,8 @@ pub struct TilingGpuResources {
     pub edges: StorageBuffer,
     pub mask_params_ubo: wgpu::Buffer,
 
-    pub opaque_pipeline: GeneratedPipelineId,
-    pub masked_pipeline: GeneratedPipelineId,
+    pub opaque_pipeline: BaseShaderId,
+    pub masked_pipeline: BaseShaderId,
     pub texture: TextureRenderer,
 }
 
@@ -141,7 +141,7 @@ impl TilingGpuResources {
                 }],
             ));
 
-        let base_masked_shader = shaders.register_base_shader(BaseShaderDescriptor {
+        let masked_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
             name: "masked_tile".into(),
             source: BASE_MASKED_SHADER_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -149,9 +149,10 @@ impl TilingGpuResources {
             varyings: vec![Varying::float32x2("mask_uv").interpolated()],
             bindings: Some(mask_atlas_bind_group_layout),
             primitive: PipelineDefaults::primitive_state(),
+            shader_defines: Vec::new(),
         });
 
-        let base_opaque_shader = shaders.register_base_shader(BaseShaderDescriptor {
+        let opaque_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
             name: "opaque_tile".into(),
             source: BASE_OPAQUE_SHADER_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -159,17 +160,6 @@ impl TilingGpuResources {
             varyings: Vec::new(),
             bindings: None,
             primitive: PipelineDefaults::primitive_state(),
-        });
-
-        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "tile(opaque)",
-            base: base_opaque_shader,
-            shader_defines: Vec::new(),
-        });
-
-        let masked_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "tile(alpha)",
-            base: base_masked_shader,
             shader_defines: Vec::new(),
         });
 

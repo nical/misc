@@ -1,11 +1,12 @@
 use core::bitflags::bitflags;
 use core::bytemuck;
 use core::gpu::PipelineDefaults;
+use core::gpu::shader::BaseShaderId;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        GeneratedPipelineId, BaseShaderDescriptor, PipelineDescriptor,
-        BaseShaderId, Shaders, Varying, VertexAtribute,
+        BaseShaderDescriptor,
+        Shaders, Varying, VertexAtribute,
     },
     resources::RendererResources,
     units::LocalRect,
@@ -41,14 +42,14 @@ unsafe impl bytemuck::Pod for Instance {}
 
 #[derive(Clone)]
 pub(crate) struct Pipelines {
-    pub opaque_pipeline: GeneratedPipelineId,
-    pub alpha_pipeline: GeneratedPipelineId,
-    pub opaque_pipeline_no_aa: GeneratedPipelineId,
-    pub alpha_pipeline_no_aa: GeneratedPipelineId,
+    pub opaque_pipeline: BaseShaderId,
+    pub alpha_pipeline: BaseShaderId,
+    pub opaque_pipeline_no_aa: BaseShaderId,
+    pub alpha_pipeline_no_aa: BaseShaderId,
 }
 
 impl Pipelines {
-    pub fn get(&self, opaque: bool, edge_aa: bool) -> GeneratedPipelineId {
+    pub fn get(&self, opaque: bool, edge_aa: bool) -> BaseShaderId {
         match (opaque, edge_aa) {
             (true, true) => self.opaque_pipeline,
             (false, true) => self.alpha_pipeline,
@@ -59,13 +60,12 @@ impl Pipelines {
 }
 
 pub struct RectangleGpuResources {
-    pub base_shader: BaseShaderId,
     pub(crate) pipelines: Pipelines,
 }
 
 impl RectangleGpuResources {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
+        let base_descriptor = BaseShaderDescriptor {
             name: "geometry::rectangle".into(),
             source: RECTANGLE_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -79,32 +79,29 @@ impl RectangleGpuResources {
             varyings: vec![Varying::float32x4("aa_distances")],
             bindings: None,
             primitive: PipelineDefaults::primitive_state(),
-        });
-
-        let opaque_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "rectangle(opaque)",
-            base: base_shader,
-            shader_defines: vec!["EDGE_AA"],
-        });
-        let alpha_pipeline = shaders.register_pipeline(PipelineDescriptor {
-            label: "rectangle(alpha)",
-            base: base_shader,
-            shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
-        });
-
-        let opaque_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
-            label: "rectangle(opaque, no-aa)",
-            base: base_shader,
             shader_defines: Vec::new(),
+        };
+
+        let alpha_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
+            shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
+            ..base_descriptor.clone()
         });
-        let alpha_pipeline_no_aa = shaders.register_pipeline(PipelineDescriptor {
-            label: "rectangle(alpha, no-aa)",
-            base: base_shader,
+
+        let opaque_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
+            shader_defines: vec!["EDGE_AA"],
+            ..base_descriptor.clone()
+        });
+
+        let alpha_pipeline_no_aa = shaders.register_base_shader(BaseShaderDescriptor {
             shader_defines: vec!["ALPHA_PASS"],
+            ..base_descriptor.clone()
+        });
+
+        let opaque_pipeline_no_aa = shaders.register_base_shader(BaseShaderDescriptor {
+            ..base_descriptor.clone()
         });
 
         RectangleGpuResources {
-            base_shader,
             pipelines: Pipelines {
                 opaque_pipeline,
                 alpha_pipeline,
