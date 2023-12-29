@@ -419,20 +419,18 @@ impl Tiler {
                     let offset_y = (ty * UNITS_PER_TILE) as f32;
                     let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
 
-                    if tx >= self.scissor_tiles.min.x {
+                    if !occluded {
                         let offset_x = (tx * UNITS_PER_TILE) as f32; // TODO: multiply with overflow.
                         let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
                         let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
                         let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;
 
-                        if !occluded {
-                            assert!(tx < self.scissor_tiles.max.x);
-                            //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
-                            events.push(Event::edge(
-                                tx as u16, ty as u16,
-                                [local_x0, local_y0, local_x1, local_y1]
-                            ));
-                        }
+                        assert!(tx < self.scissor_tiles.max.x);
+                        //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
+                        events.push(Event::edge(
+                            tx as u16, ty as u16,
+                            [local_x0, local_y0, local_x1, local_y1]
+                        ));
                     }
 
                     // Add an auxiliary edge when crossing a vertical boundary (tile x
@@ -442,9 +440,9 @@ impl Tiler {
                         // we are actually adding an auxiliary edge to the previous tile
                         // rather than the current one.
                         let aux_tx = tx.max(self.prev_tx);
-                        let occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
+                        let aux_occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
 
-                        if !occluded {
+                        if !aux_occluded {
                             let (y0, y1) = if tx < self.prev_tx {
                                 (local_y0, 255)
                             } else {
