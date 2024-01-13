@@ -6,6 +6,7 @@ use core::pattern::BindingsId;
 use core::resources::{CommonGpuResources, GpuResources};
 use core::shape::*;
 use core::stroke::*;
+use core::transform::Transforms;
 use core::units::{
     point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize,
 };
@@ -74,14 +75,14 @@ impl Renderers {
         self.msaa_strokes.begin_frame(ctx);
     }
 
-    fn prepare(&mut self, ctx: &Context, prep: &mut PrepareRenderPipelines, device: &wgpu::Device) {
-        self.tiling.prepare(ctx, prep, &device);
-        self.tiling2.prepare(ctx, prep);
-        self.meshes.prepare(ctx, prep);
-        self.stencil.prepare(ctx, prep);
+    fn prepare(&mut self, ctx: &Context, transforms: &Transforms, prep: &mut PrepareRenderPipelines, device: &wgpu::Device) {
+        self.tiling.prepare(ctx, transforms, prep, &device);
+        self.tiling2.prepare(ctx, transforms, prep);
+        self.meshes.prepare(ctx, transforms, prep);
+        self.stencil.prepare(ctx, transforms, prep);
         self.rectangles.prepare(ctx, prep);
-        self.wpf.prepare(ctx, prep);
-        self.msaa_strokes.prepare(ctx, prep);
+        self.wpf.prepare(ctx, transforms, prep);
+        self.msaa_strokes.prepare(ctx, transforms, prep);
     }
 
     fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -260,6 +261,7 @@ fn main() {
     };
 
     let mut ctx = Context::new(CanvasParams { tolerance });
+    let mut transforms = Transforms::new();
 
     let mut gpu_store = GpuStore::new(2048, &device);
 
@@ -454,6 +456,7 @@ fn main() {
                 kind: SurfaceKind::Color,
             },
         );
+        transforms.clear();
 
         renderers.begin_frame(&ctx);
 
@@ -476,6 +479,7 @@ fn main() {
             test_stuff,
             demo.msaa,
             &mut ctx,
+            &mut transforms,
             &mut renderers,
             &patterns,
             &mut gpu_store,
@@ -485,6 +489,7 @@ fn main() {
         if false {
             renderers.tiling.fill_circle(
                 &mut ctx,
+                &transforms,
                 Circle {
                     center: point(10.0, 600.0),
                     radius: 100.0,
@@ -510,7 +515,7 @@ fn main() {
         let mut prep_pipelines = render_pipelines.prepare();
 
         ctx.prepare();
-        renderers.prepare(&ctx, &mut prep_pipelines, &device);
+        renderers.prepare(&ctx, &transforms, &mut prep_pipelines, &device);
 
         let changes = prep_pipelines.finish();
         render_pipelines.build(
@@ -636,6 +641,7 @@ fn paint_scene(
     testing: bool,
     msaa: MsaaMode,
     ctx: &mut Context,
+    transforms: &mut Transforms,
     renderers: &mut Renderers,
     patterns: &Patterns,
     gpu_store: &mut GpuStore,
@@ -660,21 +666,22 @@ fn paint_scene(
                     a: 255,
                 },
             }
-            .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+            .transformed(&transforms.get_current().matrix().to_untyped()),
         );
 
         if fill_renderer == TILING2 {
-            renderers.tiling2.fill_surface(ctx, gradient);
+            renderers.tiling2.fill_surface(ctx, &transforms, gradient);
         } else {
-            renderers.tiling.fill_surface(ctx, gradient);
+            renderers.tiling.fill_surface(ctx, &transforms, gradient);
         }
     }
 
-    ctx.transforms.push(transform);
+    transforms.push(transform);
 
     if false && testing {
         renderers.tiling.fill_circle(
             ctx,
+            transforms,
             Circle::new(point(500.0, 500.0), 800.0),
             patterns.gradients.add(
                 gpu_store,
@@ -694,7 +701,7 @@ fn paint_scene(
                         a: 255,
                     },
                 }
-                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+                .transformed(&transforms.get_current().matrix().to_untyped()),
             ),
         );
     }
@@ -732,12 +739,12 @@ fn paint_scene(
                         from,
                         to,
                     }
-                    .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+                    .transformed(&transforms.get_current().matrix().to_untyped()),
                 ),
             };
 
             let path = FilledPath::new(path.clone());
-            renderers.fill(fill_renderer).fill_path(ctx, path, pattern);
+            renderers.fill(fill_renderer).fill_path(ctx, transforms, path, pattern);
         }
 
         if let Some(stroke) = stroke {
@@ -759,13 +766,13 @@ fn paint_scene(
                         from,
                         to,
                     }
-                    .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+                    .transformed(&transforms.get_current().matrix().to_untyped()),
                 ),
             };
 
             match stroke_renderer {
                 crate::INSTANCED => {
-                    renderers.msaa_strokes.stroke_path(ctx, path.clone(), pattern, width);
+                    renderers.msaa_strokes.stroke_path(ctx, transforms, path.clone(), pattern, width);
                 }
                 crate::STROKE_TO_FILL => {
                     let w = width * 0.5;
@@ -790,7 +797,7 @@ fn paint_scene(
                     }
                     let stroked_path = stroked_path.build();
                     let path = FilledPath::new(Arc::new(stroked_path));
-                    renderers.fill(fill_renderer).fill_path(ctx, path, pattern);
+                    renderers.fill(fill_renderer).fill_path(ctx, transforms, path, pattern);
                 }
                 _ => {
                     unimplemented!();
@@ -807,9 +814,8 @@ fn paint_scene(
         //    kind: SurfaceKind::Color,
         //});
 
-        ctx.transforms
-            .set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let transform_handle = ctx.transforms.get_current_gpu_handle(gpu_store);
+        transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+        let transform_handle = transforms.get_current_gpu_handle(gpu_store);
         let gradient = patterns.gradients.add(
             gpu_store,
             LinearGradient {
@@ -832,6 +838,7 @@ fn paint_scene(
 
         renderers.rectangles.fill_rect(
             ctx,
+            transforms,
             &LocalRect {
                 min: point(200.0, 700.0),
                 max: point(300.0, 900.0),
@@ -842,6 +849,7 @@ fn paint_scene(
         );
         renderers.rectangles.fill_rect(
             ctx,
+            transforms,
             &LocalRect {
                 min: point(310.5, 700.5),
                 max: point(410.5, 900.5),
@@ -850,7 +858,7 @@ fn paint_scene(
             gradient,
             transform_handle,
         );
-        ctx.transforms.pop();
+        transforms.pop();
 
         //ctx.reconfigure_surface(SurfacePassConfig {
         //    depth: false,
@@ -861,6 +869,7 @@ fn paint_scene(
 
         renderers.tiling.fill_circle(
             ctx,
+            transforms,
             Circle::new(point(500.0, 300.0), 200.0),
             patterns.gradients.add(
                 gpu_store,
@@ -880,7 +889,7 @@ fn paint_scene(
                         a: 255,
                     },
                 }
-                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+                .transformed(&transforms.get_current().matrix().to_untyped()),
             ),
         );
 
@@ -893,6 +902,7 @@ fn paint_scene(
 
         renderers.fill(fill_renderer).fill_path(
             ctx,
+            transforms,
             builder.build().into(),
             patterns.checkerboards.add(
                 gpu_store,
@@ -907,15 +917,16 @@ fn paint_scene(
                     scale: 25.0,
                     offset: point(0.0, 0.0),
                 }
-                .transformed(&ctx.transforms.get_current().matrix().to_untyped()),
+                .transformed(&transforms.get_current().matrix().to_untyped()),
             ).with_blend_mode(BlendMode::Screen),
         );
 
-        ctx.transforms.pop();
+        transforms.pop();
 
         let black = patterns.colors.add(Color::BLACK);
         renderers.tiling.fill_rect(
             ctx,
+            transforms,
             LocalRect {
                 min: point(10.0, 10.0),
                 max: point(50.0, 50.0),
@@ -924,6 +935,7 @@ fn paint_scene(
         );
         renderers.tiling.fill_rect(
             ctx,
+            transforms,
             LocalRect {
                 min: point(60.5, 10.5),
                 max: point(100.5, 50.5),
@@ -1022,10 +1034,11 @@ fn paint_scene(
 
         if false {
             let offset_path = builder2.build();
-            renderers.tiling.fill_path(ctx, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling.fill_path(ctx, transforms, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
                 ctx,
+                transforms,
                 offset_path.clone(),
                 1.0,
                 patterns.colors.add(Color {
@@ -1037,6 +1050,7 @@ fn paint_scene(
             );
             renderers.meshes.stroke_path(
                 ctx,
+                transforms,
                 path_to_offset.clone(),
                 1.0,
                 patterns.colors.add(Color::BLACK),
@@ -1055,7 +1069,7 @@ fn paint_scene(
             b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
             b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
             b.end(false);
-            renderers.meshes.stroke_path(ctx, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+            renderers.meshes.stroke_path(ctx, transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
             let green = patterns.colors.add(Color::GREEN);
             let blue = patterns.colors.add(Color::BLUE);
@@ -1065,6 +1079,7 @@ fn paint_scene(
                     PathEvent::Begin { at } => {
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: at.cast_unit(),
                                 radius: 3.0,
@@ -1076,6 +1091,7 @@ fn paint_scene(
                     PathEvent::Line { to, .. } => {
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1087,6 +1103,7 @@ fn paint_scene(
                     PathEvent::Quadratic { ctrl, to, .. } => {
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: ctrl.cast_unit(),
                                 radius: 4.0,
@@ -1096,6 +1113,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1109,6 +1127,7 @@ fn paint_scene(
                     } => {
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: ctrl1.cast_unit(),
                                 radius: 4.0,
@@ -1118,6 +1137,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: ctrl2.cast_unit(),
                                 radius: 4.0,
@@ -1127,6 +1147,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             ctx,
+                            transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 2.0,
@@ -1141,8 +1162,8 @@ fn paint_scene(
         }
     }
 
-    ctx.transforms.push(&LocalTransform::translation(10.0, 1.0));
-    ctx.transforms.pop();
+    transforms.push(&LocalTransform::translation(10.0, 1.0));
+    transforms.pop();
 }
 
 fn print_stats(

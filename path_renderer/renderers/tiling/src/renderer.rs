@@ -1,5 +1,6 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
+use core::transform::Transforms;
 use core::{bytemuck, SurfaceKind};
 use core::context::{SurfaceDrawConfig, FillPath};
 use core::gpu::shader::{RenderPipelineIndex, BaseShaderId, ShaderPatternId, BlendMode};
@@ -148,29 +149,29 @@ impl TileRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         shape: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(shape.into()), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(shape.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Rect(rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_surface(&mut self, ctx: &mut Context, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Surface, pattern);
+    pub fn fill_surface(&mut self, ctx: &mut Context, transforms: &Transforms, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         debug_assert!(self.supports_surface(ctx.surface.current_config()));
 
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
@@ -190,7 +191,7 @@ impl TileRenderer {
             .push(Fill {
                 shape: shape.into(),
                 pattern,
-                transform: ctx.transforms.current_id(),
+                transform: transforms.current_id(),
                 z_index: ctx.z_indices.push(),
             });
     }
@@ -198,6 +199,7 @@ impl TileRenderer {
     pub fn prepare(
         &mut self,
         ctx: &Context,
+        transforms: &Transforms,
         shaders: &mut PrepareRenderPipelines,
         device: &wgpu::Device,
     ) {
@@ -219,7 +221,7 @@ impl TileRenderer {
             let (commands, info) = batches.get_mut(batch_id.index);
             let surface = info.surface.draw_config(false, None);
             for fill in commands.iter().rev() {
-                self.prepare_fill(fill, &surface, ctx, device);
+                self.prepare_fill(fill, &surface, ctx, transforms, device);
             }
             self.encoder.split_sub_pass();
             let passes_end = self.encoder.render_passes.len();
@@ -285,9 +287,9 @@ impl TileRenderer {
         }
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, ctx: &Context, device: &wgpu::Device) {
+    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, _ctx: &Context, transforms: &Transforms, device: &wgpu::Device) {
         let transform = if fill.transform != TransformId::NONE {
-            Some(ctx.transforms.get(fill.transform).matrix().to_untyped())
+            Some(transforms.get(fill.transform).matrix().to_untyped())
         } else {
             None
         };
@@ -697,9 +699,10 @@ impl FillPath for TileRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }

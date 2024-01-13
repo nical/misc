@@ -10,7 +10,7 @@ use core::{
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
-    transform::TransformId,
+    transform::{TransformId, Transforms},
     units::LocalRect,
     usize_range, wgpu, gpu::shader::{RenderPipelineIndex, PrepareRenderPipelines},
 };
@@ -87,18 +87,18 @@ impl TemplateRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = ctx.transforms.current_id();
+    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
@@ -127,7 +127,7 @@ impl TemplateRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -157,7 +157,7 @@ impl TemplateRenderer {
                     // self.draws.push(...)
                 }
 
-                self.prepare_fill(fill, ctx);
+                self.prepare_fill(fill, ctx, transforms);
             }
 
             // if commands to flush...
@@ -169,8 +169,8 @@ impl TemplateRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context) {
-        let transform = ctx.transforms.get(fill.transform).matrix();
+    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context, transforms: &Transforms) {
+        let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
 
@@ -222,9 +222,10 @@ impl FillPath for TemplateRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }

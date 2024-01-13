@@ -13,7 +13,7 @@ use core::{
     pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     units::LocalRect,
-    wgpu,
+    wgpu, transform::Transforms,
 };
 
 use super::RectangleGpuResources;
@@ -79,14 +79,15 @@ impl RectangleRenderer {
     pub fn fill_rect(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         local_rect: &LocalRect,
         mut aa: Aa,
         pattern: BuiltPattern,
+        // TODO: get this from Transforms.
         transform_handle: GpuStoreHandle,
     ) {
         let z_index = ctx.z_indices.push();
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&local_rect.cast_unit());

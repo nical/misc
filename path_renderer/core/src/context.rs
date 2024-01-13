@@ -515,7 +515,6 @@ impl Default for CanvasParams {
 pub struct Context {
     // TODO: maybe split off the push/pop transforms builder thing so that this remains more compatible
     // with a retained scene model as well.
-    pub transforms: Transforms,
     pub z_indices: ZIndices,
     pub surface: ContextSurface,
     render_passes: RenderPasses,
@@ -526,7 +525,6 @@ pub struct Context {
 impl Context {
     pub fn new(params: CanvasParams) -> Self {
         Context {
-            transforms: Transforms::default(),
             z_indices: ZIndices::default(),
             surface: ContextSurface::default(),
             render_passes: RenderPasses::default(),
@@ -536,7 +534,6 @@ impl Context {
     }
 
     pub fn begin_frame(&mut self, size: SurfaceIntSize, surface: SurfacePassConfig) {
-        self.transforms.clear();
         self.z_indices.clear();
         self.render_passes.clear();
         self.surface = ContextSurface::new(size, surface);
@@ -783,7 +780,7 @@ pub trait Renderer: AsAny {
 }
 
 pub trait FillPath {
-    fn fill_path(&mut self, ctx: &mut Context, path: FilledPath, pattern: BuiltPattern);
+    fn fill_path(&mut self, ctx: &mut Context, transforms: &Transforms, path: FilledPath, pattern: BuiltPattern);
 }
 
 pub trait StrokePath {

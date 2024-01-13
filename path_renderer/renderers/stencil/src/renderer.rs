@@ -9,7 +9,7 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -205,25 +205,25 @@ impl StencilAndCoverRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, rect: &LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Rect(*rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: &LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Rect(*rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         debug_assert!(self.supports_surface(ctx.surface.current_config()));
 
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
@@ -260,12 +260,12 @@ impl StencilAndCoverRenderer {
             .push(Fill {
                 shape,
                 pattern,
-                transform: ctx.transforms.current_id(),
+                transform: transforms.current_id(),
                 z_index: ctx.z_indices.push(),
             });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         let mut batches = self.batches.take();
         let id = self.renderer_id;
         for batch_id in ctx
@@ -284,7 +284,7 @@ impl StencilAndCoverRenderer {
             let cover_idx_start = self.cover_geometry.indices.len() as u32;
 
             for fill in commands.iter() {
-                self.prepare_fill(ctx, fill);
+                self.prepare_fill(ctx, transforms, fill);
             }
 
             let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
@@ -316,9 +316,9 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
     }
 
-    fn prepare_fill(&mut self, ctx: &Context, fill: &Fill) {
+    fn prepare_fill(&mut self, ctx: &Context, transforms: &Transforms, fill: &Fill) {
 
-        let transform = ctx.transforms.get(fill.transform);
+        let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
         let transformed_aabb = transform.matrix().outer_transformed_box(&local_aabb);
 
@@ -657,9 +657,10 @@ impl FillPath for StencilAndCoverRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }

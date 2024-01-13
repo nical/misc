@@ -15,7 +15,7 @@ use core::{
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
-    transform::TransformId,
+    transform::{TransformId, Transforms},
     units::LocalRect,
     usize_range, wgpu, Point,
 };
@@ -152,11 +152,12 @@ impl MsaaStrokeRenderer {
     pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
         width: f32,
     ) {
-        self.stroke_shape(ctx, Shape::Path(path.into(), width), pattern);
+        self.stroke_shape(ctx, transforms, Shape::Path(path.into(), width), pattern);
     }
 
 //    pub fn stroke_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
@@ -167,12 +168,11 @@ impl MsaaStrokeRenderer {
 //        self.stroke_shape(ctx, Shape::Circle(circle), pattern);
 //    }
 
-    fn stroke_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = ctx.transforms.current_id();
+    fn stroke_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
@@ -201,7 +201,7 @@ impl MsaaStrokeRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -249,7 +249,7 @@ impl MsaaStrokeRenderer {
                     key = stroke.pattern.shader_and_bindings();
                     max_segments_per_instance = 1;
                 }
-                self.prepare_stroke(stroke, ctx, &mut max_segments_per_instance);
+                self.prepare_stroke(stroke, transforms, &mut max_segments_per_instance);
             }
 
             let end = self.curves.len() as u32;
@@ -274,8 +274,8 @@ impl MsaaStrokeRenderer {
         self.batches = batches;
     }
 
-    fn prepare_stroke(&mut self, shape: &Stroke, ctx: &Context, max_segments_per_instance: &mut u32) {
-        let transform = ctx.transforms.get(shape.transform).matrix();
+    fn prepare_stroke(&mut self, shape: &Stroke, transforms: &Transforms, max_segments_per_instance: &mut u32) {
+        let transform = transforms.get(shape.transform).matrix();
         let z_index = shape.z_index;
         let pattern = shape.pattern.data;
 

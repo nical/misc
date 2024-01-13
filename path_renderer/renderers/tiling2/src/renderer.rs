@@ -7,7 +7,7 @@ use core::{
     pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
-    transform::TransformId,
+    transform::{TransformId, Transforms},
     units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
     wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, BlendMode, BaseShaderId}, DynBufferRange}, bytemuck,
 };
@@ -99,22 +99,23 @@ impl TileRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_surface(&mut self, ctx: &mut Context, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Surface, pattern);
+    pub fn fill_surface(&mut self, ctx: &mut Context, transforms: &Transforms, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = ctx.transforms.current_id();
+    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
         let aabb = if let Some(aabb) = shape.aabb() {
-            ctx.transforms
+            transforms
                 .get_current()
                 .matrix()
                 .outer_transformed_box(&aabb)
@@ -146,7 +147,7 @@ impl TileRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -168,7 +169,7 @@ impl TileRenderer {
             let mask_tiles_start = self.tiles.mask_tiles.len() as u32;
 
             for fill in commands.iter().rev() {
-                self.prepare_fill(fill, ctx);
+                self.prepare_fill(fill, transforms);
             }
 
             let opaque_tiles_end = self.tiles.opaque_tiles.len() as u32;
@@ -204,8 +205,8 @@ impl TileRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context) {
-        let transform = ctx.transforms.get(fill.transform).matrix();
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
+        let transform = transforms.get(fill.transform).matrix();
 
         match &fill.shape {
             Shape::Path(shape) => {
@@ -393,9 +394,10 @@ impl FillPath for TileRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }

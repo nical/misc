@@ -15,7 +15,7 @@ use core::{
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::{Circle, FilledPath},
-    transform::TransformId,
+    transform::{TransformId, Transforms},
     units::{point, LocalPoint, LocalRect},
     usize_range, wgpu,
 };
@@ -177,45 +177,47 @@ impl MeshRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
     pub fn stroke_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: Path,
         width: f32,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::StrokePath(path, width), pattern);
+        self.fill_shape(ctx, transforms, Shape::StrokePath(path, width), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Rect(rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(ctx, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
     pub fn fill_mesh(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         mesh: TessellatedMesh,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Mesh(mesh), pattern);
+        self.fill_shape(ctx, transforms, Shape::Mesh(mesh), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, shape: Shape, pattern: BuiltPattern) {
-        let transform = ctx.transforms.current_id();
+    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = ctx
-            .transforms
+        let aabb = transforms
             .get_current()
             .matrix()
             .outer_transformed_box(&shape.aabb());
@@ -245,7 +247,7 @@ impl MeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -291,7 +293,7 @@ impl MeshRenderer {
                         geom_start = end;
                         key = fill.pattern.shader_and_bindings();
                     }
-                    self.prepare_fill(fill, ctx);
+                    self.prepare_fill(fill, transforms);
                 }
             }
 
@@ -332,7 +334,7 @@ impl MeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, ctx);
+                self.prepare_fill(fill, transforms);
             }
 
             let end = self.geometry.indices.len() as u32;
@@ -356,8 +358,8 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context) {
-        let transform = ctx.transforms.get(fill.transform).matrix();
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
+        let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
 
@@ -543,9 +545,10 @@ impl FillPath for MeshRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut Context,
+        transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }
