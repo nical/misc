@@ -4,7 +4,7 @@
 use core::{
     batching::{BatchFlags, BatchList},
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex, FillPath,
     },
     pattern::{BindingsId, BuiltPattern},
@@ -186,7 +186,7 @@ impl TemplateRenderer {
     }
 }
 
-impl CanvasRenderer for TemplateRenderer {
+impl Renderer for TemplateRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],

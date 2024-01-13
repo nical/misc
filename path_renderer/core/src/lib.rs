@@ -10,6 +10,8 @@ pub mod resources;
 pub mod shape;
 pub mod stroke;
 pub mod transform;
+pub mod render_graph;
+//pub mod canvas;
 
 pub use lyon::path::math::{point, vector, Point, Vector};
 

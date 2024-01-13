@@ -7,7 +7,7 @@ use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchId, BatchList},
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RenderPasses,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RenderPasses,
         RendererId, SubPass, SurfacePassConfig, ZIndex,
     },
     gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines},
@@ -632,7 +632,7 @@ impl TileRenderer {
     }
 }
 
-impl CanvasRenderer for TileRenderer {
+impl Renderer for TileRenderer {
     fn add_render_passes(&mut self, batch_id: BatchId, render_passes: &mut RenderPasses) {
         let (_, info) = self.batches.get(batch_id.index);
         for pass_idx in info.passes.clone() {

@@ -15,6 +15,7 @@ svg_fmt = "0.4.1"
 profiling = "1.0.4"
 wgslp = { path = "../../wgslp/lib" }
 bitflags = "2.3.3"
+smallvec = "1.11.2"
 
 [profile.release]
 debug=true

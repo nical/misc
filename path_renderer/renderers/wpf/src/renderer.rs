@@ -2,7 +2,7 @@ use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, FillPath,
     },
     gpu::{
@@ -323,7 +323,7 @@ impl FillPath for WpfMeshRenderer {
     }
 }
 
-impl CanvasRenderer for WpfMeshRenderer {
+impl Renderer for WpfMeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],

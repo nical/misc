@@ -1,7 +1,7 @@
 use core::{
     batching::{BatchFlags, BatchList},
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex, FillPath,
     },
     pattern::BuiltPattern,
@@ -321,7 +321,7 @@ impl TileRenderer {
     }
 }
 
-impl CanvasRenderer for TileRenderer {
+impl Renderer for TileRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],

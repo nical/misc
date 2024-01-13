@@ -2,7 +2,7 @@ use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig, ZIndex,
     },
     gpu::{
@@ -337,7 +337,7 @@ impl MsaaStrokeRenderer {
     }
 }
 
-impl CanvasRenderer for MsaaStrokeRenderer {
+impl Renderer for MsaaStrokeRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],

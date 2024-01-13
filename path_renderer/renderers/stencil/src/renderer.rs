@@ -23,7 +23,7 @@ use core::{
     StencilMode, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderPassState, RendererId, SubPass,
         ZIndex,
     },
     gpu::DynBufferRange,
@@ -570,7 +570,7 @@ fn generate_cover_geometry(
     geometry.indices.push(offset + 3);
 }
 
-impl CanvasRenderer for StencilAndCoverRenderer {
+impl Renderer for StencilAndCoverRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],

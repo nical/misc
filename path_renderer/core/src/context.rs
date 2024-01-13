@@ -558,9 +558,13 @@ impl Context {
         self.surface.state = state;
     }
 
+    // TODO: Maybe remove this step and pass the batch id directly duirng rendering.
+    // This removes the ability to split render passes in the middle of a batch but that
+    // should probably be a higher-level thing.
+    // Would need another way for the renderers to request for pre-passes.
     pub fn build_render_passes(
         &mut self,
-        renderers: &mut [&mut dyn CanvasRenderer],
+        renderers: &mut [&mut dyn Renderer],
     ) -> RenderPassesRequirements {
         for batch in self.batcher.batches() {
             renderers[batch.renderer as usize].add_render_passes(*batch, &mut self.render_passes)
@@ -571,7 +575,7 @@ impl Context {
 
     pub fn render(
         &self,
-        renderers: &[&dyn CanvasRenderer],
+        renderers: &[&dyn Renderer],
         resources: &GpuResources,
         bindings: &dyn BindingResolver,
         render_pipelines: &RenderPipelines,
@@ -750,7 +754,7 @@ pub struct RenderContext<'l> {
     pub bindings: &'l dyn BindingResolver,
 }
 
-pub trait CanvasRenderer: AsAny {
+pub trait Renderer: AsAny {
     fn add_render_passes(&mut self, batch: BatchId, render_passes: &mut RenderPasses) {
         render_passes.push(SubPass {
             renderer_id: batch.renderer,

@@ -3,7 +3,7 @@ use core::{
     batching::{BatchFlags, BatchList},
     bytemuck,
     context::{
-        CanvasRenderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
         SurfacePassConfig,
     },
     gpu::{
@@ -199,7 +199,7 @@ impl RectangleRenderer {
     }
 }
 
-impl CanvasRenderer for RectangleRenderer {
+impl Renderer for RectangleRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],
