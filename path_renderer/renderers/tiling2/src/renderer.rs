@@ -1,7 +1,7 @@
 use core::{
-    batching::{BatchFlags, BatchList},
+    batching::{BatchFlags, BatchList, BatchId},
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
         SurfacePassConfig, ZIndex, FillPath,
     },
     pattern::BuiltPattern,
@@ -325,7 +325,7 @@ impl TileRenderer {
 impl Renderer for TileRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        sub_passes: &[SubPass],
+        batches: &[BatchId],
         _surface_info: &RenderPassState,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -363,8 +363,8 @@ impl Renderer for TileRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for sub_pass in sub_passes {
-            let (_, batch) = self.batches.get(sub_pass.internal_index);
+        for batch_id in batches {
+            let (_, batch) = self.batches.get(batch_id.index);
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {

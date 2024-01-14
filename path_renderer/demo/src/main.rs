@@ -12,8 +12,8 @@ use core::units::{
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
-use lyon::geom::Angle;
-use lyon::path::geom::euclid::size2;
+use lyon::geom::{Angle, Box2D};
+use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
@@ -23,7 +23,7 @@ use std::time::Duration;
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tess::{MeshGpuResources, MeshRenderer};
 use msaa_stroke::{MsaaStrokeGpuResources, MsaaStrokeRenderer};
-use tiling::*;
+//use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
@@ -45,8 +45,7 @@ const TILING: usize = 0;
 //const TESS: usize = 1;
 const STENCIL: usize = 2;
 const WPF: usize = 3;
-const TILING2: usize = 4;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf", "tiling2"];
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -55,7 +54,7 @@ const STROKE_RENDERER_STRINGS: &[&str] = &["stroke-to-fill", "instanced"];
 const NUM_SCENES: u32 = 2;
 
 struct Renderers {
-    tiling: TileRenderer,
+    //tiling: TileRenderer,
     tiling2: tiling2::TileRenderer,
     meshes: MeshRenderer,
     stencil: StencilAndCoverRenderer,
@@ -66,7 +65,7 @@ struct Renderers {
 
 impl Renderers {
     fn begin_frame(&mut self, ctx: &Context) {
-        self.tiling.begin_frame(ctx);
+        //self.tiling.begin_frame(ctx);
         self.tiling2.begin_frame(ctx);
         self.meshes.begin_frame(ctx);
         self.stencil.begin_frame(ctx);
@@ -75,8 +74,8 @@ impl Renderers {
         self.msaa_strokes.begin_frame(ctx);
     }
 
-    fn prepare(&mut self, ctx: &Context, transforms: &Transforms, prep: &mut PrepareRenderPipelines, device: &wgpu::Device) {
-        self.tiling.prepare(ctx, transforms, prep, &device);
+    fn prepare(&mut self, ctx: &Context, transforms: &Transforms, prep: &mut PrepareRenderPipelines, _device: &wgpu::Device) {
+        //self.tiling.prepare(ctx, transforms, prep, &device);
         self.tiling2.prepare(ctx, transforms, prep);
         self.meshes.prepare(ctx, transforms, prep);
         self.stencil.prepare(ctx, transforms, prep);
@@ -86,7 +85,7 @@ impl Renderers {
     }
 
     fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.tiling.upload(gpu_resources, &device, &queue);
+        //self.tiling.upload(gpu_resources, &device, &queue);
         self.tiling2.upload(gpu_resources, &device, &queue);
         self.meshes.upload(gpu_resources, &device, &queue);
         self.stencil.upload(gpu_resources, &device);
@@ -97,11 +96,11 @@ impl Renderers {
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
         [
-            &mut self.tiling as &mut dyn FillPath,
+            //&mut self.tiling as &mut dyn FillPath,
+            &mut self.tiling2 as &mut dyn FillPath,
             &mut self.meshes as &mut dyn FillPath,
             &mut self.stencil as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
-            &mut self.tiling2 as &mut dyn FillPath,
         ][idx]
     }
 }
@@ -162,25 +161,10 @@ fn main() {
     }
 
     let scale_factor = 2.0;
-    let max_edges_per_gpu_tile = 512;
-    let mask_atlas_size: u32 = 2048;
-    let color_atlas_size: u32 = 2048;
-    let inital_window_size = size2(1200u32, 1000);
-
-    let mut tiler_config = TilerConfig {
-        view_box: Box2D::from_size(inital_window_size.to_f32()),
-        tolerance,
-        mask_atlas_size: size2(mask_atlas_size, mask_atlas_size),
-        color_atlas_size: size2(color_atlas_size, color_atlas_size),
-        staging_buffer_size: tiling::BYTES_PER_MASK as u32 * 2048,
-    };
 
     let event_loop = EventLoop::new();
     let window = winit::window::WindowBuilder::new()
-        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(
-            inital_window_size.width,
-            inital_window_size.height,
-        )))
+        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(1200, 1000)))
         .build(&event_loop)
         .unwrap();
     let window_size = window.inner_size();
@@ -220,7 +204,7 @@ fn main() {
     ))
     .unwrap();
 
-    let (view_box, paths) = if args.len() > 1 && !args[1].starts_with('-') {
+    let (_, paths) = if args.len() > 1 && !args[1].starts_with('-') {
         load_svg(&args[1], scale_factor)
     } else {
         let mut builder = core::path::Path::builder();
@@ -248,7 +232,7 @@ fn main() {
         )
     };
 
-    tiler_config.view_box = view_box;
+    //tiler_config.view_box = view_box;
 
     let mut shaders = Shaders::new();
     let mut render_pipelines = core::gpu::shader::RenderPipelines::new();
@@ -272,15 +256,17 @@ fn main() {
         &mut shaders,
     );
 
-    let tiling_resources = TilingGpuResources::new(
-        &mut common_resources,
-        &device,
-        &mut shaders,
-        &patterns.textures,
-        mask_atlas_size,
-        color_atlas_size,
-        use_ssaa4,
-    );
+    //let tiling_resources = TilingGpuResources::new(
+    //    &mut common_resources,
+    //    &device,
+    //    &mut shaders,
+    //    &patterns.textures,
+    //    mask_atlas_size,
+    //    color_atlas_size,
+    //    use_ssaa4,
+    //);
+
+    let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
 
     let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
 
@@ -293,28 +279,32 @@ fn main() {
 
     let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
 
-    let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
-
     let mut gpu_resources = GpuResources::new();
     let common_handle = gpu_resources.register(common_resources);
-    let tiling_handle = gpu_resources.register(tiling_resources);
+    let tiling2_handle = gpu_resources.register(tiling2_resources);
+    //let tiling_handle = gpu_resources.register(tiling_resources);
     let mesh_handle = gpu_resources.register(mesh_resources);
     let stencil_handle = gpu_resources.register(stencil_resources);
     let rectangle_handle = gpu_resources.register(rectangle_resources);
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
-    let tiling2_handle = gpu_resources.register(tiling2_resources);
 
     let mut renderers = Renderers {
-        tiling: TileRenderer::new(
+        tiling2: tiling2::TileRenderer::new(
             0,
             common_handle,
-            tiling_handle,
-            &gpu_resources[tiling_handle],
-            &patterns.textures,
-            &tiler_config,
-            &patterns.textures,
+            tiling2_handle,
+            &gpu_resources[tiling2_handle],
         ),
+        //tiling: TileRenderer::new(
+        //    0,
+        //    common_handle,
+        //    tiling_handle,
+        //    &gpu_resources[tiling_handle],
+        //    &patterns.textures,
+        //    &tiler_config,
+        //    &patterns.textures,
+        //),
         meshes: MeshRenderer::new(
             1,
             common_handle,
@@ -345,15 +335,9 @@ fn main() {
             stroke_handle,
             &gpu_resources[stroke_handle],
         ),
-        tiling2: tiling2::TileRenderer::new(
-            6,
-            common_handle,
-            tiling2_handle,
-            &gpu_resources[tiling2_handle],
-        )
     };
 
-    renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+    //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
     let mut source_textures = SourceTextures::new();
 
@@ -442,20 +426,29 @@ fn main() {
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(shaders.defaults.color_format()),
-            ..wgpu::TextureViewDescriptor::default()
+            ..Default::default()
         });
         let size = SurfaceIntSize::new(demo.window_size.width, demo.window_size.height);
 
+        let msaa_default = match demo.msaa {
+            MsaaMode::Disabled => false,
+            _ => true,
+        };
+        let msaa_tiling = match demo.msaa {
+            MsaaMode::Enabled => true,
+            _ => false,
+        };
+
+        let surface_cfg = SurfacePassConfig {
+            depth: fill_renderer != TILING,
+            msaa: if fill_renderer == TILING || fill_renderer == WPF { msaa_tiling } else { msaa_default },
+            stencil: fill_renderer == STENCIL,
+            kind: SurfaceKind::Color,
+        };
+
         gpu_store.clear();
-        ctx.begin_frame(
-            size,
-            SurfacePassConfig {
-                depth: false,
-                msaa: if demo.msaa == MsaaMode::Enabled { true } else { false },
-                stencil: false,
-                kind: SurfaceKind::Color,
-            },
-        );
+        ctx.begin_frame(size, surface_cfg);
+
         transforms.clear();
 
         renderers.begin_frame(&ctx);
@@ -477,7 +470,6 @@ fn main() {
             demo.fill_renderer,
             demo.stroke_renderer,
             test_stuff,
-            demo.msaa,
             &mut ctx,
             &mut transforms,
             &mut renderers,
@@ -486,30 +478,6 @@ fn main() {
             &transform,
         );
 
-        if false {
-            renderers.tiling.fill_circle(
-                &mut ctx,
-                &transforms,
-                Circle {
-                    center: point(10.0, 600.0),
-                    radius: 100.0,
-                    inverted: false,
-                },
-                patterns.textures.sample_rect(
-                    &mut gpu_store,
-                    image_binding,
-                    &Box2D {
-                        min: point(0.0, 0.0),
-                        max: point(800.0, 600.0),
-                    },
-                    &Box2D {
-                        min: point(-100.0, 500.0),
-                        max: point(700.0, 1100.0),
-                    },
-                    true,
-                ),
-            );
-        }
         let frame_build_start = time::precise_time_ns();
 
         let mut prep_pipelines = render_pipelines.prepare();
@@ -523,17 +491,14 @@ fn main() {
             &mut RenderPipelineBuilder(&device, &mut shaders),
         );
 
-        let requirements = ctx.build_render_passes(&mut [
-            &mut renderers.tiling,
-            &mut renderers.meshes,
-            &mut renderers.stencil,
-            &mut renderers.rectangles,
-            &mut renderers.wpf,
-            &mut renderers.msaa_strokes,
-            &mut renderers.tiling2,
-        ]);
-
         frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
+
+        let requirements = RenderPassesRequirements {
+            depth_stencil: !surface_cfg.msaa && (surface_cfg.depth || surface_cfg.stencil),
+            msaa: surface_cfg.msaa,
+            msaa_depth_stencil: surface_cfg.msaa && (surface_cfg.depth || surface_cfg.stencil),
+            temporary: false,
+        };
 
         create_render_targets(
             &device,
@@ -576,13 +541,12 @@ fn main() {
 
         ctx.render(
             &[
-                &renderers.tiling,
+                &renderers.tiling2,
                 &renderers.meshes,
                 &renderers.stencil,
                 &renderers.rectangles,
                 &renderers.wpf,
                 &renderers.msaa_strokes,
-                &renderers.tiling2,
             ],
             &gpu_resources,
             &source_textures,
@@ -590,6 +554,7 @@ fn main() {
             &device,
             common_handle,
             &target,
+            true,
             &mut encoder,
         );
 
@@ -639,7 +604,6 @@ fn paint_scene(
     fill_renderer: usize,
     stroke_renderer: usize,
     testing: bool,
-    msaa: MsaaMode,
     ctx: &mut Context,
     transforms: &mut Transforms,
     renderers: &mut Renderers,
@@ -669,58 +633,10 @@ fn paint_scene(
             .transformed(&transforms.get_current().matrix().to_untyped()),
         );
 
-        if fill_renderer == TILING2 {
-            renderers.tiling2.fill_surface(ctx, &transforms, gradient);
-        } else {
-            renderers.tiling.fill_surface(ctx, &transforms, gradient);
-        }
+        renderers.tiling2.fill_surface(ctx, &transforms, gradient);
     }
 
     transforms.push(transform);
-
-    if false && testing {
-        renderers.tiling.fill_circle(
-            ctx,
-            transforms,
-            Circle::new(point(500.0, 500.0), 800.0),
-            patterns.gradients.add(
-                gpu_store,
-                LinearGradient {
-                    from: point(100.0, 100.0),
-                    color0: Color {
-                        r: 200,
-                        g: 150,
-                        b: 0,
-                        a: 255,
-                    },
-                    to: point(100.0, 1000.0),
-                    color1: Color {
-                        r: 250,
-                        g: 50,
-                        b: 10,
-                        a: 255,
-                    },
-                }
-                .transformed(&transforms.get_current().matrix().to_untyped()),
-            ),
-        );
-    }
-
-    let msaa_default = match msaa {
-        MsaaMode::Disabled => false,
-        _ => true,
-    };
-    let msaa_tiling = match msaa {
-        MsaaMode::Enabled => true,
-        _ => false,
-    };
-
-    ctx.reconfigure_surface(SurfacePassConfig {
-        depth: fill_renderer != TILING,
-        msaa: if fill_renderer == TILING || fill_renderer == TILING2 || fill_renderer == WPF { msaa_tiling } else { msaa_default },
-        stencil: fill_renderer == STENCIL,
-        kind: SurfaceKind::Color,
-    });
 
     for (path, fill, stroke) in paths {
         if let Some(fill) = fill {
@@ -867,31 +783,31 @@ fn paint_scene(
         //    kind: SurfaceKind::Color,
         //});
 
-        renderers.tiling.fill_circle(
-            ctx,
-            transforms,
-            Circle::new(point(500.0, 300.0), 200.0),
-            patterns.gradients.add(
-                gpu_store,
-                LinearGradient {
-                    from: point(300.0, 100.0),
-                    color0: Color {
-                        r: 10,
-                        g: 200,
-                        b: 100,
-                        a: 100,
-                    },
-                    to: point(700.0, 100.0),
-                    color1: Color {
-                        r: 200,
-                        g: 100,
-                        b: 250,
-                        a: 255,
-                    },
-                }
-                .transformed(&transforms.get_current().matrix().to_untyped()),
-            ),
-        );
+        //renderers.tiling.fill_circle(
+        //    ctx,
+        //    transforms,
+        //    Circle::new(point(500.0, 300.0), 200.0),
+        //    patterns.gradients.add(
+        //        gpu_store,
+        //        LinearGradient {
+        //            from: point(300.0, 100.0),
+        //            color0: Color {
+        //                r: 10,
+        //                g: 200,
+        //                b: 100,
+        //                a: 100,
+        //            },
+        //            to: point(700.0, 100.0),
+        //            color1: Color {
+        //                r: 200,
+        //                g: 100,
+        //                b: 250,
+        //                a: 255,
+        //            },
+        //        }
+        //        .transformed(&transforms.get_current().matrix().to_untyped()),
+        //    ),
+        //);
 
         let mut builder = core::path::Path::builder();
         builder.begin(point(600.0, 0.0));
@@ -923,25 +839,25 @@ fn paint_scene(
 
         transforms.pop();
 
-        let black = patterns.colors.add(Color::BLACK);
-        renderers.tiling.fill_rect(
-            ctx,
-            transforms,
-            LocalRect {
-                min: point(10.0, 10.0),
-                max: point(50.0, 50.0),
-            },
-            black,
-        );
-        renderers.tiling.fill_rect(
-            ctx,
-            transforms,
-            LocalRect {
-                min: point(60.5, 10.5),
-                max: point(100.5, 50.5),
-            },
-            black,
-        );
+        //let black = patterns.colors.add(Color::BLACK);
+        //renderers.tiling.fill_rect(
+        //    ctx,
+        //    transforms,
+        //    LocalRect {
+        //        min: point(10.0, 10.0),
+        //        max: point(50.0, 50.0),
+        //    },
+        //    black,
+        //);
+        //renderers.tiling.fill_rect(
+        //    ctx,
+        //    transforms,
+        //    LocalRect {
+        //        min: point(60.5, 10.5),
+        //        max: point(100.5, 50.5),
+        //    },
+        //    black,
+        //);
 
         let mut p = Path::builder();
 
@@ -1034,7 +950,7 @@ fn paint_scene(
 
         if false {
             let offset_path = builder2.build();
-            renderers.tiling.fill_path(ctx, transforms, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling2.fill_path(ctx, transforms, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
                 ctx,
@@ -1168,35 +1084,27 @@ fn paint_scene(
 
 fn print_stats(
     renderers:&Renderers,
-    window_size: SurfaceIntSize,
+    _window_size: SurfaceIntSize,
 ) {
-    let mut stats = Stats::new();
-    renderers.tiling.update_stats(&mut stats);
-    println!("Tiling: {:#?}", stats);
+    //let mut stats = Stats::new();
+    //renderers.tiling.update_stats(&mut stats);
+    //println!("Tiling: {:#?}", stats);
     println!("Stencil-and-cover: {:?}", renderers.stencil.stats);
-    println!("Data:");
-    println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
-    println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
-    println!(
-        "  cpu masks: {:2} kb",
-        stats.cpu_masks_bytes() as f32 / 1000.0
-    );
-    println!(
-        "   uploaded: {:2} kb",
-        stats.uploaded_bytes() as f32 / 1000.0
-    );
-    let win_bytes = (window_size.width * window_size.height * 4) as f32;
-    println!(
-        " resolution: {}x{} ({:2} kb)  overhead {:2}%",
-        window_size.width,
-        window_size.height,
-        win_bytes / 1000.0,
-        stats.uploaded_bytes() as f32 * 100.0 / win_bytes as f32,
-    );
-    println!(
-        "#edge distributions: {:?}",
-        renderers.tiling.encoder.edge_distributions
-    );
+    //println!("Data:");
+    //println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
+    //println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
+    //println!(
+    //    "  cpu masks: {:2} kb",
+    //    stats.cpu_masks_bytes() as f32 / 1000.0
+    //);
+    //println!(
+    //    "   uploaded: {:2} kb",
+    //    stats.uploaded_bytes() as f32 / 1000.0
+    //);
+    //println!(
+    //    "#edge distributions: {:?}",
+    //    renderers.tiling.encoder.edge_distributions
+    //);
     println!("\n");
 }
 
@@ -1229,7 +1137,7 @@ fn create_render_targets(
             view_formats: &[],
         });
 
-        *depth_texture = Some(depth.create_view(&wgpu::TextureViewDescriptor::default()));
+        *depth_texture = Some(depth.create_view(&Default::default()));
     }
 
     if requirements.msaa && msaa_texture.is_none() {
@@ -1245,7 +1153,7 @@ fn create_render_targets(
             view_formats: &[],
         });
 
-        *msaa_texture = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
+        *msaa_texture = Some(msaa.create_view(&Default::default()));
     }
 
     if requirements.msaa_depth_stencil && msaa_depth_texture.is_none() {
@@ -1261,7 +1169,7 @@ fn create_render_targets(
             view_formats: &[],
         });
 
-        *msaa_depth_texture = Some(msaa_depth.create_view(&wgpu::TextureViewDescriptor::default()));
+        *msaa_depth_texture = Some(msaa_depth.create_view(&Default::default()));
     }
 
     if requirements.temporary && temporary_texture.is_none() {
@@ -1277,7 +1185,7 @@ fn create_render_targets(
             view_formats: &[],
         });
 
-        *temporary_texture = Some(temporary.create_view(&wgpu::TextureViewDescriptor::default()))
+        *temporary_texture = Some(temporary.create_view(&Default::default()))
     }
 }
 
@@ -1520,7 +1428,7 @@ impl SourceTexture {
         data: &[u8],
     ) -> Self {
         let handle = device.create_texture_with_data(queue, desc, data);
-        let view = handle.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = handle.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("source texture"),
             layout,

@@ -204,7 +204,7 @@ impl TilingGpuResources {
             view_formats: &[wgpu::TextureFormat::R8Unorm],
         });
 
-        let mask_texture_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mask_texture_view = mask_texture.create_view(&Default::default());
 
         let src_color_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Color tile atlas"),
@@ -222,7 +222,7 @@ impl TilingGpuResources {
         });
 
         let src_color_texture_view =
-            src_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            src_color_texture.create_view(&Default::default());
 
         let mask_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("alpha tiles"),

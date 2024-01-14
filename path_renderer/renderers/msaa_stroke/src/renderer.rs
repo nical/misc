@@ -1,8 +1,8 @@
 use core::{
-    batching::{BatchFlags, BatchList},
+    batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
         SurfacePassConfig, ZIndex,
     },
     gpu::{
@@ -108,7 +108,7 @@ pub struct MsaaStrokeRenderer {
 
     batches: BatchList<Stroke, BatchInfo>,
     draws: Vec<Draw>,
-    insatnce_range: Option<DynBufferRange>,
+    instance_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
     base_shader: BaseShaderId,
 }
@@ -130,7 +130,7 @@ impl MsaaStrokeRenderer {
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            insatnce_range: None,
+            instance_range: None,
             ibo_range: None,
             base_shader: res.base_shader,
         }
@@ -145,7 +145,7 @@ impl MsaaStrokeRenderer {
         self.batches.clear();
         self.curves.clear();
         self.path_data.clear();
-        self.insatnce_range = None;
+        self.instance_range = None;
         self.ibo_range = None;
     }
 
@@ -309,7 +309,7 @@ impl MsaaStrokeRenderer {
         queue: &wgpu::Queue,
     ) {
         let res = &mut resources[self.common_resources];
-        self.insatnce_range = res
+        self.instance_range = res
             .vertices
             .upload(device, bytemuck::cast_slice(&self.curves));
         let res = &mut resources[self.resources];
@@ -340,7 +340,7 @@ impl MsaaStrokeRenderer {
 impl Renderer for MsaaStrokeRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        sub_passes: &[SubPass],
+        batches: &[BatchId],
         _surface_info: &RenderPassState,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -364,12 +364,12 @@ impl Renderer for MsaaStrokeRenderer {
             0,
             common_resources
                 .vertices
-                .get_buffer_slice(self.insatnce_range.as_ref().unwrap()),
+                .get_buffer_slice(self.instance_range.as_ref().unwrap()),
         );
 
         let mut helper = DrawHelper::new();
-        for sub_pass in sub_passes {
-            let (_, batch_info) = self.batches.get(sub_pass.internal_index);
+        for batch_id in batches {
+            let (_, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 

@@ -6,9 +6,9 @@ use core::context::{SurfaceDrawConfig, FillPath};
 use core::gpu::shader::{RenderPipelineIndex, BaseShaderId, ShaderPatternId, BlendMode};
 use core::wgpu;
 use core::{
-    batching::{BatchFlags, BatchId, BatchList},
+    batching::{BatchFlags, BatchList},
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RenderPasses,
+        Renderer, Context, DrawHelper, RenderContext,
         RendererId, SubPass, SurfacePassConfig, ZIndex,
     },
     gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines},
@@ -632,28 +632,28 @@ impl TileRenderer {
             }
         }
     }
+
+    // TODO: this was part of the Renderer trait, can't split render passes after
+    // batching anymore.
+    // fn _add_render_passes(&mut self, batch_id: BatchId, render_passes: &mut RenderPasses) {
+    //     let (_, info) = self.batches.get(batch_id.index);
+    //     for pass_idx in info.passes.clone() {
+    //         let pass = &mut self.encoder.render_passes[pass_idx as usize];
+    //         pass.color_pre_pass = self.current_color_atlas != pass.color_atlas_index;
+    //         self.current_color_atlas = pass.color_atlas_index;
+    //         pass.mask_pre_pass = self.current_mask_atlas != pass.mask_atlas_index;
+    //         self.current_mask_atlas = pass.mask_atlas_index;
+    //         render_passes.push(SubPass {
+    //             renderer_id: self.renderer_id,
+    //             internal_index: pass_idx,
+    //             require_pre_pass: pass.mask_pre_pass || pass.color_pre_pass,
+    //             surface: batch_id.surface,
+    //         });
+    //     }
+    // }
 }
 
 impl Renderer for TileRenderer {
-    fn add_render_passes(&mut self, batch_id: BatchId, render_passes: &mut RenderPasses) {
-        let (_, info) = self.batches.get(batch_id.index);
-        for pass_idx in info.passes.clone() {
-            let pass = &mut self.encoder.render_passes[pass_idx as usize];
-
-            pass.color_pre_pass = self.current_color_atlas != pass.color_atlas_index;
-            self.current_color_atlas = pass.color_atlas_index;
-
-            pass.mask_pre_pass = self.current_mask_atlas != pass.mask_atlas_index;
-            self.current_mask_atlas = pass.mask_atlas_index;
-            render_passes.push(SubPass {
-                renderer_id: self.renderer_id,
-                internal_index: pass_idx,
-                require_pre_pass: pass.mask_pre_pass || pass.color_pre_pass,
-                surface: batch_id.surface,
-            });
-        }
-    }
-
     fn render_pre_pass(&self, index: u32, ctx: RenderContext, encoder: &mut wgpu::CommandEncoder) {
         let pass = &self.encoder.render_passes[index as usize];
         if pass.color_pre_pass {
@@ -677,6 +677,7 @@ impl Renderer for TileRenderer {
         }
     }
 
+/* TODO: the render API changed
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],
@@ -693,6 +694,7 @@ impl Renderer for TileRenderer {
             render_pass,
         );
     }
+*/
 }
 
 impl FillPath for TileRenderer {

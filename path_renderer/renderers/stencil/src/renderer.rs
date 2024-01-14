@@ -9,7 +9,7 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -23,7 +23,7 @@ use core::{
     StencilMode, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
     context::{
-        Renderer, Context, DrawHelper, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderPassState, RendererId,
         ZIndex,
     },
     gpu::DynBufferRange,
@@ -199,7 +199,7 @@ impl StencilAndCoverRenderer {
         self.cover_ibo_range = None;
         self.enable_msaa = ctx.surface.msaa();
         self.opaque_pass = ctx.surface.opaque_pass();
-        self.stats = Stats::default();
+        self.stats = Default::default();
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
@@ -573,7 +573,7 @@ fn generate_cover_geometry(
 impl Renderer for StencilAndCoverRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        sub_passes: &[SubPass],
+        batches: &[BatchId],
         surface_info: &RenderPassState,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -590,10 +590,10 @@ impl Renderer for StencilAndCoverRenderer {
         );
         render_pass.set_stencil_reference(128);
 
-        for sub_pass in sub_passes {
-            let (_, batch_info) = self.batches.get(sub_pass.internal_index);
+        for batch_id in batches {
+            let (_, batch) = self.batches.get(batch_id.index);
 
-            for draw in &self.draws[batch_info.draws.clone()] {
+            for draw in &self.draws[batch.draws.clone()] {
                 match draw {
                     Draw::Stencil { indices } => {
                         // Stencil

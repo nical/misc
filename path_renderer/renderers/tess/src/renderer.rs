@@ -1,8 +1,8 @@
 use core::{
-    batching::{BatchFlags, BatchList},
+    batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
         SurfacePassConfig, ZIndex, FillPath,
     },
     gpu::{
@@ -500,7 +500,7 @@ impl MeshRenderer {
 impl Renderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        sub_passes: &[SubPass],
+        batches: &[BatchId],
         _surface_info: &RenderPassState,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -527,8 +527,8 @@ impl Renderer for MeshRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for sub_pass in sub_passes {
-            let (_, batch_info) = self.batches.get(sub_pass.internal_index);
+        for batch_id in batches {
+            let (_, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 

@@ -1372,7 +1372,6 @@ dependencies = [
  "rectangles",
  "stencil",
  "tess",
- "tiling",
  "tiling2",
  "time 0.1.44",
  "usvg",

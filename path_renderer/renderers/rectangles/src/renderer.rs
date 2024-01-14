@@ -1,9 +1,9 @@
 use crate::{resources::Instance, InstanceFlags};
 use core::{
-    batching::{BatchFlags, BatchList},
+    batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
+        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
         SurfacePassConfig,
     },
     gpu::{
@@ -203,7 +203,7 @@ impl RectangleRenderer {
 impl Renderer for RectangleRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
-        sub_passes: &[SubPass],
+        batches: &[BatchId],
         _surface_info: &RenderPassState,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -221,8 +221,8 @@ impl Renderer for RectangleRenderer {
             &[],
         );
 
-        for sub_pass in sub_passes {
-            let (instances, batch) = self.batches.get(sub_pass.internal_index);
+        for batch_id in batches {
+            let (instances, batch) = self.batches.get(batch_id.index);
 
             let pipeline = ctx
                 .render_pipelines
