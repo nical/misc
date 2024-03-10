@@ -3,8 +3,8 @@ use core::{
     batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
-        SurfacePassConfig,
+        RenderPassBuilder, DrawHelper, RendererId,
+        SurfacePassConfig, BuiltRenderPass,
     },
     gpu::{
         shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
@@ -68,7 +68,7 @@ impl RectangleRenderer {
         }
     }
 
-    pub fn begin_frame(&mut self, _ctx: &Context) {
+    pub fn begin_frame(&mut self) {
         self.batches.clear();
     }
 
@@ -78,7 +78,7 @@ impl RectangleRenderer {
 
     pub fn fill_rect(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassBuilder,
         transforms: &Transforms,
         local_rect: &LocalRect,
         mut aa: Aa,
@@ -93,7 +93,7 @@ impl RectangleRenderer {
             .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = ctx.surface.current_config();
+        let surface = ctx.surface.config();
 
         if surface.msaa {
             aa = Aa::NONE;
@@ -172,7 +172,7 @@ impl RectangleRenderer {
         });
     }
 
-    pub fn prepare(&mut self, _ctx: &Context, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, _pass: &BuiltRenderPass, shaders: &mut PrepareRenderPipelines) {
         for (_, batch) in self.batches.iter_mut() {
             let pipeline = self.pipelines.get(batch.opaque, batch.edge_aa);
             let idx = shaders.prepare(RenderPipelineKey::new(
@@ -200,12 +200,12 @@ impl RectangleRenderer {
     }
 }
 
-impl Renderer for RectangleRenderer {
+impl core::Renderer for RectangleRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];

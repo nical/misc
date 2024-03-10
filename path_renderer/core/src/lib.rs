@@ -13,12 +13,15 @@ pub mod transform;
 pub mod render_graph;
 //pub mod canvas;
 
+use context::RenderPassContext;
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
 pub use bytemuck;
 pub use lyon::geom;
-use pattern::BindingsId;
+use pattern::{BindingsId, BuiltPattern};
+use resources::AsAny;
+use transform::Transforms;
 pub use wgpu;
 
 pub mod units {
@@ -178,4 +181,34 @@ impl BindingResolver for () {
     fn resolve(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
         None
     }
+}
+
+/// Parameters for the canvas renderers
+pub struct RenderContext<'l> {
+    pub render_pipelines: &'l gpu::shader::RenderPipelines,
+    pub resources: &'l resources::GpuResources,
+    pub bindings: &'l dyn BindingResolver,
+}
+
+pub trait Renderer: AsAny {
+    fn render_pre_pass(
+        &self,
+        _index: u32,
+        _ctx: RenderContext,
+        _encoder: &mut wgpu::CommandEncoder,
+    ) {
+    }
+
+    fn render<'pass, 'resources: 'pass>(
+        &self,
+        _batches: &[batching::BatchId],
+        _pass_info: &context::SurfacePassConfig,
+        _ctx: RenderContext<'resources>,
+        _render_pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+    }
+}
+
+pub trait FillPath {
+    fn fill_path(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, path: shape::FilledPath, pattern: BuiltPattern);
 }

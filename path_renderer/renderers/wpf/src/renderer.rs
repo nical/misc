@@ -2,8 +2,8 @@ use core::{
     batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
-        SurfacePassConfig, FillPath,
+        DrawHelper, RendererId,
+        SurfacePassConfig, RenderPassContext, BuiltRenderPass,
     },
     gpu::{
         shader::{
@@ -15,7 +15,7 @@ use core::{
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
     shape::FilledPath,
     transform::{TransformId, Transforms},
-    units::LocalRect,
+    units::{LocalRect, SurfaceIntSize},
     usize_range, wgpu,
 };
 use lyon_path::{FillRule, traits::PathIterator};
@@ -74,7 +74,6 @@ pub struct WpfMeshRenderer {
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
     _resources: ResourcesHandle<WpfGpuResources>,
-    enable_msaa: bool,
     builder: PathBuilder,
     vertices: Vec<Vertex>,
 
@@ -96,7 +95,6 @@ impl WpfMeshRenderer {
             renderer_id,
             common_resources,
             _resources: resources,
-            enable_msaa: false,
             builder: PathBuilder::new(),
             vertices: Vec::new(),
 
@@ -112,18 +110,17 @@ impl WpfMeshRenderer {
         !surface.msaa
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
+    pub fn begin_frame(&mut self) {
         self.vertices.clear();
         self.draws.clear();
         self.batches.clear();
-        self.enable_msaa = ctx.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -131,7 +128,7 @@ impl WpfMeshRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let _ = ctx.z_indices.push();
 
@@ -140,7 +137,7 @@ impl WpfMeshRenderer {
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
-        let surface = ctx.surface.current_config();
+        let surface = ctx.surface;
         let (commands, info) = self.batches.find_or_add_batch(
             &mut ctx.batcher,
             &pattern.batch_key(),
@@ -160,15 +157,16 @@ impl WpfMeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
+        let surface_size = pass.surface_size();
+
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -204,7 +202,7 @@ impl WpfMeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, ctx, transforms);
+                self.prepare_fill(fill, surface_size, transforms);
             }
 
             let end = self.vertices.len() as u32;
@@ -228,7 +226,7 @@ impl WpfMeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context, transforms: &Transforms) {
+    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms) {
         let transform = transforms.get(fill.transform).matrix();
         let pattern = fill.pattern.data;
 
@@ -264,8 +262,6 @@ impl WpfMeshRenderer {
                     FillRule::EvenOdd => FillMode::EvenOdd,
                     FillRule::NonZero => FillMode::Winding,
                 });
-
-                let surface_size = ctx.surface.size();
 
                 let output = self.builder.rasterize_to_tri_list(0, 0, surface_size.width, surface_size.height);
 
@@ -312,10 +308,10 @@ impl WpfMeshRenderer {
     }
 }
 
-impl FillPath for WpfMeshRenderer {
+impl core::FillPath for WpfMeshRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
@@ -324,12 +320,12 @@ impl FillPath for WpfMeshRenderer {
     }
 }
 
-impl Renderer for WpfMeshRenderer {
+impl core::Renderer for WpfMeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];

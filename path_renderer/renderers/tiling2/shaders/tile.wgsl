@@ -2,6 +2,9 @@
 #import rect
 #import z_index
 
+const TILE_SIZE_F32: f32 = 16.0;
+const TILE_COORD_MASK: u32 = 0x3FFu;
+
 struct TileInstance {
     rect: vec4f,
     edges: vec2u, // start..end
@@ -17,8 +20,6 @@ struct PathInfo {
     scissor: vec4f,
 };
 
-const TILE_SIZE_F32: f32 = 16.0;
-const TILE_COORD_MASK: u32 = 0x3FFu;
 fn tiling_decode_rect(encoded: u32) -> vec4<f32> {
     var offset = vec2<f32>(
         f32((encoded >> 10u) & TILE_COORD_MASK),
@@ -169,7 +170,7 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             i32(edge_idx % EDGE_TEXTURE_WIDTH),
             i32(edge_idx / EDGE_TEXTURE_WIDTH),
         );
-        var edge = textureLoad(edge_texture, edge_uv, 0) * 16.0;
+        var edge = textureLoad(edge_texture, edge_uv, 0) * TILE_SIZE_F32;
 
         edge_idx = edge_idx + 1u;
 

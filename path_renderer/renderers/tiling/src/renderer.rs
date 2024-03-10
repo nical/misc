@@ -1,15 +1,16 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
+use core::batching::SurfaceIndex;
 use core::transform::Transforms;
 use core::{bytemuck, SurfaceKind};
-use core::context::{SurfaceDrawConfig, FillPath};
+use core::context::{SurfaceDrawConfig, RenderPassContext, BuiltRenderPass};
 use core::gpu::shader::{RenderPipelineIndex, BaseShaderId, ShaderPatternId, BlendMode};
 use core::wgpu;
 use core::{
     batching::{BatchFlags, BatchList},
     context::{
-        Renderer, Context, DrawHelper, RenderContext,
-        RendererId, SubPass, SurfacePassConfig, ZIndex,
+        RenderPassBuilder, DrawHelper,
+        RendererId, SurfacePassConfig, ZIndex,
     },
     gpu::shader::{PrepareRenderPipelines, RenderPipelineKey, RenderPipelines},
     pattern::BuiltPattern,
@@ -66,7 +67,7 @@ pub struct TileRenderer {
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TilingGpuResources>,
-    tolerance: f32,
+    pub tolerance: f32,
     masks: TilingMasks,
     current_mask_atlas: u32,
     current_color_atlas: u32,
@@ -126,9 +127,8 @@ impl TileRenderer {
         surface.kind == SurfaceKind::Color
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
+    pub fn begin_frame(&mut self, ctx: &RenderPassBuilder) {
         let size = ctx.surface.size();
-        self.tolerance = ctx.params.tolerance;
         self.tiler.init(&size.to_f32().cast_unit().into());
         let tiles = (size.to_u32() + Size2D::new(TILE_SIZE - 1, TILE_SIZE - 1)) / TILE_SIZE;
         self.occlusion_mask.init(tiles.width, tiles.height);
@@ -148,7 +148,7 @@ impl TileRenderer {
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         shape: P,
         pattern: BuiltPattern,
@@ -156,20 +156,20 @@ impl TileRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(shape.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
-    pub fn fill_surface(&mut self, ctx: &mut Context, transforms: &Transforms, pattern: BuiltPattern) {
+    pub fn fill_surface(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(ctx.surface.current_config()));
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(ctx.surface));
 
         let aabb = transforms
             .get_current()
@@ -184,7 +184,7 @@ impl TileRenderer {
                 BatchFlags::empty(),
                 &mut || BatchInfo {
                     passes: 0..0,
-                    surface: ctx.surface.current_config(),
+                    surface: ctx.surface,
                 },
             )
             .0
@@ -198,7 +198,7 @@ impl TileRenderer {
 
     pub fn prepare(
         &mut self,
-        ctx: &Context,
+        pass: &BuiltRenderPass,
         transforms: &Transforms,
         shaders: &mut PrepareRenderPipelines,
         device: &wgpu::Device,
@@ -210,8 +210,7 @@ impl TileRenderer {
         // Process paths back to front in order to let the occlusion culling logic do its magic.
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .rev()
@@ -221,7 +220,7 @@ impl TileRenderer {
             let (commands, info) = batches.get_mut(batch_id.index);
             let surface = info.surface.draw_config(false, None);
             for fill in commands.iter().rev() {
-                self.prepare_fill(fill, &surface, ctx, transforms, device);
+                self.prepare_fill(fill, &surface, transforms, device);
             }
             self.encoder.split_sub_pass();
             let passes_end = self.encoder.render_passes.len();
@@ -287,7 +286,7 @@ impl TileRenderer {
         }
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, _ctx: &Context, transforms: &Transforms, device: &wgpu::Device) {
+    fn prepare_fill(&mut self, fill: &Fill, surface: &SurfaceDrawConfig, transforms: &Transforms, device: &wgpu::Device) {
         let transform = if fill.transform != TransformId::NONE {
             Some(transforms.get(fill.transform).matrix().to_untyped())
         } else {
@@ -653,8 +652,8 @@ impl TileRenderer {
     // }
 }
 
-impl Renderer for TileRenderer {
-    fn render_pre_pass(&self, index: u32, ctx: RenderContext, encoder: &mut wgpu::CommandEncoder) {
+impl core::Renderer for TileRenderer {
+    fn render_pre_pass(&self, index: u32, ctx: core::RenderContext, encoder: &mut wgpu::CommandEncoder) {
         let pass = &self.encoder.render_passes[index as usize];
         if pass.color_pre_pass {
             self.render_color_atlas(
@@ -681,7 +680,7 @@ impl Renderer for TileRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         sub_passes: &[SubPass],
-        _surface_info: &RenderPassState,
+        _surface_info: &SurfacePassConfig,
         ctx: RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
@@ -697,10 +696,10 @@ impl Renderer for TileRenderer {
 */
 }
 
-impl FillPath for TileRenderer {
+impl core::FillPath for TileRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
@@ -708,3 +707,17 @@ impl FillPath for TileRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
     }
 }
+
+/// A bock of commands from a specific renderer within a render pass.
+#[derive(Copy, Clone, Debug)]
+pub struct SubPass {
+    pub renderer_id: RendererId,
+    // This index is provided by the render in `add_render_pass` and passed back
+    // to it in `render`. It can be anything, it is usually a batch index.
+    pub internal_index: u32,
+    pub require_pre_pass: bool,
+    // Used when generating the render passes to decide when to split render
+    // passes. It can be obtained from the batch id.
+    pub surface: SurfaceIndex,
+}
+

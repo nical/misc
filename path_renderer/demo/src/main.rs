@@ -1,4 +1,4 @@
-use core::context::*;
+use core::{context::*, FillPath};
 use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
@@ -64,24 +64,24 @@ struct Renderers {
 }
 
 impl Renderers {
-    fn begin_frame(&mut self, ctx: &Context) {
+    fn begin_frame(&mut self) {
         //self.tiling.begin_frame(ctx);
-        self.tiling2.begin_frame(ctx);
-        self.meshes.begin_frame(ctx);
-        self.stencil.begin_frame(ctx);
-        self.wpf.begin_frame(ctx);
-        self.rectangles.begin_frame(ctx);
-        self.msaa_strokes.begin_frame(ctx);
+        self.tiling2.begin_frame();
+        self.meshes.begin_frame();
+        self.stencil.begin_frame();
+        self.wpf.begin_frame();
+        self.rectangles.begin_frame();
+        self.msaa_strokes.begin_frame();
     }
 
-    fn prepare(&mut self, ctx: &Context, transforms: &Transforms, prep: &mut PrepareRenderPipelines, _device: &wgpu::Device) {
-        //self.tiling.prepare(ctx, transforms, prep, &device);
-        self.tiling2.prepare(ctx, transforms, prep);
-        self.meshes.prepare(ctx, transforms, prep);
-        self.stencil.prepare(ctx, transforms, prep);
-        self.rectangles.prepare(ctx, prep);
-        self.wpf.prepare(ctx, transforms, prep);
-        self.msaa_strokes.prepare(ctx, transforms, prep);
+    fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, prep: &mut PrepareRenderPipelines, _device: &wgpu::Device) {
+        //self.tiling.prepare(pass, transforms, prep, &device);
+        self.tiling2.prepare(pass, transforms, prep);
+        self.meshes.prepare(pass, transforms, prep);
+        self.stencil.prepare(pass, transforms, prep);
+        self.rectangles.prepare(pass, prep);
+        self.wpf.prepare(pass, transforms, prep);
+        self.msaa_strokes.prepare(pass, transforms, prep);
     }
 
     fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -244,7 +244,7 @@ fn main() {
         textures: TextureRenderer::register(&device, &mut shaders),
     };
 
-    let mut ctx = Context::new(CanvasParams { tolerance });
+    let mut main_pass = RenderPassBuilder::new();
     let mut transforms = Transforms::new();
 
     let mut gpu_store = GpuStore::new(2048, &device);
@@ -336,6 +336,11 @@ fn main() {
             &gpu_resources[stroke_handle],
         ),
     };
+
+    renderers.tiling2.tolerance = tolerance;
+    renderers.stencil.tolerance = tolerance;
+    renderers.meshes.tolerance = tolerance;
+    renderers.msaa_strokes.tolerance = tolerance;
 
     //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
@@ -447,11 +452,12 @@ fn main() {
         };
 
         gpu_store.clear();
-        ctx.begin_frame(size, surface_cfg);
-
         transforms.clear();
 
-        renderers.begin_frame(&ctx);
+        renderers.begin_frame();
+
+        main_pass.begin(size, surface_cfg);
+
 
         gpu_resources.begin_frame();
 
@@ -470,7 +476,7 @@ fn main() {
             demo.fill_renderer,
             demo.stroke_renderer,
             test_stuff,
-            &mut ctx,
+            &mut main_pass,
             &mut transforms,
             &mut renderers,
             &patterns,
@@ -482,8 +488,8 @@ fn main() {
 
         let mut prep_pipelines = render_pipelines.prepare();
 
-        ctx.prepare();
-        renderers.prepare(&ctx, &transforms, &mut prep_pipelines, &device);
+        let built_pass = main_pass.end();
+        renderers.prepare(&built_pass, &transforms, &mut prep_pipelines, &device);
 
         let changes = prep_pipelines.finish();
         render_pipelines.build(
@@ -510,24 +516,17 @@ fn main() {
             &mut msaa_depth_texture,
             &mut temporary_texture,
         );
-        let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(tex),
-                }],
-            })
-        });
-        let target = SurfaceResources {
-            main: &frame_view,
-            depth: depth_texture.as_ref(),
-            msaa_color: msaa_texture.as_ref(),
-            msaa_depth: msaa_depth_texture.as_ref(),
-            temporary_color: temporary_texture.as_ref(),
-            temporary_src_bind_group: temporary_src_bind_group.as_ref(),
-        };
+
+        //let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
+        //    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //        label: None,
+        //        layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
+        //        entries: &[wgpu::BindGroupEntry {
+        //            binding: 0,
+        //            resource: wgpu::BindingResource::TextureView(tex),
+        //        }],
+        //    })
+        //});
 
         let render_start = time::precise_time_ns();
 
@@ -539,24 +538,77 @@ fn main() {
 
         gpu_resources.begin_rendering(&mut encoder);
 
-        ctx.render(
-            &[
-                &renderers.tiling2,
-                &renderers.meshes,
-                &renderers.stencil,
-                &renderers.rectangles,
-                &renderers.wpf,
-                &renderers.msaa_strokes,
-            ],
-            &gpu_resources,
-            &source_textures,
-            &mut render_pipelines,
-            &device,
-            common_handle,
-            &target,
-            true,
-            &mut encoder,
-        );
+        let msaa_resolve = surface_cfg.msaa;
+        let surface_cfg = main_pass.surface.config();
+        let ops = wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: if msaa_resolve {
+                wgpu::StoreOp::Discard
+            } else {
+                wgpu::StoreOp::Store
+            },
+        };
+        let pass_descriptor = &wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: if surface_cfg.msaa { msaa_texture.as_ref().unwrap() } else { &frame_view },
+                resolve_target: if msaa_resolve {
+                    Some(&frame_view)
+                } else {
+                    None
+                },
+                ops,
+            })],
+            depth_stencil_attachment: if surface_cfg.depth_or_stencil() {
+                Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: if surface_cfg.msaa {
+                        msaa_depth_texture.as_ref()
+                    } else {
+                        depth_texture.as_ref()
+                    }
+                    .unwrap(),
+                    depth_ops: if surface_cfg.depth {
+                        Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        })
+                    } else {
+                        None
+                    },
+                    stencil_ops: if surface_cfg.stencil {
+                        Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(128),
+                            store: wgpu::StoreOp::Discard,
+                        })
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            },
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        };
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&pass_descriptor);
+
+            built_pass.encode(
+                &[
+                    &renderers.tiling2,
+                    &renderers.meshes,
+                    &renderers.stencil,
+                    &renderers.rectangles,
+                    &renderers.wpf,
+                    &renderers.msaa_strokes,
+                ],
+                &gpu_resources,
+                &source_textures,
+                &render_pipelines,
+                &mut render_pass,
+            );
+        }
 
         queue.submit(Some(encoder.finish()));
 
@@ -604,7 +656,7 @@ fn paint_scene(
     fill_renderer: usize,
     stroke_renderer: usize,
     testing: bool,
-    ctx: &mut Context,
+    pass: &mut RenderPassBuilder,
     transforms: &mut Transforms,
     renderers: &mut Renderers,
     patterns: &Patterns,
@@ -633,7 +685,7 @@ fn paint_scene(
             .transformed(&transforms.get_current().matrix().to_untyped()),
         );
 
-        renderers.tiling2.fill_surface(ctx, &transforms, gradient);
+        renderers.tiling2.fill_surface(&mut pass.ctx(), &transforms, gradient);
     }
 
     transforms.push(transform);
@@ -660,7 +712,7 @@ fn paint_scene(
             };
 
             let path = FilledPath::new(path.clone());
-            renderers.fill(fill_renderer).fill_path(ctx, transforms, path, pattern);
+            renderers.fill(fill_renderer).fill_path(&mut pass.ctx(), transforms, path, pattern);
         }
 
         if let Some(stroke) = stroke {
@@ -688,7 +740,7 @@ fn paint_scene(
 
             match stroke_renderer {
                 crate::INSTANCED => {
-                    renderers.msaa_strokes.stroke_path(ctx, transforms, path.clone(), pattern, width);
+                    renderers.msaa_strokes.stroke_path(pass, transforms, path.clone(), pattern, width);
                 }
                 crate::STROKE_TO_FILL => {
                     let w = width * 0.5;
@@ -713,7 +765,7 @@ fn paint_scene(
                     }
                     let stroked_path = stroked_path.build();
                     let path = FilledPath::new(Arc::new(stroked_path));
-                    renderers.fill(fill_renderer).fill_path(ctx, transforms, path, pattern);
+                    renderers.fill(fill_renderer).fill_path(&mut pass.ctx(), transforms, path, pattern);
                 }
                 _ => {
                     unimplemented!();
@@ -723,12 +775,6 @@ fn paint_scene(
     }
 
     if testing {
-        //ctx.reconfigure_surface(SurfacePassConfig {
-        //    depth: true,
-        //    msaa: msaa_default,
-        //    stencil: true,
-        //    kind: SurfaceKind::Color,
-        //});
 
         transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = transforms.get_current_gpu_handle(gpu_store);
@@ -753,7 +799,7 @@ fn paint_scene(
         );
 
         renderers.rectangles.fill_rect(
-            ctx,
+            pass,
             transforms,
             &LocalRect {
                 min: point(200.0, 700.0),
@@ -764,7 +810,7 @@ fn paint_scene(
             transform_handle,
         );
         renderers.rectangles.fill_rect(
-            ctx,
+            pass,
             transforms,
             &LocalRect {
                 min: point(310.5, 700.5),
@@ -775,13 +821,6 @@ fn paint_scene(
             transform_handle,
         );
         transforms.pop();
-
-        //ctx.reconfigure_surface(SurfacePassConfig {
-        //    depth: false,
-        //    msaa: msaa_tiling,
-        //    stencil: false,
-        //    kind: SurfaceKind::Color,
-        //});
 
         //renderers.tiling.fill_circle(
         //    ctx,
@@ -817,7 +856,7 @@ fn paint_scene(
         builder.end(true);
 
         renderers.fill(fill_renderer).fill_path(
-            ctx,
+            &mut pass.ctx(),
             transforms,
             builder.build().into(),
             patterns.checkerboards.add(
@@ -950,10 +989,10 @@ fn paint_scene(
 
         if false {
             let offset_path = builder2.build();
-            renderers.tiling2.fill_path(ctx, transforms, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling2.fill_path(&mut pass.ctx(), transforms, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
-                ctx,
+                &mut pass.ctx(),
                 transforms,
                 offset_path.clone(),
                 1.0,
@@ -965,7 +1004,7 @@ fn paint_scene(
                 }),
             );
             renderers.meshes.stroke_path(
-                ctx,
+                &mut pass.ctx(),
                 transforms,
                 path_to_offset.clone(),
                 1.0,
@@ -985,7 +1024,7 @@ fn paint_scene(
             b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
             b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
             b.end(false);
-            renderers.meshes.stroke_path(ctx, transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+            renderers.meshes.stroke_path(&mut pass.ctx(), transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
             let green = patterns.colors.add(Color::GREEN);
             let blue = patterns.colors.add(Color::BLUE);
@@ -994,7 +1033,7 @@ fn paint_scene(
                 match evt {
                     PathEvent::Begin { at } => {
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: at.cast_unit(),
@@ -1006,7 +1045,7 @@ fn paint_scene(
                     }
                     PathEvent::Line { to, .. } => {
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: to.cast_unit(),
@@ -1018,7 +1057,7 @@ fn paint_scene(
                     }
                     PathEvent::Quadratic { ctrl, to, .. } => {
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: ctrl.cast_unit(),
@@ -1028,7 +1067,7 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: to.cast_unit(),
@@ -1042,7 +1081,7 @@ fn paint_scene(
                         ctrl1, ctrl2, to, ..
                     } => {
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: ctrl1.cast_unit(),
@@ -1052,7 +1091,7 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: ctrl2.cast_unit(),
@@ -1062,7 +1101,7 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            ctx,
+                            &mut pass.ctx(),
                             transforms,
                             Circle {
                                 center: to.cast_unit(),
@@ -1489,4 +1528,13 @@ fn create_image(
         },
         &img,
     )
+}
+
+pub struct RenderPassesRequirements {
+    pub msaa: bool,
+    pub depth_stencil: bool,
+    pub msaa_depth_stencil: bool,
+    // Temporary color target used in place of the main target if we need
+    // to read from it but can't.
+    pub temporary: bool,
 }

@@ -10,8 +10,10 @@ use crate::flatten::Flattener;
 use crate::{FillOptions, FillRule, Transform, TilePosition};
 use crate::occlusion::OcclusionBuffer;
 
-const TILE_SIZE_F32: f32 = 16.0;
+// When changing this, also change the corresponding constant in tile.wgsl
 const TILE_SIZE: i32 = 16;
+const TILE_SIZE_F32: f32 = TILE_SIZE as f32;
+
 const UNITS_PER_TILE: i32 = 256;
 const UNITS_PER_TILE_F32: f32 = UNITS_PER_TILE as f32;
 const LOCAL_COORD_MASK: i32 = 255;

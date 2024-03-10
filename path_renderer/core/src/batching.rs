@@ -321,7 +321,6 @@ impl OrderIndependentBatcher {
 pub struct Batcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
-    batches: Vec<BatchId>,
 }
 
 impl Batcher {
@@ -373,45 +372,41 @@ impl Batcher {
         or_add_index
     }
 
-    pub fn set_render_pass(&mut self, pass_idx: SurfaceIndex) {
-        self.flush_batches();
+    pub fn set_render_pass(&mut self, pass_idx: SurfaceIndex, batches: &mut Vec<BatchId>) {
+        self.flush_batches(batches);
 
         self.ordered.set_render_pass(pass_idx);
         self.order_independent.set_render_pass(pass_idx);
     }
 
     pub fn begin(&mut self) {
-        self.batches.clear();
         self.ordered.begin();
         self.order_independent.begin();
     }
 
-    pub fn finish(&mut self) {
-        self.flush_batches();
+    pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
+        self.flush_batches(batches);
 
         self.ordered.finish();
         self.order_independent.finish();
     }
 
-    pub fn batches(&self) -> &[BatchId] {
-        &self.batches
-    }
-
     pub fn new() -> Self {
         Batcher {
-            batches: Vec::new(),
             ordered: OrderedBatcher::new(),
             order_independent: OrderIndependentBatcher::new(),
         }
     }
 
-    fn flush_batches(&mut self) {
+    fn flush_batches(&mut self, batches: &mut Vec<BatchId>) {
+        let count = self.order_independent.batches.len() + self.ordered.batches.len();
+        batches.reserve(count);
+
         self.order_independent.batches.reverse();
-        self.batches
-            .extend_from_slice(&self.order_independent.batches);
+        batches.extend_from_slice(&self.order_independent.batches);
         self.order_independent.batches.clear();
 
-        self.batches.extend_from_slice(&self.ordered.batches);
+        batches.extend_from_slice(&self.ordered.batches);
         self.ordered.batches.clear();
     }
 }

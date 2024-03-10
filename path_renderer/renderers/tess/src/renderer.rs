@@ -2,8 +2,8 @@ use core::{
     batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
-        SurfacePassConfig, ZIndex, FillPath,
+        DrawHelper, RendererId,
+        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
     gpu::{
         shader::{
@@ -126,8 +126,7 @@ pub struct MeshRenderer {
     _resources: ResourcesHandle<MeshGpuResources>,
     tessellator: FillTessellator,
     geometry: VertexBuffers<Vertex, u32>,
-    tolerenace: f32,
-    enable_msaa: bool,
+    pub tolerance: f32,
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
@@ -149,8 +148,7 @@ impl MeshRenderer {
             _resources: resources,
             tessellator: FillTessellator::new(),
             geometry: VertexBuffers::new(),
-            tolerenace: 0.25,
-            enable_msaa: false,
+            tolerance: 0.25,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
@@ -164,19 +162,18 @@ impl MeshRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
+    pub fn begin_frame(&mut self) {
         self.draws.clear();
         self.batches.clear();
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
-        self.enable_msaa = ctx.surface.msaa();
         self.vbo_range = None;
         self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -186,7 +183,7 @@ impl MeshRenderer {
 
     pub fn stroke_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: Path,
         width: f32,
@@ -195,17 +192,17 @@ impl MeshRenderer {
         self.fill_shape(ctx, transforms, Shape::StrokePath(path, width), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
     pub fn fill_mesh(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         mesh: TessellatedMesh,
         pattern: BuiltPattern,
@@ -213,7 +210,7 @@ impl MeshRenderer {
         self.fill_shape(ctx, transforms, Shape::Mesh(mesh), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -223,7 +220,7 @@ impl MeshRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.current_config().depth {
+        if pattern.is_opaque && ctx.surface.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 
@@ -234,11 +231,11 @@ impl MeshRenderer {
             batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: ctx.surface.current_config(),
+                surface: ctx.surface,
                 blend_mode: pattern.blend_mode,
             },
         );
-        info.surface = ctx.surface.current_config();
+        info.surface = ctx.surface;
         commands.push(Fill {
             shape,
             pattern,
@@ -247,15 +244,14 @@ impl MeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -367,7 +363,7 @@ impl MeshRenderer {
             Shape::Path(shape) => {
                 let transform = transform.to_untyped();
                 let options =
-                    FillOptions::tolerance(self.tolerenace).with_fill_rule(shape.fill_rule);
+                    FillOptions::tolerance(self.tolerance).with_fill_rule(shape.fill_rule);
 
                 // TODO: some way to simplify/discard offscreen geometry, would probably be best
                 // done in the tessellator itself.
@@ -386,7 +382,7 @@ impl MeshRenderer {
                     .unwrap();
             }
             Shape::Circle(circle) => {
-                let options = FillOptions::tolerance(self.tolerenace);
+                let options = FillOptions::tolerance(self.tolerance);
                 self.tessellator
                     .tessellate_circle(
                         transform.transform_point(circle.center).cast_unit(),
@@ -460,7 +456,7 @@ impl MeshRenderer {
             }
             Shape::StrokePath(path, width) => {
                 let transform = transform.to_untyped();
-                let options = StrokeOptions::tolerance(self.tolerenace).with_line_width(*width);
+                let options = StrokeOptions::tolerance(self.tolerance).with_line_width(*width);
 
                 // TODO: some way to simplify/discard offscreen geometry, would probably be best
                 // done in the tessellator itself.
@@ -497,12 +493,12 @@ impl MeshRenderer {
     }
 }
 
-impl Renderer for MeshRenderer {
+impl core::Renderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];
@@ -541,10 +537,10 @@ impl Renderer for MeshRenderer {
     }
 }
 
-impl FillPath for MeshRenderer {
+impl core::FillPath for MeshRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,

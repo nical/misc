@@ -2,8 +2,8 @@ use core::{
     batching::{BatchFlags, BatchList, BatchId},
     bytemuck,
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
-        SurfacePassConfig, ZIndex,
+        RenderPassBuilder, DrawHelper, RendererId,
+        SurfacePassConfig, ZIndex, BuiltRenderPass,
     },
     gpu::{
         shader::{
@@ -104,7 +104,7 @@ pub struct MsaaStrokeRenderer {
     resources: ResourcesHandle<MsaaStrokeGpuResources>,
     curves: Vec<CurveInstance>,
     path_data: Vec<PathData>,
-    tolerenace: f32,
+    pub tolerance: f32,
 
     batches: BatchList<Stroke, BatchInfo>,
     draws: Vec<Draw>,
@@ -126,7 +126,7 @@ impl MsaaStrokeRenderer {
             resources,
             curves: Vec::new(),
             path_data: Vec::new(),
-            tolerenace: 0.25,
+            tolerance: 0.25,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
@@ -140,7 +140,7 @@ impl MsaaStrokeRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, _ctx: &Context) {
+    pub fn begin_frame(&mut self) {
         self.draws.clear();
         self.batches.clear();
         self.curves.clear();
@@ -151,7 +151,7 @@ impl MsaaStrokeRenderer {
 
     pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassBuilder,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -168,7 +168,7 @@ impl MsaaStrokeRenderer {
 //        self.stroke_shape(ctx, Shape::Circle(circle), pattern);
 //    }
 
-    fn stroke_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn stroke_shape(&mut self, ctx: &mut RenderPassBuilder, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -178,7 +178,7 @@ impl MsaaStrokeRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.current_config().depth {
+        if pattern.is_opaque && ctx.surface.config().depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
         let (commands, info) = self.batches.find_or_add_batch(
@@ -188,11 +188,11 @@ impl MsaaStrokeRenderer {
             batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: ctx.surface.current_config(),
+                surface: ctx.surface.config(),
                 blend_mode: pattern.blend_mode,
             },
         );
-        info.surface = ctx.surface.current_config();
+        info.surface = ctx.surface.config();
         commands.push(Stroke {
             shape,
             pattern,
@@ -201,7 +201,7 @@ impl MsaaStrokeRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, ctx: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
@@ -209,7 +209,6 @@ impl MsaaStrokeRenderer {
         let id = self.renderer_id;
         let mut batches = self.batches.take();
         for batch_id in ctx
-            .batcher
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -285,7 +284,7 @@ impl MsaaStrokeRenderer {
         match &shape.shape {
             Shape::Path(shape, ..) => {
                 let scale = f32::max(transform.m11, transform.m22);
-                let tolerance = self.tolerenace / scale;
+                let tolerance = self.tolerance / scale;
                 write_curves(shape.path.as_slice(), path_idx, tolerance, &mut self.curves, max_segments_per_instance);
             }
         }
@@ -337,12 +336,12 @@ impl MsaaStrokeRenderer {
     }
 }
 
-impl Renderer for MsaaStrokeRenderer {
+impl core::Renderer for MsaaStrokeRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];

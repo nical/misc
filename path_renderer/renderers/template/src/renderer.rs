@@ -4,8 +4,8 @@
 use core::{
     batching::{BatchFlags, BatchList, BatchId},
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId, SubPass,
-        SurfacePassConfig, ZIndex, FillPath,
+        RenderPassBuilder, DrawHelper, RendererId,
+        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
     pattern::{BindingsId, BuiltPattern},
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
@@ -79,14 +79,14 @@ impl TemplateRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, _ctx: &Context) {
+    pub fn begin_frame(&mut self, _ctx: &RenderPassBuilder) {
         self.draws.clear();
         self.batches.clear();
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -94,7 +94,7 @@ impl TemplateRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -104,7 +104,7 @@ impl TemplateRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.current_config().depth {
+        if pattern.is_opaque && ctx.surface.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 
@@ -115,10 +115,10 @@ impl TemplateRenderer {
             batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: ctx.surface.current_config(),
+                surface: ctx.surface,
             },
         );
-        info.surface = ctx.surface.current_config();
+        info.surface = ctx.surface;
         commands.push(Fill {
             shape,
             pattern,
@@ -127,15 +127,14 @@ impl TemplateRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -157,7 +156,7 @@ impl TemplateRenderer {
                     // self.draws.push(...)
                 }
 
-                self.prepare_fill(fill, ctx, transforms);
+                self.prepare_fill(fill, transforms);
             }
 
             // if commands to flush...
@@ -169,7 +168,7 @@ impl TemplateRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, ctx: &Context, transforms: &Transforms) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
         let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
@@ -186,12 +185,12 @@ impl TemplateRenderer {
     }
 }
 
-impl Renderer for TemplateRenderer {
+impl core::Renderer for TemplateRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];
@@ -219,10 +218,10 @@ impl Renderer for TemplateRenderer {
     }
 }
 
-impl FillPath for TemplateRenderer {
+impl core::FillPath for TemplateRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,

@@ -9,11 +9,10 @@ use lyon::{
 };
 
 use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, context::FillPath, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId};
+use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId, context::{RenderPassContext, BuiltRenderPass}};
 use core::wgpu;
 use core::{
     bytemuck,
-    context::RenderContext,
     gpu::shader::{
         BaseShaderId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
     },
@@ -22,10 +21,7 @@ use core::{
 use core::{
     StencilMode, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
-    context::{
-        Renderer, Context, DrawHelper, RenderPassState, RendererId,
-        ZIndex,
-    },
+    context::{DrawHelper, RendererId, ZIndex},
     gpu::DynBufferRange,
     pattern::{BindingsId, BuiltPattern},
     transform::TransformId,
@@ -143,10 +139,9 @@ pub struct StencilAndCoverRenderer {
     ibo_range: Option<DynBufferRange>,
     cover_vbo_range: Option<DynBufferRange>,
     cover_ibo_range: Option<DynBufferRange>,
-    enable_msaa: bool,
-    opaque_pass: bool,
     cover_pipeline: BaseShaderId,
     pub stats: Stats,
+    pub tolerance: f32,
 }
 
 impl StencilAndCoverRenderer {
@@ -169,8 +164,6 @@ impl StencilAndCoverRenderer {
             ibo_range: None,
             cover_vbo_range: None,
             cover_ibo_range: None,
-            enable_msaa: false,
-            opaque_pass: false,
             cover_pipeline: res.cover_base_shader,
             stats: Stats {
                 commands: 0,
@@ -178,6 +171,7 @@ impl StencilAndCoverRenderer {
                 cover_batches: 0,
                 vertices: 0,
             },
+            tolerance: 0.25,
         }
     }
 
@@ -185,7 +179,7 @@ impl StencilAndCoverRenderer {
         surface.stencil
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
+    pub fn begin_frame(&mut self) {
         self.commands.clear();
         self.draws.clear();
         self.batches.clear();
@@ -197,14 +191,12 @@ impl StencilAndCoverRenderer {
         self.ibo_range = None;
         self.cover_vbo_range = None;
         self.cover_ibo_range = None;
-        self.enable_msaa = ctx.surface.msaa();
-        self.opaque_pass = ctx.surface.opaque_pass();
         self.stats = Default::default();
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -212,16 +204,16 @@ impl StencilAndCoverRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut Context, transforms: &Transforms, rect: &LocalRect, pattern: BuiltPattern) {
+    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, rect: &LocalRect, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Rect(*rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut Context, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
+    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(ctx.surface.current_config()));
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+        debug_assert!(self.supports_surface(ctx.surface));
 
         let aabb = transforms
             .get_current()
@@ -265,11 +257,10 @@ impl StencilAndCoverRenderer {
             });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         let mut batches = self.batches.take();
         let id = self.renderer_id;
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -278,13 +269,13 @@ impl StencilAndCoverRenderer {
 
             let draws_start = self.draws.len();
 
-            let surface = ctx.surface.get_config(batch_id.surface);
+            let surface = pass.surface();
 
             let stencil_idx_start = self.stencil_geometry.indices.len() as u32;
             let cover_idx_start = self.cover_geometry.indices.len() as u32;
 
             for fill in commands.iter() {
-                self.prepare_fill(ctx, transforms, fill);
+                self.prepare_fill(transforms, fill);
             }
 
             let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
@@ -316,7 +307,7 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
     }
 
-    fn prepare_fill(&mut self, ctx: &Context, transforms: &Transforms, fill: &Fill) {
+    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill) {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
@@ -327,7 +318,7 @@ impl StencilAndCoverRenderer {
                 generate_stencil_geometry(
                     shape.path.as_slice(),
                     transform.matrix(),
-                    ctx.params.tolerance,
+                    self.tolerance,
                     &transformed_aabb,
                     &mut self.stencil_geometry,
                 );
@@ -347,7 +338,7 @@ impl StencilAndCoverRenderer {
                         .tessellate_circle(
                             t.transform_point(circle.center).cast_unit(),
                             circle.radius * t.scale.x,
-                            &FillOptions::tolerance(ctx.params.tolerance),
+                            &FillOptions::tolerance(self.tolerance),
                             &mut BuffersBuilder::new(
                                 &mut self.cover_geometry,
                                 VertexCtor {
@@ -570,12 +561,12 @@ fn generate_cover_geometry(
     geometry.indices.push(offset + 3);
 }
 
-impl Renderer for StencilAndCoverRenderer {
+impl core::Renderer for StencilAndCoverRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources[self.common_resources];
@@ -597,7 +588,7 @@ impl Renderer for StencilAndCoverRenderer {
                 match draw {
                     Draw::Stencil { indices } => {
                         // Stencil
-                        let pipeline = if surface_info.surface.msaa {
+                        let pipeline = if surface_info.msaa {
                             &stencil_resources.msaa_stencil_pipeline
                         } else {
                             &stencil_resources.stencil_pipeline
@@ -653,10 +644,10 @@ fn skip_edge(rect: &SurfaceRect, from: Point, to: Point) -> bool {
     from.x < rect.min.x && to.x < rect.min.x || from.y < rect.min.y && to.y < rect.min.y
 }
 
-impl FillPath for StencilAndCoverRenderer {
+impl core::FillPath for StencilAndCoverRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,

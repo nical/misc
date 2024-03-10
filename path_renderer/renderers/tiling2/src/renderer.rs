@@ -1,8 +1,8 @@
 use core::{
     batching::{BatchFlags, BatchList, BatchId},
     context::{
-        Renderer, Context, DrawHelper, RenderContext, RenderPassState, RendererId,
-        SurfacePassConfig, ZIndex, FillPath,
+        DrawHelper, RendererId,
+        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
     pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources, ResourcesHandle},
@@ -54,7 +54,7 @@ pub struct TileRenderer {
     renderer_id: RendererId,
     common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TileGpuResources>,
-    tolerance: f32,
+    pub tolerance: f32,
     tiler: Tiler,
     tiles: TilerOutput,
 
@@ -87,18 +87,14 @@ impl TileRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, ctx: &Context) {
-        let size = ctx.surface.size();
+    pub fn begin_frame(&mut self) {
         self.batches.clear();
-        self.tiler.begin_target(SurfaceIntRect::from_size(ctx.surface.size()));
-        self.tiles.occlusion.init(size.width as u32, size.height as u32);
-        self.tiles.clear();
         self.instances = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -106,11 +102,11 @@ impl TileRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_surface(&mut self, ctx: &mut Context, transforms: &Transforms, pattern: BuiltPattern) {
+    pub fn fill_surface(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, pattern: BuiltPattern) {
         self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut Context, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -131,14 +127,14 @@ impl TileRenderer {
             &aabb,
             BatchFlags::empty(),
             &mut || BatchInfo {
-                surface: ctx.surface.current_config(),
+                surface: ctx.surface,
                 pattern,
                 opaque_draw: None,
                 masked_draw: None,
                 blend_mode: pattern.blend_mode,
             },
         );
-        info.surface = ctx.surface.current_config();
+        info.surface = ctx.surface;
         commands.push(Fill {
             shape,
             pattern,
@@ -147,15 +143,19 @@ impl TileRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &Context, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
+        let size = pass.surface_size();
+        self.tiler.begin_target(SurfaceIntRect::from_size(size));
+        self.tiles.occlusion.init(size.width as u32, size.height as u32);
+        self.tiles.clear();
+
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
-            .batcher
+        for batch_id in pass
             .batches()
             .iter()
             .rev()
@@ -322,12 +322,12 @@ impl TileRenderer {
     }
 }
 
-impl Renderer for TileRenderer {
+impl core::Renderer for TileRenderer {
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
-        _surface_info: &RenderPassState,
-        ctx: RenderContext<'resources>,
+        _surface_info: &SurfacePassConfig,
+        ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         if self.instances.is_none() {
@@ -390,10 +390,10 @@ impl Renderer for TileRenderer {
     }
 }
 
-impl FillPath for TileRenderer {
+impl core::FillPath for TileRenderer {
     fn fill_path(
         &mut self,
-        ctx: &mut Context,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: FilledPath,
         pattern: BuiltPattern,
