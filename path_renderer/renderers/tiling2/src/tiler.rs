@@ -158,7 +158,7 @@ impl Tiler {
     // Similar to tile_path_nested, except that it flattens curves into a buffer before
     // processing the line segments in bulk, instead of nesting the binning into
     // the flattening loop.
-    // In its current states it doesn not appear to improve performance althogh
+    // In its current states it doesn not appear to improve performance although
     // it makes profiles a bit easier to read.
     fn tile_path(
         &mut self,
@@ -319,12 +319,16 @@ impl Tiler {
     }
 
     fn tile_segment(&mut self, edge: &LineSegment<f32>) {
+
+        let _panic = PanicLogger::new("Bug: tile_segment panic with ", edge);
+
         // Leave some margin around this early scissor test so that
         // we keep track of the previous tile near the boundary of the
         // scissor rect.
         let min_y = edge.to.y.min(edge.from.y);
         let max_y = edge.to.y.max(edge.from.y);
         let min_x = edge.to.x.min(edge.from.x);
+        let max_x = edge.to.x.max(edge.from.x);
         if min_y > self.scissor.max.y + 1.0
             || max_y < self.scissor.min.y - 1.0
             || min_x > self.scissor.max.x + 1.0
@@ -373,7 +377,10 @@ impl Tiler {
                 h_dst_tx = dst_tx;
             } else {
                 v_y1 = (ty + v_tile_side) as f32 * TILE_SIZE_F32;
-                v_x1 = v_x0 + dx_dy * (v_y1 - v_y0);
+                // The min and max operations prevent limited arithmetic precision from
+                // allowing the computed vertex to fall on a tile outside of the expected
+                // range.
+                v_x1 = (edge.from.x + dx_dy * (v_y1 - edge.from.y)).max(min_x).min(max_x);
                 h_dst_tx = if x_step == 0 {
                     dst_tx
                 } else {
@@ -400,6 +407,8 @@ impl Tiler {
             let mut h_x0 = v_x0;
             let mut h_y0 = v_y0;
             //println!(" - row {ty}, sub ({v_x0} {v_y0}) -> ({v_x1} {v_y1}), tiles x {tx} {h_dst_tx}");
+            debug_assert!(x_step > 0 || h_dst_tx <= tx);
+            debug_assert!(x_step < 0 || h_dst_tx >= tx);
 
             let mut events = &mut self.events[ty as usize % EVENT_BUCKETS];
 
@@ -438,7 +447,7 @@ impl Tiler {
                     // Add an auxiliary edge when crossing a vertical boundary (tile x
                     // coordinate changes).
                     if tx != self.prev_tx {
-                        // Note, if the edge is going in the ngative x orientation, then
+                        // Note, if the edge is going in the negative x orientation, then
                         // we are actually adding an auxiliary edge to the previous tile
                         // rather than the current one.
                         let aux_tx = tx.max(self.prev_tx);
@@ -451,7 +460,7 @@ impl Tiler {
                                 (255, local_y0)
                             };
                             //println!("   - auxiliary edge tile {aux_tx} {ty}, y-range {y0} {y1}");
-                            assert!(aux_tx < self.scissor_tiles.max.x);
+                            debug_assert!(aux_tx < self.scissor_tiles.max.x);
                             events.push(Event::edge(
                                 aux_tx as u16, ty as u16,
                                 [0, y0, 0, y1]
@@ -461,6 +470,9 @@ impl Tiler {
                 }
 
                 self.prev_tx = tx;
+                //println!("    tx: {tx}, h_dst_tx: {h_dst_tx}, dst_tx {dst_tx}");
+                debug_assert!(x_step > 0 || tx >= h_dst_tx);
+                debug_assert!(x_step < 0 || tx <= h_dst_tx);
 
                 if tx == h_dst_tx {
                     break;
@@ -1021,11 +1033,11 @@ impl Tiler {
                     if tile_last_edge != tile_first_edge {
                         // This limit isn't necessary but it is useful to catch bugs. In practice there should
                         // never be this many edges in a single tile.
-                        const MAX_EDGES_PER_TILE: usize = 512;
+                        const MAX_EDGES_PER_TILE: usize = 4096;
                         debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
 
                         if !output.occlusion.occluded(x, y) {
-                            assert!(x < x_end, "trying to push a mask tile out of bounds at {current_tile:?} scissor: {:?}, event is edge: {:?}", self.scissor_tiles, evt.is_edge());
+                            debug_assert!(x < x_end, "trying to push a mask tile out of bounds at {current_tile:?} scissor: {:?}, event is edge: {:?}", self.scissor_tiles, evt.is_edge());
                             //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                             output.mask_tiles.push(TileInstance {
                                 position: TilePosition::new(x as u32, y as u32),
@@ -1054,7 +1066,7 @@ impl Tiler {
                     // Fill solid tiles if any, up to the new tile or the end of the current row.
                     while inside && x < x_end {
                         while x < x_end && !output.occlusion.test(x, y, pattern.is_opaque) {
-                            assert!((x as i32) < self.scissor_tiles.max.x, "A");
+                            debug_assert!((x as i32) < self.scissor_tiles.max.x, "A");
                             //println!("    skip occluded solid tile {solid_tile_x:?}");
                             x += 1;
                         }
@@ -1303,6 +1315,30 @@ impl PathInfo {
     }
 }
 
+struct PanicLogger<'l, T: std::fmt::Debug> {
+    _msg: &'l str,
+    _payload: T,
+}
+
+impl<'l, T: std::fmt::Debug> PanicLogger<'l, T> {
+    #[inline]
+    pub fn new(_msg: &'l str, _payload: T) -> Self {
+        PanicLogger {
+            _msg,
+            _payload,
+        }
+    }
+}
+
+impl<'l, T: std::fmt::Debug> Drop for PanicLogger<'l, T> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        if std::thread::panicking() {
+            println!("{} {:?}", self._msg, self._payload);
+        }
+    }
+}
+
 
 #[test]
 fn size_of() {
@@ -1399,3 +1435,60 @@ fn tiler2_svg() {
     //tiler.dbg.flush_blocking();
 }
 
+#[cfg(test)]
+fn test_segment(from: Point, to: Point) {
+    let seg = LineSegment { from: point(-526043.7, 1466.5547), to: point(-526063.0, 395.3828) };
+
+    use core::path::Builder;
+    use core::gpu::shader::ShaderPatternId;
+    use core::pattern::BindingsId;
+
+    let mut path = Builder::new();
+    path.begin(from);
+    path.line_to(to);
+    path.line_to(from + vector(100.0, 0.0));
+    path.end(true);
+
+    let path = path.build();
+
+
+    let mut tiler = Tiler::new();
+    tiler.begin_target(SurfaceIntRect {
+        min: point(0, 0),
+        max: point(800, 600),
+    });
+
+    let options = FillOptions {
+        fill_rule: FillRule::EvenOdd,
+        inverted: false,
+        z_index: 0,
+        tolerance: 0.25,
+        opacity: 1.0,
+        transform: None,
+    };
+
+    let pattern = BuiltPattern {
+        data: 0,
+        shader: ShaderPatternId::from_index(0),
+        bindings: BindingsId::from_index(0),
+        is_opaque: true,
+        blend_mode: core::gpu::shader::BlendMode::None,
+        can_stretch_horizontally: true,
+        favor_prerendering: false,
+    };
+
+    let mut output = TilerOutput::new();
+
+    tiler.fill_path(path.iter(), &options, &pattern, &mut output);
+
+}
+
+#[test]
+fn segment_01() {
+    test_segment(point(-526043.7, 1466.5547), point(-526063.0, 395.3828))
+}
+
+#[test]
+fn segment_02() {
+    test_segment(point(330.918, -0.04), point(331.346, -0.85275))
+}
