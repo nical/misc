@@ -16,7 +16,7 @@ pub struct ZIndices {
 
 impl ZIndices {
     pub fn new() -> Self {
-        ZIndices { next: 0 }
+        ZIndices { next: 1 }
     }
 
     pub fn push(&mut self) -> ZIndex {
@@ -34,7 +34,7 @@ impl ZIndices {
     }
 
     pub fn clear(&mut self) {
-        self.next = 0;
+        self.next = 1;
     }
 }
 

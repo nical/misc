@@ -13,6 +13,47 @@ pub use lyon::lyon_tessellation::FillRule;
 
 pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Occlusion {
+    /// Discard occluded content early on the CPU.
+    pub cpu: bool,
+
+    /// Use the depth buffer to discard occluded content.
+    pub gpu: bool,
+}
+
+impl Default for Occlusion {
+    fn default() -> Self {
+        Occlusion {
+            gpu: false,
+            cpu: true,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RendererOptions {
+    /// The flattening tolerance threshold.
+    pub tolerance: f32,
+    /// Whether to allow occlusion culling on CPU and/or GPU.
+    pub occlusion: Occlusion,
+    /// Don't produce draw calls with blending disabled.
+    ///
+    /// This puts the masked and interrior parts of the each path in the
+    /// same draw call. It can avoid a large number of batches when both
+    /// the CPU and GPU occlusion methods are disabled.
+    pub no_opaque_batches: bool,
+}
+
+impl Default for RendererOptions {
+    fn default() -> Self {
+        RendererOptions {
+            occlusion: Occlusion::default(),
+            tolerance: 0.25,
+            no_opaque_batches: false,
+        }
+    }
+}
 
 pub struct FillOptions<'l> {
     pub fill_rule: FillRule,

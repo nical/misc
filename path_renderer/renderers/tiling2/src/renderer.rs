@@ -13,7 +13,7 @@ use core::{
 };
 use std::ops::Range;
 
-use crate::{TileGpuResources, FillOptions, tiler::{Tiler, TilerOutput, EncodedPathInfo}};
+use crate::{tiler::{EncodedPathInfo, Tiler, TilerOutput}, FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
 struct BatchInfo {
     surface: SurfacePassConfig,
@@ -55,6 +55,9 @@ pub struct TileRenderer {
     common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TileGpuResources>,
     pub tolerance: f32,
+    occlusion: Occlusion,
+    no_opaque_batches: bool,
+    back_to_front: bool,
     tiler: Tiler,
     tiles: TilerOutput,
 
@@ -69,12 +72,16 @@ impl TileRenderer {
         common_resources: ResourcesHandle<CommonGpuResources>,
         resources: ResourcesHandle<TileGpuResources>,
         res: &TileGpuResources,
+        options: &RendererOptions,
     ) -> Self {
         TileRenderer {
             renderer_id,
             common_resources,
             resources: resources,
-            tolerance: 0.25,
+            tolerance: options.tolerance,
+            occlusion: options.occlusion,
+            no_opaque_batches: options.no_opaque_batches,
+            back_to_front: options.occlusion.cpu || options.occlusion.gpu, 
             tiler: Tiler::new(),
             tiles: TilerOutput::new(),
             batches: BatchList::new(renderer_id),
@@ -83,7 +90,11 @@ impl TileRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
+        if self.occlusion.gpu && !surface.depth {
+            return false;
+        }
+
         true
     }
 
@@ -106,7 +117,7 @@ impl TileRenderer {
         self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, mut pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -120,12 +131,25 @@ impl TileRenderer {
             SurfaceRect { min: point(MIN, MIN), max: point(MAX, MAX) }
         };
 
+        let batch_flags = if self.back_to_front || self.no_opaque_batches {
+            BatchFlags::empty()
+        } else {
+            // Each shape has potententially a draw call for the masked tiles and
+            // one for the opaque interriors, so letting them overlap would break
+            // ordering.
+            BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE
+        };
+
+        if self.no_opaque_batches {
+            pattern.is_opaque = false;
+        }
+
         let batch_key = pattern.batch_key();
         let (commands, info) = self.batches.find_or_add_batch(
             &mut ctx.batcher,
             &batch_key,
             &aabb,
-            BatchFlags::empty(),
+            batch_flags,
             &mut || BatchInfo {
                 surface: ctx.surface,
                 pattern,
@@ -143,66 +167,107 @@ impl TileRenderer {
         });
     }
 
+    pub fn set_options(&mut self, options: &RendererOptions) {
+        self.tolerance = options.tolerance;
+        self.occlusion = options.occlusion;
+        self.no_opaque_batches = options.no_opaque_batches;
+    }
+
     pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
         if self.batches.is_empty() {
             return;
         }
 
+        if self.occlusion.gpu {
+            debug_assert!(pass.surface().depth);
+        }
+
         let size = pass.surface_size();
         self.tiler.begin_target(SurfaceIntRect::from_size(size));
-        self.tiles.occlusion.init(size.width as u32, size.height as u32);
+        if self.occlusion.cpu {
+            self.tiles.occlusion.init(size.width as u32, size.height as u32);
+        } else {
+            self.tiles.occlusion.disable();
+        }
         self.tiles.clear();
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in pass
-            .batches()
-            .iter()
-            .rev()
-            .filter(|batch| batch.renderer == id)
-        {
-            let (commands, info) = &mut batches.get_mut(batch_id.index);
-
-            let surface = info.surface;
-
-            let opaque_tiles_start = self.tiles.opaque_tiles.len() as u32;
-            let mask_tiles_start = self.tiles.mask_tiles.len() as u32;
-
-            for fill in commands.iter().rev() {
-                self.prepare_fill(fill, transforms);
+        if self.back_to_front {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .rev()
+                .filter(|batch| batch.renderer == id)
+            {
+                self.prepare_batch(*batch_id, transforms, shaders, &mut batches);
             }
-
-            let opaque_tiles_end = self.tiles.opaque_tiles.len() as u32;
-            let mask_tiles_end = self.tiles.mask_tiles.len() as u32;
-
-            let draw_config = surface.draw_config(true, None);
-            if opaque_tiles_end > opaque_tiles_start {
-                info.opaque_draw = Some(Draw {
-                    tiles: opaque_tiles_start..opaque_tiles_end,
-                    pipeline: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
-                        info.pattern.shader,
-                        BlendMode::None,
-                        draw_config,
-                    )),
-                })
-            }
-
-            if mask_tiles_end > mask_tiles_start {
-                self.tiles.mask_tiles[mask_tiles_start as usize .. mask_tiles_end as usize].reverse();
-                info.masked_draw = Some(Draw {
-                    tiles: mask_tiles_start..mask_tiles_end,
-                    pipeline: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
-                        info.pattern.shader,
-                        info.blend_mode.with_alpha(true),
-                        draw_config,
-                    )),
-                })
+        } else {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .filter(|batch| batch.renderer == id)
+            {
+                self.prepare_batch(*batch_id, transforms, shaders, &mut batches);
             }
         }
 
         self.batches = batches;
+    }
+
+    fn prepare_batch(
+        &mut self,
+        batch_id: BatchId,
+        transforms: &Transforms,
+        shaders: &mut PrepareRenderPipelines,
+        batches: &mut BatchList<Fill, BatchInfo>
+    ) {
+        let (commands, info) = &mut batches.get_mut(batch_id.index);
+        let surface = info.surface;
+
+        let opaque_tiles_start = self.tiles.opaque_tiles.len() as u32;
+        let mask_tiles_start = self.tiles.mask_tiles.len() as u32;
+
+        if self.back_to_front {
+            for fill in commands.iter().rev() {
+                self.prepare_fill(fill, transforms);
+            }
+        } else {
+            for fill in commands.iter() {
+                self.prepare_fill(fill, transforms);
+            }
+        }
+
+        let opaque_tiles_end = self.tiles.opaque_tiles.len() as u32;
+        let mask_tiles_end = self.tiles.mask_tiles.len() as u32;
+
+        let draw_config = surface.draw_config(true, None);
+        if opaque_tiles_end > opaque_tiles_start {
+            info.opaque_draw = Some(Draw {
+                tiles: opaque_tiles_start..opaque_tiles_end,
+                pipeline: shaders.prepare(RenderPipelineKey::new(
+                    self.base_shader,
+                    info.pattern.shader,
+                    BlendMode::None,
+                    draw_config,
+                )),
+            })
+        }
+
+        if mask_tiles_end > mask_tiles_start {
+            if self.back_to_front {
+                self.tiles.mask_tiles[mask_tiles_start as usize .. mask_tiles_end as usize].reverse();
+            }
+            info.masked_draw = Some(Draw {
+                tiles: mask_tiles_start..mask_tiles_end,
+                pipeline: shaders.prepare(RenderPipelineKey::new(
+                    self.base_shader,
+                    info.pattern.shader,
+                    info.blend_mode.with_alpha(true),
+                    draw_config,
+                )),
+            })
+        }
     }
 
     fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {

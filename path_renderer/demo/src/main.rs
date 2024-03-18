@@ -17,6 +17,7 @@ use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
+use tiling2::Occlusion;
 use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,25 +121,21 @@ fn main() {
     let mut read_tolerance = false;
     let mut read_fill = false;
     let mut use_ssaa4 = false;
+    let mut read_occlusion = false;
+    let mut z_buffer = None;
+    let mut cpu_occlusion = None;
     let mut fill_renderer = 0;
     for arg in &args {
         if read_tolerance {
-            read_tolerance = false;
             tolerance = arg.parse::<f32>().unwrap();
             println!("tolerance: {}", tolerance);
         }
         if read_fill {
-            read_fill = false;
             fill_renderer = arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len();
         }
-        if arg == "--ssaa" {
-            use_ssaa4 = true;
-        }
-        if arg == "--gl" {
-            force_gl = true;
-        }
-        if arg == "--vulkan" {
-            force_vk = true;
+        if read_occlusion {
+            cpu_occlusion = Some(arg.contains("cpu") || arg.contains("all"));
+            z_buffer = Some(arg.contains("gpu") || arg.contains("all") || arg.contains("z-buffer"));
         }
         if arg == "--x11" {
             // This used to get this demo to work in renderdoc (with the gl backend) but now
@@ -148,16 +145,13 @@ fn main() {
         if arg == "--trace" {
             trace = Some(std::path::Path::new("./trace"));
         }
-        if arg == "--asap" {
-            asap = true;
-        }
-        if arg == "--tolerance" {
-            read_tolerance = true;
-        }
-
-        if arg == "--fill" {
-            read_fill = true;
-        }
+        use_ssaa4 |= arg == "--ssaa";
+        force_gl |= arg == "--gl";
+        force_vk |= arg == "--vulkan";
+        asap |= arg == "--asap";
+        read_tolerance = arg == "--tolerance";
+        read_fill = arg == "--fill";
+        read_occlusion = arg == "--occlusion";
     }
 
     let scale_factor = 2.0;
@@ -289,12 +283,22 @@ fn main() {
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
 
+    let tiling_occlusion = Occlusion {
+        cpu: cpu_occlusion.unwrap_or(true),
+        gpu: z_buffer.unwrap_or(false),
+    };
+
     let mut renderers = Renderers {
         tiling2: tiling2::TileRenderer::new(
             0,
             common_handle,
             tiling2_handle,
             &gpu_resources[tiling2_handle],
+            &tiling2::RendererOptions {
+                tolerance,
+                occlusion: tiling_occlusion,
+                no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
+            }
         ),
         //tiling: TileRenderer::new(
         //    0,
@@ -445,7 +449,7 @@ fn main() {
         };
 
         let surface_cfg = SurfacePassConfig {
-            depth: fill_renderer != TILING,
+            depth: z_buffer.unwrap_or(fill_renderer != TILING),
             msaa: if fill_renderer == TILING || fill_renderer == WPF { msaa_tiling } else { msaa_default },
             stencil: fill_renderer == STENCIL,
             kind: SurfaceKind::Color,
