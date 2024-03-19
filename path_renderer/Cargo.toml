@@ -9,6 +9,7 @@ members = [
     "renderers/wpf",
     "renderers/msaa_stroke",
     "renderers/template",
+    "renderers/stats",
     "patterns/color",
     "patterns/linear_gradient",
     "patterns/checkerboard",
