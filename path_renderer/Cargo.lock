@@ -1370,6 +1370,7 @@ dependencies = [
  "pattern_texture",
  "profiling",
  "rectangles",
+ "stats",
  "stencil",
  "tess",
  "tiling2",
@@ -5656,7 +5657,6 @@ name = "stats"
 version = "0.1.0"
 dependencies = [
  "core",
- "profiling",
 ]
 
 [[package]]

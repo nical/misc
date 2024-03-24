@@ -17,6 +17,9 @@ use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
+use stats::renderer::StatsRenderer;
+use stats::views::{Column, Counter, Layout, Style};
+use stats::DebugGeometry;
 use tiling2::Occlusion;
 use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
@@ -283,6 +286,12 @@ fn main() {
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
 
+    let mut stats_renderer = StatsRenderer::new(&device, &queue);
+    let mut stats_geometry = DebugGeometry::new(2);
+    let mut stats_ui = Layout::new(Style::default());
+
+    let mut counters = Counters::new();
+
     let tiling_occlusion = Occlusion {
         cpu: cpu_occlusion.unwrap_or(true),
         gpu: z_buffer.unwrap_or(false),
@@ -351,7 +360,7 @@ fn main() {
     let mut source_textures = SourceTextures::new();
 
     let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
-    let image_binding =
+    let _image_binding =
         source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
 
     let mut surface_desc = wgpu::SurfaceConfiguration {
@@ -381,6 +390,7 @@ fn main() {
         stroke_renderer: 0,
         msaa: MsaaMode::Auto,
         scene_idx: 0,
+        debug_overlay: false,
     };
 
     update_title(&window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
@@ -390,9 +400,9 @@ fn main() {
     let mut msaa_depth_texture = None;
     let mut temporary_texture = None;
 
-    let mut frame_build_time = Duration::ZERO;
-    let mut render_time = Duration::ZERO;
-    let mut present_time = Duration::ZERO;
+    let mut sum_frame_build_time = Duration::ZERO;
+    let mut sum_render_time = Duration::ZERO;
+    let mut sum_present_time = Duration::ZERO;
     let mut frame_idx = 0;
     event_loop.run(move |event, _, control_flow| {
         device.poll(wgpu::Maintain::Poll);
@@ -460,6 +470,30 @@ fn main() {
 
         renderers.begin_frame();
 
+        stats_geometry.begin_frame();
+
+        if demo.debug_overlay {
+            stats_ui.draw_table(
+                (10.0, 10.0),
+                &[
+                    Column::new("name").label("CPU timings").min_width(100),
+                    Column::new("avg"),
+                    Column::new("min"),
+                    Column::new("max"),
+                ],
+                &[
+                    &counters.batching,
+                    &counters.prepare,
+                    &counters.render,
+                    &counters.cpu_total,
+                    &counters.present,
+                ],
+                &mut stats_geometry,
+            );
+
+            stats_ui.draw_text((400.0, 10.0), "Hello world\nNew line", &mut stats_geometry);
+        }
+
         main_pass.begin(size, surface_cfg);
 
 
@@ -475,6 +509,9 @@ fn main() {
             .then_translate(vector(hw, hh));
 
         let test_stuff = demo.scene_idx == 0;
+
+        let record_start = time::precise_time_ns();
+
         paint_scene(
             &paths,
             demo.fill_renderer,
@@ -489,6 +526,7 @@ fn main() {
         );
 
         let frame_build_start = time::precise_time_ns();
+        let record_time = frame_build_start - record_start;
 
         let mut prep_pipelines = render_pipelines.prepare();
 
@@ -501,7 +539,8 @@ fn main() {
             &mut RenderPipelineBuilder(&device, &mut shaders),
         );
 
-        frame_build_time += Duration::from_nanos(time::precise_time_ns() - frame_build_start);
+        let frame_build_time = Duration::from_nanos(time::precise_time_ns() - frame_build_start);
+        sum_frame_build_time += frame_build_time;
 
         let requirements = RenderPassesRequirements {
             depth_stencil: !surface_cfg.msaa && (surface_cfg.depth || surface_cfg.stencil),
@@ -595,6 +634,15 @@ fn main() {
             occlusion_query_set: None,
         };
 
+        stats_renderer.update(
+            &stats_geometry,
+            (size.width as u32, size.height as u32),
+            1.0,
+            1.0,
+            &device,
+            &queue,
+        );
+
         {
             let mut render_pass = encoder.begin_render_pass(&pass_descriptor);
 
@@ -614,37 +662,54 @@ fn main() {
             );
         }
 
+        if demo.debug_overlay {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Debug overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            stats_renderer.render(&mut render_pass);
+        }
+
         queue.submit(Some(encoder.finish()));
 
         let present_start = time::precise_time_ns();
-        render_time += Duration::from_nanos(present_start - render_start);
+        let render_time = Duration::from_nanos(present_start - render_start);
+        sum_render_time += render_time;
 
         frame.present();
 
-        present_time += Duration::from_nanos(time::precise_time_ns() - present_start);
+        let present_time = Duration::from_nanos(time::precise_time_ns() - present_start);
+        sum_present_time += present_time;
 
-        fn ms(duration: Duration) -> f64 {
-            duration.as_micros() as f64 / 1000.0
+        fn ms(duration: Duration) -> f32 {
+            (duration.as_micros() as f64 / 1000.0) as f32
         }
 
-        let n = 60;
+        let rec_t = ms(Duration::from_nanos(record_time));
+        let fbt = ms(frame_build_time);
+        let rt = ms(render_time);
+        let pt = ms(present_time);
+        counters.batching.set(rec_t);
+        counters.prepare.set(fbt);
+        counters.render.set(rt);
+        counters.present.set(pt);
+        counters.cpu_total.set(rec_t + fbt + rt);
+
         frame_idx += 1;
-        if frame_idx == n {
-            let fbt = ms(frame_build_time) / (n as f64);
-            let rt = ms(render_time) / (n as f64);
-            let pt = ms(present_time) / (n as f64);
-            frame_build_time = Duration::ZERO;
-            render_time = Duration::ZERO;
-            present_time = Duration::ZERO;
+        if frame_idx == 30 {
             frame_idx = 0;
-            println!(
-                "frame {:.2}ms (prepare {:.2}ms, render {:.2}ms, present {:.2}ms)",
-                fbt + rt,
-                fbt,
-                rt,
-                pt
-            );
-            print_stats(&renderers, demo.window_size);
+            counters.update();
         }
 
         gpu_resources.end_frame();
@@ -1254,6 +1319,7 @@ pub struct Demo {
     pub stroke_renderer: usize,
     pub msaa: MsaaMode,
     pub scene_idx: u32,
+    pub debug_overlay: bool,
 }
 
 fn update_inputs(
@@ -1380,6 +1446,9 @@ fn update_inputs(
                 };
                 update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
                 redraw = true;
+            }
+            VirtualKeyCode::O => {
+                demo.debug_overlay = !demo.debug_overlay;
             }
 
             _key => {}
@@ -1541,4 +1610,38 @@ pub struct RenderPassesRequirements {
     // Temporary color target used in place of the main target if we need
     // to read from it but can't.
     pub temporary: bool,
+}
+
+pub struct Counters {
+    pub batching: Counter,
+    pub prepare: Counter,
+    pub render: Counter,
+    pub present: Counter,
+    pub cpu_total: Counter,
+
+    pub batches: Counter,
+}
+
+impl Counters {
+    pub fn new() -> Self {
+        Counters {
+            batching: Counter::float("batching", "ms"),
+            prepare: Counter::float("Prepare", "ms"),
+            render: Counter::float("Render", "ms"),
+            present: Counter::float("Present", "ms"),
+            cpu_total: Counter::float("Total", "ms"),
+
+            batches: Counter::int("Batches", ""),
+        }
+    }
+
+    pub fn update(&mut self) {
+        self.batching.update();
+        self.prepare.update();
+        self.render.update();
+        self.present.update();
+        self.cpu_total.update();
+
+        self.batches.update();
+    }
 }

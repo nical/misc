@@ -19,6 +19,7 @@ stencil = { path = "../renderers/stencil" }
 rectangles = { path = "../renderers/rectangles" }
 msaa_stroke = { path = "../renderers/msaa_stroke" }
 wpf = { path = "../renderers/wpf" }
+stats = { path = "../renderers/stats" }
 
 pattern_color = { path = "../patterns/color" }
 pattern_linear_gradient = { path = "../patterns/linear_gradient" }
