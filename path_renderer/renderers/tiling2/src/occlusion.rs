@@ -33,6 +33,10 @@ impl OcclusionBuffer {
         self.disabled = true;
     }
 
+    pub fn is_disabled(&self) -> bool {
+        self.data.is_empty()
+    } 
+
     pub fn init(&mut self, w: u32, h: u32) {
         self.disabled = false;
         let w = w as usize;

@@ -86,9 +86,10 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
 }
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
-    var ab = (i32(pattern.uv.x) + i32(pattern.uv.y)) % 2;
-    if (ab < 0) { ab = 1 - ab; }
-
+    var uv = pattern.uv;
+    if (uv.x < 0.0) { uv.x = 1.0 - uv.x; }
+    if (uv.y < 0.0) { uv.y = 1.0 - uv.y; }
+    var ab = (i32(uv.x) + i32(uv.y)) % 2;
     return mix(pattern.color0, pattern.color1, f32(ab));
 }
 ";

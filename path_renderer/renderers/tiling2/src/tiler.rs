@@ -20,6 +20,9 @@ const LOCAL_COORD_MASK: i32 = 255;
 const LOCAL_COORD_BITS: i32 = 8;
 const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
 
+struct TileUnit;
+type TilePoint = core::geom::euclid::Point2D<u16, TileUnit>;
+
 pub struct Tiler {
     events: Vec<Vec<Event>>,
     point_buffer: Vec<Point>,
@@ -37,7 +40,9 @@ pub struct Tiler {
     //pub dbg: rerun::RecordingStream,
 }
 
-const EVENT_BUCKETS: usize = 8;
+// TODO: The inverted mode currently only works with 1 event bucket but
+// the non-inverted one tends to be a bit faster with 8.
+const EVENT_BUCKETS: usize = 1;
 
 impl Tiler {
     pub fn new() -> Self {
@@ -384,9 +389,9 @@ impl Tiler {
             if ty != self.prev_ty {
                 let positive = ty > self.prev_ty;
                 let row = ty + (!positive) as i32;
-                if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y {
+                if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y && tx + 1 < self.scissor_tiles.max.x {
                     //println!("    - backdrop {} {row}, positive:{positive}", (tx + 1).max(0));
-                    self.events(row as usize).push(Event::backdrop((tx + 1).max(0) as u16, row as u16, positive));
+                    self.events(row as usize).push(Event::backdrop((tx + 1).max(scissor_min_tx) as u16, row as u16, positive));
                 }
                 self.prev_ty = ty;
             }
@@ -488,6 +493,11 @@ impl Tiler {
     }
 
     fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, pattern: &BuiltPattern, output: &mut TilerOutput) {
+        if inverted {
+            self.generate_tiles_inverted(fill_rule, pattern, output);
+            return;
+        }
+
         profiling::scope!("Tiler::generate_tiles");
 
         let path_index = output.paths.len() as u32 - 1;
@@ -512,28 +522,16 @@ impl Tiler {
             //    }
             //}
 
-            let mut current_tile = (0, 0);
+            let mut current = TilePoint::new(0, 0);
             let mut tile_first_edge = output.edges.len();
             let mut backdrop: i16 = 0;
 
             for evt in events.iter() {
                 let tile = evt.tile();
-                //if evt.is_edge() {
-                //    println!("   * edge {tile:?}");
-                //} else {
-                //    println!("   * backdrop {tile:?}");
-                //}
-                if tile != current_tile {
-                    let mut x = current_tile.0;
-                    let y = current_tile.1;
+                //println!("    * {evt:?}");
 
-                    let x_end = if tile.1 == y {
-                        tile.0.min(self.scissor_tiles.max.x as u16)
-                    } else {
-                        self.scissor_tiles.max.x as u16
-                    };
-
-                    //if tile.1 != current_tile.1 {
+                if current != tile {
+                    //if tile.y != current_tile.y {
                     //    println!("");
                     //}
                     //println!("* new tile {tile:?} (was {current_tile:?}, backdrop: {backdrop:?}");
@@ -542,13 +540,12 @@ impl Tiler {
                         // This limit isn't necessary but it is useful to catch bugs. In practice there should
                         // never be this many edges in a single tile.
                         const MAX_EDGES_PER_TILE: usize = 4096;
-                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current_tile:?}, edges {tile_first_edge} {tile_last_edge}");
+                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current:?}, edges {tile_first_edge} {tile_last_edge}");
 
-                        if !output.occlusion.occluded(x, y) {
-                            debug_assert!(x < x_end, "trying to push a mask tile out of bounds at {current_tile:?} scissor: {:?}, event is edge: {:?}", self.scissor_tiles, evt.is_edge());
+                        if !output.occlusion.occluded(current.x, current.y) {
                             //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                             output.mask_tiles.push(TileInstance {
-                                position: TilePosition::new(x as u32, y as u32),
+                                position: TilePosition::new(current.x as u32, current.y as u32),
                                 backdrop,
                                 first_edge: tile_first_edge as u32,
                                 edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
@@ -557,61 +554,38 @@ impl Tiler {
                         }
 
                         tile_first_edge = tile_last_edge;
-                        x += 1;
+                        current.x += 1;
                     }
 
-                    let inside = inverted ^ match fill_rule {
+                    // The dummy tile is the only one expected to be outside the visible
+                    // area. No need to fill solid tiles
+                    if current.y >= self.scissor_tiles.max.y as u16 {
+                        break;
+                    }
+
+                    let x_end = if current.y == tile.y {
+                        tile.x.min(self.scissor_tiles.max.x as u16)
+                    } else {
+                        self.scissor_tiles.max.x as u16
+                    };
+
+                    let inside = match fill_rule {
                         FillRule::EvenOdd => backdrop % 2 != 0,
                         FillRule::NonZero => backdrop != 0,
                     };
 
-                    // The dummy tile is the only one expected to be outside the visible
-                    // area. No need to fill solid tiles
-                    if y >= self.scissor_tiles.max.y as u16 {
-                        break;
+                    if current.x < x_end && inside {
+                        Self::fill_span(current.x, x_end, current.y, backdrop, pattern.is_opaque, path_index, output);
                     }
 
-                    // Fill solid tiles if any, up to the new tile or the end of the current row.
-                    while inside && x < x_end {
-                        while x < x_end && !output.occlusion.test(x, y, pattern.is_opaque) {
-                            debug_assert!((x as i32) < self.scissor_tiles.max.x, "A");
-                            //println!("    skip occluded solid tile {solid_tile_x:?}");
-                            x += 1;
-                        }
-
-                        if x < x_end {
-                            //println!("    begin solid tile {solid_tile_x:?}");
-                            let mut position = TilePosition::new(x as u32, y as u32);
-                            x += 1;
-
-                            while x < x_end && output.occlusion.test(x, y, pattern.is_opaque) {
-                                //println!("    extend solid tile {solid_tile_x:?}");
-                                x += 1;
-                                position.extend();
-                            }
-
-                            let tiles = if pattern.is_opaque {
-                                &mut output.opaque_tiles
-                            } else {
-                                &mut output.mask_tiles
-                            };
-                            tiles.push(TileInstance {
-                                position,
-                                backdrop,
-                                first_edge: 0,
-                                edge_count: 0,
-                                path_index,
-                            }.encode());
-                        }
-                    }
-
-                    if tile.1 != y {
+                    if current.y != tile.y{
                         // We moved to a new row of tiles.
-                        //println!("");
-                        //println!("   * reset backdrop");
                         backdrop = 0;
+                        current = tile;
+                        // println!("\n   * reset backdrop {current_tile:?}");
+                    } else {
+                        current = tile;
                     }
-                    current_tile = tile;
                 }
 
                 if evt.is_edge() {
@@ -624,6 +598,181 @@ impl Tiler {
             }
 
         }
+    }
+
+    fn generate_tiles_inverted(&mut self, fill_rule: FillRule, pattern: &BuiltPattern, output: &mut TilerOutput) {
+        let path_index = output.paths.len() as u32 - 1;
+        let max_x = self.scissor_tiles.max.x as u16;
+
+        let mut events = std::mem::take(&mut self.events);
+
+        for events in &mut events {
+            events.sort_unstable_by_key(|e| e.sort_key);
+            // Push a dummy backdrop out of view that will cause the current tile to be flushed
+            // at the last iteration without having to replicate the logic out of the loop.
+            events.push(Event::backdrop(0, std::u16::MAX, false));
+
+            let mut current = TilePoint::new(0, 0);
+            let mut tile_first_edge = output.edges.len();
+            let mut backdrop: i16 = 0;
+
+            for evt in events.iter() {
+                let tile = evt.tile();
+                //println!("    * {evt:?}");
+
+                if current != tile {
+                    let tile_last_edge = output.edges.len();
+                    if tile_last_edge != tile_first_edge {
+                        // This limit isn't necessary but it is useful to catch bugs. In practice there should
+                        // never be this many edges in a single tile.
+                        const MAX_EDGES_PER_TILE: usize = 4096;
+                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current:?}, edges {tile_first_edge} {tile_last_edge}");
+
+                        if !output.occlusion.occluded(current.x, current.y) {
+                            output.mask_tiles.push(TileInstance {
+                                position: TilePosition::new(current.x as u32, current.y as u32),
+                                backdrop,
+                                first_edge: tile_first_edge as u32,
+                                edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
+                                path_index,
+                            }.encode());
+                        }
+
+                        tile_first_edge = tile_last_edge;
+                        current.x += 1;
+                    }
+                }
+
+                while current != tile {
+                    let next_x = if current.y == tile.y {
+                        tile.x.min(max_x)
+                    } else {
+                        max_x
+                    };
+
+                    let inside = !match fill_rule {
+                        FillRule::EvenOdd => backdrop % 2 != 0,
+                        FillRule::NonZero => backdrop != 0,
+                    };
+
+                    // Fill solid tiles if any, up to the new tile or the end of the current row.
+                    if inside {
+                        Self::fill_span(current.x, next_x, current.y, backdrop, pattern.is_opaque, path_index, output);
+                    }
+
+                    if next_x == max_x {
+                        // Reached the end of a row, move to the next.
+                        backdrop = 0;
+                        current.x = 0;
+                        current.y += 1;
+                        // The dummy tile is the only one expected to be outside the visible
+                        // area. No need to fill solid tiles
+                        if current.y >= self.scissor_tiles.max.y as u16 {
+                            break;
+                        }
+                    } else {
+                        current.x = next_x;
+                    }
+                }
+
+                if evt.is_edge() {
+                    output.edges.push(unsafe { std::mem::transmute(evt.payload) });
+                } else {
+                    let winding = if evt.payload == 0 { -1 } else { 1 };
+                    backdrop += winding;
+                }
+            }
+        }
+
+        self.events = events;
+    }
+
+    fn fill_span(
+        mut x: u16,
+        x_end: u16,
+        y: u16,
+        backdrop: i16,
+        is_opaque: bool,
+        path_index: u32,
+        output: &mut TilerOutput,
+    ) {
+        // Fill solid tiles if any, up to the new tile or the end of the current row.
+        while x < x_end {
+            // Skip over occluded tiles.
+            while x < x_end && !output.occlusion.test(x, y, is_opaque) {
+                x += 1;
+            }
+
+            if x >= x_end {
+                return;
+            }
+
+            // Begin a solid tile at `position`
+            let mut position = TilePosition::new(x as u32, y as u32);
+            x += 1;
+
+            // Extend the solid tile until we reach x_end or an occluded
+            // tile.
+            while x < x_end && output.occlusion.test(x, y, is_opaque) {
+                x += 1;
+                position.extend();
+            }
+
+            // Add the (strectched) tile and start over if we haven't reached
+            // x_end yet.
+            let tiles = if is_opaque {
+                &mut output.opaque_tiles
+            } else {
+                &mut output.mask_tiles
+            };
+            tiles.push(TileInstance {
+                position,
+                backdrop,
+                first_edge: 0,
+                edge_count: 0,
+                path_index,
+            }.encode());
+        }
+    }
+
+    fn fill_span_no_occlusion(
+        mut x: u16,
+        x_end: u16,
+        y: u16,
+        backdrop: i16,
+        is_opaque: bool,
+        path_index: u32,
+        output: &mut TilerOutput,
+    ) {
+        if x == x_end {
+            return;
+        }
+
+        // Begin a solid tile at `position`
+        let mut position = TilePosition::new(x as u32, y as u32);
+        x += 1;
+
+        // Extend the solid tile until we reach x_end or an occluded
+        // tile.
+        while x < x_end {
+            x += 1;
+            position.extend();
+        }
+
+        // Add the (strectched) tile and start over if we haven't reached
+        // x_end yet.
+        let tiles = if is_opaque {
+            &mut output.opaque_tiles
+        } else {
+            &mut output.mask_tiles
+        };
+        tiles.push(TileInstance {
+            position,
+            backdrop,
+            first_edge: 0,
+            edge_count: 0,
+            path_index,
+        }.encode());
     }
 
     pub fn fill_surface(
@@ -662,8 +811,18 @@ impl Tiler {
     }
 }
 
+struct Scan {
+    is_opaque: bool,
+}
+
+impl Scan {
+    fn fill_span(&mut self, x0: u16, x1: u16, y: u16, backdrop: i16, output: &mut TilerOutput) {
+        todo!();
+    }
+}
+
 /// A sortable compressed event that encodes either a binned edge or a backdrop update
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 struct Event {
     sort_key: u32,
     payload: u32,
@@ -688,11 +847,22 @@ impl Event {
         self.sort_key & 1 != 0
     }
 
-    fn tile(&self) -> (u16, u16) {
-        (
+    fn tile(&self) -> TilePoint {
+        TilePoint::new(
             ((self.sort_key >> 1) & 0x3FF) as u16,
             ((self.sort_key >> 11) & 0x3FF) as u16,
         )
+    }
+}
+
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let tile = self.tile();
+        if self.is_edge() {
+            write!(f, "Edge at {tile:?}")
+        } else {
+            write!(f, "Backdrop at {tile:?}")
+        }
     }
 }
 
@@ -703,11 +873,11 @@ fn event() {
     let e3 = Event::edge(0b1111111111, 0b1101010101, [0, 1, 2, 3]);
     let b1 = Event::backdrop(1, 3, true);
     let b2 = Event::backdrop(2, 3, true);
-    assert_eq!(e1.tile(), (1, 3));
-    assert_eq!(e2.tile(), (2, 3));
-    assert_eq!(e3.tile(), (0b1111111111, 0b1101010101));
-    assert_eq!(b1.tile(), (1, 3));
-    assert_eq!(b2.tile(), (2, 3));
+    assert_eq!(e1.tile().to_tuple(), (1, 3));
+    assert_eq!(e2.tile().to_tuple(), (2, 3));
+    assert_eq!(e3.tile().to_tuple(), (0b1111111111, 0b1101010101));
+    assert_eq!(b1.tile().to_tuple(), (1, 3));
+    assert_eq!(b2.tile().to_tuple(), (2, 3));
     let mut v = vec![e3, e2, e1, b2, b1];
     v.sort_unstable_by_key(|e| e.sort_key);
     assert_eq!(v, vec![b1, e1, b2, e2, e3]);

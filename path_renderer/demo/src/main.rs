@@ -924,10 +924,11 @@ fn paint_scene(
         builder.line_to(point(1000.0, 50.0));
         builder.end(true);
 
+        let fill: FilledPath = builder.build().into();
         renderers.fill(fill_renderer).fill_path(
             &mut pass.ctx(),
             transforms,
-            builder.build().into(),
+            fill,//.inverted(),
             patterns.checkerboards.add(
                 gpu_store,
                 &Checkerboard {
@@ -935,14 +936,14 @@ fn paint_scene(
                         r: 10,
                         g: 100,
                         b: 250,
-                        a: 255,
+                        a: 50,
                     },
-                    color1: Color::WHITE,
+                    color1: Color { r: 255, g: 255, b: 255, a: 100 },
                     scale: 25.0,
                     offset: point(0.0, 0.0),
                 }
                 .transformed(&transforms.get_current().matrix().to_untyped()),
-            ).with_blend_mode(BlendMode::Screen),
+            )//.with_blend_mode(BlendMode::Screen),
         );
 
         transforms.pop();
