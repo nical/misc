@@ -904,6 +904,9 @@ impl BindGroupLayout {
                 wgpu::BindingType::StorageTexture { .. } => {
                     todo!();
                 }
+                wgpu::BindingType::AccelerationStructure => {
+                    unimplemented!();
+                }
             }
 
             binding += 1;

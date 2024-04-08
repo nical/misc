@@ -17,10 +17,10 @@ use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
-use stats::renderer::StatsRenderer;
+use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 use stats::views::{Column, Counter, Layout, Style};
-use stats::DebugGeometry;
 use tiling2::Occlusion;
+use winit::keyboard::{Key, NamedKey};
 use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,8 +36,8 @@ use pattern_texture::TextureRenderer;
 
 use futures::executor::block_on;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use winit::event_loop::{EventLoop, EventLoopWindowTarget};
 use winit::window::Window;
 
 use core::wgpu;
@@ -159,7 +159,7 @@ fn main() {
 
     let scale_factor = 2.0;
 
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
     let window = winit::window::WindowBuilder::new()
         .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(1200, 1000)))
         .build(&event_loop)
@@ -180,7 +180,7 @@ fn main() {
     });
 
     // create an surface
-    let surface = unsafe { instance.create_surface(&window).unwrap() };
+    let surface = instance.create_surface(&window).unwrap();
 
     // create an adapter
     let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -194,8 +194,8 @@ fn main() {
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: None,
-            features: wgpu::Features::default(),
-            limits: wgpu::Limits::default(),
+            required_features: wgpu::Features::default(),
+            required_limits: wgpu::Limits::default(),
         },
         trace,
     ))
@@ -286,8 +286,12 @@ fn main() {
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
 
-    let mut stats_renderer = StatsRenderer::new(&device, &queue);
-    let mut stats_geometry = DebugGeometry::new(2);
+    let mut stats_renderer = StatsRenderer::new(&device, &queue, &StatsRendererOptions {
+        target_format: wgpu::TextureFormat::Bgra8Unorm,
+        .. StatsRendererOptions::default()
+    });
+
+    let mut stats_geometry = Overlay::new(2);
     let mut stats_ui = Layout::new(Style::default());
 
     let mut counters = Counters::new();
@@ -371,6 +375,7 @@ fn main() {
         present_mode: wgpu::PresentMode::AutoVsync,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
         view_formats: vec![],
+        desired_maximum_frame_latency: 2,
     };
 
     surface.configure(&device, &surface_desc);
@@ -395,6 +400,8 @@ fn main() {
 
     update_title(&window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
 
+    let window = &window;
+
     let mut depth_texture = None;
     let mut msaa_texture = None;
     let mut msaa_depth_texture = None;
@@ -404,10 +411,10 @@ fn main() {
     let mut sum_render_time = Duration::ZERO;
     let mut sum_present_time = Duration::ZERO;
     let mut frame_idx = 0;
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, window_target| {
         device.poll(wgpu::Maintain::Poll);
 
-        if !update_inputs(event, &window, control_flow, &mut demo) {
+        if !update_inputs(event, window, window_target, &mut demo) {
             return;
         }
 
@@ -638,7 +645,6 @@ fn main() {
             &stats_geometry,
             (size.width as u32, size.height as u32),
             1.0,
-            1.0,
             &device,
             &queue,
         );
@@ -717,7 +723,7 @@ fn main() {
         if asap {
             window.request_redraw();
         }
-    });
+    }).unwrap();
 }
 
 fn paint_scene(
@@ -943,7 +949,7 @@ fn paint_scene(
                     offset: point(0.0, 0.0),
                 }
                 .transformed(&transforms.get_current().matrix().to_untyped()),
-            )//.with_blend_mode(BlendMode::Screen),
+            ).with_blend_mode(BlendMode::Screen),
         );
 
         transforms.pop();
@@ -1191,32 +1197,6 @@ fn paint_scene(
     transforms.pop();
 }
 
-fn print_stats(
-    renderers:&Renderers,
-    _window_size: SurfaceIntSize,
-) {
-    //let mut stats = Stats::new();
-    //renderers.tiling.update_stats(&mut stats);
-    //println!("Tiling: {:#?}", stats);
-    println!("Stencil-and-cover: {:?}", renderers.stencil.stats);
-    //println!("Data:");
-    //println!("      tiles: {:2} kb", stats.tiles_bytes() as f32 / 1000.0);
-    //println!("      edges: {:2} kb", stats.edges_bytes() as f32 / 1000.0);
-    //println!(
-    //    "  cpu masks: {:2} kb",
-    //    stats.cpu_masks_bytes() as f32 / 1000.0
-    //);
-    //println!(
-    //    "   uploaded: {:2} kb",
-    //    stats.uploaded_bytes() as f32 / 1000.0
-    //);
-    //println!(
-    //    "#edge distributions: {:?}",
-    //    renderers.tiling.encoder.edge_distributions
-    //);
-    println!("\n");
-}
-
 fn create_render_targets(
     device: &wgpu::Device,
     requirements: &RenderPassesRequirements,
@@ -1326,7 +1306,7 @@ pub struct Demo {
 fn update_inputs(
     event: Event<()>,
     window: &Window,
-    control_flow: &mut ControlFlow,
+    window_target: &EventLoopWindowTarget<()>,
     demo: &mut Demo,
 ) -> bool {
     let p = demo.pan;
@@ -1335,7 +1315,10 @@ fn update_inputs(
     let sr = demo.stroke_renderer;
     let mut redraw = false;
     match event {
-        Event::RedrawRequested(_) => {
+        Event::WindowEvent {
+            event: WindowEvent::RedrawRequested,
+            ..
+        } => {
             demo.render = true;
         }
         Event::WindowEvent {
@@ -1346,7 +1329,7 @@ fn update_inputs(
             event: WindowEvent::CloseRequested,
             ..
         } => {
-            *control_flow = ControlFlow::Exit;
+            window_target.exit();
             return false;
         }
         Event::WindowEvent {
@@ -1380,76 +1363,71 @@ fn update_inputs(
         Event::WindowEvent {
             event:
                 WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(key),
-                            ..
-                        },
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        ..
+                    },
                     ..
                 },
             ..
-        } => match key {
-            VirtualKeyCode::Escape => {
-                *control_flow = ControlFlow::Exit;
+        } => match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                window_target.exit();
                 return false;
             }
-            VirtualKeyCode::PageDown => {
+            Key::Named(NamedKey::PageDown) => {
                 demo.target_zoom *= 0.8;
             }
-            VirtualKeyCode::PageUp => {
+            Key::Named(NamedKey::PageUp) => {
                 demo.target_zoom *= 1.25;
             }
-            VirtualKeyCode::Left => {
+            Key::Named(NamedKey::ArrowLeft) => {
                 demo.target_pan[0] += 100.0 / demo.target_zoom;
             }
-            VirtualKeyCode::Right => {
+            Key::Named(NamedKey::ArrowRight) => {
                 demo.target_pan[0] -= 100.0 / demo.target_zoom;
             }
-            VirtualKeyCode::Up => {
+            Key::Named(NamedKey::ArrowUp) => {
                 demo.target_pan[1] += 100.0 / demo.target_zoom;
             }
-            VirtualKeyCode::Down => {
+            Key::Named(NamedKey::ArrowDown) => {
                 demo.target_pan[1] -= 100.0 / demo.target_zoom;
             }
-            VirtualKeyCode::W => {
-                demo.wireframe = !demo.wireframe;
-            }
-            VirtualKeyCode::K => {
-                demo.scene_idx = (demo.scene_idx + 1) % NUM_SCENES;
-                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                redraw = true;
-            }
-            VirtualKeyCode::J => {
-                if demo.scene_idx == 0 {
-                    demo.scene_idx = NUM_SCENES - 1;
-                } else {
-                    demo.scene_idx -= 1;
+            Key::Character(c) => {
+                if c == "w" {
+                    demo.wireframe = !demo.wireframe;
+                } else if c == "k" {
+                    demo.scene_idx = (demo.scene_idx + 1) % NUM_SCENES;
+                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                    redraw = true;    
+                } else if c == "j" {
+                    if demo.scene_idx == 0 {
+                        demo.scene_idx = NUM_SCENES - 1;
+                    } else {
+                        demo.scene_idx -= 1;
+                    }
+                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                    redraw = true;    
+                } else if c == "f" {
+                    demo.fill_renderer = (demo.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
+                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                    redraw = true;    
+                } else if c == "s" {
+                    demo.stroke_renderer = (demo.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
+                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                    redraw = true;    
+                } else if c == "m" {
+                    demo.msaa = match demo.msaa {
+                        MsaaMode::Auto => MsaaMode::Disabled,
+                        MsaaMode::Disabled => MsaaMode::Enabled,
+                        MsaaMode::Enabled => MsaaMode::Auto,
+                    };
+                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
+                    redraw = true;    
+                } else if c == "o" {
+                    demo.debug_overlay = !demo.debug_overlay;
                 }
-                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                redraw = true;
-            }
-            VirtualKeyCode::F => {
-                demo.fill_renderer = (demo.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
-                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                redraw = true;
-            }
-            VirtualKeyCode::S => {
-                demo.stroke_renderer = (demo.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
-                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                redraw = true;
-            }
-            VirtualKeyCode::M => {
-                demo.msaa = match demo.msaa {
-                    MsaaMode::Auto => MsaaMode::Disabled,
-                    MsaaMode::Disabled => MsaaMode::Enabled,
-                    MsaaMode::Enabled => MsaaMode::Auto,
-                };
-                update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                redraw = true;
-            }
-            VirtualKeyCode::O => {
-                demo.debug_overlay = !demo.debug_overlay;
             }
 
             _key => {}
@@ -1474,8 +1452,6 @@ fn update_inputs(
     if redraw {
         window.request_redraw();
     }
-
-    *control_flow = ControlFlow::Wait;
 
     true
 }
@@ -1540,7 +1516,7 @@ impl SourceTexture {
         desc: &wgpu::TextureDescriptor,
         data: &[u8],
     ) -> Self {
-        let handle = device.create_texture_with_data(queue, desc, data);
+        let handle = device.create_texture_with_data(queue, desc, wgpu::util::TextureDataOrder::default(), data);
         let view = handle.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("source texture"),

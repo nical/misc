@@ -7,4 +7,5 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 core = { path = "../../core" }
+debug_overlay = { version = "0.2.2", features = ["wgpu"] }
 
