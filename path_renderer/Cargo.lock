@@ -1388,6 +1388,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug_overlay"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2a1d0ec662388c4bee488a8160d8161ec7f731d03197f12ce7a8532257a5d47"
+dependencies = [
+ "bytemuck",
+ "wgpu 0.19.3",
+]
+
+[[package]]
 name = "deflate"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1403,6 +1413,7 @@ version = "0.1.0"
 dependencies = [
  "color-backtrace",
  "core",
+ "debug_overlay 0.3.0",
  "futures",
  "lyon",
  "msaa_stroke",
@@ -1412,7 +1423,6 @@ dependencies = [
  "pattern_texture",
  "profiling",
  "rectangles",
- "stats",
  "stencil",
  "tess",
  "tiling2",
@@ -5775,7 +5785,7 @@ name = "stats"
 version = "0.1.0"
 dependencies = [
  "core",
- "debug_overlay",
+ "debug_overlay 0.2.2",
 ]
 
 [[package]]

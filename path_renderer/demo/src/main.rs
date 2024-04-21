@@ -12,13 +12,15 @@ use core::units::{
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
+use debug_overlay::{CounterId, Counters, Overlay, CounterDescriptor, Orientation, Graphs, Column, Table};
+use debug_overlay::wgpu::{Renderer as OverlayRenderer, RendererOptions as OverlayOptions};
 use lyon::geom::{Angle, Box2D};
 use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
-use stats::{StatsRenderer, StatsRendererOptions, Overlay};
-use stats::views::{Column, Counter, Layout, Style};
+//use stats::{StatsRenderer, StatsRendererOptions, Overlay};
+//use stats::views::{Column, Counter, Layout, Style};
 use tiling2::Occlusion;
 use winit::keyboard::{Key, NamedKey};
 use wpf::{WpfGpuResources, WpfMeshRenderer};
@@ -286,15 +288,17 @@ fn main() {
     let wpf_handle = gpu_resources.register(wpf_resources);
     let stroke_handle = gpu_resources.register(stroke_resources);
 
-    let mut stats_renderer = StatsRenderer::new(&device, &queue, &StatsRendererOptions {
+    let mut stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
         target_format: wgpu::TextureFormat::Bgra8Unorm,
-        .. StatsRendererOptions::default()
+        .. OverlayOptions::default()
     });
 
-    let mut stats_geometry = Overlay::new(2);
-    let mut stats_ui = Layout::new(Style::default());
+    let mut overlay = Overlay::new();
 
-    let mut counters = Counters::new();
+    let mut counters = counters();
+    counters.enable_history(BATCHING);
+    counters.enable_history(PREPARE);
+    counters.enable_history(RENDER);
 
     let tiling_occlusion = Occlusion {
         cpu: cpu_occlusion.unwrap_or(true),
@@ -410,7 +414,6 @@ fn main() {
     let mut sum_frame_build_time = Duration::ZERO;
     let mut sum_render_time = Duration::ZERO;
     let mut sum_present_time = Duration::ZERO;
-    let mut frame_idx = 0;
     event_loop.run(move |event, window_target| {
         device.poll(wgpu::Maintain::Poll);
 
@@ -477,28 +480,43 @@ fn main() {
 
         renderers.begin_frame();
 
-        stats_geometry.begin_frame();
+        overlay.begin_frame();
 
         if demo.debug_overlay {
-            stats_ui.draw_table(
-                (10.0, 10.0),
-                &[
-                    Column::new("name").label("CPU timings").min_width(100),
-                    Column::new("avg"),
-                    Column::new("min"),
-                    Column::new("max"),
-                ],
-                &[
-                    &counters.batching,
-                    &counters.prepare,
-                    &counters.render,
-                    &counters.cpu_total,
-                    &counters.present,
-                ],
-                &mut stats_geometry,
-            );
+            overlay.draw_item(&"Hello world\nNew line");
+            overlay.end_group();
 
-            stats_ui.draw_text((400.0, 10.0), "Hello world\nNew line", &mut stats_geometry);
+            let mut selection = Vec::new();
+            counters.select_counters([BATCHING, PREPARE, RENDER].iter().cloned(), &mut selection);
+
+            overlay.draw_item(&Table {
+                    columns: &[
+                        Column::color(),
+                        Column::name().with_unit().label("CPU timings"),
+                        Column::avg().label("Avg"),
+                        Column::max().label("Max"),
+                        Column::history_graph(),
+                    ],
+                    rows: &selection,
+                    labels: true,
+            });
+
+            overlay.draw_item(&Graphs {
+                counters: &selection,
+                width: Some(120),
+                height: None,
+                reference_value: 8.0,
+                orientation: Orientation::Vertical,
+            });
+
+            overlay.end_group();
+
+            overlay.push_column();
+
+            overlay.draw_item(&"More text");
+            overlay.end_group();
+
+            overlay.finish();
         }
 
         main_pass.begin(size, surface_cfg);
@@ -642,7 +660,7 @@ fn main() {
         };
 
         stats_renderer.update(
-            &stats_geometry,
+            &overlay.geometry,
             (size.width as u32, size.height as u32),
             1.0,
             &device,
@@ -706,17 +724,13 @@ fn main() {
         let fbt = ms(frame_build_time);
         let rt = ms(render_time);
         let pt = ms(present_time);
-        counters.batching.set(rec_t);
-        counters.prepare.set(fbt);
-        counters.render.set(rt);
-        counters.present.set(pt);
-        counters.cpu_total.set(rec_t + fbt + rt);
+        counters.set(BATCHING, rec_t);
+        counters.set(PREPARE, fbt);
+        counters.set(RENDER, rt);
+        counters.set(PRESENT, pt);
+        counters.set(CPU_TOTAL, rec_t + fbt + rt);
 
-        frame_idx += 1;
-        if frame_idx == 30 {
-            frame_idx = 0;
-            counters.update();
-        }
+        counters.update();
 
         gpu_resources.end_frame();
 
@@ -1400,7 +1414,7 @@ fn update_inputs(
                 } else if c == "k" {
                     demo.scene_idx = (demo.scene_idx + 1) % NUM_SCENES;
                     update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;    
+                    redraw = true;
                 } else if c == "j" {
                     if demo.scene_idx == 0 {
                         demo.scene_idx = NUM_SCENES - 1;
@@ -1408,15 +1422,15 @@ fn update_inputs(
                         demo.scene_idx -= 1;
                     }
                     update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;    
+                    redraw = true;
                 } else if c == "f" {
                     demo.fill_renderer = (demo.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
                     update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;    
+                    redraw = true;
                 } else if c == "s" {
                     demo.stroke_renderer = (demo.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
                     update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;    
+                    redraw = true;
                 } else if c == "m" {
                     demo.msaa = match demo.msaa {
                         MsaaMode::Auto => MsaaMode::Disabled,
@@ -1424,9 +1438,10 @@ fn update_inputs(
                         MsaaMode::Enabled => MsaaMode::Auto,
                     };
                     update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;    
+                    redraw = true;
                 } else if c == "o" {
                     demo.debug_overlay = !demo.debug_overlay;
+                    redraw = true;
                 }
             }
 
@@ -1589,36 +1604,25 @@ pub struct RenderPassesRequirements {
     pub temporary: bool,
 }
 
-pub struct Counters {
-    pub batching: Counter,
-    pub prepare: Counter,
-    pub render: Counter,
-    pub present: Counter,
-    pub cpu_total: Counter,
+const BATCHING: CounterId = 0;
+const PREPARE: CounterId = 1;
+const RENDER: CounterId = 2;
+const PRESENT: CounterId = 3;
+const CPU_TOTAL: CounterId = 4;
+const BATCHES: CounterId = 5;
 
-    pub batches: Counter,
-}
-
-impl Counters {
-    pub fn new() -> Self {
-        Counters {
-            batching: Counter::float("batching", "ms"),
-            prepare: Counter::float("Prepare", "ms"),
-            render: Counter::float("Render", "ms"),
-            present: Counter::float("Present", "ms"),
-            cpu_total: Counter::float("Total", "ms"),
-
-            batches: Counter::int("Batches", ""),
-        }
-    }
-
-    pub fn update(&mut self) {
-        self.batching.update();
-        self.prepare.update();
-        self.render.update();
-        self.present.update();
-        self.cpu_total.update();
-
-        self.batches.update();
-    }
+fn counters() -> Counters {
+    let float = &CounterDescriptor::float;
+    let int = &CounterDescriptor::int;
+    Counters::new(
+        &[
+            float("Batching", "ms", BATCHING).safe_range(0.0..4.0).color((100, 150, 200, 255)),
+            float("Prepare",  "ms", PREPARE).safe_range(0.0..6.0).color((200, 150, 100, 255)),
+            float("Render",   "ms", RENDER).safe_range(0.0..4.0).color((50, 50, 200, 255)),
+            float("Present",  "ms", PRESENT).safe_range(0.0..12.0).color((200, 200, 30, 255)),
+            float("Total",    "ms", CPU_TOTAL).safe_range(0.0..16.0).color((50, 250, 250, 255)),
+            int( "Batches",   "",   BATCHES),
+        ],
+        60,
+    )
 }
