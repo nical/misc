@@ -339,6 +339,7 @@ fn create_mask_upload_pipeline(
                     },
                 ],
             }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &module,
@@ -348,6 +349,7 @@ fn create_mask_upload_pipeline(
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,

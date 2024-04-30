@@ -36,8 +36,6 @@ pub struct Tiler {
     // tile_segment
     prev_tx: i32,
     prev_ty: i32,
-
-    //pub dbg: rerun::RecordingStream,
 }
 
 // TODO: The inverted mode currently only works with 1 event bucket but
@@ -70,7 +68,6 @@ impl Tiler {
             },
             prev_tx: -1,
             prev_ty: -1,
-            //dbg: rerun::RecordingStreamBuilder::new("tiler2").spawn().unwrap(),
         }
     }
 
@@ -1108,7 +1105,6 @@ fn tiler2_svg() {
         println!("xxxx{}", Rectangle { x, y, w, h, border_radius: 0.0, style: solid_tile_style });
     }
     println!("xxxx{}", EndSvg);
-    //tiler.dbg.flush_blocking();
 }
 
 #[cfg(test)]

@@ -416,11 +416,13 @@ impl Shaders {
                 module,
                 entry_point: "vs_main",
                 buffers: &vertex_buffers,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: "fs_main",
                 targets: color_target,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: base.primitive,
             depth_stencil,

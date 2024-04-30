@@ -62,11 +62,13 @@ impl StencilAndCoverResources {
                 module: &stencil_module,
                 entry_point: "vs_main",
                 buffers: &[vertex_attributes.buffer_layout()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &stencil_module,
                 entry_point: "fs_main",
                 targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: PipelineDefaults::primitive_state(),
             depth_stencil: Some(wgpu::DepthStencilState {

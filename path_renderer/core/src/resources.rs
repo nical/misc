@@ -281,11 +281,13 @@ impl CommonGpuResources {
                 module: &color_module,
                 entry_point: "vs_main",
                 buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &color_module,
                 entry_point: "fs_main",
                 targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: PipelineDefaults::primitive_state(),
             depth_stencil: None,
