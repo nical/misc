@@ -442,7 +442,7 @@ impl RenderNodeBuilder {
     pub fn begin(&mut self, graph: &mut RenderGraph, task_id: TaskId, size: SurfaceIntSize, surface_cfg: SurfacePassConfig) {
         let mut descriptor = NodeDescriptor::new().task(task_id).label("Target");
 
-
+        
         let attachments = &[
             Attachment::Texture {
                kind: match surface_cfg.kind {

@@ -469,9 +469,9 @@ fn main() {
         };
 
         let surface_cfg = SurfacePassConfig {
-            depth: z_buffer.unwrap_or(fill_renderer != TILING),
-            msaa: if fill_renderer == TILING || fill_renderer == WPF { msaa_tiling } else { msaa_default },
-            stencil: fill_renderer == STENCIL,
+            depth: z_buffer.unwrap_or(demo.fill_renderer != TILING),
+            msaa: if demo.fill_renderer == TILING || demo.fill_renderer == WPF { msaa_tiling } else { msaa_default },
+            stencil: demo.fill_renderer == STENCIL,
             kind: SurfaceKind::Color,
         };
 
