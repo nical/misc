@@ -12,7 +12,6 @@ lyon = "1.0.0"
 profiling = "1.0.4"
 copyless = "0.1.5"
 ordered-float = "1.0.2"
-time = "0.1.42"
 
 [dependencies.image]
 version = "0.23"

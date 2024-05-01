@@ -25,7 +25,7 @@ use tiling2::Occlusion;
 use winit::keyboard::{Key, NamedKey};
 use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Instant, Duration};
 use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
 use tess::{MeshGpuResources, MeshRenderer};
 use msaa_stroke::{MsaaStrokeGpuResources, MsaaStrokeRenderer};
@@ -125,7 +125,7 @@ fn main() {
     let mut asap = false;
     let mut read_tolerance = false;
     let mut read_fill = false;
-    let mut use_ssaa4 = false;
+    let mut _use_ssaa4 = false;
     let mut read_occlusion = false;
     let mut z_buffer = None;
     let mut cpu_occlusion = None;
@@ -150,7 +150,7 @@ fn main() {
         if arg == "--trace" {
             trace = Some(std::path::Path::new("./trace"));
         }
-        use_ssaa4 |= arg == "--ssaa";
+        _use_ssaa4 |= arg == "--ssaa";
         force_gl |= arg == "--gl";
         force_vk |= arg == "--vulkan";
         asap |= arg == "--asap";
@@ -262,7 +262,7 @@ fn main() {
     //    &patterns.textures,
     //    mask_atlas_size,
     //    color_atlas_size,
-    //    use_ssaa4,
+    //    _use_ssaa4,
     //);
 
     let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
@@ -535,7 +535,7 @@ fn main() {
 
         let test_stuff = demo.scene_idx == 0;
 
-        let record_start = time::precise_time_ns();
+        let record_start = Instant::now();
 
         paint_scene(
             &paths,
@@ -550,7 +550,7 @@ fn main() {
             &transform,
         );
 
-        let frame_build_start = time::precise_time_ns();
+        let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
 
         let mut prep_pipelines = render_pipelines.prepare();
@@ -564,7 +564,7 @@ fn main() {
             &mut RenderPipelineBuilder(&device, &mut shaders),
         );
 
-        let frame_build_time = Duration::from_nanos(time::precise_time_ns() - frame_build_start);
+        let frame_build_time = Instant::now() - frame_build_start;
         sum_frame_build_time += frame_build_time;
 
         let requirements = RenderPassesRequirements {
@@ -596,7 +596,7 @@ fn main() {
         //    })
         //});
 
-        let render_start = time::precise_time_ns();
+        let render_start = Instant::now();
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -707,20 +707,20 @@ fn main() {
 
         queue.submit(Some(encoder.finish()));
 
-        let present_start = time::precise_time_ns();
-        let render_time = Duration::from_nanos(present_start - render_start);
+        let present_start = Instant::now();
+        let render_time = present_start - render_start;
         sum_render_time += render_time;
 
         frame.present();
 
-        let present_time = Duration::from_nanos(time::precise_time_ns() - present_start);
+        let present_time = Instant::now() - present_start;
         sum_present_time += present_time;
 
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
         }
 
-        let rec_t = ms(Duration::from_nanos(record_time));
+        let rec_t = ms(record_time);
         let fbt = ms(frame_build_time);
         let rt = ms(render_time);
         let pt = ms(present_time);
