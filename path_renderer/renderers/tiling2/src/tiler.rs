@@ -32,10 +32,6 @@ pub struct Tiler {
     viewport: SurfaceRect,
     scissor: SurfaceRect,
     scissor_tiles: Box2D<i32>,
-
-    // tile_segment
-    prev_tx: i32,
-    prev_ty: i32,
 }
 
 // TODO: The inverted mode currently only works with 1 event bucket but
@@ -66,8 +62,6 @@ impl Tiler {
                 min: point(0, 0),
                 max: point(0, 0),
             },
-            prev_tx: -1,
-            prev_ty: -1,
         }
     }
 
@@ -290,10 +284,6 @@ impl Tiler {
         let mut iter = point_buffer.iter();
         let mut from = *iter.next().unwrap();
 
-        let (tx, ty) = self.tile_for_position(from);
-        self.prev_tx = tx;
-        self.prev_ty = ty;
-
         for to in iter {
             self.tile_segment(&LineSegment { from, to: *to });
             from = *to;
@@ -329,8 +319,8 @@ impl Tiler {
         let from_i32_y = (edge.from.y * COORD_SCALE) as i32;
         let to_i32_x = (edge.to.x * COORD_SCALE) as i32;
         let to_i32_y = (edge.to.y * COORD_SCALE) as i32;
-        let src_tx = (from_i32_x >> LOCAL_COORD_BITS);
-        let src_ty = (from_i32_y >> LOCAL_COORD_BITS);
+        let mut src_tx = (from_i32_x >> LOCAL_COORD_BITS);
+        let mut src_ty = (from_i32_y >> LOCAL_COORD_BITS);
         let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
         let dst_ty = (to_i32_y >> LOCAL_COORD_BITS);
         let scissor_min_tx = self.scissor_tiles.min.x;
@@ -380,17 +370,14 @@ impl Tiler {
             let row_occluded = ty < self.scissor_tiles.min.y || ty >= self.scissor_tiles.max.y;
 
             // When moving to a different row of tiles, add backdrop events.
-            // Note: this relies not only on the input and locals of this function,
-            // but also on the assumption that we correctly keep track of self.prev_ty
-            // inside and outside of this function.
-            if ty != self.prev_ty {
-                let positive = ty > self.prev_ty;
+            if ty != src_ty {
+                let positive = ty > src_ty;
                 let row = ty + (!positive) as i32;
                 if row >= self.scissor_tiles.min.y && row < self.scissor_tiles.max.y && tx + 1 < self.scissor_tiles.max.x {
                     //println!("    - backdrop {} {row}, positive:{positive}", (tx + 1).max(0));
                     self.events(row as usize).push(Event::backdrop((tx + 1).max(scissor_min_tx) as u16, row as u16, positive));
                 }
-                self.prev_ty = ty;
+                src_ty = ty;
             }
 
             let mut h_x0 = v_x0;
@@ -435,15 +422,15 @@ impl Tiler {
 
                     // Add an auxiliary edge when crossing a vertical boundary (tile x
                     // coordinate changes).
-                    if tx != self.prev_tx {
+                    if tx != src_tx {
                         // Note, if the edge is going in the negative x orientation, then
                         // we are actually adding an auxiliary edge to the previous tile
                         // rather than the current one.
-                        let aux_tx = tx.max(self.prev_tx);
+                        let aux_tx = tx.max(src_tx);
                         let aux_occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
 
                         if !aux_occluded {
-                            let (y0, y1) = if tx < self.prev_tx {
+                            let (y0, y1) = if tx < src_tx {
                                 (local_y0, 255)
                             } else {
                                 (255, local_y0)
@@ -458,7 +445,7 @@ impl Tiler {
                     }
                 }
 
-                self.prev_tx = tx;
+                src_tx = tx;
                 //println!("    tx: {tx}, h_dst_tx: {h_dst_tx}, dst_tx {dst_tx}");
                 debug_assert!(x_step > 0 || tx >= h_dst_tx);
                 debug_assert!(x_step < 0 || tx <= h_dst_tx);
@@ -509,13 +496,14 @@ impl Tiler {
             // at the last iteration without having to replicate the logic out of the loop.
             events.push(Event::backdrop(0, std::u16::MAX, false));
 
+            //println!("tiles {:?}", self.scissor_tiles);
             //for e in events.iter() {
-            //    let (tx, ty) = e.tile();
+            //    let TilePoint { x, y, .. } = e.tile();
             //    let edge: [u8; 4] = unsafe { std::mem::transmute(e.payload) };
             //    if e.is_edge() {
-            //        println!("- {tx} {ty} edge {edge:?}");
+            //        println!("- {x} {y} edge {edge:?}");
             //    } else {
-            //        println!("- {tx} {ty} backdrop {}", if e.payload == 0 { -1 } else { 1 });
+            //        println!("- {x} {y} backdrop {}", if e.payload == 0 { -1 } else { 1 });
             //    }
             //}
 
@@ -554,12 +542,6 @@ impl Tiler {
                         current.x += 1;
                     }
 
-                    // The dummy tile is the only one expected to be outside the visible
-                    // area. No need to fill solid tiles
-                    if current.y >= self.scissor_tiles.max.y as u16 {
-                        break;
-                    }
-
                     let x_end = if current.y == tile.y {
                         tile.x.min(self.scissor_tiles.max.x as u16)
                     } else {
@@ -577,6 +559,10 @@ impl Tiler {
 
                     if current.y != tile.y{
                         // We moved to a new row of tiles.
+                        if current.y >= self.scissor_tiles.max.y as u16 {
+                            break;
+                        }
+
                         backdrop = 0;
                         current = tile;
                         // println!("\n   * reset backdrop {current_tile:?}");
