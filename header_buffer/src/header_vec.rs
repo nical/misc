@@ -1,27 +1,27 @@
-use crate::buffer::RawHeaderBuffer;
+use crate::buffer::UnmanagedHeaderBuffer;
 use crate::util::{self, nnptr};
 use crate::allocator::{Allocator, AllocError};
 
-pub struct RawHeaderVec<H, T> {
-    buffer: RawHeaderBuffer<H, T>,
+pub struct UnmanagedHeaderVec<H, T> {
+    buffer: UnmanagedHeaderBuffer<H, T>,
     len: usize,
 }
 
-impl<T> RawHeaderVec<(), T> {
+impl<T> UnmanagedHeaderVec<(), T> {
     pub fn new() -> Self {
-        RawHeaderVec {
-            buffer: RawHeaderBuffer::new(),
+        UnmanagedHeaderVec {
+            buffer: UnmanagedHeaderBuffer::new(),
             len: 0,
         }
     }
 }
 
-impl<H, T> RawHeaderVec<H, T> {
+impl<H, T> UnmanagedHeaderVec<H, T> {
     /// Creates an empty pre-allocated vector with a given storage capacity.
     pub fn try_with_capacity_in<A: Allocator>(header: H, cap: usize, allocator: &A) -> Result<Self, AllocError> {
-        let buffer = RawHeaderBuffer::<H, T>::try_allocate_in(header, cap, allocator)?;
+        let buffer = UnmanagedHeaderBuffer::<H, T>::try_allocate_in(header, cap, allocator)?;
 
-        Ok(RawHeaderVec {
+        Ok(UnmanagedHeaderVec {
             buffer,
             len: 0,
         })
@@ -66,7 +66,7 @@ impl<H, T> RawHeaderVec<H, T> {
             self.buffer.deallocate_in(allocator);
         }
 
-        self.buffer = RawHeaderBuffer::dangling();
+        self.buffer = UnmanagedHeaderBuffer::dangling();
         self.len = 0;
     }
 

@@ -1,10 +1,10 @@
-use crate::header_vec::RawHeaderVec;
+use crate::header_vec::UnmanagedHeaderVec;
 
 struct Header<T> {
-    next: Option<RawSegVec<T>>
+    next: Option<UnmanagedSegVec<T>>
 }
 
-pub struct RawSegVec<T> {
-    first: Option<RawHeaderVec<Header<T>, T>>,
-    last: RawHeaderVec<Header<T>, T>,
+pub struct UnmanagedSegVec<T> {
+    first: Option<UnmanagedHeaderVec<Header<T>, T>>,
+    last: UnmanagedHeaderVec<Header<T>, T>,
 }

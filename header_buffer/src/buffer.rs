@@ -4,20 +4,20 @@ use crate::allocator::*;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-pub struct RawHeaderBuffer<H, T> {
+pub struct UnmanagedHeaderBuffer<H, T> {
     data: NonNull<T>,
     _marker: PhantomData<H>,
     cap: usize,
 }
 
-impl<T> RawHeaderBuffer<(), T> {
+impl<T> UnmanagedHeaderBuffer<(), T> {
     /// Creates an empty buffer without doing any memory allocation.
     pub fn new() -> Self {
         unsafe { Self::dangling() }
     }
 }
 
-impl<H, T> RawHeaderBuffer<H, T> {
+impl<H, T> UnmanagedHeaderBuffer<H, T> {
     /// Creates an empty pre-allocated vector with a given storage capacity.
     pub fn try_allocate_in<A: Allocator>(header: H, cap: usize, allocator: &A) -> Result<Self, AllocError> {
         let (data, cap) = util::allocate_in::<H, T, A>(cap, allocator)?;
@@ -26,7 +26,7 @@ impl<H, T> RawHeaderBuffer<H, T> {
             nnptr::write(header_ptr, header);
         }
 
-        Ok(RawHeaderBuffer {
+        Ok(UnmanagedHeaderBuffer {
             data,
             _marker: PhantomData,
             cap,
@@ -35,7 +35,7 @@ impl<H, T> RawHeaderBuffer<H, T> {
 
     #[inline]
     pub unsafe fn dangling() -> Self {
-        RawHeaderBuffer {
+        UnmanagedHeaderBuffer {
             data: NonNull::dangling(),
             _marker: PhantomData,
             cap: 0,

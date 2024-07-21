@@ -1,14 +1,14 @@
-use crate::header_vec::RawHeaderVec;
+use crate::header_vec::UnmanagedHeaderVec;
 use crate::allocator::{Allocator, AllocError};
 
-pub struct RawVec<T> {
-    inner: RawHeaderVec<(), T>,
+pub struct UnmanagedVec<T> {
+    inner: UnmanagedHeaderVec<(), T>,
 }
 
-impl<T> RawVec<T> {
+impl<T> UnmanagedVec<T> {
     /// Creates an empty, unallocated raw vector.
     pub fn new() -> Self {
-        RawVec { inner: RawHeaderVec::new() }
+        UnmanagedVec { inner: UnmanagedHeaderVec::new() }
     }
 
     /// Creates an empty pre-allocated vector with a given storage capacity.
@@ -16,11 +16,11 @@ impl<T> RawVec<T> {
     /// Does not allocate memory if `cap` is zero.
     pub fn try_with_capacity_in<A: Allocator>(cap: usize, allocator: &A) -> Result<Self, AllocError> {
         if cap == 0 {
-            return Ok(RawVec::new());
+            return Ok(UnmanagedVec::new());
         }
 
-        Ok(RawVec {
-            inner: RawHeaderVec::try_with_capacity_in((), cap, allocator)?,
+        Ok(UnmanagedVec {
+            inner: UnmanagedHeaderVec::try_with_capacity_in((), cap, allocator)?,
         })
     }
 
@@ -29,11 +29,11 @@ impl<T> RawVec<T> {
         T: Clone,
     {
         if data.len() == 0 {
-            return Ok(RawVec::new())
+            return Ok(UnmanagedVec::new())
         }
 
-        Ok(RawVec {
-            inner: RawHeaderVec::try_from_slice((), data, allocator)?
+        Ok(UnmanagedVec {
+            inner: UnmanagedHeaderVec::try_from_slice((), data, allocator)?
         })
     }
 
