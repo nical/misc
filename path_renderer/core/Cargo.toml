@@ -7,8 +7,8 @@ workspace = ".."
 
 [dependencies]
 lyon = "1.0.0"
-wgpu = "0.20.0"
-winit = "0.29.15"
+wgpu = "22.0.0"
+#winit = "0.30.0"
 futures = "0.3.5"
 bytemuck = "1.2.0"
 svg_fmt = "0.4.1"
@@ -22,4 +22,3 @@ debug=true
 
 [features]
 tracy_profiling = ["profiling/profile-with-tracy"]
-trace = ["wgpu/trace"]

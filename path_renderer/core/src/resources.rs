@@ -296,6 +296,7 @@ impl CommonGpuResources {
                 count: shaders.defaults.msaa_sample_count(),
                 ..wgpu::MultisampleState::default()
             },
+            cache: None,
         };
 
         let msaa_blit = device.create_render_pipeline(&descriptor);

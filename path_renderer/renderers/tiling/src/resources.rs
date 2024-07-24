@@ -468,6 +468,7 @@ fn create_mask_pipeline(
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
+        cache: None,
     };
 
     let fill_pipeline = device.create_render_pipeline(&fill_pipeline_descriptor);
@@ -497,6 +498,7 @@ fn create_mask_pipeline(
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
+        cache: None,
     };
 
     let circle_pipeline = device.create_render_pipeline(&circle_pipeline_descriptor);
@@ -523,6 +525,7 @@ fn create_mask_pipeline(
         depth_stencil: None,
         multiview: None,
         multisample: wgpu::MultisampleState::default(),
+        cache: None,
     };
 
     let rect_pipeline = device.create_render_pipeline(&rect_pipeline_descriptor);

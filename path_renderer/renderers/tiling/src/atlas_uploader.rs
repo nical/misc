@@ -367,6 +367,7 @@ fn create_mask_upload_pipeline(
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
+        cache: None,
     };
 
     let pipeline = device.create_render_pipeline(&pipeline_descriptor);

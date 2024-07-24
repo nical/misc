@@ -95,6 +95,7 @@ impl StencilAndCoverResources {
             }),
             multiview: None,
             multisample: wgpu::MultisampleState::default(),
+            cache: None,
         };
         let stencil_pipeline = device.create_render_pipeline(&descriptor);
 

@@ -428,6 +428,7 @@ impl Shaders {
             depth_stencil,
             multiview: None,
             multisample,
+            cache: None,
         };
 
         device.create_render_pipeline(&descriptor)

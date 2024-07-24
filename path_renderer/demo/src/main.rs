@@ -3,7 +3,7 @@ use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::BindingsId;
-use core::resources::{CommonGpuResources, GpuResources};
+use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::shape::*;
 use core::stroke::*;
 use core::transform::Transforms;
@@ -12,7 +12,7 @@ use core::units::{
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
-use debug_overlay::{CounterId, Counters, Overlay, CounterDescriptor, Orientation, Graphs, Column, Table};
+use debug_overlay::{Column, Counters, Graphs, Orientation, Overlay, Table};
 use debug_overlay::wgpu::{Renderer as OverlayRenderer, RendererOptions as OverlayOptions};
 use lyon::geom::{Angle, Box2D};
 use lyon::path::PathEvent;
@@ -22,7 +22,6 @@ use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
 use tiling2::Occlusion;
-use winit::keyboard::{Key, NamedKey};
 use wpf::{WpfGpuResources, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
@@ -37,10 +36,11 @@ use pattern_linear_gradient::{LinearGradient, LinearGradientRenderer};
 use pattern_texture::TextureRenderer;
 
 use futures::executor::block_on;
-use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
-use winit::event_loop::{EventLoop, EventLoopWindowTarget};
-use winit::window::Window;
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{Window, WindowId};
 
 use core::wgpu;
 
@@ -111,339 +111,550 @@ impl Renderers {
     }
 }
 
-fn main() {
-    color_backtrace::install();
-    profiling::register_thread!("Main");
+enum AppState {
+    Initializing,
+    Running(App),
+    Closing,
+}
 
-    let args: Vec<String> = std::env::args().collect();
+struct App {
+    window: Arc<Window>,
+    view: Demo,
 
-    let mut tolerance = 0.25;
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    surface_desc: wgpu::SurfaceConfiguration,
+    depth_texture: Option<wgpu::TextureView>,
+    msaa_texture: Option<wgpu::TextureView>,
+    msaa_depth_texture: Option<wgpu::TextureView>,
+    temporary_texture: Option<wgpu::TextureView>,
 
-    let mut trace = None;
-    let mut force_gl = false;
-    let mut force_vk = false;
-    let mut asap = false;
-    let mut read_tolerance = false;
-    let mut read_fill = false;
-    let mut _use_ssaa4 = false;
-    let mut read_occlusion = false;
-    let mut z_buffer = None;
-    let mut cpu_occlusion = None;
-    let mut fill_renderer = 0;
-    for arg in &args {
-        if read_tolerance {
-            tolerance = arg.parse::<f32>().unwrap();
-            println!("tolerance: {}", tolerance);
+    shaders: Shaders,
+    gpu_resources: GpuResources,
+    renderers: Renderers,
+    render_pipelines: core::gpu::shader::RenderPipelines,
+    patterns: Patterns,
+    gpu_store: GpuStore,
+    transforms: Transforms,
+    overlay: Overlay,
+    stats_renderer: OverlayRenderer,
+    counters: Counters,
+    wgpu_counters: counters::wgpu::Ids,
+    renderer_counters: counters::render::Ids,
+    common_handle: ResourcesHandle<CommonGpuResources>,
+    main_pass: RenderPassBuilder,
+    source_textures: SourceTextures,
+    paths: Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>,
+
+    sum_frame_build_time: Duration,
+    sum_render_time: Duration,
+    sum_present_time: Duration,
+    asap: bool,
+    z_buffer: Option<bool>,
+}
+
+impl ApplicationHandler for AppState {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let win_attrs = Window::default_attributes();
+        let window = Arc::new(event_loop.create_window(win_attrs).unwrap());
+
+        match self {
+            AppState::Initializing => {
+                if let Some(app) = App::init(window) {
+                    *self = AppState::Running(app);
+                    return;
+                }
+            }
+            _ => {
+                // TODO
+            }
         }
-        if read_fill {
-            fill_renderer = arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len();
-        }
-        if read_occlusion {
-            cpu_occlusion = Some(arg.contains("cpu") || arg.contains("all"));
-            z_buffer = Some(arg.contains("gpu") || arg.contains("all") || arg.contains("z-buffer"));
-        }
-        if arg == "--x11" {
-            // This used to get this demo to work in renderdoc (with the gl backend) but now
-            // it runs into new issues.
-            std::env::set_var("WINIT_UNIX_BACKEND", "x11");
-        }
-        if arg == "--trace" {
-            trace = Some(std::path::Path::new("./trace"));
-        }
-        _use_ssaa4 |= arg == "--ssaa";
-        force_gl |= arg == "--gl";
-        force_vk |= arg == "--vulkan";
-        asap |= arg == "--asap";
-        read_tolerance = arg == "--tolerance";
-        read_fill = arg == "--fill";
-        read_occlusion = arg == "--occlusion";
+
+        event_loop.exit();
     }
 
-    let scale_factor = 2.0;
-
-    let event_loop = EventLoop::new().unwrap();
-    let window = winit::window::WindowBuilder::new()
-        .with_inner_size(winit::dpi::Size::Physical(PhysicalSize::new(1200, 1000)))
-        .build(&event_loop)
-        .unwrap();
-    let window_size = window.inner_size();
-
-    let backends = if force_gl {
-        wgpu::Backends::GL
-    } else if force_vk {
-        wgpu::Backends::VULKAN
-    } else {
-        wgpu::Backends::all()
-    };
-    // create an instance
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        ..wgpu::InstanceDescriptor::default()
-    });
-
-    // create an surface
-    let surface = instance.create_surface(&window).unwrap();
-
-    // create an adapter
-    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-    }))
-    .unwrap();
-    println!("{:#?}", adapter.get_info());
-    // create a device and a queue
-    let (device, queue) = block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::default(),
-            required_limits: wgpu::Limits::default(),
-        },
-        trace,
-    ))
-    .unwrap();
-
-    let (_, paths) = if args.len() > 1 && !args[1].starts_with('-') {
-        load_svg(&args[1], scale_factor)
-    } else {
-        let mut builder = core::path::Path::builder();
-        builder.begin(point(0.0, 0.0));
-        builder.line_to(point(50.0, 400.0));
-        builder.line_to(point(450.0, 450.0));
-        builder.line_to(point(400.0, 50.0));
-        builder.end(true);
-
-        (
-            Box2D {
-                min: point(0.0, 0.0),
-                max: point(500.0, 500.0),
-            },
-            vec![(
-                Arc::new(builder.build()),
-                Some(SvgPattern::Color(Color {
-                    r: 50,
-                    g: 200,
-                    b: 100,
-                    a: 255,
-                })),
-                None,
-            )],
-        )
-    };
-
-    //tiler_config.view_box = view_box;
-
-    let mut shaders = Shaders::new();
-    let mut render_pipelines = core::gpu::shader::RenderPipelines::new();
-
-    let patterns = Patterns {
-        colors: SolidColorRenderer::register(&mut shaders),
-        gradients: LinearGradientRenderer::register(&mut shaders),
-        checkerboards: CheckerboardRenderer::register(&mut shaders),
-        textures: TextureRenderer::register(&device, &mut shaders),
-    };
-
-    let mut main_pass = RenderPassBuilder::new();
-    let mut transforms = Transforms::new();
-
-    let mut gpu_store = GpuStore::new(2048, &device);
-
-    let mut common_resources = CommonGpuResources::new(
-        &device,
-        SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
-        &gpu_store,
-        &mut shaders,
-    );
-
-    //let tiling_resources = TilingGpuResources::new(
-    //    &mut common_resources,
-    //    &device,
-    //    &mut shaders,
-    //    &patterns.textures,
-    //    mask_atlas_size,
-    //    color_atlas_size,
-    //    _use_ssaa4,
-    //);
-
-    let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
-
-    let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
-
-    let stencil_resources =
-        StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
-
-    let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
-
-    let wpf_resources = WpfGpuResources::new(&device, &mut shaders);
-
-    let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
-
-    let mut gpu_resources = GpuResources::new();
-    let common_handle = gpu_resources.register(common_resources);
-    let tiling2_handle = gpu_resources.register(tiling2_resources);
-    //let tiling_handle = gpu_resources.register(tiling_resources);
-    let mesh_handle = gpu_resources.register(mesh_resources);
-    let stencil_handle = gpu_resources.register(stencil_resources);
-    let rectangle_handle = gpu_resources.register(rectangle_resources);
-    let wpf_handle = gpu_resources.register(wpf_resources);
-    let stroke_handle = gpu_resources.register(stroke_resources);
-
-    let mut stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
-        target_format: wgpu::TextureFormat::Bgra8Unorm,
-        .. OverlayOptions::default()
-    });
-
-    let mut overlay = Overlay::new();
-
-    let mut counters = counters();
-    counters.enable_history(BATCHING);
-    counters.enable_history(PREPARE);
-    counters.enable_history(RENDER);
-
-    let tiling_occlusion = Occlusion {
-        cpu: cpu_occlusion.unwrap_or(true),
-        gpu: z_buffer.unwrap_or(false),
-    };
-
-    let mut renderers = Renderers {
-        tiling2: tiling2::TileRenderer::new(
-            0,
-            common_handle,
-            tiling2_handle,
-            &gpu_resources[tiling2_handle],
-            &tiling2::RendererOptions {
-                tolerance,
-                occlusion: tiling_occlusion,
-                no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let this = match self {
+            AppState::Running(this) => this,
+            _ => {
+                event_loop.exit();
+                return;
             }
-        ),
-        //tiling: TileRenderer::new(
-        //    0,
-        //    common_handle,
-        //    tiling_handle,
-        //    &gpu_resources[tiling_handle],
+        };
+
+        this.update_inputs(event_loop, id, event);
+
+        if this.view.render {
+            this.render();
+        }
+
+        if event_loop.exiting() {
+            *self = AppState::Closing;
+        }
+    }
+}
+
+impl App {
+    fn init(window: Arc<Window>) -> Option<Self> {
+        let args: Vec<String> = std::env::args().collect();
+
+        let mut tolerance = 0.25;
+
+        let mut trace = None;
+        let mut force_gl = false;
+        let mut force_vk = false;
+        let mut asap = false;
+        let mut read_tolerance = false;
+        let mut read_fill = false;
+        let mut _use_ssaa4 = false;
+        let mut read_occlusion = false;
+        let mut z_buffer = None;
+        let mut cpu_occlusion = None;
+        let mut fill_renderer = 0;
+        for arg in &args {
+            if read_tolerance {
+                tolerance = arg.parse::<f32>().unwrap();
+                println!("tolerance: {}", tolerance);
+            }
+            if read_fill {
+                fill_renderer = arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len();
+            }
+            if read_occlusion {
+                cpu_occlusion = Some(arg.contains("cpu") || arg.contains("all"));
+                z_buffer = Some(arg.contains("gpu") || arg.contains("all") || arg.contains("z-buffer"));
+            }
+            if arg == "--x11" {
+                // This used to get this demo to work in renderdoc (with the gl backend) but now
+                // it runs into new issues.
+                std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+            }
+            if arg == "--trace" {
+                trace = Some(std::path::Path::new("./trace"));
+            }
+            _use_ssaa4 |= arg == "--ssaa";
+            force_gl |= arg == "--gl";
+            force_vk |= arg == "--vulkan";
+            asap |= arg == "--asap";
+            read_tolerance = arg == "--tolerance";
+            read_fill = arg == "--fill";
+            read_occlusion = arg == "--occlusion";
+        }
+
+        let scale_factor = 2.0;
+
+        let window_size = window.inner_size();
+
+        let backends = if force_gl {
+            wgpu::Backends::GL
+        } else if force_vk {
+            wgpu::Backends::VULKAN
+        } else {
+            wgpu::Backends::all()
+        };
+        // create an instance
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::default()
+        });
+
+        // create an surface
+        let surface = instance.create_surface(window.clone()).unwrap();
+
+        // create an adapter
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .unwrap();
+        println!("{:#?}", adapter.get_info());
+        // create a device and a queue
+        let (device, queue) = block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::default(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+            },
+            trace,
+        ))
+        .unwrap();
+
+        let (_, paths) = if args.len() > 1 && !args[1].starts_with('-') {
+            load_svg(&args[1], scale_factor)
+        } else {
+            let mut builder = core::path::Path::builder();
+            builder.begin(point(0.0, 0.0));
+            builder.line_to(point(50.0, 400.0));
+            builder.line_to(point(450.0, 450.0));
+            builder.line_to(point(400.0, 50.0));
+            builder.end(true);
+
+            (
+                Box2D {
+                    min: point(0.0, 0.0),
+                    max: point(500.0, 500.0),
+                },
+                vec![(
+                    Arc::new(builder.build()),
+                    Some(SvgPattern::Color(Color {
+                        r: 50,
+                        g: 200,
+                        b: 100,
+                        a: 255,
+                    })),
+                    None,
+                )],
+            )
+        };
+
+        //tiler_config.view_box = view_box;
+
+        let mut shaders = Shaders::new();
+        let render_pipelines = core::gpu::shader::RenderPipelines::new();
+
+        let patterns = Patterns {
+            colors: SolidColorRenderer::register(&mut shaders),
+            gradients: LinearGradientRenderer::register(&mut shaders),
+            checkerboards: CheckerboardRenderer::register(&mut shaders),
+            textures: TextureRenderer::register(&device, &mut shaders),
+        };
+
+        let main_pass = RenderPassBuilder::new();
+        let transforms = Transforms::new();
+
+        let gpu_store = GpuStore::new(2048, &device);
+
+        let mut common_resources = CommonGpuResources::new(
+            &device,
+
+            SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
+            &gpu_store,
+            &mut shaders,
+        );
+
+        //let tiling_resources = TilingGpuResources::new(
+        //    &mut common_resources,
+        //    &device,
+        //    &mut shaders,
         //    &patterns.textures,
-        //    &tiler_config,
-        //    &patterns.textures,
-        //),
-        meshes: MeshRenderer::new(
-            1,
+        //    mask_atlas_size,
+        //    color_atlas_size,
+        //    _use_ssaa4,
+        //);
+
+        let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
+
+        let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
+
+        let stencil_resources =
+            StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
+
+        let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
+
+        let wpf_resources = WpfGpuResources::new(&device, &mut shaders);
+
+        let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
+
+        let mut gpu_resources = GpuResources::new();
+        let common_handle = gpu_resources.register(common_resources);
+        let tiling2_handle = gpu_resources.register(tiling2_resources);
+        //let tiling_handle = gpu_resources.register(tiling_resources);
+        let mesh_handle = gpu_resources.register(mesh_resources);
+        let stencil_handle = gpu_resources.register(stencil_resources);
+        let rectangle_handle = gpu_resources.register(rectangle_resources);
+        let wpf_handle = gpu_resources.register(wpf_resources);
+        let stroke_handle = gpu_resources.register(stroke_resources);
+
+        let stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
+            target_format: wgpu::TextureFormat::Bgra8Unorm,
+            .. OverlayOptions::default()
+        });
+
+        let overlay = Overlay::new();
+
+        let mut counters = Counters::new(60);
+
+        let wgpu_counters = counters::wgpu::register("wgpu", &mut counters);
+        let renderer_counters = counters::render::register("renderer", &mut counters);
+
+        counters.enable_history(renderer_counters.batching());
+        counters.enable_history(renderer_counters.prepare());
+        counters.enable_history(renderer_counters.render());
+        counters.enable_history(wgpu_counters.texture_memory());
+        counters.enable_history(wgpu_counters.buffer_memory());
+        counters.enable_history(wgpu_counters.memory_allocations());
+
+        let tiling_occlusion = Occlusion {
+            cpu: cpu_occlusion.unwrap_or(true),
+            gpu: z_buffer.unwrap_or(false),
+        };
+
+        let mut renderers = Renderers {
+            tiling2: tiling2::TileRenderer::new(
+                0,
+                common_handle,
+                tiling2_handle,
+                &gpu_resources[tiling2_handle],
+                &tiling2::RendererOptions {
+                    tolerance,
+                    occlusion: tiling_occlusion,
+                    no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
+                }
+            ),
+            //tiling: TileRenderer::new(
+            //    0,
+            //    common_handle,
+            //    tiling_handle,
+            //    &gpu_resources[tiling_handle],
+            //    &patterns.textures,
+            //    &tiler_config,
+            //    &patterns.textures,
+            //),
+            meshes: MeshRenderer::new(
+                1,
+                common_handle,
+                mesh_handle,
+                &gpu_resources[mesh_handle],
+            ),
+            stencil: StencilAndCoverRenderer::new(
+                2,
+                common_handle,
+                stencil_handle,
+                &gpu_resources[stencil_handle],
+            ),
+            rectangles: RectangleRenderer::new(
+                3,
+                common_handle,
+                rectangle_handle,
+                &gpu_resources[rectangle_handle],
+            ),
+            wpf: WpfMeshRenderer::new(
+                4,
+                common_handle,
+                wpf_handle,
+                &gpu_resources[wpf_handle],
+            ),
+            msaa_strokes: MsaaStrokeRenderer::new(
+                5,
+                common_handle,
+                stroke_handle,
+                &gpu_resources[stroke_handle],
+            ),
+        };
+
+        renderers.tiling2.tolerance = tolerance;
+        renderers.stencil.tolerance = tolerance;
+        renderers.meshes.tolerance = tolerance;
+        renderers.msaa_strokes.tolerance = tolerance;
+
+        //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+
+        let mut source_textures = SourceTextures::new();
+
+        let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
+        let _image_binding =
+            source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
+
+        let surface_desc = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: window_size.width,
+            height: window_size.height,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+
+        surface.configure(&device, &surface_desc);
+
+        window.request_redraw();
+
+        let view = Demo {
+            zoom: 1.0,
+            target_zoom: 1.0,
+            pan: [0.0, 0.0],
+            target_pan: [0.0, 0.0],
+            window_size: SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
+            wireframe: false,
+            size_changed: true,
+            render: true,
+            fill_renderer,
+            stroke_renderer: 0,
+            msaa: MsaaMode::Auto,
+            scene_idx: 0,
+            debug_overlay: false,
+        };
+
+        Some(App {
+            window,
+            view,
+            device,
+            queue,
+            surface,
+            surface_desc,
+            depth_texture: None,
+            msaa_depth_texture: None,
+            temporary_texture: None,
+            msaa_texture: None,
+            shaders,
+            gpu_resources,
+            renderers,
+            render_pipelines,
+            patterns,
+            gpu_store,
+            transforms,
+            overlay,
+            stats_renderer,
+            counters,
+            wgpu_counters,
+            renderer_counters,
             common_handle,
-            mesh_handle,
-            &gpu_resources[mesh_handle],
-        ),
-        stencil: StencilAndCoverRenderer::new(
-            2,
-            common_handle,
-            stencil_handle,
-            &gpu_resources[stencil_handle],
-        ),
-        rectangles: RectangleRenderer::new(
-            3,
-            common_handle,
-            rectangle_handle,
-            &gpu_resources[rectangle_handle],
-        ),
-        wpf: WpfMeshRenderer::new(
-            4,
-            common_handle,
-            wpf_handle,
-            &gpu_resources[wpf_handle],
-        ),
-        msaa_strokes: MsaaStrokeRenderer::new(
-            5,
-            common_handle,
-            stroke_handle,
-            &gpu_resources[stroke_handle],
-        ),
-    };
+            main_pass,
+            source_textures,
+            paths,
+            sum_frame_build_time: Duration::ZERO,
+            sum_present_time: Duration::ZERO,
+            sum_render_time: Duration::ZERO,
+            asap,
+            z_buffer,
+        })
+    }
 
-    renderers.tiling2.tolerance = tolerance;
-    renderers.stencil.tolerance = tolerance;
-    renderers.meshes.tolerance = tolerance;
-    renderers.msaa_strokes.tolerance = tolerance;
+    fn update_inputs(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let view = &mut self.view;
+        let initial_scroll = view.pan;
+        let initial_zoom = view.zoom;
+        let mut redraw = false;
+        match event {
+            WindowEvent::RedrawRequested => {
+                view.render = true;
+            }
+            WindowEvent::Destroyed | WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                view.window_size.width = size.width as i32;
+                view.window_size.height = size.height as i32;
+                view.size_changed = true;
+                view.render = true;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                use winit::event::MouseScrollDelta::*;
+                let (dx, dy) = match delta {
+                    LineDelta(x, y) => (x * 20.0, -y * 20.0),
+                    PixelDelta(v) => (-v.x as f32, -v.y as f32),
+                };
+                let dx = dx / view.target_zoom;
+                let dy = dy / view.target_zoom;
+                if dx != 0.0 || dy != 0.0 {
+                    view.target_pan[0] -= dx;
+                    view.target_pan[1] -= dy;
+                    view.pan[0] -= dx;
+                    view.pan[1] -= dy;
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(key_code),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => match key_code {
+                KeyCode::Escape => event_loop.exit(),
+                KeyCode::PageDown => view.target_zoom *= 0.8,
+                KeyCode::PageUp => view.target_zoom *= 1.25,
+                KeyCode::ArrowLeft => view.target_pan[0] += 50.0 / view.target_zoom,
+                KeyCode::ArrowRight => view.target_pan[0] -= 50.0 / view.target_zoom,
+                KeyCode::ArrowUp => view.target_pan[1] -= 50.0 / view.target_zoom,
+                KeyCode::ArrowDown => view.target_pan[1] += 50.0 / view.target_zoom,
+                KeyCode::KeyW => {
+                    view.wireframe = !view.wireframe;
+                }
+                KeyCode::KeyK => {
+                    view.scene_idx = (view.scene_idx + 1) % NUM_SCENES;
+                    update_title(&self.window, view.fill_renderer, view.stroke_renderer, view.msaa);
+                    redraw = true;
+                }
+                KeyCode::KeyJ => {
+                    if view.scene_idx == 0 {
+                        view.scene_idx = NUM_SCENES - 1;
+                    } else {
+                        view.scene_idx -= 1;
+                    }
+                    update_title(&self.window, view.fill_renderer, view.stroke_renderer, view.msaa);
+                    redraw = true;
+                }
+                KeyCode::KeyF => {
+                    view.fill_renderer = (view.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
+                    update_title(&self.window, view.fill_renderer, view.stroke_renderer, view.msaa);
+                    redraw = true;
+                }
+                KeyCode::KeyS => {
+                    view.stroke_renderer = (view.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
+                    update_title(&self.window, view.fill_renderer, view.stroke_renderer, view.msaa);
+                    redraw = true;
+                }
+                KeyCode::KeyM => {
+                    view.msaa = match view.msaa {
+                        MsaaMode::Auto => MsaaMode::Disabled,
+                        MsaaMode::Disabled => MsaaMode::Enabled,
+                        MsaaMode::Enabled => MsaaMode::Auto,
+                    };
+                    update_title(&self.window, view.fill_renderer, view.stroke_renderer, view.msaa);
+                    redraw = true;
+                }
+                KeyCode::KeyO => {
+                    view.debug_overlay = !view.debug_overlay;
+                    redraw = true;
+                }
+                _key => {}
+            },
+            _evt => {}
+        };
 
-    //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-
-    let mut source_textures = SourceTextures::new();
-
-    let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
-    let _image_binding =
-        source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
-
-    let mut surface_desc = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        width: window_size.width,
-        height: window_size.height,
-        present_mode: wgpu::PresentMode::AutoVsync,
-        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-    };
-
-    surface.configure(&device, &surface_desc);
-
-    window.request_redraw();
-
-    let mut demo = Demo {
-        zoom: 1.0,
-        target_zoom: 1.0,
-        pan: [0.0, 0.0],
-        target_pan: [0.0, 0.0],
-        window_size: SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
-        wireframe: false,
-        size_changed: true,
-        render: true,
-        fill_renderer,
-        stroke_renderer: 0,
-        msaa: MsaaMode::Auto,
-        scene_idx: 0,
-        debug_overlay: false,
-    };
-
-    update_title(&window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-
-    let window = &window;
-
-    let mut depth_texture = None;
-    let mut msaa_texture = None;
-    let mut msaa_depth_texture = None;
-    let mut temporary_texture = None;
-
-    let mut sum_frame_build_time = Duration::ZERO;
-    let mut sum_render_time = Duration::ZERO;
-    let mut sum_present_time = Duration::ZERO;
-    event_loop.run(move |event, window_target| {
-        device.poll(wgpu::Maintain::Poll);
-
-        if !update_inputs(event, window, window_target, &mut demo) {
+        if event_loop.exiting() {
+            view.render = false;
             return;
         }
 
-        if demo.size_changed {
-            demo.size_changed = false;
-            let physical = demo.window_size;
-            surface_desc.width = physical.width as u32;
-            surface_desc.height = physical.height as u32;
-            surface.configure(&device, &surface_desc);
-            gpu_resources[common_handle].resize_target(
-                SurfaceIntSize::new(demo.window_size.width, demo.window_size.height),
-                &queue,
+        view.zoom += (view.target_zoom - view.zoom) / 3.0;
+        view.pan[0] = view.pan[0] + (view.target_pan[0] - view.pan[0]) / 3.0;
+        view.pan[1] = view.pan[1] + (view.target_pan[1] - view.pan[1]) / 3.0;
+
+        redraw |= view.pan != initial_scroll || view.zoom != initial_zoom;
+
+        if redraw {
+            self.window.request_redraw();
+        }
+    }
+
+    fn render(&mut self) {
+        if self.view.size_changed {
+            self.view.size_changed = false;
+            let physical = self.view.window_size;
+            self.surface_desc.width = physical.width as u32;
+            self.surface_desc.height = physical.height as u32;
+            self.surface.configure(&self.device, &self.surface_desc);
+            self.gpu_resources[self.common_handle].resize_target(
+                SurfaceIntSize::new(self.view.window_size.width, self.view.window_size.height),
+                &self.queue,
             );
 
-            depth_texture = None;
-            msaa_texture = None;
-            msaa_depth_texture = None;
-            temporary_texture = None;
+            self.depth_texture = None;
+            self.msaa_texture = None;
+            self.msaa_depth_texture = None;
+            self.temporary_texture = None;
         }
 
-        if !demo.render {
+        if !self.view.render {
             return;
         }
-        demo.render = false;
+        self.view.render = false;
 
-        let frame = match surface.get_current_texture() {
+        let frame = match self.surface.get_current_texture() {
             Ok(texture) => texture,
             Err(e) => {
                 println!("Swap-chain error: {:?}", e);
@@ -454,42 +665,46 @@ fn main() {
         //println!("\n\n\n ----- \n\n");
 
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(shaders.defaults.color_format()),
+            format: Some(self.shaders.defaults.color_format()),
             ..Default::default()
         });
-        let size = SurfaceIntSize::new(demo.window_size.width, demo.window_size.height);
+        let size = SurfaceIntSize::new(self.view.window_size.width, self.view.window_size.height);
 
-        let msaa_default = match demo.msaa {
+        let msaa_default = match self.view.msaa {
             MsaaMode::Disabled => false,
             _ => true,
         };
-        let msaa_tiling = match demo.msaa {
+        let msaa_tiling = match self.view.msaa {
             MsaaMode::Enabled => true,
             _ => false,
         };
 
         let surface_cfg = SurfacePassConfig {
-            depth: z_buffer.unwrap_or(demo.fill_renderer != TILING),
-            msaa: if demo.fill_renderer == TILING || demo.fill_renderer == WPF { msaa_tiling } else { msaa_default },
-            stencil: demo.fill_renderer == STENCIL,
+            depth: self.z_buffer.unwrap_or(self.view.fill_renderer != TILING),
+            msaa: if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default },
+            stencil: self.view.fill_renderer == STENCIL,
             kind: SurfaceKind::Color,
         };
 
-        gpu_store.clear();
-        transforms.clear();
+        self.gpu_store.clear();
+        self.transforms.clear();
 
-        renderers.begin_frame();
+        self.renderers.begin_frame();
 
-        overlay.begin_frame();
+        self.overlay.begin_frame();
 
-        if demo.debug_overlay {
-            overlay.draw_item(&"Hello world\nNew line");
-            overlay.end_group();
+        if self.view.debug_overlay {
+            self.overlay.draw_item(&"Hello world\nNew line");
+            self.overlay.end_group();
 
             let mut selection = Vec::new();
-            counters.select_counters([BATCHING, PREPARE, RENDER].iter().cloned(), &mut selection);
+            self.counters.select_counters([
+                self.renderer_counters.batching(),
+                self.renderer_counters.prepare(),
+                self.renderer_counters.render()
+            ].iter().cloned(), &mut selection);
 
-            overlay.draw_item(&Table {
+            self.overlay.draw_item(&Table {
                     columns: &[
                         Column::color(),
                         Column::name().with_unit().label("CPU timings"),
@@ -501,7 +716,7 @@ fn main() {
                     labels: true,
             });
 
-            overlay.draw_item(&Graphs {
+            self.overlay.draw_item(&Graphs {
                 counters: &selection,
                 width: Some(120),
                 height: None,
@@ -509,63 +724,79 @@ fn main() {
                 orientation: Orientation::Vertical,
             });
 
-            overlay.end_group();
+            self.overlay.end_group();
 
-            overlay.push_column();
+            self.overlay.push_column();
 
-            overlay.draw_item(&"More text");
-            overlay.end_group();
+            self.overlay.draw_item(&"More text");
+            self.overlay.end_group();
 
-            overlay.finish();
+            selection.clear();
+            self.counters.select_counters(
+                self.wgpu_counters.all(),
+                &mut selection
+            );
+
+            self.overlay.draw_item(&Table {
+                    columns: &[
+                        Column::name().with_unit().label("wgpu internals"),
+                        Column::value(),
+                        Column::history_graph(),
+                    ],
+                    rows: &selection,
+                    labels: true,
+            });
+
+            self.overlay.finish();
         }
 
-        main_pass.begin(size, surface_cfg);
+        self.main_pass.begin(size, surface_cfg);
 
 
-        gpu_resources.begin_frame();
+        self.gpu_resources.begin_frame();
 
-        let tx = demo.pan[0].round();
-        let ty = demo.pan[1].round();
+        let tx = self.view.pan[0].round();
+        let ty = self.view.pan[1].round();
         let hw = (size.width as f32) * 0.5;
         let hh = (size.height as f32) * 0.5;
         let transform = LocalTransform::translation(tx, ty)
             .then_translate(-vector(hw, hh))
-            .then_scale(demo.zoom, demo.zoom)
+            .then_scale(self.view.zoom, self.view.zoom)
             .then_translate(vector(hw, hh));
 
-        let test_stuff = demo.scene_idx == 0;
+        let test_stuff = self.view.scene_idx == 0;
 
         let record_start = Instant::now();
 
         paint_scene(
-            &paths,
-            demo.fill_renderer,
-            demo.stroke_renderer,
+            &self.paths,
+            self.view.fill_renderer,
+            self.view.stroke_renderer,
             test_stuff,
-            &mut main_pass,
-            &mut transforms,
-            &mut renderers,
-            &patterns,
-            &mut gpu_store,
+            &mut self.main_pass,
+            &mut self.transforms,
+            &mut self.renderers,
+            &self.patterns,
+            &mut self.gpu_store,
             &transform,
         );
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
 
-        let mut prep_pipelines = render_pipelines.prepare();
+        let mut prep_pipelines = self.render_pipelines.prepare();
 
-        let built_pass = main_pass.end();
-        renderers.prepare(&built_pass, &transforms, &mut prep_pipelines, &device);
+        let built_pass = self.main_pass.end();
+        self.renderers.prepare(&built_pass, &self.transforms, &mut prep_pipelines, &self.device);
 
         let changes = prep_pipelines.finish();
-        render_pipelines.build(
+        self.render_pipelines.build(
             &[&changes],
-            &mut RenderPipelineBuilder(&device, &mut shaders),
+            &mut RenderPipelineBuilder(&self.device, &mut self.shaders),
         );
 
         let frame_build_time = Instant::now() - frame_build_start;
-        sum_frame_build_time += frame_build_time;
+        self.sum_frame_build_time += frame_build_time;
 
         let requirements = RenderPassesRequirements {
             depth_stencil: !surface_cfg.msaa && (surface_cfg.depth || surface_cfg.stencil),
@@ -575,14 +806,14 @@ fn main() {
         };
 
         create_render_targets(
-            &device,
+            &self.device,
             &requirements,
             size,
-            &shaders.defaults,
-            &mut depth_texture,
-            &mut msaa_texture,
-            &mut msaa_depth_texture,
-            &mut temporary_texture,
+            &self.shaders.defaults,
+            &mut self.depth_texture,
+            &mut self.msaa_texture,
+            &mut self.msaa_depth_texture,
+            &mut self.temporary_texture,
         );
 
         //let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
@@ -599,15 +830,15 @@ fn main() {
         let render_start = Instant::now();
 
         let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        renderers.upload(&mut gpu_resources, &shaders, &device, &queue);
-        gpu_store.upload(&device, &queue);
+        self.renderers.upload(&mut self.gpu_resources, &self.shaders, &self.device, &self.queue);
+        self.gpu_store.upload(&self.device, &self.queue);
 
-        gpu_resources.begin_rendering(&mut encoder);
+        self.gpu_resources.begin_rendering(&mut encoder);
 
         let msaa_resolve = surface_cfg.msaa;
-        let surface_cfg = main_pass.surface.config();
+        let surface_cfg = self.main_pass.surface.config();
         let ops = wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
             store: if msaa_resolve {
@@ -619,7 +850,7 @@ fn main() {
         let pass_descriptor = &wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: if surface_cfg.msaa { msaa_texture.as_ref().unwrap() } else { &frame_view },
+                view: if surface_cfg.msaa { self.msaa_texture.as_ref().unwrap() } else { &frame_view },
                 resolve_target: if msaa_resolve {
                     Some(&frame_view)
                 } else {
@@ -630,9 +861,9 @@ fn main() {
             depth_stencil_attachment: if surface_cfg.depth_or_stencil() {
                 Some(wgpu::RenderPassDepthStencilAttachment {
                     view: if surface_cfg.msaa {
-                        msaa_depth_texture.as_ref()
+                        self.msaa_depth_texture.as_ref()
                     } else {
-                        depth_texture.as_ref()
+                        self.depth_texture.as_ref()
                     }
                     .unwrap(),
                     depth_ops: if surface_cfg.depth {
@@ -659,12 +890,12 @@ fn main() {
             occlusion_query_set: None,
         };
 
-        stats_renderer.update(
-            &overlay.geometry,
+        self.stats_renderer.update(
+            &self.overlay.geometry,
             (size.width as u32, size.height as u32),
             1.0,
-            &device,
-            &queue,
+            &self.device,
+            &self.queue,
         );
 
         {
@@ -672,21 +903,21 @@ fn main() {
 
             built_pass.encode(
                 &[
-                    &renderers.tiling2,
-                    &renderers.meshes,
-                    &renderers.stencil,
-                    &renderers.rectangles,
-                    &renderers.wpf,
-                    &renderers.msaa_strokes,
+                    &self.renderers.tiling2,
+                    &self.renderers.meshes,
+                    &self.renderers.stencil,
+                    &self.renderers.rectangles,
+                    &self.renderers.wpf,
+                    &self.renderers.msaa_strokes,
                 ],
-                &gpu_resources,
-                &source_textures,
-                &render_pipelines,
+                &self.gpu_resources,
+                &self.source_textures,
+                &self.render_pipelines,
                 &mut render_pass,
             );
         }
 
-        if demo.debug_overlay {
+        if self.view.debug_overlay {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Debug overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -702,19 +933,19 @@ fn main() {
                 occlusion_query_set: None,
             });
 
-            stats_renderer.render(&mut render_pass);
+            self.stats_renderer.render(&mut render_pass);
         }
 
-        queue.submit(Some(encoder.finish()));
+        self.queue.submit(Some(encoder.finish()));
 
         let present_start = Instant::now();
         let render_time = present_start - render_start;
-        sum_render_time += render_time;
+        self.sum_render_time += render_time;
 
         frame.present();
 
         let present_time = Instant::now() - present_start;
-        sum_present_time += present_time;
+        self.sum_present_time += present_time;
 
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
@@ -724,20 +955,37 @@ fn main() {
         let fbt = ms(frame_build_time);
         let rt = ms(render_time);
         let pt = ms(present_time);
-        counters.set(BATCHING, rec_t);
-        counters.set(PREPARE, fbt);
-        counters.set(RENDER, rt);
-        counters.set(PRESENT, pt);
-        counters.set(CPU_TOTAL, rec_t + fbt + rt);
+        self.counters.set(self.renderer_counters.batching(), rec_t);
+        self.counters.set(self.renderer_counters.prepare(), fbt);
+        self.counters.set(self.renderer_counters.render(), rt);
+        self.counters.set(self.renderer_counters.present(), pt);
+        self.counters.set(self.renderer_counters.cpu_total(), rec_t + fbt + rt);
 
-        counters.update();
+        let wgpu_counters = self.device.get_internal_counters();
+        debug_overlay::update_wgpu_internal_counters(&mut self.counters, self.wgpu_counters, &wgpu_counters);
 
-        gpu_resources.end_frame();
+        self.counters.update();
 
-        if asap {
-            window.request_redraw();
+        self.gpu_resources.end_frame();
+
+        if self.asap {
+            self.window.request_redraw();
         }
-    }).unwrap();
+
+        self.device.poll(wgpu::Maintain::Poll);
+    }
+}
+
+fn main() {
+    color_backtrace::install();
+    profiling::register_thread!("Main");
+
+
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    let mut app = AppState::Initializing;
+    event_loop.run_app(&mut app).unwrap();
 }
 
 fn paint_scene(
@@ -1317,160 +1565,6 @@ pub struct Demo {
     pub debug_overlay: bool,
 }
 
-fn update_inputs(
-    event: Event<()>,
-    window: &Window,
-    window_target: &EventLoopWindowTarget<()>,
-    demo: &mut Demo,
-) -> bool {
-    let p = demo.pan;
-    let z = demo.zoom;
-    let fr = demo.fill_renderer;
-    let sr = demo.stroke_renderer;
-    let mut redraw = false;
-    match event {
-        Event::WindowEvent {
-            event: WindowEvent::RedrawRequested,
-            ..
-        } => {
-            demo.render = true;
-        }
-        Event::WindowEvent {
-            event: WindowEvent::Destroyed,
-            ..
-        }
-        | Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            window_target.exit();
-            return false;
-        }
-        Event::WindowEvent {
-            event: WindowEvent::Resized(size),
-            ..
-        } => {
-            let size = SurfaceIntSize::new(size.width as i32, size.height as i32);
-            if demo.window_size != size {
-                demo.window_size = size;
-                demo.size_changed = true
-            }
-        }
-        Event::WindowEvent {
-            event: WindowEvent::MouseWheel { delta, .. },
-            ..
-        } => {
-            use winit::event::MouseScrollDelta::*;
-            let (dx, dy) = match delta {
-                LineDelta(x, y) => (x * 20.0, -y * 20.0),
-                PixelDelta(v) => (-v.x as f32, -v.y as f32),
-            };
-            let dx = dx / demo.target_zoom;
-            let dy = dy / demo.target_zoom;
-            if dx != 0.0 || dy != 0.0 {
-                demo.target_pan[0] -= dx;
-                demo.target_pan[1] -= dy;
-                demo.pan[0] -= dx;
-                demo.pan[1] -= dy;
-            }
-        }
-        Event::WindowEvent {
-            event:
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        ..
-                    },
-                    ..
-                },
-            ..
-        } => match logical_key {
-            Key::Named(NamedKey::Escape) => {
-                window_target.exit();
-                return false;
-            }
-            Key::Named(NamedKey::PageDown) => {
-                demo.target_zoom *= 0.8;
-            }
-            Key::Named(NamedKey::PageUp) => {
-                demo.target_zoom *= 1.25;
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                demo.target_pan[0] += 100.0 / demo.target_zoom;
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                demo.target_pan[0] -= 100.0 / demo.target_zoom;
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                demo.target_pan[1] += 100.0 / demo.target_zoom;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                demo.target_pan[1] -= 100.0 / demo.target_zoom;
-            }
-            Key::Character(c) => {
-                if c == "w" {
-                    demo.wireframe = !demo.wireframe;
-                } else if c == "k" {
-                    demo.scene_idx = (demo.scene_idx + 1) % NUM_SCENES;
-                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;
-                } else if c == "j" {
-                    if demo.scene_idx == 0 {
-                        demo.scene_idx = NUM_SCENES - 1;
-                    } else {
-                        demo.scene_idx -= 1;
-                    }
-                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;
-                } else if c == "f" {
-                    demo.fill_renderer = (demo.fill_renderer + 1) % FILL_RENDERER_STRINGS.len();
-                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;
-                } else if c == "s" {
-                    demo.stroke_renderer = (demo.stroke_renderer + 1) % STROKE_RENDERER_STRINGS.len();
-                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;
-                } else if c == "m" {
-                    demo.msaa = match demo.msaa {
-                        MsaaMode::Auto => MsaaMode::Disabled,
-                        MsaaMode::Disabled => MsaaMode::Enabled,
-                        MsaaMode::Enabled => MsaaMode::Auto,
-                    };
-                    update_title(window, demo.fill_renderer, demo.stroke_renderer, demo.msaa);
-                    redraw = true;
-                } else if c == "o" {
-                    demo.debug_overlay = !demo.debug_overlay;
-                    redraw = true;
-                }
-            }
-
-            _key => {}
-        },
-        _evt => {
-            //println!("{:?}", _evt);
-        }
-    }
-
-    if fr != demo.fill_renderer {
-        println!("Fill: {}", FILL_RENDERER_STRINGS[demo.fill_renderer]);
-    }
-    if sr != demo.stroke_renderer {
-        println!("Stroke: {}", STROKE_RENDERER_STRINGS[demo.stroke_renderer]);
-    }
-
-    demo.zoom += (demo.target_zoom - demo.zoom) * 0.15;
-    demo.pan[0] += (demo.target_pan[0] - demo.pan[0]) * 0.15;
-    demo.pan[1] += (demo.target_pan[1] - demo.pan[1]) * 0.15;
-    redraw |= p != demo.pan || z != demo.zoom;
-
-    if redraw {
-        window.request_redraw();
-    }
-
-    true
-}
-
 fn update_title(window: &Window, fill_renderer: usize, stroke_renderer: usize, msaa: MsaaMode) {
     let title = format!("Demo - fill: {}, stroke: {}, msaa: {msaa:?}",
         FILL_RENDERER_STRINGS[fill_renderer],
@@ -1604,25 +1698,15 @@ pub struct RenderPassesRequirements {
     pub temporary: bool,
 }
 
-const BATCHING: CounterId = 0;
-const PREPARE: CounterId = 1;
-const RENDER: CounterId = 2;
-const PRESENT: CounterId = 3;
-const CPU_TOTAL: CounterId = 4;
-const BATCHES: CounterId = 5;
+pub mod counters {
+    debug_overlay::declare_counters!(render = {
+        batching: float = "batching" with { unit: "ms", safe_range: Some(0.0..4.0), color: (100, 150, 200, 255) },
+        prepare: float = "prepare"   with { unit: "ms", safe_range: Some(0.0..6.0), color: (200, 150, 100, 255) },
+        render: float = "render"     with { unit: "ms", safe_range: Some(0.0..4.0), color: (50, 50, 200, 255) },
+        present: float = "present"   with { unit: "ms", safe_range: Some(0.0..12.0), color: (200, 200, 30, 255) },
+        cpu_total: float = "total"       with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 250, 250, 255) },
+        batches: int = "batches"
+    });
 
-fn counters() -> Counters {
-    let float = &CounterDescriptor::float;
-    let int = &CounterDescriptor::int;
-    Counters::new(
-        &[
-            float("Batching", "ms", BATCHING).safe_range(0.0..4.0).color((100, 150, 200, 255)),
-            float("Prepare",  "ms", PREPARE).safe_range(0.0..6.0).color((200, 150, 100, 255)),
-            float("Render",   "ms", RENDER).safe_range(0.0..4.0).color((50, 50, 200, 255)),
-            float("Present",  "ms", PRESENT).safe_range(0.0..12.0).color((200, 200, 30, 255)),
-            float("Total",    "ms", CPU_TOTAL).safe_range(0.0..16.0).color((50, 250, 250, 255)),
-            int( "Batches",   "",   BATCHES),
-        ],
-        60,
-    )
+    pub use debug_overlay::wgpu_counters as wgpu;
 }
