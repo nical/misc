@@ -1,12 +1,11 @@
-
 //! Memory allocation APIs
 
 pub use crate::global;
 pub use core::alloc::{GlobalAlloc, Layout, LayoutError};
 
-use std::error::Error;
 use core::fmt;
 use core::ptr::{self, NonNull};
+use std::error::Error;
 
 /// The `AllocError` error indicates an allocation failure
 /// that may be due to resource exhaustion or to
