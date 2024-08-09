@@ -1,5 +1,8 @@
 //! Memory allocation APIs
 
+pub use allocator_api2::alloc::{Global, Allocator, AllocError, Layout, LayoutError};
+
+/*
 pub use crate::global;
 pub use core::alloc::{GlobalAlloc, Layout, LayoutError};
 
@@ -398,3 +401,4 @@ where
         unsafe { (**self).shrink(ptr, old_layout, new_layout) }
     }
 }
+*/

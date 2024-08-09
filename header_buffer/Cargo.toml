@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 allocator-api2 = "0.2.18"
+
+[dev-dependencies]
+allocator-api2-tests = "0.2.15"

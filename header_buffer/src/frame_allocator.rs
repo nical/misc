@@ -5,8 +5,41 @@ use std::{
 
 use crate::allocator::{AllocError, Allocator};
 
+// TODO: 16 might be enough in practice.
 const CHUNK_ALIGNMENT: usize = 32;
-const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Stats {
+    /// Number of allocated memory chunks.
+    pub chunks: u32,
+    /// A measure of the sum of the utilization of each chunk.
+    ///
+    /// - When a chunk is full, it's utilization is 1.0.
+    /// - for the current chunk, utilization is the fraction of used space
+    ///   over the total size of the chunk.
+    ///
+    /// For example, a utilization of 2.25 means that 3 chunk are allocated
+    /// and a quarter of the current chunk is used.
+    pub chunk_utilization: f32,
+    /// Total number of allocations.
+    ///
+    /// This does not take deallocations into account.
+    pub allocations: u32,
+    /// Total number of deallocations.
+    pub deallocations: u32,
+    /// Total number of reallocations.
+    pub reallocations: u32,
+    /// Number of reallocations that used the in-place fast path. These did
+    /// not require copying data.
+    pub in_place_reallocations: u32,
+    /// Total number of bytes that were copied during reallocation.
+    pub reallocated_bytes: usize,
+    /// Total number of allocated bytes.
+    ///
+    /// This does not take deallocations into account.
+    pub allocated_bytes: usize,
+}
 
 pub struct Chunk {
     previous: Option<NonNull<Chunk>>,
@@ -16,10 +49,6 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn previous(this: NonNull<Chunk>) -> Option<NonNull<Chunk>> {
-        unsafe { (*this.as_ptr()).previous }
-    }
-
     pub fn allocate_chunk(
         size: usize,
         previous: Option<NonNull<Chunk>>,
@@ -80,15 +109,15 @@ impl Chunk {
 
             (*this.as_ptr()).cursor = next;
 
-            let slice = std::slice::from_raw_parts_mut(cursor, size);
-            let suballocation: NonNull<[u8]> = NonNull::new_unchecked(slice);
+            let cursor = NonNull::new(cursor).unwrap();
+            let suballocation: NonNull<[u8]> = NonNull::slice_from_raw_parts(cursor, size);
 
             Ok(suballocation)
         }
     }
 
     pub unsafe fn deallocate_item(this: NonNull<Chunk>, item: NonNull<u8>, layout: Layout) {
-        debug_assert!(Self::contains_item(this, item));
+        debug_assert!(Chunk::contains_item(this, item));
 
         unsafe {
             let size = align(layout.size(), CHUNK_ALIGNMENT);
@@ -102,6 +131,52 @@ impl Chunk {
         }
     }
 
+    pub unsafe fn grow_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, ()> {
+        debug_assert!(Chunk::contains_item(this, item));
+
+        let old_size = align(old_layout.size(), CHUNK_ALIGNMENT);
+        let new_size = align(new_layout.size(), CHUNK_ALIGNMENT);
+        let old_item_end = item.as_ptr().add(old_size);
+
+        if old_item_end != (*this.as_ptr()).cursor {
+            return Err(());
+        }
+
+        // The item is the last allocation. we can attempt to just move
+        // the cursor if the new size fits.
+
+        let chunk_end = (*this.as_ptr()).chunk_end;
+        let available_size = chunk_end.offset_from(item.as_ptr());
+
+        if new_size as isize > available_size {
+            // Does not fit.
+            return Err(());
+        }
+
+        let new_item_end = item.as_ptr().add(new_size);
+        (*this.as_ptr()).cursor = new_item_end;
+
+        Ok(NonNull::slice_from_raw_parts(item, new_size))
+    }
+
+    pub unsafe fn shrink_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> NonNull<[u8]> {
+        debug_assert!(Chunk::contains_item(this, item));
+
+        let old_size = align(old_layout.size(), CHUNK_ALIGNMENT);
+        let new_size = align(new_layout.size(), CHUNK_ALIGNMENT);
+        let old_item_end = item.as_ptr().add(old_size);
+
+        // The item is the last allocation. we can attempt to just move
+        // the cursor if the new size fits.
+
+        if old_item_end == (*this.as_ptr()).cursor {
+            let new_item_end = item.as_ptr().add(new_size);
+            (*this.as_ptr()).cursor = new_item_end;
+        }
+
+        NonNull::slice_from_raw_parts(item, new_size)
+    }
+
     pub fn contains_item(this: NonNull<Chunk>, item: NonNull<u8>) -> bool {
         unsafe {
             let start: *mut u8 = this.cast::<u8>().as_ptr().add(CHUNK_ALIGNMENT);
@@ -110,6 +185,18 @@ impl Chunk {
 
             start <= item && item < end
         }
+    }
+
+    fn available_size(this: NonNull<Chunk>) -> usize {
+        unsafe {
+            let this = this.as_ptr();
+            (*this).chunk_end.offset_from((*this).cursor) as usize
+        }
+    }
+
+    fn utilization(this: NonNull<Chunk>) -> f32 {
+        let size = unsafe { (*this.as_ptr()).size } as f32;
+        (size - Chunk::available_size(this) as f32) / size
     }
 }
 
@@ -127,6 +214,8 @@ pub struct BumpAllocator<A: Allocator> {
     chunk_size: usize,
     allocation_count: i32,
     parent_allocator: A,
+
+    stats: Stats,
 }
 
 impl<A: Allocator> BumpAllocator<A> {
@@ -135,6 +224,8 @@ impl<A: Allocator> BumpAllocator<A> {
     }
 
     pub fn with_chunk_size_in(chunk_size: usize, parent_allocator: A) -> Self {
+        let mut stats = Stats::default();
+        stats.chunks = 1;
         BumpAllocator {
             current_chunk: Chunk::allocate_chunk(
                 chunk_size,
@@ -144,10 +235,26 @@ impl<A: Allocator> BumpAllocator<A> {
             chunk_size,
             parent_allocator,
             allocation_count: 0,
+
+            stats,
         }
     }
 
+    pub fn get_stats(&mut self) -> Stats {
+        self.stats.chunk_utilization = self.stats.chunks as f32 - 1.0 + Chunk::utilization(self.current_chunk);
+        self.stats
+    }
+
+    pub fn reset_stats(&mut self) {
+        let chunks = self.stats.chunks;
+        self.stats = Stats::default();
+        self.stats.chunks = chunks;
+    }
+
     pub fn allocate_item(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        self.stats.allocations += 1;
+        self.stats.allocated_bytes += layout.size();
+
         if let Ok(alloc) = Chunk::allocate_item(self.current_chunk, layout) {
             self.allocation_count += 1;
             return Ok(alloc);
@@ -158,7 +265,7 @@ impl<A: Allocator> BumpAllocator<A> {
         match Chunk::allocate_item(self.current_chunk, layout) {
             Ok(alloc) => {
                 self.allocation_count += 1;
-                return Ok(alloc);
+                    return Ok(alloc);
             }
             Err(_) => {
                 return Err(AllocError);
@@ -167,12 +274,61 @@ impl<A: Allocator> BumpAllocator<A> {
     }
 
     pub fn deallocate_item(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        self.stats.deallocations += 1;
+
         if Chunk::contains_item(self.current_chunk, ptr) {
             unsafe { Chunk::deallocate_item(self.current_chunk, ptr, layout); }
         }
 
         self.allocation_count -= 1;
         debug_assert!(self.allocation_count >= 0);
+    }
+
+    pub unsafe fn grow_item(&mut self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        self.stats.reallocations += 1;
+
+        if Chunk::contains_item(self.current_chunk, ptr) {
+            if let Ok(alloc) = Chunk::grow_item(self.current_chunk, ptr, old_layout, new_layout) {
+                self.stats.allocated_bytes += new_layout.size() - old_layout.size();
+                self.stats.in_place_reallocations += 1;
+                return Ok(alloc);
+            }
+        }
+
+        let new_alloc = if let Ok(alloc) = Chunk::allocate_item(self.current_chunk, new_layout) {
+            alloc
+        } else {
+            self.alloc_chunk(new_layout.size())?;
+            Chunk::allocate_item(self.current_chunk, new_layout).map_err(|_| AllocError)?
+        };
+
+        self.stats.allocated_bytes += new_layout.size();
+        self.stats.reallocated_bytes += old_layout.size();
+
+        unsafe {
+            ptr::copy_nonoverlapping(ptr.as_ptr(), new_alloc.as_ptr().cast(), old_layout.size());
+        }
+
+        Ok(new_alloc)
+    }
+
+    pub unsafe fn shrink_item(&mut self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        debug_assert!(
+            new_layout.size() <= old_layout.size(),
+            "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
+        );
+
+        if Chunk::contains_item(self.current_chunk, ptr) {
+            return unsafe { Ok(Chunk::shrink_item(self.current_chunk, ptr, old_layout, new_layout)) };
+        }
+
+        // Can't actually shrink, so return the full range of the previous allocation.
+        Ok(NonNull::slice_from_raw_parts(ptr, old_layout.size()))
     }
 
     fn alloc_chunk(&mut self, item_size: usize) -> Result<(), AllocError> {
@@ -188,6 +344,8 @@ impl<A: Allocator> BumpAllocator<A> {
         }
         self.current_chunk = chunk;
 
+        self.stats.chunks += 1;
+
         Ok(())
     }
 }
@@ -201,45 +359,4 @@ impl<A: Allocator> Drop for BumpAllocator<A> {
             Chunk::deallocate_chunk(chunk, &self.parent_allocator)
         }
     }
-}
-
-#[derive(Copy, Clone)]
-pub struct BumpAllocatorRef<A: Allocator>(NonNull<BumpAllocator<A>>);
-
-impl<A: Allocator> BumpAllocatorRef<A> {
-    pub unsafe fn new(allocator: &mut BumpAllocator<A>) -> Self {
-        BumpAllocatorRef(NonNull::new_unchecked(allocator as *mut _))
-    }
-}
-
-unsafe impl<A: Allocator> Allocator for BumpAllocatorRef<A> {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe {
-            (*self.0.as_ptr()).allocate_item(layout)
-        }
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        unsafe {
-            (*self.0.as_ptr()).deallocate_item(ptr, layout);
-        }
-    }
-
-    // TODO: grow/shrink
-}
-
-#[test]
-fn bump_simple() {
-    use crate::global::Global;
-    use crate::vector;
-    let mut bump = BumpAllocator::with_chunk_size_in(1024, Global);
-    let bumpref = unsafe { BumpAllocatorRef::new(&mut bump) };
-
-    let v1 = vector![[0i32; 4] in bumpref];
-    let v2 = vector![[1i32; 64] in bumpref];
-    let v3 = vector![[2i32; 1024] in bumpref];
-
-    std::mem::drop(v1);
-    std::mem::drop(v2);
-    std::mem::drop(v3);
 }
