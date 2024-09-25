@@ -16,7 +16,6 @@ use std::ops::Range;
 use crate::{tiler::{EncodedPathInfo, Tiler, TilerOutput}, FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
 struct BatchInfo {
-    surface: SurfacePassConfig,
     pattern: BuiltPattern,
     opaque_draw: Option<Draw>,
     masked_draw: Option<Draw>,
@@ -81,7 +80,7 @@ impl TileRenderer {
             tolerance: options.tolerance,
             occlusion: options.occlusion,
             no_opaque_batches: options.no_opaque_batches,
-            back_to_front: options.occlusion.cpu || options.occlusion.gpu, 
+            back_to_front: options.occlusion.cpu || options.occlusion.gpu,
             tiler: Tiler::new(),
             tiles: TilerOutput::new(),
             batches: BatchList::new(renderer_id),
@@ -144,22 +143,18 @@ impl TileRenderer {
             pattern.is_opaque = false;
         }
 
-        let batch_key = pattern.batch_key();
-        let (commands, info) = self.batches.find_or_add_batch(
-            &mut ctx.batcher,
-            &batch_key,
+        self.batches.find_or_add_batch(
+            ctx,
+            &pattern.batch_key(),
             &aabb,
             batch_flags,
             &mut || BatchInfo {
-                surface: ctx.surface,
                 pattern,
                 opaque_draw: None,
                 masked_draw: None,
                 blend_mode: pattern.blend_mode,
             },
-        );
-        info.surface = ctx.surface;
-        commands.push(Fill {
+        ).push(Fill {
             shape,
             pattern,
             transform,
@@ -222,8 +217,7 @@ impl TileRenderer {
         shaders: &mut PrepareRenderPipelines,
         batches: &mut BatchList<Fill, BatchInfo>
     ) {
-        let (commands, info) = &mut batches.get_mut(batch_id.index);
-        let surface = info.surface;
+        let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
         let opaque_tiles_start = self.tiles.opaque_tiles.len() as u32;
         let mask_tiles_start = self.tiles.mask_tiles.len() as u32;
@@ -429,7 +423,7 @@ impl core::Renderer for TileRenderer {
         let mut helper = DrawHelper::new();
 
         for batch_id in batches {
-            let (_, batch) = self.batches.get(batch_id.index);
+            let (_, _, batch) = self.batches.get(batch_id.index);
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {

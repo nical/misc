@@ -236,7 +236,7 @@ impl StencilAndCoverRenderer {
 
         self.batches
             .find_or_add_batch(
-                &mut ctx.batcher,
+                ctx,
                 &(pattern.batch_key() | (stencil_key << 32)),
                 &aabb,
                 BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
@@ -247,9 +247,7 @@ impl StencilAndCoverRenderer {
                     stencil_mode,
                     blend_mode: pattern.blend_mode,
                 },
-            )
-            .0
-            .push(Fill {
+            ).push(Fill {
                 shape,
                 pattern,
                 transform: transforms.current_id(),
@@ -265,11 +263,9 @@ impl StencilAndCoverRenderer {
             .iter()
             .filter(|batch| batch.renderer == id)
         {
-            let (commands, batch_info) = batches.get_mut(batch_id.index);
+            let (commands, surface, batch_info) = batches.get_mut(batch_id.index);
 
             let draws_start = self.draws.len();
-
-            let surface = pass.surface();
 
             let stencil_idx_start = self.stencil_geometry.indices.len() as u32;
             let cover_idx_start = self.cover_geometry.indices.len() as u32;
@@ -582,7 +578,7 @@ impl core::Renderer for StencilAndCoverRenderer {
         render_pass.set_stencil_reference(128);
 
         for batch_id in batches {
-            let (_, batch) = self.batches.get(batch_id.index);
+            let (_, _, batch) = self.batches.get(batch_id.index);
 
             for draw in &self.draws[batch.draws.clone()] {
                 match draw {

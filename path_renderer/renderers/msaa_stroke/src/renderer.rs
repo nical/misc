@@ -1,13 +1,12 @@
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
+    batching::{BatchFlags, BatchId, BatchList},
     bytemuck,
     context::{
-        RenderPassBuilder, DrawHelper, RendererId,
-        SurfacePassConfig, ZIndex, BuiltRenderPass,
+        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     },
     gpu::{
         shader::{
-            PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode, BaseShaderId,
+            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
         },
         DynBufferRange, Shaders,
     },
@@ -32,7 +31,6 @@ pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 
 struct BatchInfo {
     draws: Range<u32>,
-    surface: SurfacePassConfig,
     blend_mode: BlendMode,
 }
 
@@ -151,7 +149,7 @@ impl MsaaStrokeRenderer {
 
     pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
-        ctx: &mut RenderPassBuilder,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         path: P,
         pattern: BuiltPattern,
@@ -168,7 +166,7 @@ impl MsaaStrokeRenderer {
 //        self.stroke_shape(ctx, Shape::Circle(circle), pattern);
 //    }
 
-    fn stroke_shape(&mut self, ctx: &mut RenderPassBuilder, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn stroke_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -178,22 +176,19 @@ impl MsaaStrokeRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.config().depth {
+        if pattern.is_opaque && ctx.surface.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
-        let (commands, info) = self.batches.find_or_add_batch(
-            &mut ctx.batcher,
+        self.batches.find_or_add_batch(
+            ctx,
             &pattern.batch_key(),
             &aabb,
             batch_flags,
             &mut || BatchInfo {
                 draws: 0..0,
-                surface: ctx.surface.config(),
                 blend_mode: pattern.blend_mode,
             },
-        );
-        info.surface = ctx.surface.config();
-        commands.push(Stroke {
+        ).push(Stroke {
             shape,
             pattern,
             transform,
@@ -213,9 +208,7 @@ impl MsaaStrokeRenderer {
             .iter()
             .filter(|batch| batch.renderer == id)
         {
-            let (commands, info) = &mut batches.get_mut(batch_id.index);
-
-            let surface = info.surface;
+            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
             let draw_start = self.draws.len() as u32;
             let mut key = commands
@@ -315,7 +308,7 @@ impl MsaaStrokeRenderer {
 
         if !self.path_data.is_empty() {
             res.paths.bump_allocator().push(self.path_data.len());
-            // TODO: this should be a 
+            // TODO: this should be a
             if res.paths.ensure_allocated(device) {
                 res.geom_bind_group = None;
             }
@@ -368,7 +361,7 @@ impl core::Renderer for MsaaStrokeRenderer {
 
         let mut helper = DrawHelper::new();
         for batch_id in batches {
-            let (_, batch_info) = self.batches.get(batch_id.index);
+            let (_, _, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 
@@ -395,7 +388,7 @@ fn write_curves(path: PathSlice, path_index: u32, tolerance: f32, curves: &mut V
                 builder.end(last, first, close);
             }
             PathEvent::Line { from, to } => {
-                builder.line(&LineSegment { from, to });                
+                builder.line(&LineSegment { from, to });
             }
             PathEvent::Quadratic { from, ctrl, to } => {
                 builder.quadratic_bezier(&QuadraticBezierSegment { from, ctrl, to });
@@ -486,11 +479,11 @@ impl<'l> InstanceBuilder<'l> {
         let mut remainging_curve_segments = num_segments_cagd(curve, self.tolerance); // TODO
         debug_assert!(join_segments < MAX_SEGMENTS_PER_INSTANCE);
         let mut t0 = 0.0;
-        while remainging_curve_segments > 0 { 
+        while remainging_curve_segments > 0 {
             let current_curve_segments = (MAX_SEGMENTS_PER_INSTANCE - join_segments).min(remainging_curve_segments);
-    
+
             let t1 = current_curve_segments as f32 / remainging_curve_segments as f32;
-            
+
             let subcurve = curve.split_range(t0..t1);
 
             self.output.push(CurveInstance {
@@ -501,10 +494,10 @@ impl<'l> InstanceBuilder<'l> {
                 prev_ctrl: self.prev_ctrl,
                 path_index: self.path_index,
                 segment_counts: join_segments | (current_curve_segments << 16),
-            });        
+            });
 
             self.prev_ctrl = subcurve.ctrl2;
-    
+
             self.max_segments = u32::max(self.max_segments, current_curve_segments + join_segments + 1);
             remainging_curve_segments -= current_curve_segments;
             join_segments = 0;

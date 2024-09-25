@@ -23,6 +23,7 @@ use pattern::{BindingsId, BuiltPattern};
 use resources::AsAny;
 use transform::Transforms;
 pub use wgpu;
+pub use etagere;
 
 pub mod units {
     use lyon::geom::euclid::{self, Box2D, Point2D, Size2D, Vector2D};
@@ -174,11 +175,15 @@ pub fn usize_range(r: Range<u32>) -> Range<usize> {
 }
 
 pub trait BindingResolver {
-    fn resolve(&self, id: BindingsId) -> Option<&wgpu::BindGroup>;
+    fn resolve_bindings(&self, id: BindingsId) -> Option<&wgpu::BindGroup>;
+
+    fn resolve_attachment(&self, id: u32) -> Option<&wgpu::TextureView> {
+        todo!()
+    }
 }
 
 impl BindingResolver for () {
-    fn resolve(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
+    fn resolve_bindings(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
         None
     }
 }

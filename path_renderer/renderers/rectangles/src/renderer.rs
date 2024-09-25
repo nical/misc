@@ -1,19 +1,11 @@
 use crate::{resources::Instance, InstanceFlags};
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
-    bytemuck,
-    context::{
-        RenderPassBuilder, DrawHelper, RendererId,
-        SurfacePassConfig, BuiltRenderPass,
-    },
-    gpu::{
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
+    }, gpu::{
         shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
         DynBufferRange, GpuStoreHandle,
-    },
-    pattern::BuiltPattern,
-    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
-    units::LocalRect,
-    wgpu, transform::Transforms,
+    }, pattern::BuiltPattern, resources::{CommonGpuResources, GpuResources, ResourcesHandle}, transform::Transforms, units::LocalRect, wgpu
 };
 
 use super::RectangleGpuResources;
@@ -41,7 +33,6 @@ pub struct Batch {
     // TODO: pattern, surface and opaque are only kept so that we can
     // create the pipeline index later in the prepare pass.
     pattern: BuiltPattern,
-    surface: SurfacePassConfig,
     opaque: bool,
     pipeline_idx: Option<RenderPipelineIndex>,
 }
@@ -78,7 +69,7 @@ impl RectangleRenderer {
 
     pub fn fill_rect(
         &mut self,
-        ctx: &mut RenderPassBuilder,
+        ctx: &mut RenderPassContext,
         transforms: &Transforms,
         local_rect: &LocalRect,
         mut aa: Aa,
@@ -93,7 +84,7 @@ impl RectangleRenderer {
             .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = ctx.surface.config();
+        let surface = ctx.surface;
 
         if surface.msaa {
             aa = Aa::NONE;
@@ -111,22 +102,19 @@ impl RectangleRenderer {
             && aabb.width() > 50.0
             && aabb.height() > 50.0
         {
-            let (commands, _) = self.batches.find_or_add_batch(
-                &mut ctx.batcher,
+            self.batches.find_or_add_batch(
+                ctx,
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::ORDER_INDEPENDENT,
                 &mut || Batch {
                     pattern,
-                    surface,
                     opaque: true,
                     edge_aa: true,
                     vbo_range: None,
                     pipeline_idx: None,
                 },
-            );
-
-            commands.push(Instance {
+            ).push(Instance {
                 local_rect: *local_rect,
                 z_index,
                 pattern: pattern.data,
@@ -146,14 +134,13 @@ impl RectangleRenderer {
             BatchFlags::empty()
         };
 
-        let (commands, batch) = self.batches.find_or_add_batch(
-            &mut ctx.batcher,
+        let mut batch = self.batches.find_or_add_batch(
+            ctx,
             &pattern.batch_key(),
             &aabb,
             batch_flags,
             &mut || Batch {
                 pattern,
-                surface,
                 opaque: use_opaque_pass,
                 edge_aa: false,
                 vbo_range: None,
@@ -161,9 +148,8 @@ impl RectangleRenderer {
             },
         );
 
-        batch.edge_aa |= aa != Aa::NONE;
-
-        commands.push(Instance {
+        batch.batch_data().edge_aa |= aa != Aa::NONE;
+        batch.push(Instance {
             local_rect: *local_rect,
             z_index,
             pattern: pattern.data,
@@ -173,13 +159,13 @@ impl RectangleRenderer {
     }
 
     pub fn prepare(&mut self, _pass: &BuiltRenderPass, shaders: &mut PrepareRenderPipelines) {
-        for (_, batch) in self.batches.iter_mut() {
+        for (_, surface, batch) in self.batches.iter_mut() {
             let pipeline = self.pipelines.get(batch.opaque, batch.edge_aa);
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
                 batch.pattern.shader,
                 batch.pattern.blend_mode.with_alpha(batch.edge_aa),
-                batch.surface.draw_config(true, None),
+                surface.draw_config(true, None),
             ));
             batch.pipeline_idx = Some(idx);
         }
@@ -192,7 +178,7 @@ impl RectangleRenderer {
         _queue: &wgpu::Queue,
     ) {
         let common = &mut resources[self.common_resources];
-        for (items, batch) in self.batches.iter_mut() {
+        for (items, _, batch) in self.batches.iter_mut() {
             batch.vbo_range = common
                 .vertices
                 .upload(device, bytemuck::cast_slice(&items[..]));
@@ -222,7 +208,7 @@ impl core::Renderer for RectangleRenderer {
         );
 
         for batch_id in batches {
-            let (instances, batch) = self.batches.get(batch_id.index);
+            let (instances, _, batch) = self.batches.get(batch_id.index);
 
             let pipeline = ctx
                 .render_pipelines

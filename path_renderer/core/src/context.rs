@@ -291,6 +291,9 @@ impl SurfaceInfo {
     }
 }
 
+// Paramater for the renderers's prepare methods.
+// For now it matches the RenderPassBuilder it is created from
+// but it may become a subset of it.
 pub struct RenderPassContext<'l> {
     pub z_indices: &'l mut ZIndices,
     pub batcher: &'l mut Batcher,
@@ -355,6 +358,10 @@ impl BuiltRenderPass {
 
     pub fn surface_size(&self) -> SurfaceIntSize {
         self.size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty()
     }
 
     pub fn encode<'pass, 'resources: 'pass>(
@@ -442,7 +449,7 @@ impl RenderNodeBuilder {
     pub fn begin(&mut self, graph: &mut RenderGraph, task_id: TaskId, size: SurfaceIntSize, surface_cfg: SurfacePassConfig) {
         let mut descriptor = NodeDescriptor::new().task(task_id).label("Target");
 
-        
+
         let attachments = &[
             Attachment::Texture {
                kind: match surface_cfg.kind {
@@ -502,7 +509,7 @@ impl DrawHelper {
     ) {
         let idx = group_index as usize;
         if id.is_some() && id != self.current_bindings[idx] {
-            if let Some(bind_group) = resolver.resolve(id) {
+            if let Some(bind_group) = resolver.resolve_bindings(id) {
                 pass.set_bind_group(group_index, bind_group, &[]);
             }
             self.current_bindings[idx] = id;
@@ -536,7 +543,7 @@ fn surface_draw_config() {
                 for kind in [SurfaceKind::Color, SurfaceKind::Alpha] {
                     let surface = SurfaceDrawConfig { msaa, depth, stencil, kind};
                     assert_eq!(SurfaceDrawConfig::from_hash(surface.hash()), surface);
-                }                
+                }
             }
         }
     }

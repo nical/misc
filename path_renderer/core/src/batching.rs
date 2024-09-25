@@ -1,6 +1,8 @@
 use bitflags::bitflags;
 use std::collections::VecDeque;
 
+use crate::{context::RenderPassContext, SurfacePassConfig};
+
 pub type Rect = crate::units::SurfaceRect;
 
 pub type SurfaceIndex = u16;
@@ -411,10 +413,31 @@ impl Batcher {
     }
 }
 
+pub struct BatchRef<'l, T, I> {
+    inner: &'l mut (Vec<T>, SurfacePassConfig, I),
+}
+
+impl <'l, T, I> BatchRef<'l, T, I> {
+    #[inline]
+    pub fn push(&mut self, val: T) {
+        self.inner.0.push(val);
+    }
+
+    #[inline]
+    pub fn surface(&mut self) -> SurfacePassConfig {
+        self.inner.1
+    }
+
+    #[inline]
+    pub fn batch_data(&mut self) -> &mut I {
+        &mut self.inner.2
+    }
+}
+
 /// A helper class for storing batches in a renderer.
 pub struct BatchList<T, I> {
     // TODO: try something more efficient than Vec<Vec<T>>
-    batches: Vec<(Vec<T>, I)>,
+    batches: Vec<(Vec<T>, SurfacePassConfig, I)>,
     renderer: RendererId,
 }
 
@@ -428,40 +451,41 @@ impl<T, I> BatchList<T, I> {
 
     pub fn find_or_add_batch(
         &mut self,
-        batcher: &mut Batcher,
+        ctx: &mut RenderPassContext,
         batch_key: &BatchKey,
         aabb: &Rect,
         flags: BatchFlags,
         or_add: &mut impl FnMut() -> I,
-    ) -> (&mut Vec<T>, &mut I) {
+    ) -> BatchRef<T, I> {
         let new_batch_index = self.batches.len() as u32;
         let batch_index =
-            batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
+            ctx.batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
 
         if batch_index == new_batch_index {
-            self.batches.push((Vec::with_capacity(32), or_add()));
+            self.batches.push((Vec::with_capacity(32), ctx.surface, or_add()));
         }
 
         let b = &mut self.batches[batch_index as usize];
-        return (&mut b.0, &mut b.1);
+
+        BatchRef { inner: b }
     }
 
-    pub fn get(&self, index: BatchIndex) -> (&[T], &I) {
+    pub fn get(&self, index: BatchIndex) -> (&[T], &SurfacePassConfig, &I) {
         let b = &self.batches[index as usize];
-        (&b.0, &b.1)
+        (&b.0, &b.1, &b.2)
     }
 
-    pub fn get_mut(&mut self, index: BatchIndex) -> (&mut Vec<T>, &mut I) {
+    pub fn get_mut(&mut self, index: BatchIndex) -> (&mut Vec<T>, &SurfacePassConfig, &mut I) {
         let b = &mut self.batches[index as usize];
-        (&mut b.0, &mut b.1)
+        (&mut b.0, &b.1, &mut b.2)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Vec<T>, &I)> {
-        self.batches.iter().map(|b| (&b.0, &b.1))
+    pub fn iter(&self) -> impl Iterator<Item = (&Vec<T>, &SurfacePassConfig, &I)> {
+        self.batches.iter().map(|b| (&b.0, &b.1, &b.2))
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &mut I)> {
-        self.batches.iter_mut().map(|b| (&mut b.0, &mut b.1))
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &SurfacePassConfig, &mut I)> {
+        self.batches.iter_mut().map(|b| (&mut b.0, &b.1, &mut b.2))
     }
 
     pub fn is_empty(&self) -> bool {

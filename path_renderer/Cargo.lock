@@ -376,6 +376,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
  "bytemuck",
+ "etagere",
  "futures",
  "lyon",
  "profiling",
@@ -571,6 +572,16 @@ checksum = "a258e46cdc063eb8519c00b9fc845fc47bcfca4130e2f08e88665ceda8474245"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "etagere"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e2f1e3be19fb10f549be8c1bf013e8675b4066c445e36eb76d2ebb2f54ee495"
+dependencies = [
+ "euclid",
+ "svg_fmt",
 ]
 
 [[package]]

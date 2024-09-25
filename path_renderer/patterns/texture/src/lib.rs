@@ -135,7 +135,7 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let dst_uv = (src_rect.xy + uv * src_size) * inv_texture_size;
 
     // Shrink the sample bounds by half a pixel to prevent the interpolation from
-    // sampling outside of the desirect rect when the geometry is inflated.
+    // sampling outside of the desired rect when the geometry is inflated.
     var uv_bounds = vec4<f32>(
         (src_rect.xy + vec2<f32>(0.5)) * inv_texture_size,
         (src_rect.zw - vec2<f32>(0.5)) * inv_texture_size,

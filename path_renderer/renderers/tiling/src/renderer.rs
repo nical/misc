@@ -56,7 +56,6 @@ impl Shape {
 
 struct BatchInfo {
     passes: Range<u32>,
-    surface: SurfacePassConfig,
 }
 
 pub struct TileRenderer {
@@ -178,17 +177,14 @@ impl TileRenderer {
 
         self.batches
             .find_or_add_batch(
-                &mut ctx.batcher,
+                ctx,
                 &pattern.batch_key(),
                 &aabb,
                 BatchFlags::empty(),
                 &mut || BatchInfo {
                     passes: 0..0,
-                    surface: ctx.surface,
                 },
-            )
-            .0
-            .push(Fill {
+            ).push(Fill {
                 shape: shape.into(),
                 pattern,
                 transform: transforms.current_id(),
@@ -217,8 +213,8 @@ impl TileRenderer {
             .filter(|batch| batch.renderer == id)
         {
             let passes_start = self.encoder.render_passes.len();
-            let (commands, info) = batches.get_mut(batch_id.index);
-            let surface = info.surface.draw_config(false, None);
+            let (commands, surface, info) = batches.get_mut(batch_id.index);
+            let surface = surface.draw_config(false, None);
             for fill in commands.iter().rev() {
                 self.prepare_fill(fill, &surface, transforms, device);
             }
@@ -442,7 +438,7 @@ impl TileRenderer {
 
                 // We could try to avoid redundant bindings.
                 if batch.pattern_inputs.is_some() {
-                    if let Some(group) = bindings.resolve(batch.pattern_inputs) {
+                    if let Some(group) = bindings.resolve_bindings(batch.pattern_inputs) {
                         pass.set_bind_group(1, group, &[]);
                     }
                 }
@@ -720,4 +716,3 @@ pub struct SubPass {
     // passes. It can be obtained from the batch id.
     pub surface: SurfaceIndex,
 }
-

@@ -41,7 +41,6 @@ unsafe impl bytemuck::Pod for Vertex {}
 
 struct BatchInfo {
     draws: Range<u32>,
-    surface: SurfacePassConfig,
     blend_mode: BlendMode,
 }
 
@@ -137,20 +136,16 @@ impl WpfMeshRenderer {
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
-        let surface = ctx.surface;
-        let (commands, info) = self.batches.find_or_add_batch(
-            &mut ctx.batcher,
+        self.batches.find_or_add_batch(
+            ctx,
             &pattern.batch_key(),
             &aabb,
             BatchFlags::empty(),
             &mut || BatchInfo {
                 draws: 0..0,
-                surface,
                 blend_mode: pattern.blend_mode.with_alpha(true),
             },
-        );
-        info.surface = surface;
-        commands.push(Fill {
+        ).push(Fill {
             shape,
             pattern,
             transform,
@@ -171,9 +166,7 @@ impl WpfMeshRenderer {
             .iter()
             .filter(|batch| batch.renderer == id)
         {
-            let (commands, info) = &mut batches.get_mut(batch_id.index);
-
-            let surface = info.surface;
+            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
             let draw_start = self.draws.len() as u32;
             let mut key = commands
@@ -345,7 +338,7 @@ impl core::Renderer for WpfMeshRenderer {
         let mut helper = DrawHelper::new();
 
         for batch_id in batches {
-            let (_, batch_info) = self.batches.get(batch_id.index);
+            let (_, _, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 
