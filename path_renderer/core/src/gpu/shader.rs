@@ -7,6 +7,7 @@ use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 use super::VertexBuilder;
 use crate::{gpu::PipelineDefaults, context::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind}};
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShaderPatternId(u16);
 impl ShaderPatternId {
@@ -33,6 +34,7 @@ impl ShaderPatternId {
     }
 }
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BaseShaderId(u16);
 impl BaseShaderId {
@@ -45,7 +47,103 @@ impl BaseShaderId {
     }
 }
 
-pub type BindGroupLayoutId = u16;
+// Note: The pipeline layout key hash relies on BindGroupLayoutId using
+// 16 bits.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BindGroupLayoutId(pub(crate) u16);
+
+impl BindGroupLayoutId {
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    #[inline]
+    fn from_index(idx: usize) -> Self {
+        BindGroupLayoutId(idx as u16)
+    }
+}
+
+pub struct CommonBindGroupLayouts {
+    pub target_and_gpu_store: BindGroupLayoutId,
+    pub color_texture: BindGroupLayoutId,
+    pub alpha_texture: BindGroupLayoutId,
+}
+
+fn init_common_layouts(layouts: &mut Vec<BindGroupLayout>, device: &wgpu::Device) -> CommonBindGroupLayouts {
+    assert!(layouts.is_empty());
+
+    let target_desc_buffer_size = std::mem::size_of::<crate::gpu::GpuTargetDescriptor>() as u64;
+    layouts.push(BindGroupLayout::new(
+        device,
+        "target and gpu store".into(),
+        vec![
+            Binding {
+                name: "render_target".into(),
+                struct_type: "RenderTarget".into(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(target_desc_buffer_size),
+                },
+            },
+            Binding {
+                name: "gpu_store_texture".into(),
+                struct_type: "f32".into(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+            },
+            Binding {
+                name: "default_sampler".into(),
+                struct_type: String::new(),
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            },
+        ],
+    ));
+
+    layouts.push(BindGroupLayout::new(
+        device,
+        "color texture".into(),
+        vec![Binding {
+            name: "src_color_texture".into(),
+            struct_type: "f32".into(),
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        }],
+    ));
+
+    layouts.push(BindGroupLayout::new(
+        device,
+        "alpha texture".into(),
+        vec![Binding {
+            name: "src_alpha_texture".into(),
+            struct_type: "f32".into(),
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        }],
+    ));
+
+    CommonBindGroupLayouts {
+        target_and_gpu_store: BindGroupLayoutId(0),
+        color_texture: BindGroupLayoutId(1),
+        alpha_texture: BindGroupLayoutId(2),
+    }
+}
 
 pub struct Shaders {
     sources: ShaderSources,
@@ -57,45 +155,48 @@ pub struct Shaders {
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
     // TODO: storing base bindings here and letting the common resources set is not great.
     // TODO: name clash with base shader's bindings. Rename into global bindings?
-    pub base_bindings: Option<BindGroupLayoutId>,
+    // pub base_bindings: Option<BindGroupLayoutId>,
     pub defaults: PipelineDefaults,
+    pub common_bind_group_layouts: CommonBindGroupLayouts,
 }
 
 impl Shaders {
-    pub fn new() -> Self {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let mut bind_group_layouts = Vec::new();
+        let common_bind_group_layouts = init_common_layouts(&mut bind_group_layouts, device);
+
         Shaders {
             sources: ShaderSources::new(),
 
             patterns: Vec::new(),
             base_shaders: Vec::new(),
             module_cache: HashMap::new(),
-            bind_group_layouts: Vec::new(),
+            bind_group_layouts,
             pipeline_layouts: HashMap::new(),
-            // TODO: this is hacky: base bindings is initialized by the common gpu resources.
-            base_bindings: None,
             defaults: PipelineDefaults::new(),
+            common_bind_group_layouts,
         }
     }
 
     pub fn register_bind_group_layout(&mut self, bgl: BindGroupLayout) -> BindGroupLayoutId {
-        let id = self.bind_group_layouts.len() as BindGroupLayoutId;
+        let id = BindGroupLayoutId::from_index(self.bind_group_layouts.len());
         self.bind_group_layouts.push(bgl);
 
         id
     }
 
     pub fn get_base_bind_group_layout(&self) -> &BindGroupLayout {
-        &self.bind_group_layouts[self.base_bindings.unwrap() as usize]
+        &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()]
     }
 
     pub fn get_bind_group_layout(&self, id: BindGroupLayoutId) -> &BindGroupLayout {
-        &self.bind_group_layouts[id as usize]
+        &self.bind_group_layouts[id.index()]
     }
 
     pub fn find_bind_group_layout(&self, name: &str) -> Option<BindGroupLayoutId> {
         for (idx, item) in self.bind_group_layouts.iter().enumerate() {
             if item.name == name {
-                return Some(idx as BindGroupLayoutId);
+                return Some(BindGroupLayoutId::from_index(idx));
             }
         }
 
@@ -150,10 +251,6 @@ impl Shaders {
         self.patterns.len()
     }
 
-    pub fn set_base_bindings(&mut self, id: BindGroupLayoutId) {
-        self.base_bindings = Some(id);
-    }
-
     pub fn create_shader_module(
         &mut self,
         device: &wgpu::Device,
@@ -173,16 +270,14 @@ impl Shaders {
         let base = &self.base_shaders[pipeline_id.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
-        let base_bindings = self
-            .base_bindings
-            .map(|id| &self.bind_group_layouts[id as usize]);
+        let base_bindings = &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()];
         let geom_bindings = base
             .bindings
-            .map(|id| &self.bind_group_layouts[id as usize]);
+            .map(|id| &self.bind_group_layouts[id.index()]);
         let pattern_bindings = pattern
             .map(|desc| desc.bindings)
             .flatten()
-            .map(|id| &self.bind_group_layouts[id as usize]);
+            .map(|id| &self.bind_group_layouts[id.index()]);
 
         let src = generate_shader_source(
             base,
@@ -224,16 +319,14 @@ impl Shaders {
         };
 
         let module = self.module_cache.entry(module_key).or_insert_with(|| {
-            let base_bindings = self
-                .base_bindings
-                .map(|id| &self.bind_group_layouts[id as usize]);
+            let base_bindings = &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()];
             let geom_bindings = base
                 .bindings
-                .map(|id| &self.bind_group_layouts[id as usize]);
+                .map(|id| &self.bind_group_layouts[id.index()]);
             let pattern_bindings = pattern
                 .map(|desc| desc.bindings)
                 .flatten()
-                .map(|id| &self.bind_group_layouts[id as usize]);
+                .map(|id| &self.bind_group_layouts[id.index()]);
 
             let src = generate_shader_source(
                 base,
@@ -269,27 +362,28 @@ impl Shaders {
         let mut key = 0u64;
         let mut shift = 0;
         if let Some(id) = base.bindings {
-            key |= (id as u64 + 1) << shift;
+            key |= (id.0 as u64 + 1) << shift;
             shift += 16;
         }
 
         if let Some(pattern) = pattern {
             if let Some(id) = pattern.bindings {
-                key |= (id as u64 + 1) << shift;
+                key |= (id.0 as u64 + 1) << shift;
             }
         }
 
         let layout = self.pipeline_layouts.entry(key).or_insert_with(|| {
             let mut layouts = Vec::new();
-            layouts.push(&self.bind_group_layouts[self.base_bindings.unwrap() as usize].handle);
+            let base_id = self.common_bind_group_layouts.target_and_gpu_store;
+            layouts.push(&self.bind_group_layouts[base_id.index()].handle);
 
             if let Some(id) = base.bindings {
-                layouts.push(&self.bind_group_layouts[id as usize].handle);
+                layouts.push(&self.bind_group_layouts[id.index()].handle);
             }
 
             if let Some(pattern) = pattern {
                 if let Some(id) = pattern.bindings {
-                    layouts.push(&self.bind_group_layouts[id as usize].handle);
+                    layouts.push(&self.bind_group_layouts[id.index()].handle);
                 }
             }
 
@@ -939,24 +1033,24 @@ pub struct BaseShaderDescriptor {
 pub fn generate_shader_source(
     base: &BaseShaderDescriptor,
     pattern: Option<&PatternDescriptor>,
-    base_bindings: Option<&BindGroupLayout>,
+    _base_bindings: &BindGroupLayout,
     geom_bindings: Option<&BindGroupLayout>,
     pattern_bindings: Option<&BindGroupLayout>,
 ) -> String {
     let mut source = String::new();
 
     let mut group_index = 0;
-    if let Some(_bindings) = base_bindings {
-        // TODO right now the base bindings are in the imported sources. Generate them
-        // once the shaders have moved to this system.
-        //bindings.generate_shader_source(group_index, &mut source);
-        writeln!(
-            source,
-            "@group(0) @binding(2) var default_sampler: sampler;"
-        )
-        .unwrap();
-        group_index += 1;
-    }
+
+    // TODO right now the base bindings are in the imported sources. Generate them
+    // once the shaders have moved to this system.
+    //base_bindings.generate_shader_source(group_index, &mut source);
+    writeln!(
+        source,
+        "@group(0) @binding(2) var default_sampler: sampler;"
+    )
+    .unwrap();
+    group_index += 1;
+
     if let Some(bindings) = geom_bindings {
         bindings.generate_shader_source(group_index, &mut source);
         group_index += 1;
@@ -1158,6 +1252,7 @@ pub struct ModuleKey {
     pub defines: Vec<&'static str>,
 }
 
+// If this grows to use up more than 4 bits, BatchKey must be adjusted.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BlendMode {

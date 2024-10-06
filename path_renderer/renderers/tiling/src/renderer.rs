@@ -438,7 +438,7 @@ impl TileRenderer {
 
                 // We could try to avoid redundant bindings.
                 if batch.pattern_inputs.is_some() {
-                    if let Some(group) = bindings.resolve_bindings(batch.pattern_inputs) {
+                    if let Some(group) = bindings.resolve_input(batch.pattern_inputs) {
                         pass.set_bind_group(1, group, &[]);
                     }
                 }

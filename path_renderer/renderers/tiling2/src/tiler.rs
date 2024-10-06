@@ -1035,7 +1035,7 @@ fn tiler2_svg() {
     let pattern = BuiltPattern {
         data: 0,
         shader: ShaderPatternId::from_index(0),
-        bindings: BindingsId::from_index(0),
+        bindings: BindingsId::NONE,
         is_opaque: true,
         blend_mode: core::gpu::shader::BlendMode::None,
         can_stretch_horizontally: true,
@@ -1128,7 +1128,7 @@ fn test_segment(from: Point, to: Point) {
     let pattern = BuiltPattern {
         data: 0,
         shader: ShaderPatternId::from_index(0),
-        bindings: BindingsId::from_index(0),
+        bindings: BindingsId::NONE,
         is_opaque: true,
         blend_mode: core::gpu::shader::BlendMode::None,
         can_stretch_horizontally: true,

@@ -175,15 +175,17 @@ pub fn usize_range(r: Range<u32>) -> Range<usize> {
 }
 
 pub trait BindingResolver {
-    fn resolve_bindings(&self, id: BindingsId) -> Option<&wgpu::BindGroup>;
+    fn resolve_input(&self, id: BindingsId) -> Option<&wgpu::BindGroup>;
 
-    fn resolve_attachment(&self, id: u32) -> Option<&wgpu::TextureView> {
-        todo!()
-    }
+    fn resolve_attachment(&self, id: BindingsId) -> Option<&wgpu::TextureView>;
 }
 
 impl BindingResolver for () {
-    fn resolve_bindings(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
+    fn resolve_input(&self, _: BindingsId) -> Option<&wgpu::BindGroup> {
+        None
+    }
+
+    fn resolve_attachment(&self, _: BindingsId) -> Option<&wgpu::TextureView> {
         None
     }
 }

@@ -19,7 +19,7 @@ use copyless::VecHelper;
 use core::{bytemuck, SurfaceDrawConfig};
 use core::wgpu;
 
-pub const SRC_COLOR_ATLAS_BINDING: BindingsId = BindingsId::from_index(65000);
+pub const SRC_COLOR_ATLAS_BINDING: BindingsId = BindingsId::renderer(0);
 
 fn opaque_span(
     mut x: u32,

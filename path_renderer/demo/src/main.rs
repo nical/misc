@@ -1,8 +1,9 @@
+use core::render_graph::{GpuResource, ResourceKind};
 use core::{context::*, FillPath};
 use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
-use core::pattern::BindingsId;
+use core::pattern::{BindingsId, BindingsNamespace};
 use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
 use core::shape::*;
 use core::stroke::*;
@@ -138,6 +139,7 @@ struct App {
 
     shaders: Shaders,
     gpu_resources: GpuResources,
+    resource_pool: ResourcePool,
     renderers: Renderers,
     render_pipelines: core::gpu::shader::RenderPipelines,
     patterns: Patterns,
@@ -338,7 +340,7 @@ impl App {
 
         //tiler_config.view_box = view_box;
 
-        let mut shaders = Shaders::new();
+        let mut shaders = Shaders::new(&device);
         let render_pipelines = core::gpu::shader::RenderPipelines::new();
 
         let patterns = Patterns {
@@ -412,6 +414,46 @@ impl App {
         counters.enable_history(wgpu_counters.texture_memory());
         counters.enable_history(wgpu_counters.buffer_memory());
         counters.enable_history(wgpu_counters.memory_allocations());
+
+        let mut resource_pool = ResourcePool::new();
+
+        let color_format = shaders.defaults.color_format();
+        let _color_2048x2048_rw = resource_pool.register_resource_kind(Box::new(move |device, shaders| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("color atlas"),
+                dimension: wgpu::TextureDimension::D2,
+                sample_count: 1,
+                mip_level_count: 1,
+                format: color_format,
+                size: wgpu::Extent3d {
+                    width: 2048,
+                    height: 2048,
+                    depth_or_array_layers: 1,
+                },
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+
+            let view = texture.create_view(&Default::default());
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &shaders.get_bind_group_layout(shaders.common_bind_group_layouts.color_texture).handle,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view)
+                    },
+                ],
+                label: None,
+            });
+
+            Some(GpuResource {
+                as_input: Some(bind_group),
+                as_attachment: Some(view),
+            })
+        }));
 
         let tiling_occlusion = Occlusion {
             cpu: cpu_occlusion.unwrap_or(true),
@@ -531,6 +573,7 @@ impl App {
             atlas_texture: AttachmentId(5),
             shaders,
             gpu_resources,
+            resource_pool,
             renderers,
             render_pipelines,
             patterns,
@@ -839,10 +882,57 @@ impl App {
 
         let mut built_passes = Vec::new();
 
-        // TODO: instead specify the attachments here instead of in the loop
-        // that builds thw wgpu render passes.
-        built_passes.push((self.atlas.pass.end(), self.atlas_texture));
-        built_passes.push((self.main_surface.pass.end(), self.window_texture));
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        struct PassOutput {
+            color: ColorAttachment,
+            depth_stencil: Option<AttachmentId>,
+        }
+
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        struct ColorAttachment {
+            view: AttachmentId,
+            resolve_target: Option<AttachmentId>,
+        }
+
+        impl From<AttachmentId> for ColorAttachment {
+            fn from(id: AttachmentId) -> Self {
+                ColorAttachment { view: id, resolve_target: None, }
+            }
+        }
+
+        let atlas_pass_output = PassOutput {
+            color: self.atlas_texture.into(),
+            depth_stencil: None,
+        };
+
+        let main_pass_cfg = self.main_surface.pass.surface.config();
+        let use_msaa = main_pass_cfg.msaa();
+        let main_pass_output = PassOutput {
+            color: ColorAttachment {
+                view: if use_msaa {
+                    self.msaa_texture
+                } else {
+                    self.window_texture
+                },
+                resolve_target: if use_msaa {
+                    Some(self.window_texture)
+                } else {
+                    None
+                },
+            },
+            depth_stencil: if main_pass_cfg.depth_or_stencil() {
+                Some(if use_msaa {
+                    self.msaa_depth_texture
+                } else {
+                    self.depth_texture
+                })
+            } else {
+                None
+            },
+        };
+
+        built_passes.push((self.atlas.pass.end(), atlas_pass_output));
+        built_passes.push((self.main_surface.pass.end(), main_pass_output));
 
         let mut need_atlas_texture = false;
         for (pass, output) in &built_passes {
@@ -855,7 +945,7 @@ impl App {
                 &mut prep_pipelines,
                 &self.device,
             );
-            need_atlas_texture |= *output == self.atlas_texture;
+            need_atlas_texture |= output.color == self.atlas_texture.into();
         }
 
         let changes = prep_pipelines.finish();
@@ -933,72 +1023,40 @@ impl App {
                 continue;
             }
 
-            let is_window_surface = *output == self.window_texture;
-            let is_atlas_surface = *output == self.atlas_texture;
-
-            // TODO: the main pass is hard-coded here
             let surface_cfg = built_pass.surface();
-            let msaa_resolve = surface_cfg.msaa;
             let pass_descriptor = &wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.attachments.get(&
-                        if is_window_surface {
-                            if surface_cfg.msaa {
-                                self.msaa_texture
-                            } else {
-                                self.window_texture
-                            }
-                        } else {
-                            *output
-                        }
-                    ).unwrap(),
-                    resolve_target: if msaa_resolve {
-                        self.attachments.get(output)
-                    } else {
-                        None
-                    },
+                    view: self.attachments.get(&output.color.view).unwrap(),
+                    resolve_target: output.color.resolve_target.map(|id| self.attachments.get(&id).unwrap()),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: if msaa_resolve {
+                        store: if surface_cfg.msaa {
                             wgpu::StoreOp::Discard
                         } else {
                             wgpu::StoreOp::Store
-                        },
-                    },
-                })],
-                depth_stencil_attachment: if surface_cfg.depth_or_stencil() {
-                    Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: if is_window_surface {
-                            if surface_cfg.msaa {
-                                self.attachments.get(&self.msaa_depth_texture)
-                            } else {
-                                self.attachments.get(&self.depth_texture)
-                            }
-                        } else {
-                            unimplemented!()
                         }
-                        .unwrap(),
-                        depth_ops: if surface_cfg.depth {
-                            Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0.0),
-                                store: wgpu::StoreOp::Discard,
-                            })
-                        } else {
-                            None
-                        },
-                        stencil_ops: if surface_cfg.stencil {
-                            Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(128),
-                                store: wgpu::StoreOp::Discard,
-                            })
-                        } else {
-                            None
-                        },
-                    })
-                } else {
-                    None
-                },
+                    }
+                })],
+                depth_stencil_attachment: output.depth_stencil.map(|id| wgpu::RenderPassDepthStencilAttachment {
+                    view: self.attachments.get(&id).unwrap(),
+                    depth_ops: if surface_cfg.depth {
+                        Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        })
+                    } else {
+                        None
+                    },
+                    stencil_ops: if surface_cfg.stencil {
+                        Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(128),
+                            store: wgpu::StoreOp::Discard,
+                        })
+                    } else {
+                        None
+                    },
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             };
@@ -1706,19 +1764,23 @@ impl Bindings {
     }
 
     fn add_texture(&mut self, texture: SourceTexture) -> BindingsId {
-        let id = BindingsId::from_index(self.textures.len());
+        let id = BindingsId::external(self.textures.len() as u32);
         self.textures.push(texture);
         id
     }
 }
 
 impl BindingResolver for Bindings {
-    fn resolve_bindings(&self, id: core::pattern::BindingsId) -> Option<&wgpu::BindGroup> {
-        if id.is_none() {
+    fn resolve_input(&self, id: core::pattern::BindingsId) -> Option<&wgpu::BindGroup> {
+        if id.namespace() != BindingsNamespace::External {
             return None;
         }
 
         Some(&self.textures[id.index()].bind_group)
+    }
+
+    fn resolve_attachment(&self, _id: BindingsId) -> Option<&wgpu::TextureView> {
+        unimplemented!()
     }
 }
 
@@ -1824,9 +1886,53 @@ pub mod counters {
         prepare: float = "prepare"   with { unit: "ms", safe_range: Some(0.0..6.0), color: (200, 150, 100, 255) },
         render: float = "render"     with { unit: "ms", safe_range: Some(0.0..4.0), color: (50, 50, 200, 255) },
         present: float = "present"   with { unit: "ms", safe_range: Some(0.0..12.0), color: (200, 200, 30, 255) },
-        cpu_total: float = "total"       with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 250, 250, 255) },
+        cpu_total: float = "total"   with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 250, 250, 255) },
         batches: int = "batches"
     });
 
     pub use debug_overlay::wgpu_counters as wgpu;
+}
+
+
+type ResourceConstructor = Box<dyn Fn(&wgpu::Device, &Shaders) -> Option<GpuResource>>;
+
+pub struct ResourcePool {
+    pub kinds: Vec<ResourceConstructor>,
+    // TODO: the key is not just the resource kind but also its size.
+    pub resources: Vec<Vec<GpuResource>>,
+}
+
+impl ResourcePool {
+    pub fn new() -> Self {
+        ResourcePool {
+            kinds: Vec::new(),
+            resources: Vec::new(),
+        }
+    }
+
+    pub fn register_resource_kind(&mut self, constructor: ResourceConstructor) -> ResourceKind {
+        assert!(self.kinds.len() < u8::MAX as usize);
+        let id = ResourceKind(self.kinds.len() as u8);
+
+        self.kinds.push(constructor);
+
+        id
+    }
+
+    pub fn update_resource_kind(&mut self, kind: ResourceKind, constructor: ResourceConstructor) {
+        self.resources[kind.index()].clear();
+        self.kinds[kind.index()] = constructor;
+    }
+
+    pub fn get(&mut self, device: &wgpu::Device, shaders: &Shaders, kind: ResourceKind) -> Option<GpuResource> {
+        if let Some(resource) = self.resources[kind.index()].pop() {
+            return Some(resource);
+        }
+
+        self.kinds[kind.index()](device, shaders)
+    }
+
+    pub fn recycle(&mut self, kind: ResourceKind, resource: GpuResource) {
+        self.resources[kind.index()].push(resource);
+    }
 }

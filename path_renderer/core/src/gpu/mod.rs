@@ -1,6 +1,7 @@
 pub mod gpu_store;
 pub mod shader;
 pub mod storage_buffer;
+pub mod resources;
 
 pub use gpu_store::*;
 pub use shader::Shaders;

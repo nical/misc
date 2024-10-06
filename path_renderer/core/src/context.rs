@@ -2,7 +2,7 @@ use crate::batching::{Batcher, BatchId};
 use crate::gpu::shader::RenderPipelines;
 use crate::path::FillRule;
 use crate::pattern::BindingsId;
-use crate::render_graph::{NodeId, RenderGraph, NodeDescriptor, ResourceKind, Allocation, TaskId, Attachment};
+use crate::render_graph::{NodeId, RenderGraph, NodeDescriptor, ResourceKind, TaskId, Attachment};
 use crate::resources::GpuResources;
 use crate::units::SurfaceIntSize;
 use crate::{BindingResolver, Renderer, RenderContext};
@@ -419,63 +419,6 @@ impl BuiltRenderPass {
     }
 }
 
-pub struct RenderNodeBuilder {
-    node_id: Option<NodeId>,
-    task_id: Option<TaskId>,
-    pub pass: RenderPassBuilder,
-}
-
-impl RenderNodeBuilder {
-    pub fn new() -> Self {
-        RenderNodeBuilder {
-            node_id: None,
-            task_id: None,
-            pass: RenderPassBuilder::new(),
-        }
-    }
-
-    pub fn node_id(&self) -> NodeId {
-        self.node_id.unwrap()
-    }
-
-    pub fn task_id(&self) -> TaskId {
-        self.task_id.unwrap()
-    }
-
-    pub fn ctx(&mut self) -> RenderPassContext {
-        self.pass.ctx()
-    }
-
-    pub fn begin(&mut self, graph: &mut RenderGraph, task_id: TaskId, size: SurfaceIntSize, surface_cfg: SurfacePassConfig) {
-        let mut descriptor = NodeDescriptor::new().task(task_id).label("Target");
-
-
-        let attachments = &[
-            Attachment::Texture {
-               kind: match surface_cfg.kind {
-                   SurfaceKind::Color => ResourceKind::ColorTexture,
-                   SurfaceKind::Alpha => ResourceKind::AlphaTexture,
-               },
-               allocation: Allocation::Auto,
-           }
-        ];
-        descriptor = descriptor.render_to(attachments);
-
-        if surface_cfg.depth || surface_cfg.stencil {
-            descriptor = descriptor.depth_stencil(Attachment::Texture { kind: ResourceKind::DepthTexture, allocation: Allocation::Auto });
-        }
-
-        self.node_id = Some(graph.add_node(&descriptor));
-        self.task_id = Some(task_id);
-
-        self.pass.begin(size, surface_cfg);
-    }
-
-    pub fn end(&mut self) -> BuiltRenderPass {
-        self.pass.end()
-    }
-}
-
 /// Work a renderer can schedule before a render pass.
 #[derive(Debug)]
 pub struct PrePass {
@@ -509,7 +452,7 @@ impl DrawHelper {
     ) {
         let idx = group_index as usize;
         if id.is_some() && id != self.current_bindings[idx] {
-            if let Some(bind_group) = resolver.resolve_bindings(id) {
+            if let Some(bind_group) = resolver.resolve_input(id) {
                 pass.set_bind_group(group_index, bind_group, &[]);
             }
             self.current_bindings[idx] = id;
