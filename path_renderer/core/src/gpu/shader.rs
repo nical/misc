@@ -74,7 +74,7 @@ pub struct CommonBindGroupLayouts {
 fn init_common_layouts(layouts: &mut Vec<BindGroupLayout>, device: &wgpu::Device) -> CommonBindGroupLayouts {
     assert!(layouts.is_empty());
 
-    let target_desc_buffer_size = std::mem::size_of::<crate::gpu::GpuTargetDescriptor>() as u64;
+    let target_desc_buffer_size = std::mem::size_of::<crate::gpu::RenderPassDescriptor>() as u64;
     layouts.push(BindGroupLayout::new(
         device,
         "target and gpu store".into(),

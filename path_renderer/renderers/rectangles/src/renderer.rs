@@ -5,10 +5,10 @@ use core::{
     }, gpu::{
         shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
         DynBufferRange, GpuStoreHandle,
-    }, pattern::BuiltPattern, resources::{CommonGpuResources, GpuResources, ResourcesHandle}, transform::Transforms, units::LocalRect, wgpu
+    }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu
 };
 
-use super::RectangleGpuResources;
+use super::resources::Pipelines;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -38,24 +38,18 @@ pub struct Batch {
 }
 
 pub struct RectangleRenderer {
-    common_resources: ResourcesHandle<CommonGpuResources>,
-    _resources: ResourcesHandle<RectangleGpuResources>,
     batches: BatchList<Instance, Batch>,
     pipelines: crate::resources::Pipelines,
 }
 
 impl RectangleRenderer {
-    pub fn new(
+    pub(crate) fn new(
         renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<RectangleGpuResources>,
-        res: &RectangleGpuResources,
+        pipelines: Pipelines,
     ) -> Self {
         RectangleRenderer {
-            common_resources,
-            _resources: resources,
             batches: BatchList::new(renderer_id),
-            pipelines: res.pipelines.clone(),
+            pipelines,
         }
     }
 
@@ -177,9 +171,8 @@ impl RectangleRenderer {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        let common = &mut resources[self.common_resources];
         for (items, _, batch) in self.batches.iter_mut() {
-            batch.vbo_range = common
+            batch.vbo_range = resources.common
                 .vertices
                 .upload(device, bytemuck::cast_slice(&items[..]));
         }
@@ -194,17 +187,12 @@ impl core::Renderer for RectangleRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &ctx.resources[self.common_resources];
+        let common_resources = &ctx.resources.common;
 
         let mut helper = DrawHelper::new();
         render_pass.set_index_buffer(
             common_resources.quad_ibo.slice(..),
             wgpu::IndexFormat::Uint16,
-        );
-        render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
         );
 
         for batch_id in batches {

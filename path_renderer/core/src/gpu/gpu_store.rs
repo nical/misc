@@ -28,6 +28,9 @@ pub struct GpuStore {
     height: usize,
 
     texture: wgpu::Texture,
+    view: wgpu::TextureView,
+
+    epoch: u32,
 }
 
 impl GpuStore {
@@ -49,12 +52,17 @@ impl GpuStore {
             view_formats: &[wgpu::TextureFormat::Rgba32Float],
         });
 
+        let view = texture.create_view(&Default::default());
+
         GpuStore {
             offset: 0,
             data: vec![0.0; size],
             height: h as usize,
 
             texture,
+            view,
+
+            epoch: 0,
         }
     }
 
@@ -85,6 +93,7 @@ impl GpuStore {
         let rows = self.offset / w + if self.offset % w == 0 { 0 } else { 1 };
 
         if rows > self.height {
+            self.epoch += 1;
             self.height = self.data.len() / FLOATS_PER_ROW;
             self.texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("gpu store"),
@@ -123,8 +132,17 @@ impl GpuStore {
         );
     }
 
+    // The epoch changes when the texture is reallocated.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    pub fn texture_view(&self) -> &wgpu::TextureView {
+        &self.view
     }
 
     pub fn bind_group_layout_entry(
@@ -144,6 +162,7 @@ impl GpuStore {
         }
     }
 
+    // TODO: remove this
     pub fn create_texture_view(&self) -> wgpu::TextureView {
         self.texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("gpu store"),
@@ -264,7 +283,7 @@ impl DynamicStore {
             let end = offset + len;
             mapped[offset..end].copy_from_slice(chunk);
             offset = end;
-        } 
+        }
 
         let aligned_end = align(end, 64);
 

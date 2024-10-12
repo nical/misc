@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::sync::Arc;
 
 use lyon::{
     geom::{CubicBezierSegment, QuadraticBezierSegment},
@@ -8,8 +9,9 @@ use lyon::{
     path::{PathEvent, PathSlice},
 };
 
-use super::StencilAndCoverResources;
-use core::{resources::{CommonGpuResources, GpuResources, ResourcesHandle}, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId, context::{RenderPassContext, BuiltRenderPass}};
+use crate::resources::StencilAndCoverResources;
+
+use core::{resources::GpuResources, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId, context::{RenderPassContext, BuiltRenderPass}};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -129,8 +131,6 @@ pub struct Stats {
 pub struct StencilAndCoverRenderer {
     commands: Vec<Fill>,
     renderer_id: RendererId,
-    resources: ResourcesHandle<StencilAndCoverResources>,
-    common_resources: ResourcesHandle<CommonGpuResources>,
     stencil_geometry: VertexBuffers<StencilVertex, u32>,
     cover_geometry: VertexBuffers<CoverVertex, u32>,
     draws: Vec<Draw>,
@@ -142,20 +142,17 @@ pub struct StencilAndCoverRenderer {
     cover_pipeline: BaseShaderId,
     pub stats: Stats,
     pub tolerance: f32,
+    shared: Arc<StencilAndCoverResources>,
 }
 
 impl StencilAndCoverRenderer {
-    pub fn new(
+    pub(crate) fn new(
+        shared: Arc<StencilAndCoverResources>,
         renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<StencilAndCoverResources>,
-        res: &StencilAndCoverResources,
     ) -> Self {
         StencilAndCoverRenderer {
             commands: Vec::new(),
             renderer_id,
-            resources,
-            common_resources,
             stencil_geometry: VertexBuffers::new(),
             cover_geometry: VertexBuffers::new(),
             draws: Vec::new(),
@@ -164,7 +161,7 @@ impl StencilAndCoverRenderer {
             ibo_range: None,
             cover_vbo_range: None,
             cover_ibo_range: None,
-            cover_pipeline: res.cover_base_shader,
+            cover_pipeline: shared.cover_base_shader,
             stats: Stats {
                 commands: 0,
                 stencil_batches: 0,
@@ -172,6 +169,7 @@ impl StencilAndCoverRenderer {
                 vertices: 0,
             },
             tolerance: 0.25,
+            shared,
         }
     }
 
@@ -358,18 +356,17 @@ impl StencilAndCoverRenderer {
     }
 
     pub fn upload(&mut self, resources: &mut GpuResources, device: &wgpu::Device) {
-        let res = &mut resources[self.common_resources];
-        self.vbo_range = res.vertices.upload(
+        self.vbo_range = resources.common.vertices.upload(
             device,
             bytemuck::cast_slice(&self.stencil_geometry.vertices),
         );
-        self.ibo_range = res
+        self.ibo_range = resources.common
             .indices
             .upload(device, bytemuck::cast_slice(&self.stencil_geometry.indices));
-        self.cover_vbo_range = res
+        self.cover_vbo_range = resources.common
             .vertices
             .upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
-        self.cover_ibo_range = res
+        self.cover_ibo_range = resources.common
             .indices
             .upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
     }
@@ -565,16 +562,8 @@ impl core::Renderer for StencilAndCoverRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &ctx.resources[self.common_resources];
-        let stencil_resources = &ctx.resources[self.resources];
-
         let mut helper = DrawHelper::new();
 
-        render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
         render_pass.set_stencil_reference(128);
 
         for batch_id in batches {
@@ -585,19 +574,19 @@ impl core::Renderer for StencilAndCoverRenderer {
                     Draw::Stencil { indices } => {
                         // Stencil
                         let pipeline = if surface_info.msaa {
-                            &stencil_resources.msaa_stencil_pipeline
+                            &self.shared.msaa_stencil_pipeline
                         } else {
-                            &stencil_resources.stencil_pipeline
+                            &self.shared.stencil_pipeline
                         };
                         render_pass.set_index_buffer(
-                            common_resources
+                            ctx.resources.common
                                 .indices
                                 .get_buffer_slice(self.ibo_range.as_ref().unwrap()),
                             wgpu::IndexFormat::Uint32,
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            common_resources
+                            ctx.resources.common
                                 .vertices
                                 .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
                         );
@@ -613,14 +602,14 @@ impl core::Renderer for StencilAndCoverRenderer {
                         helper.resolve_and_bind(1, pattern_inputs, ctx.bindings, render_pass);
 
                         render_pass.set_index_buffer(
-                            common_resources
+                            ctx.resources.common
                                 .indices
                                 .get_buffer_slice(self.cover_ibo_range.as_ref().unwrap()),
                             wgpu::IndexFormat::Uint32,
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            common_resources
+                            ctx.resources.common
                                 .vertices
                                 .get_buffer_slice(self.cover_vbo_range.as_ref().unwrap()),
                         );

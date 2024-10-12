@@ -12,7 +12,7 @@ use core::{
         DynBufferRange,
     },
     pattern::{BindingsId, BuiltPattern},
-    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    resources::GpuResources,
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::{LocalRect, SurfaceIntSize},
@@ -21,8 +21,6 @@ use core::{
 use lyon_path::{FillRule, traits::PathIterator};
 use wpf_gpu_raster::{PathBuilder, FillMode};
 use std::ops::Range;
-
-use super::WpfGpuResources;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -71,8 +69,6 @@ struct Draw {
 
 pub struct WpfMeshRenderer {
     renderer_id: RendererId,
-    common_resources: ResourcesHandle<CommonGpuResources>,
-    _resources: ResourcesHandle<WpfGpuResources>,
     builder: PathBuilder,
     vertices: Vec<Vertex>,
 
@@ -84,16 +80,12 @@ pub struct WpfMeshRenderer {
 }
 
 impl WpfMeshRenderer {
-    pub fn new(
+    pub(crate) fn new(
         renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<WpfGpuResources>,
-        res: &WpfGpuResources,
+        base_shader: BaseShaderId,
     ) -> Self {
         WpfMeshRenderer {
             renderer_id,
-            common_resources,
-            _resources: resources,
             builder: PathBuilder::new(),
             vertices: Vec::new(),
 
@@ -101,7 +93,7 @@ impl WpfMeshRenderer {
             batches: BatchList::new(renderer_id),
             vbo_range: None,
             ibo_range: None,
-            base_shader: res.base_shader,
+            base_shader,
         }
     }
 
@@ -294,8 +286,7 @@ impl WpfMeshRenderer {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        let res = &mut resources[self.common_resources];
-        self.vbo_range = res
+        self.vbo_range = resources.common
             .vertices
             .upload(device, bytemuck::cast_slice(&self.vertices));
     }
@@ -321,16 +312,9 @@ impl core::Renderer for WpfMeshRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &ctx.resources[self.common_resources];
-
-        render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
         render_pass.set_vertex_buffer(
             0,
-            common_resources
+            ctx.resources.common
                 .vertices
                 .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
         );

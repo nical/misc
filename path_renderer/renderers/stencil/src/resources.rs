@@ -5,10 +5,18 @@ use core::{
         shader::BaseShaderId,
         Shaders, VertexBuilder,
     },
-    resources::{CommonGpuResources, RendererResources},
+    resources::CommonGpuResources,
+    context::RendererId,
 };
+use std::sync::Arc;
 
-pub struct StencilAndCoverResources {
+use crate::StencilAndCoverRenderer;
+
+pub struct StencilAndCover {
+    resources: Arc<StencilAndCoverResources>,
+}
+
+pub(crate) struct StencilAndCoverResources {
     pub stencil_pipeline: wgpu::RenderPipeline,
     pub msaa_stencil_pipeline: wgpu::RenderPipeline,
     pub cover_base_shader: BaseShaderId,
@@ -27,9 +35,9 @@ const STENCIL_SHADER_SRC: &'static str = "
 }
 ";
 
-impl StencilAndCoverResources {
+impl StencilAndCover {
     pub fn new(
-        common: &mut CommonGpuResources,
+        _common: &mut CommonGpuResources,
         device: &wgpu::Device,
         shaders: &mut Shaders,
     ) -> Self {
@@ -44,7 +52,7 @@ impl StencilAndCoverResources {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stencil"),
             bind_group_layouts: &[&shaders
-                .get_bind_group_layout(common.target_and_gpu_store_layout)
+                .get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_store)
                 .handle],
             push_constant_ranges: &[],
         });
@@ -108,20 +116,19 @@ impl StencilAndCoverResources {
         // TODO: this creates an implicit dependency to the mesh renderer.
         let cover_base_shader = shaders.find_base_shader("geometry::simple_mesh").unwrap();
 
-        StencilAndCoverResources {
-            stencil_pipeline,
-            msaa_stencil_pipeline,
-            cover_base_shader,
+        StencilAndCover {
+            resources: Arc::new(StencilAndCoverResources {
+                stencil_pipeline,
+                msaa_stencil_pipeline,
+                cover_base_shader,
+            })
         }
     }
-}
 
-impl RendererResources for StencilAndCoverResources {
-    fn name(&self) -> &'static str {
-        "StencilAndCoverResources"
+    pub fn new_renderer(
+        &self,
+        renderer_id: RendererId,
+    ) -> StencilAndCoverRenderer {
+        StencilAndCoverRenderer::new(self.resources.clone(), renderer_id)
     }
-
-    fn begin_frame(&mut self) {}
-
-    fn end_frame(&mut self) {}
 }

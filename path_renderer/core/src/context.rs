@@ -2,7 +2,6 @@ use crate::batching::{Batcher, BatchId};
 use crate::gpu::shader::RenderPipelines;
 use crate::path::FillRule;
 use crate::pattern::BindingsId;
-use crate::render_graph::{NodeId, RenderGraph, NodeDescriptor, ResourceKind, TaskId, Attachment};
 use crate::resources::GpuResources;
 use crate::units::SurfaceIntSize;
 use crate::{BindingResolver, Renderer, RenderContext};
@@ -366,6 +365,7 @@ impl BuiltRenderPass {
 
     pub fn encode<'pass, 'resources: 'pass>(
         &self,
+        pass_index: u16,
         renderers: &[&'resources dyn Renderer],
         resources: &'resources GpuResources,
         bindings: &'resources dyn BindingResolver,
@@ -387,6 +387,9 @@ impl BuiltRenderPass {
         //    });
         //    render_pass.draw_indexed(0..6, 0, 0..1);
         //}
+
+        let base_bind_group = resources.graph.get_base_bindgroup(pass_index);
+        render_pass.set_bind_group(0, base_bind_group, &[]);
 
         // Traverse batches, grouping consecutive items with the same renderer.
         let mut start = 0;

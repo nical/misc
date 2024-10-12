@@ -11,7 +11,7 @@ use core::{
             Varying, VertexAtribute,
         },
         storage_buffer::*,
-        GpuTargetDescriptor, Shaders, VertexBuilder,
+        RenderPassDescriptor, Shaders, VertexBuilder,
     },
     resources::{CommonGpuResources, RendererResources},
 };
@@ -168,7 +168,7 @@ impl TilingGpuResources {
 
         let mask_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
-            contents: bytemuck::cast_slice(&[GpuTargetDescriptor::new(
+            contents: bytemuck::cast_slice(&[RenderPassDescriptor::new(
                 mask_atlas_size,
                 mask_atlas_size,
             )]),
@@ -176,7 +176,7 @@ impl TilingGpuResources {
         });
         let color_tiles_params_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask params"),
-            contents: bytemuck::cast_slice(&[GpuTargetDescriptor::new(
+            contents: bytemuck::cast_slice(&[RenderPassDescriptor::new(
                 color_atlas_size,
                 color_atlas_size,
             )]),
@@ -402,7 +402,7 @@ fn create_mask_pipeline(
     let circle_module = &shaders.create_shader_module(device, "Circle mask", circle_src, &[]);
     let rect_module = &shaders.create_shader_module(device, "Rectangle mask", rect_src, &[]);
 
-    let mask_globals_buffer_size = std::mem::size_of::<GpuTargetDescriptor>() as u64;
+    let mask_globals_buffer_size = std::mem::size_of::<RenderPassDescriptor>() as u64;
 
     let mask_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

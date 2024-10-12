@@ -1,7 +1,6 @@
 pub mod gpu_store;
 pub mod shader;
 pub mod storage_buffer;
-pub mod resources;
 
 pub use gpu_store::*;
 pub use shader::Shaders;
@@ -12,20 +11,20 @@ use crate::context::{DepthMode, StencilMode, SurfaceDrawConfig};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct GpuTargetDescriptor {
+pub struct RenderPassDescriptor {
     pub width: f32,
     pub height: f32,
     pub inv_width: f32,
     pub inv_height: f32,
 }
 
-impl GpuTargetDescriptor {
+impl RenderPassDescriptor {
     pub fn new(w: u32, h: u32) -> Self {
         let width = w as f32;
         let height = h as f32;
         let inv_width = 1.0 / width;
         let inv_height = 1.0 / height;
-        GpuTargetDescriptor {
+        RenderPassDescriptor {
             width,
             height,
             inv_width,
@@ -34,8 +33,8 @@ impl GpuTargetDescriptor {
     }
 }
 
-unsafe impl bytemuck::Pod for GpuTargetDescriptor {}
-unsafe impl bytemuck::Zeroable for GpuTargetDescriptor {}
+unsafe impl bytemuck::Pod for RenderPassDescriptor {}
+unsafe impl bytemuck::Zeroable for RenderPassDescriptor {}
 
 #[derive(Clone)]
 pub struct VertexBuilder {

@@ -1,27 +1,20 @@
+use core::batching::RendererId;
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::{BindGroupLayout, Binding, BindGroupLayoutId};
-use core::gpu::storage_buffer::{StorageBuffer, StorageKind};
 use core::wgpu;
-use core::{
-    gpu::shader::{
-        BaseShaderDescriptor,
-        BaseShaderId, Shaders, VertexAtribute,
-    },
-    resources::RendererResources,
+use core::gpu::shader::{
+    BaseShaderDescriptor, BindGroupLayout, Binding, BindGroupLayoutId,
+    BaseShaderId, Shaders, VertexAtribute,
 };
 
-use crate::PathData;
+use crate::{MsaaStrokeRenderer, PathData};
 
-pub struct MsaaStrokeGpuResources {
-    pub base_shader: BaseShaderId,
-    pub paths: StorageBuffer,
-    pub geom_bind_group_layout: BindGroupLayoutId,
-    pub geom_bind_group: Option<wgpu::BindGroup>,
+pub struct MsaaStroke {
+    base_shader: BaseShaderId,
+    geom_bind_group_layout: BindGroupLayoutId,
 }
 
-impl MsaaStrokeGpuResources {
-    pub fn new(device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-
+impl MsaaStroke {
+    pub fn new(device: &wgpu::Device, shaders: &mut Shaders) -> MsaaStroke {
         let bgl = shaders.register_bind_group_layout(BindGroupLayout::new(
             device,
             "msaa stroker geom".into(),
@@ -61,27 +54,20 @@ impl MsaaStrokeGpuResources {
             shader_defines: Vec::new(),
         });
 
-        MsaaStrokeGpuResources {
+        MsaaStroke {
             base_shader,
-            paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
             geom_bind_group_layout: bgl,
-            geom_bind_group: None,
         }
     }
-}
 
-impl RendererResources for MsaaStrokeGpuResources {
-    fn name(&self) -> &'static str {
-        "SkeletalStrokeGpuResources"
+    pub fn new_renderer(&self, device: &wgpu::Device, id: RendererId) -> MsaaStrokeRenderer {
+        MsaaStrokeRenderer::new(
+            device,
+            id,
+            self.base_shader,
+            self.geom_bind_group_layout,
+        )
     }
-
-    fn begin_frame(&mut self) {
-        self.paths.begin_frame();    
-    }
-
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
-
-    fn end_frame(&mut self) {}
 }
 
 const SHADER_SRC: &'static str = "

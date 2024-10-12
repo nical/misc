@@ -8,15 +8,13 @@ use core::{
         SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
     pattern::{BindingsId, BuiltPattern},
-    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    resources::{CommonGpuResources, GpuResources},
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::LocalRect,
     usize_range, wgpu, gpu::shader::{RenderPipelineIndex, PrepareRenderPipelines},
 };
 use std::ops::Range;
-
-use crate::TemplateGpuResources;
 
 struct BatchInfo {
     draws: Range<u32>,
@@ -50,24 +48,17 @@ struct Draw {
 
 pub struct TemplateRenderer {
     renderer_id: RendererId,
-    common_resources: ResourcesHandle<CommonGpuResources>,
-    resources: ResourcesHandle<TemplateGpuResources>,
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
 }
 
 impl TemplateRenderer {
-    pub fn new(
+    pub(crate) fn new(
         renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<TemplateGpuResources>,
-        res: &TemplateGpuResources,
     ) -> Self {
         TemplateRenderer {
             renderer_id,
-            common_resources,
-            resources: resources,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
@@ -187,14 +178,6 @@ impl core::Renderer for TemplateRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &ctx.resources[self.common_resources];
-
-        render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
-
         let mut helper = DrawHelper::new();
 
         for batch_id in batches {

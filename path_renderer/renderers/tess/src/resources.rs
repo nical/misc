@@ -1,18 +1,18 @@
+use core::batching::RendererId;
 use core::gpu::PipelineDefaults;
 use core::wgpu;
-use core::{
-    gpu::shader::{
-        BaseShaderDescriptor,
-        BaseShaderId, Shaders, VertexAtribute,
-    },
-    resources::RendererResources,
+use core::gpu::shader::{
+    BaseShaderDescriptor,
+    BaseShaderId, Shaders, VertexAtribute,
 };
 
-pub struct MeshGpuResources {
+use crate::MeshRenderer;
+
+pub struct Tessellation {
     pub base_shader: BaseShaderId,
 }
 
-impl MeshGpuResources {
+impl Tessellation {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
         let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::simple_mesh".into(),
@@ -29,22 +29,14 @@ impl MeshGpuResources {
             shader_defines: Vec::new(),
         });
 
-        MeshGpuResources {
+        Tessellation {
             base_shader,
         }
     }
-}
 
-impl RendererResources for MeshGpuResources {
-    fn name(&self) -> &'static str {
-        "MeshGpuResources"
+    pub fn new_renderer(&self, renderer_id: RendererId) -> MeshRenderer {
+        MeshRenderer::new(renderer_id, self.base_shader)
     }
-
-    fn begin_frame(&mut self) {}
-
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
-
-    fn end_frame(&mut self) {}
 }
 
 const SIMPLE_MESH_SRC: &'static str = "

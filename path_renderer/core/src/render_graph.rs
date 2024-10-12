@@ -1,7 +1,7 @@
 use std::{fmt, ops::Range, u16};
 use smallvec::SmallVec;
 
-use crate::{pattern::{BindingsId, BindingsNamespace}, BindingResolver};
+use crate::pattern::{BindingsId, BindingsNamespace};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);
@@ -61,6 +61,38 @@ pub struct TaskId(pub u64);
 pub struct ResourceKind(pub u8);
 
 impl ResourceKind {
+    pub const COLOR_TEXTURE: Self = ResourceKind(0);
+    pub const ALPHA_TEXTURE: Self = ResourceKind(1);
+    pub const DEPTH_STENCIL_TEXTURE: Self = ResourceKind(2);
+    pub const MSAA_COLOR_TEXTURE: Self = ResourceKind(3);
+    pub const MSAA_ALPHA_TEXTURE: Self = ResourceKind(4);
+    pub const MSAA_DEPTH_STENCIL_TEXTURE: Self = ResourceKind(5);
+    pub const STORAGE_BUFFER: Self = ResourceKind(6);
+
+    pub const fn color_texture(msaa: bool) -> Self {
+        if msaa {
+            Self::MSAA_COLOR_TEXTURE
+        } else {
+            Self::COLOR_TEXTURE
+        }
+    }
+
+    pub const fn alpha_texture(msaa: bool) -> Self {
+        if msaa {
+            Self::MSAA_ALPHA_TEXTURE
+        } else {
+            Self::ALPHA_TEXTURE
+        }
+    }
+
+    pub const fn depth_stencil_texture(msaa: bool) -> Self {
+        if msaa {
+            Self::MSAA_DEPTH_STENCIL_TEXTURE
+        } else {
+            Self::DEPTH_STENCIL_TEXTURE
+        }
+    }
+
     #[inline]
     pub fn index(&self) -> usize {
         self.0 as usize
@@ -127,7 +159,7 @@ pub struct RenderPassData {
     pub target_size: (u32, u32)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TempResourceKey {
     pub kind: ResourceKind,
     pub size: (u32, u32),
@@ -142,58 +174,9 @@ pub struct BuiltGraph {
 }
 
 impl BuiltGraph {
-    fn resolve_binding(&self, binding: BindingsId) -> PhysicalResourceId {
+    pub fn resolve_binding(&self, binding: BindingsId) -> PhysicalResourceId {
         debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
         self.resources[binding.index()].resource
-    }
-}
-
-pub struct GpuResource {
-    // TODO: when used as an input, we also need a binding for the render target info
-    pub as_input: Option<wgpu::BindGroup>,
-    pub as_attachment: Option<wgpu::TextureView>,
-}
-
-pub struct Bindings<'l> {
-    pub graph: &'l BuiltGraph,
-    pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
-    pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
-    pub resources: Vec<GpuResource>,
-}
-
-impl<'l> BindingResolver for Bindings<'l> {
-    fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
-        match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                let pres = self.graph.resolve_binding(binding);
-                let index = pres.index as usize;
-                match pres.allocation {
-                    Allocation::Temporary => self.resources[index].as_input.as_ref(),
-                    Allocation::External => self.external_inputs[index],
-                }
-            }
-            BindingsNamespace::External => {
-                self.external_inputs[binding.index()]
-            }
-            _ => None
-        }
-    }
-
-    fn resolve_attachment(&self, binding: BindingsId) -> Option<&wgpu::TextureView> {
-        match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                let pres = self.graph.resolve_binding(binding);
-                let index = pres.index as usize;
-                match pres.allocation {
-                    Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
-                    Allocation::External => self.external_attachments[index]
-                }
-            }
-            BindingsNamespace::External => {
-                self.external_attachments[binding.index()]
-            }
-            _ => None
-        }
     }
 }
 
@@ -519,7 +502,6 @@ impl RenderGraph {
 
         let mut commands = Vec::with_capacity(sorted.len());
         let mut pass_data = Vec::with_capacity(sorted.len());
-        pass_data.push(RenderPassData { target_size: (0, 0) });
 
         // Second pass allocates physical resources.
         for node_id in &sorted {

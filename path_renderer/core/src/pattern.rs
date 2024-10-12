@@ -1,5 +1,3 @@
-use std::u16;
-
 use crate::gpu::shader::{ShaderPatternId, BlendMode};
 
 // TODO: Pattern coordinate system:

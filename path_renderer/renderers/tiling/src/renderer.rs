@@ -64,7 +64,6 @@ pub struct TileRenderer {
     pub occlusion_mask: TiledOcclusionBuffer,
     batches: BatchList<Fill, BatchInfo>,
     renderer_id: RendererId,
-    common_resources: ResourcesHandle<CommonGpuResources>,
     resources: ResourcesHandle<TilingGpuResources>,
     pub tolerance: f32,
     masks: TilingMasks,
@@ -87,7 +86,6 @@ struct TilingMasks {
 impl TileRenderer {
     pub fn new(
         renderer_id: RendererId,
-        common_resources_id: ResourcesHandle<CommonGpuResources>,
         resources_id: ResourcesHandle<TilingGpuResources>,
         res: &TilingGpuResources,
         textures: &TextureRenderer,
@@ -100,7 +98,6 @@ impl TileRenderer {
         TileRenderer {
             batches: BatchList::new(renderer_id),
             renderer_id,
-            common_resources: common_resources_id,
             resources: resources_id,
             encoder: TileEncoder::new(config, texture_load, 8), // TODO number of patterns
             tiler: Tiler::new(config),
@@ -371,7 +368,7 @@ impl TileRenderer {
             .edges
             .upload_bytes(0, bytemuck::cast_slice(&self.encoder.edges), &queue);
 
-        let common_resources = &mut resources[self.common_resources];
+        let common_resources = &mut resources.common;
 
         self.encoder.upload(&mut common_resources.vertices, &device);
         self.masks
@@ -422,11 +419,11 @@ impl TileRenderer {
             common_resources.quad_ibo.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-        pass.set_bind_group(
-            0,
-            &resources.color_atlas_target_and_gpu_store_bind_group,
-            &[],
-        );
+        //pass.set_bind_group(
+        //    0,
+        //    &resources.color_atlas_target_and_gpu_store_bind_group,
+        //    &[],
+        //);
 
         let batch_range = self.encoder.color_atlas_passes[color_atlas_index as usize].clone();
         let batches = &self.encoder.atlas_pattern_batches[batch_range.clone()];
@@ -542,11 +539,6 @@ impl TileRenderer {
             common_resources.quad_ibo.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-        pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
 
         let mut helper = DrawHelper::new();
 
@@ -655,7 +647,7 @@ impl core::Renderer for TileRenderer {
             self.render_color_atlas(
                 pass.color_atlas_index,
                 ctx.render_pipelines,
-                &ctx.resources[self.common_resources],
+                &ctx.resources.common,
                 &ctx.resources[self.resources],
                 ctx.bindings,
                 encoder,
@@ -664,7 +656,7 @@ impl core::Renderer for TileRenderer {
         if pass.mask_pre_pass {
             self.render_mask_atlas(
                 pass.mask_atlas_index,
-                &ctx.resources[self.common_resources],
+                &ctx.resources.common,
                 &ctx.resources[self.resources],
                 ctx.bindings,
                 encoder,

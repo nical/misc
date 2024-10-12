@@ -1,3 +1,4 @@
+use core::batching::RendererId;
 use core::bitflags::bitflags;
 use core::bytemuck;
 use core::gpu::PipelineDefaults;
@@ -8,9 +9,10 @@ use core::{
         BaseShaderDescriptor,
         Shaders, Varying, VertexAtribute,
     },
-    resources::RendererResources,
     units::LocalRect,
 };
+
+use crate::RectangleRenderer;
 
 bitflags! {
     #[repr(transparent)]
@@ -59,11 +61,11 @@ impl Pipelines {
     }
 }
 
-pub struct RectangleGpuResources {
+pub struct Rectangles {
     pub(crate) pipelines: Pipelines,
 }
 
-impl RectangleGpuResources {
+impl Rectangles {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
         let base_descriptor = BaseShaderDescriptor {
             name: "geometry::rectangle".into(),
@@ -101,7 +103,7 @@ impl RectangleGpuResources {
             ..base_descriptor.clone()
         });
 
-        RectangleGpuResources {
+        Rectangles {
             pipelines: Pipelines {
                 opaque_pipeline,
                 alpha_pipeline,
@@ -110,18 +112,10 @@ impl RectangleGpuResources {
             },
         }
     }
-}
 
-impl RendererResources for RectangleGpuResources {
-    fn name(&self) -> &'static str {
-        "RectangleGpuResources"
+    pub fn new_renderer(&self, id: RendererId) -> RectangleRenderer {
+        RectangleRenderer::new(id, self.pipelines.clone())
     }
-
-    fn begin_frame(&mut self) {}
-
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
-
-    fn end_frame(&mut self) {}
 }
 
 const RECTANGLE_SRC: &'static str = "
@@ -210,7 +204,7 @@ fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, m
             let uvuv = vec4<f32>(uv, vec2<f32>(1.0) - uv);
             let local_aa_distances = uvuv * vec4<f32>(local_size, local_size)
                 + (uvuv * 2.0 - vec4<f32>(1.0)) * abs(offsets);
-    
+
             aa_distances = local_aa_distances * scale.xyxy;
         }
     }

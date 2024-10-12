@@ -1,10 +1,10 @@
-use core::render_graph::{GpuResource, ResourceKind};
+use core::render_graph::{Allocation, Attachment, BuiltGraph, NodeDescriptor, RenderGraph, ResourceKind, TaskId};
 use core::{context::*, FillPath};
 use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
 use core::gpu::{GpuStore, PipelineDefaults, Shaders};
 use core::path::Path;
 use core::pattern::{BindingsId, BindingsNamespace};
-use core::resources::{CommonGpuResources, GpuResources, ResourcesHandle};
+use core::resources::{GpuResource, GpuResources};
 use core::shape::*;
 use core::stroke::*;
 use core::transform::Transforms;
@@ -21,16 +21,16 @@ use lyon::geom::{Angle, Box2D};
 use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
-use rectangles::{Aa, RectangleGpuResources, RectangleRenderer};
+use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
-use tiling2::Occlusion;
-use wpf::{WpfGpuResources, WpfMeshRenderer};
+use tiling2::{Occlusion, Tiling};
+use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
-use stencil::{StencilAndCoverRenderer, StencilAndCoverResources};
-use tess::{MeshGpuResources, MeshRenderer};
-use msaa_stroke::{MsaaStrokeGpuResources, MsaaStrokeRenderer};
+use stencil::{StencilAndCoverRenderer, StencilAndCover};
+use tess::{MeshRenderer, Tessellation};
+use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 //use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
@@ -139,7 +139,6 @@ struct App {
 
     shaders: Shaders,
     gpu_resources: GpuResources,
-    resource_pool: ResourcePool,
     renderers: Renderers,
     render_pipelines: core::gpu::shader::RenderPipelines,
     patterns: Patterns,
@@ -150,10 +149,8 @@ struct App {
     counters: Counters,
     wgpu_counters: counters::wgpu::Ids,
     renderer_counters: counters::render::Ids,
-    common_handle: ResourcesHandle<CommonGpuResources>,
     main_surface: RenderSurface,
     atlas: AtlasSurface,
-    source_textures: Bindings,
     paths: Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>,
 
     sum_frame_build_time: Duration,
@@ -355,70 +352,14 @@ impl App {
 
         let gpu_store = GpuStore::new(2048, &device);
 
-        let mut common_resources = CommonGpuResources::new(
+        let mut gpu_resources = GpuResources::new(
             &device,
-
-            SurfaceIntSize::new(window_size.width as i32, window_size.height as i32),
             &gpu_store,
             &mut shaders,
         );
 
-        //let tiling_resources = TilingGpuResources::new(
-        //    &mut common_resources,
-        //    &device,
-        //    &mut shaders,
-        //    &patterns.textures,
-        //    mask_atlas_size,
-        //    color_atlas_size,
-        //    _use_ssaa4,
-        //);
-
-        let tiling2_resources = tiling2::TileGpuResources::new(&device, &mut shaders);
-
-        let mesh_resources = MeshGpuResources::new(&device, &mut shaders);
-
-        let stencil_resources =
-            StencilAndCoverResources::new(&mut common_resources, &device, &mut shaders);
-
-        let rectangle_resources = RectangleGpuResources::new(&device, &mut shaders);
-
-        let wpf_resources = WpfGpuResources::new(&device, &mut shaders);
-
-        let stroke_resources = MsaaStrokeGpuResources::new(&device, &mut shaders);
-
-        let mut gpu_resources = GpuResources::new();
-        let common_handle = gpu_resources.register(common_resources);
-        let tiling2_handle = gpu_resources.register(tiling2_resources);
-        //let tiling_handle = gpu_resources.register(tiling_resources);
-        let mesh_handle = gpu_resources.register(mesh_resources);
-        let stencil_handle = gpu_resources.register(stencil_resources);
-        let rectangle_handle = gpu_resources.register(rectangle_resources);
-        let wpf_handle = gpu_resources.register(wpf_resources);
-        let stroke_handle = gpu_resources.register(stroke_resources);
-
-        let stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
-            target_format: wgpu::TextureFormat::Bgra8Unorm,
-            .. OverlayOptions::default()
-        });
-
-        let overlay = Overlay::new();
-
-        let mut counters = Counters::new(60);
-
-        let wgpu_counters = counters::wgpu::register("wgpu", &mut counters);
-        let renderer_counters = counters::render::register("renderer", &mut counters);
-
-        counters.enable_history(renderer_counters.batching());
-        counters.enable_history(renderer_counters.prepare());
-        counters.enable_history(renderer_counters.render());
-        counters.enable_history(wgpu_counters.texture_memory());
-        counters.enable_history(wgpu_counters.buffer_memory());
-        counters.enable_history(wgpu_counters.memory_allocations());
-
-        let mut resource_pool = ResourcePool::new();
-
         let color_format = shaders.defaults.color_format();
-        let _color_2048x2048_rw = resource_pool.register_resource_kind(Box::new(move |device, shaders| {
+        let _color_rw = gpu_resources.graph.register_resource_kind(Box::new(move |key, device, shaders| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("color atlas"),
                 dimension: wgpu::TextureDimension::D2,
@@ -426,8 +367,8 @@ impl App {
                 mip_level_count: 1,
                 format: color_format,
                 size: wgpu::Extent3d {
-                    width: 2048,
-                    height: 2048,
+                    width: key.size.0,
+                    height: key.size.1,
                     depth_or_array_layers: 1,
                 },
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -450,67 +391,70 @@ impl App {
             });
 
             Some(GpuResource {
+                key,
                 as_input: Some(bind_group),
                 as_attachment: Some(view),
             })
         }));
+
+
+        //let tiling_resources = TilingGpuResources::new(
+        //    &mut gpu_resources.common,
+        //    &device,
+        //    &mut shaders,
+        //    &patterns.textures,
+        //    mask_atlas_size,
+        //    color_atlas_size,
+        //    _use_ssaa4,
+        //);
+
+        let stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
+            target_format: wgpu::TextureFormat::Bgra8Unorm,
+            .. OverlayOptions::default()
+        });
+
+        let overlay = Overlay::new();
+
+        let mut counters = Counters::new(60);
+
+        let wgpu_counters = counters::wgpu::register("wgpu", &mut counters);
+        let renderer_counters = counters::render::register("renderer", &mut counters);
+
+        counters.enable_history(renderer_counters.batching());
+        counters.enable_history(renderer_counters.prepare());
+        counters.enable_history(renderer_counters.render());
+        counters.enable_history(wgpu_counters.texture_memory());
+        counters.enable_history(wgpu_counters.buffer_memory());
+        counters.enable_history(wgpu_counters.memory_allocations());
 
         let tiling_occlusion = Occlusion {
             cpu: cpu_occlusion.unwrap_or(true),
             gpu: z_buffer.unwrap_or(false),
         };
 
+        let rectangles = Rectangles::new(&device, &mut shaders);
+        let tessellation = Tessellation::new(&device, &mut shaders);
+        let tiling = Tiling::new(&device, &mut shaders);
+        let stencil_and_cover = StencilAndCover::new(&mut gpu_resources.common, &device, &mut shaders);
+        let wpf = Wpf::new(&device, &mut shaders);
+        let msaa_stroke = MsaaStroke::new(&device, &mut shaders);
+
         let mut renderers = Renderers {
-            tiling2: tiling2::TileRenderer::new(
+            tiling2: tiling.new_renderer(
+                &device,
+                &mut shaders,
                 0,
-                common_handle,
-                tiling2_handle,
-                &gpu_resources[tiling2_handle],
                 &tiling2::RendererOptions {
                     tolerance,
                     occlusion: tiling_occlusion,
                     no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
                 }
             ),
-            //tiling: TileRenderer::new(
-            //    0,
-            //    common_handle,
-            //    tiling_handle,
-            //    &gpu_resources[tiling_handle],
-            //    &patterns.textures,
-            //    &tiler_config,
-            //    &patterns.textures,
-            //),
-            meshes: MeshRenderer::new(
-                1,
-                common_handle,
-                mesh_handle,
-                &gpu_resources[mesh_handle],
-            ),
-            stencil: StencilAndCoverRenderer::new(
-                2,
-                common_handle,
-                stencil_handle,
-                &gpu_resources[stencil_handle],
-            ),
-            rectangles: RectangleRenderer::new(
-                3,
-                common_handle,
-                rectangle_handle,
-                &gpu_resources[rectangle_handle],
-            ),
-            wpf: WpfMeshRenderer::new(
-                4,
-                common_handle,
-                wpf_handle,
-                &gpu_resources[wpf_handle],
-            ),
-            msaa_strokes: MsaaStrokeRenderer::new(
-                5,
-                common_handle,
-                stroke_handle,
-                &gpu_resources[stroke_handle],
-            ),
+            meshes: tessellation.new_renderer(1),
+            stencil: stencil_and_cover.new_renderer(2),
+            rectangles: rectangles.new_renderer(3),
+            wpf: wpf.new_renderer(4),
+            msaa_strokes: msaa_stroke.new_renderer(&device, 5),
         };
 
         renderers.tiling2.tolerance = tolerance;
@@ -519,12 +463,6 @@ impl App {
         renderers.msaa_strokes.tolerance = tolerance;
 
         //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
-
-        let mut source_textures = Bindings::new();
-
-        let img_bgl = shaders.get_bind_group_layout(patterns.textures.bind_group_layout());
-        let _image_binding =
-            source_textures.add_texture(create_image(&device, &queue, &img_bgl.handle, 800, 600));
 
         let surface_desc = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -573,7 +511,6 @@ impl App {
             atlas_texture: AttachmentId(5),
             shaders,
             gpu_resources,
-            resource_pool,
             renderers,
             render_pipelines,
             patterns,
@@ -584,7 +521,6 @@ impl App {
             counters,
             wgpu_counters,
             renderer_counters,
-            common_handle,
             main_surface: RenderSurface {
                 pass: main_pass
             },
@@ -593,7 +529,6 @@ impl App {
                 atlas: core::etagere::AtlasAllocator::new(ATLAS_SIZE.cast_unit()),
                 size: ATLAS_SIZE,
             },
-            source_textures,
             paths,
             sum_frame_build_time: Duration::ZERO,
             sum_present_time: Duration::ZERO,
@@ -718,10 +653,6 @@ impl App {
             self.surface_desc.width = physical.width as u32;
             self.surface_desc.height = physical.height as u32;
             self.surface.configure(&self.device, &self.surface_desc);
-            self.gpu_resources[self.common_handle].resize_target(
-                SurfaceIntSize::new(self.view.window_size.width, self.view.window_size.height),
-                &self.queue,
-            );
 
             // Let go of these textures since their size changed.
             for attachment in [
@@ -846,6 +777,7 @@ impl App {
         self.main_surface.pass.begin(size, main_surface_cfg);
         self.atlas.pass.begin(size, atlas_surface_cfg);
 
+        let mut graph = RenderGraph::new();
 
         self.gpu_resources.begin_frame();
 
@@ -861,6 +793,29 @@ impl App {
         let test_stuff = self.view.scene_idx == 0;
 
         let record_start = Instant::now();
+
+        let mut attachments = Vec::new();
+        let main_size = (size.width as u32, size.height as u32);
+        let kind = ResourceKind::color_texture(main_surface_cfg.msaa);
+        attachments.push(Attachment::External { kind, size: main_size, index: 0 });
+        if main_surface_cfg.depth_or_stencil() {
+            let kind = ResourceKind::depth_stencil_texture(main_surface_cfg.msaa);
+            attachments.push(Attachment::Auto { kind, size: main_size });
+        }
+
+        let root = graph.add_node(
+            &NodeDescriptor::new()
+                .task(TaskId(0))
+                .write(&attachments)
+        );
+
+        let atlas_id = graph.add_node(
+            &NodeDescriptor::new()
+                .task(TaskId(1))
+                .write(&[Attachment::Auto { kind: ResourceKind::COLOR_TEXTURE, size: (2048, 2048) }])
+        );
+
+        graph.add_root(root, 1);
 
         paint_scene(
             &self.paths,
@@ -878,9 +833,7 @@ impl App {
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
 
-        let mut prep_pipelines = self.render_pipelines.prepare();
-
-        let mut built_passes = Vec::new();
+        let mut tasks = Vec::new();
 
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         struct PassOutput {
@@ -931,11 +884,16 @@ impl App {
             },
         };
 
-        built_passes.push((self.atlas.pass.end(), atlas_pass_output));
-        built_passes.push((self.main_surface.pass.end(), main_pass_output));
+        let built_graph = graph.schedule().unwrap();
+
+        // TODO: the indices here must match the task id.
+        tasks.push((self.main_surface.pass.end(), main_pass_output));
+        tasks.push((self.atlas.pass.end(), atlas_pass_output));
+
+        let mut prep_pipelines = self.render_pipelines.prepare();
 
         let mut need_atlas_texture = false;
-        for (pass, output) in &built_passes {
+        for (pass, output) in &tasks {
             if pass.is_empty() {
                 continue;
             }
@@ -954,8 +912,18 @@ impl App {
             &mut RenderPipelineBuilder(&self.device, &mut self.shaders),
         );
 
-        let frame_build_time = Instant::now() - frame_build_start;
+        let render_start = Instant::now();
+        let frame_build_time = render_start - frame_build_start;
         self.sum_frame_build_time += frame_build_time;
+
+        self.gpu_resources.upload(
+            &self.device,
+            &self.queue,
+            &self.shaders,
+            &self.gpu_store,
+            &built_graph.temporary_resources,
+            &built_graph.pass_data,
+        );
 
         create_render_targets(
             &self.device,
@@ -991,15 +959,13 @@ impl App {
         //let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
         //    device.create_bind_group(&wgpu::BindGroupDescriptor {
         //        label: None,
-        //        layout: &gpu_resources[common_handle].msaa_blit_src_bind_group_layout,
+        //        layout: &gpu_resources.common.msaa_blit_src_bind_group_layout,
         //        entries: &[wgpu::BindGroupEntry {
         //            binding: 0,
         //            resource: wgpu::BindingResource::TextureView(tex),
         //        }],
         //    })
         //});
-
-        let render_start = Instant::now();
 
         self.renderers.upload(&mut self.gpu_resources, &self.shaders, &self.device, &self.queue);
         self.gpu_store.upload(&self.device, &self.queue);
@@ -1018,10 +984,20 @@ impl App {
 
         self.gpu_resources.begin_rendering(&mut encoder);
 
-        for (built_pass, output) in &built_passes {
+        let bindings = Bindings {
+            graph: &built_graph,
+            external_inputs: &[],
+            external_attachments: &[],
+            resources: &[]
+        };
+
+        for command in &built_graph.commands {
+            let (built_pass, output) = &tasks[command.task_id.0 as usize];
             if built_pass.is_empty() {
                 continue;
             }
+
+            let pass_index = command.pass_data;
 
             let surface_cfg = built_pass.surface();
             let pass_descriptor = &wgpu::RenderPassDescriptor {
@@ -1064,6 +1040,7 @@ impl App {
             let mut wgpu_pass = encoder.begin_render_pass(&pass_descriptor);
 
             built_pass.encode(
+                pass_index,
                 &[
                     &self.renderers.tiling2,
                     &self.renderers.meshes,
@@ -1073,7 +1050,7 @@ impl App {
                     &self.renderers.msaa_strokes,
                 ],
                 &self.gpu_resources,
-                &self.source_textures,
+                &bindings,
                 &self.render_pipelines,
                 &mut wgpu_pass,
             );
@@ -1127,6 +1104,8 @@ impl App {
         debug_overlay::update_wgpu_internal_counters(&mut self.counters, self.wgpu_counters, &wgpu_counters);
 
         self.counters.update();
+
+        std::mem::drop(bindings);
 
         self.gpu_resources.end_frame();
 
@@ -1752,38 +1731,6 @@ struct SourceTexture {
     bind_group: wgpu::BindGroup,
 }
 
-struct Bindings {
-    textures: Vec<SourceTexture>,
-}
-
-impl Bindings {
-    fn new() -> Self {
-        Bindings {
-            textures: Vec::new(),
-        }
-    }
-
-    fn add_texture(&mut self, texture: SourceTexture) -> BindingsId {
-        let id = BindingsId::external(self.textures.len() as u32);
-        self.textures.push(texture);
-        id
-    }
-}
-
-impl BindingResolver for Bindings {
-    fn resolve_input(&self, id: core::pattern::BindingsId) -> Option<&wgpu::BindGroup> {
-        if id.namespace() != BindingsNamespace::External {
-            return None;
-        }
-
-        Some(&self.textures[id.index()].bind_group)
-    }
-
-    fn resolve_attachment(&self, _id: BindingsId) -> Option<&wgpu::TextureView> {
-        unimplemented!()
-    }
-}
-
 impl SourceTexture {
     fn from_data(
         device: &wgpu::Device,
@@ -1894,45 +1841,45 @@ pub mod counters {
 }
 
 
-type ResourceConstructor = Box<dyn Fn(&wgpu::Device, &Shaders) -> Option<GpuResource>>;
-
-pub struct ResourcePool {
-    pub kinds: Vec<ResourceConstructor>,
-    // TODO: the key is not just the resource kind but also its size.
-    pub resources: Vec<Vec<GpuResource>>,
+pub struct Bindings<'l> {
+    pub graph: &'l BuiltGraph,
+    pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
+    pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
+    pub resources: &'l[GpuResource],
 }
 
-impl ResourcePool {
-    pub fn new() -> Self {
-        ResourcePool {
-            kinds: Vec::new(),
-            resources: Vec::new(),
+impl<'l> BindingResolver for Bindings<'l> {
+    fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
+        match binding.namespace() {
+            BindingsNamespace::RenderGraph => {
+                let pres = self.graph.resolve_binding(binding);
+                let index = pres.index as usize;
+                match pres.allocation {
+                    Allocation::Temporary => self.resources[index].as_input.as_ref(),
+                    Allocation::External => self.external_inputs[index],
+                }
+            }
+            BindingsNamespace::External => {
+                self.external_inputs[binding.index()]
+            }
+            _ => None
         }
     }
 
-    pub fn register_resource_kind(&mut self, constructor: ResourceConstructor) -> ResourceKind {
-        assert!(self.kinds.len() < u8::MAX as usize);
-        let id = ResourceKind(self.kinds.len() as u8);
-
-        self.kinds.push(constructor);
-
-        id
-    }
-
-    pub fn update_resource_kind(&mut self, kind: ResourceKind, constructor: ResourceConstructor) {
-        self.resources[kind.index()].clear();
-        self.kinds[kind.index()] = constructor;
-    }
-
-    pub fn get(&mut self, device: &wgpu::Device, shaders: &Shaders, kind: ResourceKind) -> Option<GpuResource> {
-        if let Some(resource) = self.resources[kind.index()].pop() {
-            return Some(resource);
+    fn resolve_attachment(&self, binding: BindingsId) -> Option<&wgpu::TextureView> {
+        match binding.namespace() {
+            BindingsNamespace::RenderGraph => {
+                let pres = self.graph.resolve_binding(binding);
+                let index = pres.index as usize;
+                match pres.allocation {
+                    Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
+                    Allocation::External => self.external_attachments[index]
+                }
+            }
+            BindingsNamespace::External => {
+                self.external_attachments[binding.index()]
+            }
+            _ => None
         }
-
-        self.kinds[kind.index()](device, shaders)
-    }
-
-    pub fn recycle(&mut self, kind: ResourceKind, resource: GpuResource) {
-        self.resources[kind.index()].push(resource);
     }
 }

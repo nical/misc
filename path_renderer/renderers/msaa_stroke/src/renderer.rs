@@ -6,13 +6,12 @@ use core::{
     },
     gpu::{
         shader::{
-            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
-        },
-        DynBufferRange, Shaders,
+            BaseShaderId, BindGroupLayoutId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
+        }, storage_buffer::{StorageBuffer, StorageKind}, DynBufferRange, Shaders
     },
     //path::Path,
     pattern::{BindingsId, BuiltPattern},
-    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    resources::GpuResources,
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::LocalRect,
@@ -23,8 +22,6 @@ use lyon::{
     path::{PathSlice, PathEvent},
 };
 use std::ops::Range;
-
-use super::MsaaStrokeGpuResources;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -98,8 +95,6 @@ struct Draw {
 
 pub struct MsaaStrokeRenderer {
     renderer_id: RendererId,
-    common_resources: ResourcesHandle<CommonGpuResources>,
-    resources: ResourcesHandle<MsaaStrokeGpuResources>,
     curves: Vec<CurveInstance>,
     path_data: Vec<PathData>,
     pub tolerance: f32,
@@ -109,19 +104,21 @@ pub struct MsaaStrokeRenderer {
     instance_range: Option<DynBufferRange>,
     ibo_range: Option<DynBufferRange>,
     base_shader: BaseShaderId,
+
+    paths: StorageBuffer,
+    geom_bind_group: Option<wgpu::BindGroup>,
+    geom_bind_group_layout: BindGroupLayoutId,
 }
 
 impl MsaaStrokeRenderer {
-    pub fn new(
+    pub(crate) fn new(
+        device: &wgpu::Device,
         renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<MsaaStrokeGpuResources>,
-        res: &MsaaStrokeGpuResources,
+        base_shader: BaseShaderId,
+        geom_bind_group_layout: BindGroupLayoutId,
     ) -> Self {
         MsaaStrokeRenderer {
             renderer_id,
-            common_resources,
-            resources,
             curves: Vec::new(),
             path_data: Vec::new(),
             tolerance: 0.25,
@@ -130,7 +127,11 @@ impl MsaaStrokeRenderer {
             batches: BatchList::new(renderer_id),
             instance_range: None,
             ibo_range: None,
-            base_shader: res.base_shader,
+            base_shader,
+
+            paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
+            geom_bind_group: None,
+            geom_bind_group_layout,
         }
     }
 
@@ -300,31 +301,29 @@ impl MsaaStrokeRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        let res = &mut resources[self.common_resources];
-        self.instance_range = res
+        self.instance_range = resources.common
             .vertices
             .upload(device, bytemuck::cast_slice(&self.curves));
-        let res = &mut resources[self.resources];
 
         if !self.path_data.is_empty() {
-            res.paths.bump_allocator().push(self.path_data.len());
+            self.paths.bump_allocator().push(self.path_data.len());
             // TODO: this should be a
-            if res.paths.ensure_allocated(device) {
-                res.geom_bind_group = None;
+            if self.paths.ensure_allocated(device) {
+                self.geom_bind_group = None;
             }
 
-            res.geom_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.geom_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("msaa stroker geom"),
-                layout: &shaders.get_bind_group_layout(res.geom_bind_group_layout).handle,
+                layout: &shaders.get_bind_group_layout(self.geom_bind_group_layout).handle,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: res.paths.binding_resource(),
+                        resource: self.paths.binding_resource(),
                     },
                 ]
             }));
 
-            res.paths.upload_bytes(0, bytemuck::cast_slice(&self.path_data), queue);
+            self.paths.upload_bytes(0, bytemuck::cast_slice(&self.path_data), queue);
         }
     }
 }
@@ -337,24 +336,15 @@ impl core::Renderer for MsaaStrokeRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let common_resources = &ctx.resources[self.common_resources];
-        let stroker_resources = &ctx.resources[self.resources];
-
-        render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
-
         render_pass.set_bind_group(
             1,
-            stroker_resources.geom_bind_group.as_ref().unwrap(),
+            self.geom_bind_group.as_ref().unwrap(),
             &[],
         );
 
         render_pass.set_vertex_buffer(
             0,
-            common_resources
+            ctx.resources.common
                 .vertices
                 .get_buffer_slice(self.instance_range.as_ref().unwrap()),
         );

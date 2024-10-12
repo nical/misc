@@ -5,7 +5,7 @@ use core::{
         SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
     pattern::BuiltPattern,
-    resources::{CommonGpuResources, GpuResources, ResourcesHandle},
+    resources::GpuResources,
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use crate::{tiler::{EncodedPathInfo, Tiler, TilerOutput}, FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
-struct BatchInfo {
+pub(crate) struct BatchInfo {
     pattern: BuiltPattern,
     opaque_draw: Option<Draw>,
     masked_draw: Option<Draw>,
@@ -42,7 +42,7 @@ impl Shape {
     }
 }
 
-struct Fill {
+pub(crate) struct Fill {
     shape: Shape,
     pattern: BuiltPattern,
     transform: TransformId,
@@ -50,45 +50,22 @@ struct Fill {
 }
 
 pub struct TileRenderer {
-    renderer_id: RendererId,
-    common_resources: ResourcesHandle<CommonGpuResources>,
-    resources: ResourcesHandle<TileGpuResources>,
+    pub(crate) renderer_id: RendererId,
     pub tolerance: f32,
-    occlusion: Occlusion,
-    no_opaque_batches: bool,
-    back_to_front: bool,
-    tiler: Tiler,
-    tiles: TilerOutput,
+    pub(crate) occlusion: Occlusion,
+    pub(crate) no_opaque_batches: bool,
+    pub(crate) back_to_front: bool,
+    pub(crate) tiler: Tiler,
+    pub(crate) tiles: TilerOutput,
 
-    batches: BatchList<Fill, BatchInfo>,
-    base_shader: BaseShaderId,
-    instances: Option<DynBufferRange>,
+    pub(crate) batches: BatchList<Fill, BatchInfo>,
+    pub(crate) base_shader: BaseShaderId,
+    pub(crate) instances: Option<DynBufferRange>,
+
+    pub(crate) resources: TileGpuResources,
 }
 
 impl TileRenderer {
-    pub fn new(
-        renderer_id: RendererId,
-        common_resources: ResourcesHandle<CommonGpuResources>,
-        resources: ResourcesHandle<TileGpuResources>,
-        res: &TileGpuResources,
-        options: &RendererOptions,
-    ) -> Self {
-        TileRenderer {
-            renderer_id,
-            common_resources,
-            resources: resources,
-            tolerance: options.tolerance,
-            occlusion: options.occlusion,
-            no_opaque_batches: options.no_opaque_batches,
-            back_to_front: options.occlusion.cpu || options.occlusion.gpu,
-            tiler: Tiler::new(),
-            tiles: TilerOutput::new(),
-            batches: BatchList::new(renderer_id),
-            base_shader: res.base_shader,
-            instances: None,
-        }
-    }
-
     pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
         if self.occlusion.gpu && !surface.depth {
             return false;
@@ -306,8 +283,7 @@ impl TileRenderer {
         //    self.tiles.mask_tiles.len(),
         //);
 
-        let res = &mut resources[self.common_resources];
-        self.instances = res.vertices.upload_multiple(device,
+        self.instances = resources.common.vertices.upload_multiple(device,
             &[
                 bytemuck::cast_slice(&self.tiles.mask_tiles),
                 bytemuck::cast_slice(&self.tiles.opaque_tiles)
@@ -323,12 +299,10 @@ impl TileRenderer {
             }
         }
 
-        let res = &mut resources[self.resources];
-
         let rows = (self.tiles.edges.len() / edges_per_row) as u32;
         queue.write_texture(
             wgpu::ImageCopyTexture {
-                texture: &res.edge_texture,
+                texture: &self.resources.edge_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
@@ -361,7 +335,7 @@ impl TileRenderer {
         let size_of_texel = 16;
         queue.write_texture(
             wgpu::ImageCopyTexture {
-                texture: &res.path_texture,
+                texture: &self.resources.path_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
@@ -393,8 +367,7 @@ impl core::Renderer for TileRenderer {
             return;
         }
 
-        let common_resources = &ctx.resources[self.common_resources];
-        let resources = &ctx.resources[self.resources];
+        let common_resources = &ctx.resources.common;
 
         render_pass.set_index_buffer(
             common_resources.quad_ibo.slice(..),
@@ -409,14 +382,8 @@ impl core::Renderer for TileRenderer {
         );
 
         render_pass.set_bind_group(
-            0,
-            &common_resources.main_target_and_gpu_store_bind_group,
-            &[],
-        );
-
-        render_pass.set_bind_group(
             1,
-            &resources.bind_group,
+            &self.resources.bind_group,
             &[],
         );
 

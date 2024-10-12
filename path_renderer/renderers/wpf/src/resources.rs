@@ -6,14 +6,16 @@ use core::{
         BaseShaderDescriptor,
         BaseShaderId, Shaders, VertexAtribute,
     },
-    resources::RendererResources,
+    context::RendererId,
 };
 
-pub struct WpfGpuResources {
+use crate::WpfMeshRenderer;
+
+pub struct Wpf {
     pub base_shader: BaseShaderId,
 }
 
-impl WpfGpuResources {
+impl Wpf {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
         let wpf_mesh_base = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::wpf_mesh".into(),
@@ -32,22 +34,14 @@ impl WpfGpuResources {
             shader_defines: Vec::new(),
         });
 
-        WpfGpuResources {
+        Wpf {
             base_shader: wpf_mesh_base,
         }
     }
-}
 
-impl RendererResources for WpfGpuResources {
-    fn name(&self) -> &'static str {
-        "MeshGpuResources"
+    pub fn new_renderer(&self, id: RendererId) -> WpfMeshRenderer {
+        WpfMeshRenderer::new(id, self.base_shader)
     }
-
-    fn begin_frame(&mut self) {}
-
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
-
-    fn end_frame(&mut self) {}
 }
 
 const WPF_MESH_SRC: &'static str = "
