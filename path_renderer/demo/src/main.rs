@@ -745,7 +745,7 @@ impl App {
 
         let root = graph.add_node(&descriptor);
 
-        let atlas_id = graph.add_node(
+        let _atlas_id = graph.add_node(
             &NodeDescriptor::new()
                 .task(TaskId(1))
                 .size(SurfaceIntSize::new(2048, 2048))
@@ -783,8 +783,6 @@ impl App {
                 ColorAttachment2 { view: id, resolve_target: None, }
             }
         }
-
-        let main_pass_cfg = self.main_surface.pass.surface.config();
 
         let built_graph = graph.schedule().unwrap();
 
@@ -875,8 +873,11 @@ impl App {
                     view,
                     resolve_target,
                     ops: wgpu::Operations {
-                        // TODO
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: if color_attachment.load() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        },
                         store: if color_attachment.store() {
                             wgpu::StoreOp::Store
                         } else {

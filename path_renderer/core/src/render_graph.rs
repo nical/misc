@@ -100,6 +100,7 @@ pub struct NodeResourceInfo {
     /// The actual resource id.
     pub resource: ResourceIndex,
     /// True if any render node reads from it.
+    pub load: bool,
     pub store: bool,
     // TODO: pub load
 }
@@ -195,6 +196,10 @@ impl<'l> AttachmentRef<'l> {
 
     pub fn store(&self) -> bool {
         self.info.store
+    }
+
+    pub fn load(&self) -> bool {
+        self.info.load
     }
 }
 
@@ -723,6 +728,7 @@ impl RenderGraph {
             id: Option<ResourceIndex>,
             read_at_least_once: bool,
             reusable: bool,
+            load: bool,
         }
 
         let mut virtual_resources = vec![
@@ -732,6 +738,7 @@ impl RenderGraph {
                 id: None,
                 read_at_least_once: false,
                 reusable: false,
+                load: false,
             };
             self.resources.len()
         ];
@@ -758,6 +765,7 @@ impl RenderGraph {
                             // know that no new reference can be added to it.
                             reusable: full_schedule || !node.readable,
                             read_at_least_once: false,
+                            load: false,
                         }
                     }
                     Attachment::External(index) => {
@@ -771,6 +779,7 @@ impl RenderGraph {
                             }),
                             reusable: false,
                             read_at_least_once: false,
+                            load: false,
                         }
                     }
                     Attachment::Dependency(dep) => {
@@ -786,6 +795,7 @@ impl RenderGraph {
                             id: dep_vres.id,
                             reusable: false,
                             read_at_least_once: false,
+                            load: true,
                         }
                     }
                 };
@@ -925,6 +935,7 @@ impl RenderGraph {
         for res in &virtual_resources {
             resources.push(res.id.map(|id| NodeResourceInfo {
                 resource: id,
+                load: res.load,
                 store: res.read_at_least_once,
             }));
         }
