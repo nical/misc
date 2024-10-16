@@ -4,7 +4,8 @@ use core::gpu::shader::{
     Varying, BlendMode,
 };
 use core::gpu::GpuStore;
-use core::pattern::{BindingsId, BuiltPattern};
+use core::pattern::BuiltPattern;
+use core::BindingsId;
 use core::wgpu;
 
 #[derive(Clone, Debug)]

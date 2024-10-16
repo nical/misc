@@ -12,12 +12,12 @@ use core::{
         DynBufferRange,
     },
     path::Path,
-    pattern::{BindingsId, BuiltPattern},
+    pattern::BuiltPattern,
     resources::GpuResources,
     shape::{Circle, FilledPath},
     transform::{TransformId, Transforms},
     units::{point, LocalPoint, LocalRect},
-    usize_range, wgpu,
+    BindingsId, usize_range, wgpu,
 };
 use lyon::{
     geom::euclid::vec2,

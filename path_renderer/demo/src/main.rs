@@ -1,9 +1,8 @@
-use core::render_graph::{Allocation, Attachment, BuiltGraph, NodeDescriptor, RenderGraph, ResourceKind, TaskId};
+use core::render_graph::{Allocation, Attachment, BuiltGraph, ColorAttachment, NodeDescriptor, RenderGraph, TaskId};
 use core::{context::*, FillPath};
 use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
-use core::gpu::{GpuStore, PipelineDefaults, Shaders};
+use core::gpu::{GpuStore, Shaders};
 use core::path::Path;
-use core::pattern::{BindingsId, BindingsNamespace};
 use core::resources::{GpuResource, GpuResources};
 use core::shape::*;
 use core::stroke::*;
@@ -13,7 +12,7 @@ use core::units::{
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
-use std::collections::HashMap;
+use core::{BindingsId, BindingsNamespace};
 use std::u32;
 use debug_overlay::{Column, Counters, Graphs, Orientation, Overlay, Table};
 use debug_overlay::wgpu::{Renderer as OverlayRenderer, RendererOptions as OverlayOptions};
@@ -129,13 +128,6 @@ struct App {
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     surface_desc: wgpu::SurfaceConfiguration,
-    attachments: HashMap<AttachmentId, wgpu::TextureView>,
-    window_texture: AttachmentId,
-    depth_texture: AttachmentId,
-    msaa_texture: AttachmentId,
-    msaa_depth_texture: AttachmentId,
-    temporary_texture: AttachmentId,
-    atlas_texture: AttachmentId,
 
     shaders: Shaders,
     gpu_resources: GpuResources,
@@ -358,46 +350,6 @@ impl App {
             &mut shaders,
         );
 
-        let color_format = shaders.defaults.color_format();
-        let _color_rw = gpu_resources.graph.register_resource_kind(Box::new(move |key, device, shaders| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("color atlas"),
-                dimension: wgpu::TextureDimension::D2,
-                sample_count: 1,
-                mip_level_count: 1,
-                format: color_format,
-                size: wgpu::Extent3d {
-                    width: key.size.0,
-                    height: key.size.1,
-                    depth_or_array_layers: 1,
-                },
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-
-            let view = texture.create_view(&Default::default());
-
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &shaders.get_bind_group_layout(shaders.common_bind_group_layouts.color_texture).handle,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view)
-                    },
-                ],
-                label: None,
-            });
-
-            Some(GpuResource {
-                key,
-                as_input: Some(bind_group),
-                as_attachment: Some(view),
-            })
-        }));
-
-
         //let tiling_resources = TilingGpuResources::new(
         //    &mut gpu_resources.common,
         //    &device,
@@ -502,13 +454,6 @@ impl App {
             queue,
             surface,
             surface_desc,
-            attachments: HashMap::new(),
-            window_texture: AttachmentId(0),
-            depth_texture: AttachmentId(1),
-            msaa_depth_texture: AttachmentId(2),
-            temporary_texture: AttachmentId(3),
-            msaa_texture: AttachmentId(4),
-            atlas_texture: AttachmentId(5),
             shaders,
             gpu_resources,
             renderers,
@@ -653,16 +598,6 @@ impl App {
             self.surface_desc.width = physical.width as u32;
             self.surface_desc.height = physical.height as u32;
             self.surface.configure(&self.device, &self.surface_desc);
-
-            // Let go of these textures since their size changed.
-            for attachment in [
-                self.depth_texture,
-                self.msaa_texture,
-                self.msaa_depth_texture,
-                self.temporary_texture,
-            ] {
-                self.attachments.remove(&attachment);
-            }
         }
 
         if !self.view.render {
@@ -684,7 +619,6 @@ impl App {
             format: Some(self.shaders.defaults.color_format()),
             ..Default::default()
         });
-        self.attachments.insert(self.window_texture, frame_view);
 
         let size = SurfaceIntSize::new(self.view.window_size.width, self.view.window_size.height);
 
@@ -794,25 +728,28 @@ impl App {
 
         let record_start = Instant::now();
 
-        let mut attachments = Vec::new();
-        let main_size = (size.width as u32, size.height as u32);
-        let kind = ResourceKind::color_texture(main_surface_cfg.msaa);
-        attachments.push(Attachment::External { kind, size: main_size, index: 0 });
+        let main_target_binding = BindingsId::external(0);
+        let attachments = [ColorAttachment::color().with_external(0, false)];
+        let mut descriptor = NodeDescriptor::new()
+            .task(TaskId(0))
+            .size(size)
+            .msaa(main_surface_cfg.msaa)
+            .attachments(&attachments);
         if main_surface_cfg.depth_or_stencil() {
-            let kind = ResourceKind::depth_stencil_texture(main_surface_cfg.msaa);
-            attachments.push(Attachment::Auto { kind, size: main_size });
+            descriptor = descriptor.depth_stencil(
+                Attachment::Auto,
+                main_surface_cfg.depth,
+                main_surface_cfg.stencil
+            );
         }
 
-        let root = graph.add_node(
-            &NodeDescriptor::new()
-                .task(TaskId(0))
-                .write(&attachments)
-        );
+        let root = graph.add_node(&descriptor);
 
         let atlas_id = graph.add_node(
             &NodeDescriptor::new()
                 .task(TaskId(1))
-                .write(&[Attachment::Auto { kind: ResourceKind::COLOR_TEXTURE, size: (2048, 2048) }])
+                .size(SurfaceIntSize::new(2048, 2048))
+                .attachments(&[ColorAttachment::color()])
         );
 
         graph.add_root(root, 1);
@@ -836,64 +773,28 @@ impl App {
         let mut tasks = Vec::new();
 
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-        struct PassOutput {
-            color: ColorAttachment,
-            depth_stencil: Option<AttachmentId>,
-        }
-
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-        struct ColorAttachment {
+        struct ColorAttachment2 {
             view: AttachmentId,
             resolve_target: Option<AttachmentId>,
         }
 
-        impl From<AttachmentId> for ColorAttachment {
+        impl From<AttachmentId> for ColorAttachment2 {
             fn from(id: AttachmentId) -> Self {
-                ColorAttachment { view: id, resolve_target: None, }
+                ColorAttachment2 { view: id, resolve_target: None, }
             }
         }
 
-        let atlas_pass_output = PassOutput {
-            color: self.atlas_texture.into(),
-            depth_stencil: None,
-        };
-
         let main_pass_cfg = self.main_surface.pass.surface.config();
-        let use_msaa = main_pass_cfg.msaa();
-        let main_pass_output = PassOutput {
-            color: ColorAttachment {
-                view: if use_msaa {
-                    self.msaa_texture
-                } else {
-                    self.window_texture
-                },
-                resolve_target: if use_msaa {
-                    Some(self.window_texture)
-                } else {
-                    None
-                },
-            },
-            depth_stencil: if main_pass_cfg.depth_or_stencil() {
-                Some(if use_msaa {
-                    self.msaa_depth_texture
-                } else {
-                    self.depth_texture
-                })
-            } else {
-                None
-            },
-        };
 
         let built_graph = graph.schedule().unwrap();
 
         // TODO: the indices here must match the task id.
-        tasks.push((self.main_surface.pass.end(), main_pass_output));
-        tasks.push((self.atlas.pass.end(), atlas_pass_output));
+        tasks.push(self.main_surface.pass.end());
+        tasks.push(self.atlas.pass.end());
 
         let mut prep_pipelines = self.render_pipelines.prepare();
 
-        let mut need_atlas_texture = false;
-        for (pass, output) in &tasks {
+        for pass in &tasks {
             if pass.is_empty() {
                 continue;
             }
@@ -903,7 +804,6 @@ impl App {
                 &mut prep_pipelines,
                 &self.device,
             );
-            need_atlas_texture |= output.color == self.atlas_texture.into();
         }
 
         let changes = prep_pipelines.finish();
@@ -925,48 +825,6 @@ impl App {
             &built_graph.pass_data,
         );
 
-        create_render_targets(
-            &self.device,
-            &RenderPassesRequirements::from_surface_config(&main_surface_cfg),
-            size,
-            &self.shaders.defaults,
-            &mut self.attachments,
-            self.depth_texture,
-            self.msaa_texture,
-            self.msaa_depth_texture,
-            self.temporary_texture,
-        );
-
-        if need_atlas_texture && !self.attachments.contains_key(&self.atlas_texture) {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                size: wgpu::Extent3d {
-                    width: ATLAS_SIZE.width as u32,
-                    height: ATLAS_SIZE.height as u32,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.shaders.defaults.color_format(),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                label: Some("color atlas"),
-                view_formats: &[],
-            });
-
-            self.attachments.insert(self.atlas_texture, texture.create_view(&Default::default()));
-        }
-
-        //let temporary_src_bind_group = temporary_texture.as_ref().map(|tex| {
-        //    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //        label: None,
-        //        layout: &gpu_resources.common.msaa_blit_src_bind_group_layout,
-        //        entries: &[wgpu::BindGroupEntry {
-        //            binding: 0,
-        //            resource: wgpu::BindingResource::TextureView(tex),
-        //        }],
-        //    })
-        //});
-
         self.renderers.upload(&mut self.gpu_resources, &self.shaders, &self.device, &self.queue);
         self.gpu_store.upload(&self.device, &self.queue);
 
@@ -987,36 +845,53 @@ impl App {
         let bindings = Bindings {
             graph: &built_graph,
             external_inputs: &[],
-            external_attachments: &[],
-            resources: &[]
+            external_attachments: &[
+                Some(&frame_view),
+            ],
+            resources: &self.gpu_resources.graph.resources(),
         };
 
-        for command in &built_graph.commands {
-            let (built_pass, output) = &tasks[command.task_id.0 as usize];
+        let mut attachments = Vec::new();
+        for command in &built_graph {
+            let built_pass = &tasks[command.task_id().0 as usize];
             if built_pass.is_empty() {
                 continue;
             }
 
-            let pass_index = command.pass_data;
+            attachments.clear();
+            for item in command.color_attachments() {
+                let Some(color_attachment) = item.attachment else {
+                    attachments.push(None);
+                    continue;
+                };
 
-            let surface_cfg = built_pass.surface();
-            let pass_descriptor = &wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.attachments.get(&output.color.view).unwrap(),
-                    resolve_target: output.color.resolve_target.map(|id| self.attachments.get(&id).unwrap()),
+                let view = bindings.resolve_attachment(color_attachment.binding()).unwrap();
+
+                let resolve_target = item.resolve_target.and_then(|attachment| {
+                    bindings.resolve_attachment(attachment.binding())
+                });
+
+                attachments.push(Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target,
                     ops: wgpu::Operations {
+                        // TODO
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: if surface_cfg.msaa {
-                            wgpu::StoreOp::Discard
-                        } else {
+                        store: if color_attachment.store() {
                             wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
                         }
                     }
-                })],
-                depth_stencil_attachment: output.depth_stencil.map(|id| wgpu::RenderPassDepthStencilAttachment {
-                    view: self.attachments.get(&id).unwrap(),
-                    depth_ops: if surface_cfg.depth {
+                }));
+            }
+
+            let depth_stencil_attachment = command.depth_stencil_attachment().map(|attachment| {
+                let view = bindings.resolve_attachment(attachment.binding()).unwrap();
+
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: if attachment.depth() {
                         Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(0.0),
                             store: wgpu::StoreOp::Discard,
@@ -1024,7 +899,7 @@ impl App {
                     } else {
                         None
                     },
-                    stencil_ops: if surface_cfg.stencil {
+                    stencil_ops: if attachment.stencil() {
                         Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(128),
                             store: wgpu::StoreOp::Discard,
@@ -1032,7 +907,13 @@ impl App {
                     } else {
                         None
                     },
-                }),
+                }
+            });
+
+            let pass_descriptor = &wgpu::RenderPassDescriptor {
+                label: command.label(),
+                color_attachments: &attachments,
+                depth_stencil_attachment,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             };
@@ -1040,7 +921,7 @@ impl App {
             let mut wgpu_pass = encoder.begin_render_pass(&pass_descriptor);
 
             built_pass.encode(
-                pass_index,
+                command.pass_data_index(),
                 &[
                     &self.renderers.tiling2,
                     &self.renderers.meshes,
@@ -1060,7 +941,7 @@ impl App {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Debug overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.attachments.get(&self.window_texture).unwrap(),
+                    view: bindings.resolve_attachment(main_target_binding).unwrap(),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -1600,88 +1481,6 @@ fn paint_scene(
     transforms.pop();
 }
 
-fn create_render_targets(
-    device: &wgpu::Device,
-    requirements: &RenderPassesRequirements,
-    size: SurfaceIntSize,
-    defaults: &PipelineDefaults,
-    attachments: &mut HashMap<AttachmentId, wgpu::TextureView>,
-    depth_texture: AttachmentId,
-    msaa_texture: AttachmentId,
-    msaa_depth_texture: AttachmentId,
-    temporary_texture: AttachmentId,
-) {
-    let size = wgpu::Extent3d {
-        width: size.width as u32,
-        height: size.height as u32,
-        depth_or_array_layers: 1,
-    };
-
-    if requirements.depth_stencil && !attachments.contains_key(&depth_texture) {
-        println!("create depth texture");
-        let depth = device.create_texture(&wgpu::TextureDescriptor {
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: defaults.depth_stencil_format().unwrap(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("depth"),
-            view_formats: &[],
-        });
-
-        attachments.insert(depth_texture, depth.create_view(&Default::default()));
-    }
-
-    if requirements.msaa && !attachments.contains_key(&msaa_texture) {
-        println!("create msaa texture");
-        let msaa = device.create_texture(&wgpu::TextureDescriptor {
-            size,
-            mip_level_count: 1,
-            sample_count: defaults.msaa_sample_count(),
-            dimension: wgpu::TextureDimension::D2,
-            format: defaults.msaa_format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("msaa"),
-            view_formats: &[],
-        });
-
-        attachments.insert(msaa_texture, msaa.create_view(&Default::default()));
-    }
-
-    if requirements.msaa_depth_stencil && !attachments.contains_key(&msaa_depth_texture) {
-        println!("create msaa depth texture");
-        let msaa_depth = device.create_texture(&wgpu::TextureDescriptor {
-            size,
-            mip_level_count: 1,
-            sample_count: defaults.msaa_sample_count(),
-            dimension: wgpu::TextureDimension::D2,
-            format: defaults.depth_stencil_format().unwrap(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("depth+msaa"),
-            view_formats: &[],
-        });
-
-        attachments.insert(msaa_depth_texture, msaa_depth.create_view(&Default::default()));
-    }
-
-    if requirements.temporary && !attachments.contains_key(&temporary_texture) {
-        println!("create temp texture");
-        let temporary = device.create_texture(&wgpu::TextureDescriptor {
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: defaults.color_format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            label: Some("Temporary color"),
-            view_formats: &[],
-        });
-
-        attachments.insert(temporary_texture, temporary.create_view(&Default::default()));
-    }
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MsaaMode {
     Auto,
@@ -1806,27 +1605,6 @@ fn create_image(
     )
 }
 
-// TODO: this is specific to the main pass
-pub struct RenderPassesRequirements {
-    pub msaa: bool,
-    pub depth_stencil: bool,
-    pub msaa_depth_stencil: bool,
-    // Temporary color target used in place of the main target if we need
-    // to read from it but can't.
-    pub temporary: bool,
-}
-
-impl RenderPassesRequirements {
-    fn from_surface_config(cfg: &SurfacePassConfig) -> Self {
-        RenderPassesRequirements {
-            depth_stencil: !cfg.msaa && (cfg.depth || cfg.stencil),
-            msaa: cfg.msaa,
-            msaa_depth_stencil: cfg.msaa && (cfg.depth || cfg.stencil),
-            temporary: false,
-        }
-    }
-}
-
 pub mod counters {
     debug_overlay::declare_counters!(render = {
         batching: float = "batching" with { unit: "ms", safe_range: Some(0.0..4.0), color: (100, 150, 200, 255) },
@@ -1852,11 +1630,14 @@ impl<'l> BindingResolver for Bindings<'l> {
     fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
         match binding.namespace() {
             BindingsNamespace::RenderGraph => {
-                let pres = self.graph.resolve_binding(binding);
-                let index = pres.index as usize;
-                match pres.allocation {
-                    Allocation::Temporary => self.resources[index].as_input.as_ref(),
-                    Allocation::External => self.external_inputs[index],
+                if let Some(id) = self.graph.resolve_binding(binding) {
+                    let index = id.index as usize;
+                    match id.allocation {
+                        Allocation::Temporary => self.resources[index].as_input.as_ref(),
+                        Allocation::External => self.external_inputs[index],
+                    }
+                } else {
+                    None
                 }
             }
             BindingsNamespace::External => {
@@ -1869,11 +1650,14 @@ impl<'l> BindingResolver for Bindings<'l> {
     fn resolve_attachment(&self, binding: BindingsId) -> Option<&wgpu::TextureView> {
         match binding.namespace() {
             BindingsNamespace::RenderGraph => {
-                let pres = self.graph.resolve_binding(binding);
-                let index = pres.index as usize;
-                match pres.allocation {
-                    Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
-                    Allocation::External => self.external_attachments[index]
+                if let Some(id) = self.graph.resolve_binding(binding) {
+                    let index = id.index as usize;
+                    match id.allocation {
+                        Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
+                        Allocation::External => self.external_attachments[index]
+                    }
+                } else {
+                    return None;
                 }
             }
             BindingsNamespace::External => {

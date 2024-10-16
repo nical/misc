@@ -1,10 +1,9 @@
 use crate::batching::{Batcher, BatchId};
 use crate::gpu::shader::RenderPipelines;
 use crate::path::FillRule;
-use crate::pattern::BindingsId;
 use crate::resources::GpuResources;
 use crate::units::SurfaceIntSize;
-use crate::{BindingResolver, Renderer, RenderContext};
+use crate::{BindingsId, BindingResolver, Renderer, RenderContext};
 use std::ops::Range;
 
 pub type ZIndex = u32;

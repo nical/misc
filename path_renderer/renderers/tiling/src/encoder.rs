@@ -11,12 +11,12 @@ use crate::TILE_SIZE;
 use crate::*;
 use core::gpu::shader::ShaderPatternId;
 use core::gpu::{DynBufferRange, DynamicStore};
-use core::pattern::{BindingsId, BuiltPattern};
+use core::pattern::BuiltPattern;
 pub use core::units::{point, vector, Point, Vector};
 use pattern_texture::TextureRenderer;
 
 use copyless::VecHelper;
-use core::{bytemuck, SurfaceDrawConfig};
+use core::{bytemuck, SurfaceDrawConfig, BindingsId};
 use core::wgpu;
 
 pub const SRC_COLOR_ATLAS_BINDING: BindingsId = BindingsId::renderer(0);

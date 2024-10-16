@@ -1007,7 +1007,7 @@ fn size_of() {
 fn tiler2_svg() {
     use core::path::Builder;
     use core::gpu::shader::ShaderPatternId;
-    use core::pattern::BindingsId;
+    use core::BindingsId;
 
     let mut path = Builder::new();
     path.begin(point(10.0, 0.0));
@@ -1099,7 +1099,7 @@ fn test_segment(from: Point, to: Point) {
 
     use core::path::Builder;
     use core::gpu::shader::ShaderPatternId;
-    use core::pattern::BindingsId;
+    use core::BindingsId;
 
     let mut path = Builder::new();
     path.begin(from);

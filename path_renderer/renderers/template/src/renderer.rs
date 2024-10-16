@@ -7,12 +7,13 @@ use core::{
         RenderPassBuilder, DrawHelper, RendererId,
         SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
     },
-    pattern::{BindingsId, BuiltPattern},
+    pattern::BuiltPattern,
     resources::{CommonGpuResources, GpuResources},
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::LocalRect,
-    usize_range, wgpu, gpu::shader::{RenderPipelineIndex, PrepareRenderPipelines},
+    gpu::shader::{RenderPipelineIndex, PrepareRenderPipelines},
+    BindingsId, usize_range, wgpu,
 };
 use std::ops::Range;
 

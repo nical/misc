@@ -1,5 +1,5 @@
 use crate::gpu::{DynamicStore, GpuStore, RenderPassDescriptor, PipelineDefaults, Shaders};
-use crate::render_graph::{RenderPassData, ResourceKind, TempResourceKey};
+use crate::render_graph::{RenderPassData, TempResourceKey};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
 use wgpu::util::DeviceExt;
@@ -20,26 +20,7 @@ impl GpuResources {
         shaders: &mut crate::gpu::Shaders,
     ) -> Self {
         let common = CommonGpuResources::new(device, gpu_store, shaders);
-        let mut graph = RenderGraphResources::new(device);
-        let copy = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC;
-        let render = wgpu::TextureUsages::RENDER_ATTACHMENT;
-        let sample = wgpu::TextureUsages::TEXTURE_BINDING;
-        let color_format = shaders.defaults.color_format();
-        let depth_stencil_format = shaders.defaults.depth_stencil_format().unwrap();
-        let color_texture = register_texture_kind(&mut graph, color_format, false, render | sample | copy);
-        let alpha_texture = register_texture_kind(&mut graph, wgpu::TextureFormat::R8Unorm, false, render | sample | copy);
-        let ds_texture = register_texture_kind(&mut graph, depth_stencil_format, false, render);
-        let msaa_color_texture = register_texture_kind(&mut graph, color_format, true, render);
-        let msaa_alpha_texture = register_texture_kind(&mut graph, wgpu::TextureFormat::R8Unorm, true, render);
-        let msaa_ds_texture = register_texture_kind(&mut graph, depth_stencil_format, true, render);
-        // TODO: register storage buffer resources.
-
-        assert_eq!(color_texture, ResourceKind::COLOR_TEXTURE);
-        assert_eq!(alpha_texture, ResourceKind::ALPHA_TEXTURE);
-        assert_eq!(ds_texture, ResourceKind::DEPTH_STENCIL_TEXTURE);
-        assert_eq!(msaa_color_texture, ResourceKind::MSAA_COLOR_TEXTURE);
-        assert_eq!(msaa_alpha_texture, ResourceKind::MSAA_ALPHA_TEXTURE);
-        assert_eq!(msaa_ds_texture, ResourceKind::MSAA_DEPTH_STENCIL_TEXTURE);
+        let graph = RenderGraphResources::new(device);
 
         GpuResources {
             systems: Vec::with_capacity(32),
@@ -275,11 +256,8 @@ pub struct GpuResource {
     pub as_attachment: Option<wgpu::TextureView>,
 }
 
-type ResourceConstructor = Box<dyn Fn(TempResourceKey, &wgpu::Device, &Shaders) -> Option<GpuResource>>;
-
 // TODO: the name isn't great.
 pub struct RenderGraphResources {
-    kinds: Vec<ResourceConstructor>,
     pool: Vec<GpuResource>,
     resources: Vec<GpuResource>,
     pass_bind_groups: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
@@ -306,22 +284,12 @@ impl RenderGraphResources {
         });
 
         RenderGraphResources {
-            kinds: Vec::new(),
             pool: Vec::new(),
             resources: Vec::new(),
             pass_bind_groups: Vec::new(),
             default_sampler,
             gpu_store_epoch: u32::MAX,
         }
-    }
-
-    pub fn register_resource_kind(&mut self, constructor: ResourceConstructor) -> ResourceKind {
-        assert!(self.kinds.len() < u8::MAX as usize);
-        let id = ResourceKind(self.kinds.len() as u8);
-
-        self.kinds.push(constructor);
-
-        id
     }
 
     pub fn begin_frame(&mut self) {
@@ -348,7 +316,11 @@ impl RenderGraphResources {
             let resource = if pool_idx < self.pool.len() {
                 self.pool.swap_remove(pool_idx)
             } else {
-                self.kinds[key.kind.index()](*key, device, shaders).unwrap()
+                if key.kind.is_texture() {
+                    self.allocate_texture(device, shaders, *key)
+                } else {
+                    unimplemented!()
+                }
             };
 
             self.resources.push(resource);
@@ -415,6 +387,74 @@ impl RenderGraphResources {
         }
     }
 
+    fn allocate_texture(&self,
+        device: &wgpu::Device,
+        shaders: &Shaders,
+        key: TempResourceKey,
+    ) -> GpuResource {
+        let kind = key.kind.as_texture().unwrap();
+
+        println!("allocate texture {key:?}");
+
+        let mut usage = wgpu::TextureUsages::empty();
+        usage.set(wgpu::TextureUsages::COPY_SRC, kind.is_copy_src());
+        usage.set(wgpu::TextureUsages::COPY_DST, kind.is_copy_dst());
+        usage.set(wgpu::TextureUsages::RENDER_ATTACHMENT, kind.is_attachment() | kind.is_depth_stencil());
+        usage.set(wgpu::TextureUsages::TEXTURE_BINDING, kind.is_binding());
+
+        let format = if kind.is_color() {
+            shaders.defaults.color_format()
+        } else if kind.is_alpha() {
+            wgpu::TextureFormat::R8Unorm
+        } else if kind.is_depth_stencil() {
+            shaders.defaults.depth_stencil_format().unwrap()
+        } else {
+            unimplemented!()
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("color atlas"),
+            dimension: wgpu::TextureDimension::D2,
+            sample_count: if kind.is_msaa() { 4 } else { 1 },
+            mip_level_count: 1,
+            format,
+            size: wgpu::Extent3d {
+                width: key.size.0,
+                height: key.size.1,
+                depth_or_array_layers: 1,
+            },
+            usage,
+            view_formats: &[],
+        });
+
+        let view = if kind.is_binding() || kind.is_attachment() || kind.is_depth_stencil() {
+            Some(texture.create_view(&Default::default()))
+        } else {
+            None
+        };
+
+        let bind_group = if kind.is_binding() {
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &shaders.get_bind_group_layout(shaders.common_bind_group_layouts.color_texture).handle,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view.as_ref().unwrap())
+                    },
+                ],
+                label: None,
+            }))
+        } else {
+            None
+        };
+
+        GpuResource {
+            key,
+            as_input: bind_group,
+            as_attachment: view,
+        }
+    }
+
     // Should be called only between upload and end_frame.
     pub fn get_resource(&self, index: u16) -> &GpuResource {
         &self.resources[index as usize]
@@ -430,60 +470,15 @@ impl RenderGraphResources {
     }
 
     pub fn end_frame(&mut self) {
+        // Discard resources that we did not use this frame.
+        self.pool.clear();
+
+        // Keep the one sthat were used.
         self.pool.reserve(self.resources.len());
         while let Some(res) = self.resources.pop() {
             self.pool.push(res);
         }
     }
-}
-
-fn register_texture_kind(
-    graph_resources: &mut RenderGraphResources,
-    format: wgpu::TextureFormat,
-    msaa: bool,
-    usage: wgpu::TextureUsages,
-) -> ResourceKind {
-    graph_resources.register_resource_kind(Box::new(move |key, device, shaders| {
-        println!("create texture format {format:?} key {key:?}");
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("color atlas"),
-            dimension: wgpu::TextureDimension::D2,
-            sample_count: if msaa { 4 } else { 1 },
-            mip_level_count: 1,
-            format,
-            size: wgpu::Extent3d {
-                width: key.size.0,
-                height: key.size.1,
-                depth_or_array_layers: 1,
-            },
-            usage,
-            view_formats: &[],
-        });
-
-        let view = texture.create_view(&Default::default());
-
-        let bind_group = if usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &shaders.get_bind_group_layout(shaders.common_bind_group_layouts.color_texture).handle,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view)
-                    },
-                ],
-                label: None,
-            }))
-        } else {
-            None
-        };
-
-        Some(GpuResource {
-            key,
-            as_input: bind_group,
-            as_attachment: Some(view),
-        })
-    }))
 }
 
 // TODO: The RendererResources mechanism was originally used by all renderers to

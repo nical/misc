@@ -11,12 +11,12 @@ use core::{
         },
         DynBufferRange,
     },
-    pattern::{BindingsId, BuiltPattern},
+    pattern::BuiltPattern,
     resources::GpuResources,
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::{LocalRect, SurfaceIntSize},
-    usize_range, wgpu,
+    BindingsId, usize_range, wgpu,
 };
 use lyon_path::{FillRule, traits::PathIterator};
 use wpf_gpu_raster::{PathBuilder, FillMode};

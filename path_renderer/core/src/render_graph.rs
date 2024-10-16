@@ -1,7 +1,7 @@
 use std::{fmt, ops::Range, u16};
 use smallvec::SmallVec;
 
-use crate::pattern::{BindingsId, BindingsNamespace};
+use crate::{units::SurfaceIntSize, BindingsId, BindingsNamespace, ResourceKind, TextureKind};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);
@@ -22,88 +22,63 @@ impl NodeId {
         NodeId(idx as u16)
     }
 
-    pub fn attachment(self, slot: u8) -> Dependency {
+    pub fn color(self, slot: u8) -> Dependency {
         Dependency {
             node: self,
-            slot,
+            slot: Slot::Color(slot),
+        }
+    }
+
+    pub fn msaa(self, slot: u8) -> Dependency {
+        Dependency {
+            node: self,
+            slot: Slot::Msaa(slot),
+        }
+    }
+
+    pub fn depth_stencil(self) -> Dependency {
+        Dependency {
+            node: self,
+            slot: Slot::DepthStencil,
         }
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Slot {
+    Color(u8),
+    Msaa(u8),
+    DepthStencil,
+    // Other(u8)
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Dependency {
     pub node: NodeId,
-    pub slot: u8
+    pub slot: Slot,
 }
 
 impl From<NodeId> for Dependency {
     fn from(node: NodeId) -> Self {
         Dependency {
             node,
-            slot: 0,
+            slot: Slot::Color(0),
         }
     }
 }
 
 impl fmt::Debug for Dependency {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}:{}", self.node.0, self.slot)
+        match self.slot {
+            Slot::Color(idx) => write!(f, "#{}.color_{}", self.node.0, idx),
+            Slot::Msaa(idx) => write!(f, "#{}.msaa_{}", self.node.0, idx),
+            Slot::DepthStencil => write!(f, "#{}.depth_stencil", self.node.0),
+        }
     }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TaskId(pub u64);
-
-/// Identifies the parameters for creating a resource.
-///
-/// For example "An rgba8 texture of size 2048x2048"
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ResourceKind(pub u8);
-
-impl ResourceKind {
-    pub const COLOR_TEXTURE: Self = ResourceKind(0);
-    pub const ALPHA_TEXTURE: Self = ResourceKind(1);
-    pub const DEPTH_STENCIL_TEXTURE: Self = ResourceKind(2);
-    pub const MSAA_COLOR_TEXTURE: Self = ResourceKind(3);
-    pub const MSAA_ALPHA_TEXTURE: Self = ResourceKind(4);
-    pub const MSAA_DEPTH_STENCIL_TEXTURE: Self = ResourceKind(5);
-    pub const STORAGE_BUFFER: Self = ResourceKind(6);
-
-    pub const fn color_texture(msaa: bool) -> Self {
-        if msaa {
-            Self::MSAA_COLOR_TEXTURE
-        } else {
-            Self::COLOR_TEXTURE
-        }
-    }
-
-    pub const fn alpha_texture(msaa: bool) -> Self {
-        if msaa {
-            Self::MSAA_ALPHA_TEXTURE
-        } else {
-            Self::ALPHA_TEXTURE
-        }
-    }
-
-    pub const fn depth_stencil_texture(msaa: bool) -> Self {
-        if msaa {
-            Self::MSAA_DEPTH_STENCIL_TEXTURE
-        } else {
-            Self::DEPTH_STENCIL_TEXTURE
-        }
-    }
-
-    #[inline]
-    pub fn index(&self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl fmt::Debug for ResourceKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}", self.0)
-    }
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Allocation {
@@ -121,23 +96,26 @@ pub enum Allocation {
 // are used by as many nodes as possible to minimize memory usage.
 
 #[derive(Debug)]
-pub struct VirtualResourceInfo {
+pub struct NodeResourceInfo {
     /// The actual resource id.
-    pub resource: PhysicalResourceId,
+    pub resource: ResourceIndex,
     /// True if any render node reads from it.
     pub store: bool,
+    // TODO: pub load
 }
 
-type PhysicalResourceIdx = u16;
+type PhysicalResourceIndex = u16;
 
+// TODO: Rename into ResourceIndex.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PhysicalResourceId {
+pub struct ResourceIndex {
+    // TODO: move kind out of PhysicalResourceId so that we can do  BindingsId -> PhsyicalResourceId mapping
     pub kind: ResourceKind,
     pub allocation: Allocation,
-    pub index: PhysicalResourceIdx,
+    pub index: PhysicalResourceIndex,
 }
 
-impl fmt::Debug for PhysicalResourceId {
+impl fmt::Debug for ResourceIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}({:?}:{:?})", self.allocation, self.index, self.kind)
     }
@@ -145,12 +123,165 @@ impl fmt::Debug for PhysicalResourceId {
 
 #[derive(Debug)]
 pub struct Command {
-    pub resources: Range<usize>,
+    resources: NodeResources,
+    pub msaa: bool,
+    pub depth: bool,
+    pub stencil: bool,
     pub node_id: NodeId,
     pub task_id: TaskId,
     /// Index into `BuiltGraph::pass_data`.
-    pub pass_data: u16,
+    pub pass_data_index: RenderPassDataIndex,
+    pub label: Option<&'static str>,
 }
+
+pub struct CommandRef<'l> {
+    command: &'l Command,
+    graph: &'l BuiltGraph
+}
+
+impl<'l> CommandRef<'l> {
+    pub fn resources(&self) -> &[Option<NodeResourceInfo>] {
+        &self.graph.resources[self.command.resources.all()]
+    }
+
+    pub fn color_attachments(&self) -> AttachmentsIter {
+        AttachmentsIter {
+            inner: self.graph.resources[self.command.resources.color_attachments()].iter(),
+            index: self.command.resources.resources_start,
+            msaa_enabled: self.command.msaa,
+        }
+    }
+
+    pub fn depth_stencil_attachment(&self) -> Option<DepthStencilAttachmentRef> {
+        self.command.resources.depth_stencil().and_then(|idx| {
+            Some(DepthStencilAttachmentRef {
+                binding: BindingsId::graph(idx as u16),
+                depth: self.command.depth,
+                stencil: self.command.stencil,
+            })
+        })
+    }
+
+    pub fn msaa(&self) -> bool {
+        self.command.msaa
+    }
+
+    pub fn task_id(&self) -> TaskId {
+        self.command.task_id
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.command.node_id
+    }
+
+    pub fn pass_data_index(&self) -> RenderPassDataIndex {
+        self.command.pass_data_index
+    }
+
+    pub fn label(&self) -> Option<&'static str> {
+        self.command.label
+    }
+}
+
+pub struct AttachmentRef<'l> {
+    info: &'l NodeResourceInfo,
+    binding: BindingsId,
+}
+
+impl<'l> AttachmentRef<'l> {
+    pub fn binding(&self) -> BindingsId {
+        self.binding
+    }
+
+    pub fn store(&self) -> bool {
+        self.info.store
+    }
+}
+
+pub struct DepthStencilAttachmentRef {
+    binding: BindingsId,
+    depth: bool,
+    stencil: bool,
+}
+
+impl DepthStencilAttachmentRef {
+    pub fn binding(&self) -> BindingsId {
+        self.binding
+    }
+
+    pub fn depth(&self) -> bool {
+        self.depth
+    }
+
+    pub fn stencil(&self) -> bool {
+        self.stencil
+    }
+}
+
+pub struct AttachmentsIter<'l> {
+    msaa_enabled: bool,
+    index: u16,
+    inner: std::slice::Iter<'l, Option<NodeResourceInfo>>,
+}
+
+pub struct ColorAttachmentInfo<'l> {
+    pub attachment: Option<AttachmentRef<'l>>,
+    pub resolve_target: Option<AttachmentRef<'l>>,
+}
+
+impl<'l> Iterator for AttachmentsIter<'l> {
+    type Item = ColorAttachmentInfo<'l>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let non_msaa = self.inner.next();
+        let msaa = self.inner.next();
+        debug_assert!(non_msaa.is_none() == msaa.is_none());
+        let (Some(msaa), Some(non_msaa)) = (msaa, non_msaa) else {
+            return None;
+        };
+        let idx = self.index;
+        let msaa_idx = idx + 1;
+        self.index += 2;
+
+        if self.msaa_enabled {
+            return Some(ColorAttachmentInfo {
+                attachment: msaa.as_ref().map(|info| AttachmentRef {
+                    info,
+                    binding: BindingsId::graph(msaa_idx)
+                }),
+                resolve_target: non_msaa.as_ref().map(|info| AttachmentRef {
+                    info,
+                    binding: BindingsId::graph(idx)
+                }),
+            });
+        } else {
+            return Some(ColorAttachmentInfo {
+                attachment: non_msaa.as_ref().map(|info| AttachmentRef {
+                    info,
+                    binding: BindingsId::graph(idx)
+                }),
+                resolve_target: None,
+            })
+        }
+    }
+}
+
+pub struct CommandsIter<'l> {
+    graph: &'l BuiltGraph,
+    inner: std::slice::Iter<'l, Command>,
+}
+
+impl<'l> Iterator for CommandsIter<'l> {
+    type Item = CommandRef<'l>;
+    fn next(&mut self) -> Option<CommandRef<'l>> {
+        let command = self.inner.next()?;
+        Some(CommandRef {
+            graph: self.graph,
+            command,
+        })
+    }
+}
+
+pub type RenderPassDataIndex = u16;
 
 /// Global per render node data that will be passed to shaders
 /// via a an offset into a globals buffer.
@@ -168,15 +299,26 @@ pub struct TempResourceKey {
 #[derive(Debug)]
 pub struct BuiltGraph {
     pub temporary_resources: Vec<TempResourceKey>,
-    pub resources: Vec<VirtualResourceInfo>,
+    pub resources: Vec<Option<NodeResourceInfo>>,
     pub pass_data: Vec<RenderPassData>,
     pub commands: Vec<Command>,
 }
 
 impl BuiltGraph {
-    pub fn resolve_binding(&self, binding: BindingsId) -> PhysicalResourceId {
+    pub fn resolve_binding(&self, binding: BindingsId) -> Option<ResourceIndex> {
         debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
-        self.resources[binding.index()].resource
+        self.resources[binding.index()].as_ref().map(|res| res.resource)
+    }
+}
+
+impl<'l> IntoIterator for &'l BuiltGraph {
+    type Item = CommandRef<'l>;
+    type IntoIter = CommandsIter<'l>;
+    fn into_iter(self) -> Self::IntoIter {
+        CommandsIter {
+            graph: self,
+            inner: self.commands.iter(),
+        }
     }
 }
 
@@ -185,12 +327,63 @@ pub enum GraphError {
     DependencyCycle(NodeId),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ColorAttachment {
+    pub kind: TextureKind,
+    pub non_msaa: Attachment,
+    pub msaa: Attachment,
+}
+
+impl ColorAttachment {
+    pub const fn color() -> Self {
+        ColorAttachment {
+            kind: TextureKind::color(),
+            non_msaa: Attachment::Auto,
+            msaa: Attachment::Auto,
+        }
+    }
+
+    pub const fn alpha() -> Self {
+        ColorAttachment {
+            kind: TextureKind::alpha(),
+            non_msaa: Attachment::Auto,
+            msaa: Attachment::Auto,
+        }
+    }
+
+    pub const fn with_dependency(mut self, dep: Dependency) -> Self {
+        match dep.slot {
+            Slot::Color(_) => {
+                self.non_msaa = Attachment::Dependency(dep);
+            }
+            Slot::Msaa(_) => {
+                self.msaa = Attachment::Dependency(dep);
+            }
+            Slot::DepthStencil => {
+                panic!("Can't use a depth_stencil slot as a color attachment");
+            }
+        }
+
+        self
+    }
+
+    pub const fn with_external(mut self, index: u16, msaa: bool) -> Self {
+        if msaa {
+            self.msaa = Attachment::External(index);
+        } else {
+            self.non_msaa = Attachment::External(index);
+        }
+
+        self
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Attachment {
     /// Automatically allocate the resource for this attachment.
-    Auto { kind: ResourceKind, size: (u32, u32) },
+    Auto,
     /// Use the specified resource for this attachment.
-    External { kind: ResourceKind, size: (u32, u32), index: u16 },
+    External(u16),
     /// Use the same resource as the one provided by the dependency.
     Dependency(Dependency),
 }
@@ -206,7 +399,11 @@ pub struct NodeDescriptor<'l> {
     pub label: Option<&'static str>,
     pub task: Option<TaskId>,
     pub reads: &'l[Dependency],
-    pub writes: &'l[Attachment],
+    pub attachments: &'l[ColorAttachment],
+    pub depth_stencil: Option<(Attachment, bool, bool)>,
+    pub msaa_resolve_target: Option<Attachment>,
+    pub msaa: bool,
+    pub size: Option<SurfaceIntSize>,
 }
 
 impl NodeDescriptor<'static> {
@@ -215,55 +412,130 @@ impl NodeDescriptor<'static> {
             label: None,
             task: None,
             reads: &[],
-            writes: &[],
+            attachments: &[],
+            depth_stencil: None,
+            msaa_resolve_target: None,
+            msaa: false,
+            size: None,
         }
     }
 }
 
 impl<'l> NodeDescriptor<'l> {
 
-    pub fn task(mut self, task: TaskId) -> Self {
-        self.task = Some(task);
-
-        self
-    }
-
-    pub fn label(mut self, label: &'static str) -> Self {
-        self.label = Some(label);
-
-        self
-    }
-
-    pub fn write<'a>(self, attachments: &'a [Attachment]) -> NodeDescriptor<'a>
-    where 'l : 'a
-    {
-        NodeDescriptor {
-            label: self.label,
-            task: self.task,
-            writes: attachments,
-            reads: self.reads,
-        }
-    }
-
     pub fn read<'a>(self, inputs: &'a [Dependency]) -> NodeDescriptor<'a>
     where 'l : 'a
     {
         NodeDescriptor {
-            label: self.label,
-            task: self.task,
-            writes: self.writes,
             reads: inputs,
+            .. self
+        }
+    }
+
+    pub fn attachments<'a>(self, attachments: &'a [ColorAttachment]) -> NodeDescriptor<'a>
+    where 'l : 'a
+    {
+        NodeDescriptor {
+            attachments,
+            .. self
+        }
+    }
+
+    pub fn depth_stencil(self, attachment: Attachment, depth: bool, stencil: bool) -> Self {
+        NodeDescriptor {
+            depth_stencil: Some((attachment, depth, stencil)),
+            .. self
+        }
+    }
+
+    pub fn task(self, task: TaskId) -> Self {
+        NodeDescriptor {
+            task: Some(task),
+            .. self
+        }
+    }
+
+    pub fn label(self, label: &'static str) -> Self {
+        NodeDescriptor {
+            label: Some(label),
+            .. self
+        }
+    }
+
+    pub fn msaa_resolve(self, attachment: Attachment) -> Self {
+        NodeDescriptor {
+            msaa_resolve_target: Some(attachment),
+            .. self
+        }
+    }
+
+    pub fn msaa(self, msaa: bool) -> Self {
+        NodeDescriptor {
+            msaa,
+            .. self
+        }
+    }
+
+    pub fn size(self, size: SurfaceIntSize) -> Self {
+        NodeDescriptor {
+            size: Some(size),
+            .. self
         }
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OutputKind {
+    ColorAttachment,
+    DepthStencilAttachment,
+    MsaaResolveTarget,
+    Other,
+}
+
+#[derive(Clone, Debug)]
+struct NodeResources {
+    resources_start: u16,
+    attachments_end: u16,
+    resources_end: u16,
+    depth_stencil: Option<u16>,
+}
+
 struct Node {
-    attachments: SmallVec<[Attachment; 4]>,
+    resources: NodeResources,
     reads: SmallVec<[Dependency; 4]>,
+    msaa: bool,
+    depth: bool,
+    stencil: bool,
+    size: (u32, u32),
     readable: bool,
-    first_virtual_resource: u16,
     label: Option<&'static str>,
     // writes: TODO
+}
+
+impl NodeResources {
+    fn slot_index(&self, slot: Slot) -> usize {
+        match slot {
+            Slot::Color(idx) => idx as usize * 2,
+            Slot::Msaa(idx) => idx as usize * 2 + 1,
+            Slot::DepthStencil => self.depth_stencil().unwrap(),
+        }
+    }
+
+    fn index(&self, slot: Slot) -> usize {
+        self.resources_start as usize + self.slot_index(slot)
+    }
+
+    fn all(&self) -> Range<usize> {
+        self.resources_start as usize .. self.resources_end as usize
+    }
+
+    fn color_attachments(&self) -> Range<usize> {
+        self.resources_start as usize .. self.attachments_end as usize
+    }
+
+    fn depth_stencil(&self) -> Option<usize> {
+        self.depth_stencil.map(|ds| ds as usize)
+    }
 }
 
 struct Root {
@@ -271,8 +543,14 @@ struct Root {
     stored_attachments: u32,
 }
 
+struct NodeResource {
+    kind: ResourceKind,
+    attachment: Attachment,
+}
+
 pub struct RenderGraph {
     nodes: Vec<Node>,
+    resources: Vec<NodeResource>,
     tasks: Vec<TaskId>,
     roots: Vec<Root>,
     next_virtual_resource: u16,
@@ -282,6 +560,7 @@ impl RenderGraph {
     pub fn new() -> Self {
         RenderGraph {
             nodes: Vec::new(),
+            resources: Vec::new(),
             tasks: Vec::new(),
             roots: Vec::new(),
             next_virtual_resource: 0,
@@ -289,8 +568,9 @@ impl RenderGraph {
     }
 
     pub fn clear(&mut self) {
-        self.tasks.clear();
         self.nodes.clear();
+        self.resources.clear();
+        self.tasks.clear();
         self.roots.clear();
         self.next_virtual_resource = 0;
     }
@@ -298,16 +578,53 @@ impl RenderGraph {
     pub fn add_node(&mut self, desc: &NodeDescriptor) -> NodeId {
         let id = NodeId::from_index(self.nodes.len());
 
+        let resources_start = self.resources.len();
+        for attachment in desc.attachments {
+            let kind = attachment.kind.with_attachment();
+            let msaa_kind = kind.with_msaa(true);
+            self.resources.push(NodeResource {
+                kind: kind.as_resource(),
+                attachment: attachment.non_msaa,
+            });
+            self.resources.push(NodeResource {
+                kind: msaa_kind.as_resource(),
+                attachment: attachment.msaa,
+            });
+        }
+        let attachments_end = self.resources.len();
+        let mut ds_resource = None;
+        let mut depth = false;
+        let mut stencil = false;
+        if let Some((attachment, d, s)) = desc.depth_stencil {
+            depth = d;
+            stencil = s;
+            ds_resource = Some(self.resources.len() as u16);
+            self.resources.push(NodeResource {
+                kind: TextureKind::depth_stencil().with_msaa(desc.msaa).as_resource(),
+                attachment,
+            });
+        }
+
+        let resources_end = self.resources.len();
+
         self.tasks.push(desc.task.expect("NodeDescriptor needs a task."));
         self.nodes.push(Node {
-            attachments: SmallVec::from_slice(desc.writes),
+            resources: NodeResources {
+                resources_start: resources_start as u16,
+                resources_end: resources_end as u16,
+                attachments_end: attachments_end as u16,
+                depth_stencil: ds_resource,
+            },
+            msaa: desc.msaa,
+            depth,
+            stencil,
+            size: desc.size.map(|s| s.to_u32().to_tuple()).unwrap_or((0, 0)),
             reads: SmallVec::from_slice(desc.reads),
-            first_virtual_resource: self.next_virtual_resource,
             readable: true,
             label: desc.label,
         });
 
-        self.next_virtual_resource += desc.writes.len() as u16;
+        self.next_virtual_resource += desc.attachments.len() as u16;
 
         id
     }
@@ -330,12 +647,8 @@ impl RenderGraph {
     }
 
     pub fn get_binding(&self, dep: Dependency) -> BindingsId {
-        let node = &self.nodes[dep.node.index()];
-        debug_assert!(node.attachments.len() > dep.slot as usize);
-        let idx = node.first_virtual_resource as u32
-            + dep.slot as u32;
-
-        BindingsId::new(BindingsNamespace::RenderGraph, idx)
+        let idx = self.nodes[dep.node.index()].resources.index(dep.slot);
+        BindingsId::graph(idx as u16)
     }
 
     fn topological_sort(&self, sorted: &mut Vec<NodeId>) -> Result<(), GraphError> {
@@ -361,8 +674,8 @@ impl RenderGraph {
 
                 cycle_check[id.index()] = true;
                 let node = &self.nodes[id.index()];
-                for attachment in &node.attachments {
-                    match attachment {
+                for res in &self.resources[node.resources.all()] {
+                    match res.attachment {
                         Attachment::Dependency(dep) => {
                             if !added[dep.node.index()] {
                                 if cycle_check[dep.node.index()] {
@@ -396,7 +709,7 @@ impl RenderGraph {
         Ok(())
     }
 
-    pub fn schedule(&self) -> Result<BuiltGraph, GraphError> {
+    pub fn schedule(&mut self) -> Result<BuiltGraph, GraphError> {
         // TODO: partial schedule
         let full_schedule = true;
 
@@ -407,7 +720,7 @@ impl RenderGraph {
         struct VirtualResource {
             refs: u16,
             size: (u32, u32),
-            id: PhysicalResourceId,
+            id: Option<ResourceIndex>,
             read_at_least_once: bool,
             reusable: bool,
         }
@@ -416,15 +729,11 @@ impl RenderGraph {
             VirtualResource {
                 refs: 0,
                 size: (0, 0),
-                id: PhysicalResourceId {
-                    kind: ResourceKind(u8::MAX),
-                    allocation: Allocation::Temporary,
-                    index: PhysicalResourceIdx::MAX,
-                },
+                id: None,
                 read_at_least_once: false,
                 reusable: false,
             };
-            self.next_virtual_resource as usize
+            self.resources.len()
         ];
 
         let mut temp_resources = TemporaryResources {
@@ -436,40 +745,37 @@ impl RenderGraph {
         // are used.
         for node_id in &sorted {
             let node = &self.nodes[node_id.index()];
-            for (idx, attachment) in node.attachments.iter().enumerate() {
-                let vres = match attachment {
-                    Attachment::Auto { kind, size } => {
+            for idx in node.resources.all() {
+                let resource = &self.resources[idx];
+
+                let vres = match resource.attachment {
+                    Attachment::Auto => {
                         VirtualResource {
                             refs: 0,
-                            size: *size,
-                            id: PhysicalResourceId {
-                                kind: *kind,
-                                allocation: Allocation::Temporary,
-                                index: PhysicalResourceIdx::MAX,
-                            },
+                            size: node.size,
+                            id: None,
                             // Only make the physical resource available again if we
                             // know that no new reference can be added to it.
                             reusable: full_schedule || !node.readable,
                             read_at_least_once: false,
                         }
                     }
-                    Attachment::External { kind, size, index: resource } => {
+                    Attachment::External(index) => {
                         VirtualResource {
                             refs: 0,
-                            size: *size,
-                            id: PhysicalResourceId {
-                                index: *resource,
-                                kind: *kind,
+                            size: node.size,
+                            id: Some(ResourceIndex {
+                                index,
+                                kind: resource.kind,
                                 allocation: Allocation::External,
-                            },
+                            }),
                             reusable: false,
                             read_at_least_once: false,
                         }
                     }
                     Attachment::Dependency(dep) => {
                         let dep_node = &self.nodes[dep.node.index()];
-                        let base_vres = dep_node.first_virtual_resource;
-                        let dep_vres = &mut virtual_resources[base_vres as usize + dep.slot as usize];
+                        let dep_vres = &mut virtual_resources[dep_node.resources.index(dep.slot)];
                         // For now, rendering on top of the output of another node assumes
                         // that what is rendered on top of must be stored.
                         dep_vres.read_at_least_once = true;
@@ -483,14 +789,11 @@ impl RenderGraph {
                         }
                     }
                 };
-
-                let offset = node.first_virtual_resource as usize;
-                virtual_resources[offset + idx] = vres;
+                virtual_resources[idx] = vres;
             }
 
             for dep in &node.reads {
-                let vres_idx = node.first_virtual_resource as usize
-                    + dep.slot as usize;
+                let vres_idx = self.nodes[dep.node.index()].resources.index(dep.slot);
 
                 // TODO: if the resource aliases another virtual resource, update
                 // that resource's ref count.
@@ -506,32 +809,55 @@ impl RenderGraph {
         // Second pass allocates physical resources.
         for node_id in &sorted {
             let node = &self.nodes[node_id.index()];
-            let first_vres_idx = node.first_virtual_resource as usize;
-            let mut vres_idx = first_vres_idx;
 
             let mut size = None;
-            for attachment in &node.attachments {
-                match attachment {
-                    Attachment::Auto { kind, size } => {
-                        let resource = temp_resources.get(TempResourceKey {  kind: *kind, size: *size });
-                        virtual_resources[vres_idx].id.index = resource;
+            for idx in node.resources.all() {
+                let res = &self.resources[idx];
+                match res.attachment {
+                    Attachment::Auto => {
+                        let virt_res = &mut virtual_resources[idx];
+                        let resource = temp_resources.get(TempResourceKey {
+                            kind: res.kind,
+                            size: virt_res.size,
+                        });
+
+                        // We can skip allocating unused resolve targets.
+                        let allocate = if let Some(kind) = res.kind.as_texture() {
+                            let is_resolve_target = !kind.is_depth_stencil() && node.msaa && !kind.is_msaa();
+
+                            (is_resolve_target && virt_res.refs > 0)
+                                || (node.msaa && kind.is_msaa())
+                                || kind.is_depth_stencil()
+                        } else {
+                            true
+                        };
+
+                        if allocate {
+                            virt_res.id = Some(ResourceIndex {
+                                kind: res.kind,
+                                allocation: Allocation::Temporary,
+                                index: resource
+                            });
+                        }
                     }
                     Attachment::Dependency(dep) => {
-                        let dep_vres = self.nodes[dep.node.index()].first_virtual_resource as usize + dep.slot as usize;
-                        let pres = virtual_resources[dep_vres].id;
+                        let dep_node = &self.nodes[dep.node.index()];
+                        let pres = virtual_resources[dep_node.resources.index(dep.slot)].id;
 
-                        virtual_resources[vres_idx].id = pres;
+                        virtual_resources[idx].id = pres;
                     }
                     _ => {}
-                };
+                }
 
                 // If nobody reads the attachment, it can be reused right away.
                 // This is typically the case for transient resources like depth or stencil
                 // textures that tend to be used within a render pass but not consumed by
                 // other nodes.
-                let vres = &virtual_resources[vres_idx];
-                if vres.reusable && vres.refs == 0 {
-                    temp_resources.recycle(TempResourceKey { kind: vres.id.kind, size: vres.size }, vres.id.index);
+                let vres = &virtual_resources[idx];
+                if let Some(id) = vres.id {
+                    if vres.reusable && vres.refs == 0 {
+                        temp_resources.recycle(TempResourceKey { kind: id.kind, size: vres.size }, id.index);
+                    }
                 }
 
                 // TODO: using the size of the first output is fragile at best and only
@@ -539,20 +865,20 @@ impl RenderGraph {
                 if size.is_none() {
                     size = Some(vres.size);
                 }
-
-                vres_idx += 1;
             }
 
             for dep in &node.reads {
-                let dep_vres_idx = node.first_virtual_resource as usize
-                    + dep.slot as usize;
+                let dep_node = &self.nodes[dep.node.index()];
+                let dep_vres_idx = dep_node.resources.index(dep.slot);
 
                 // TODO: if the resource aliases another virtual resource, update
                 // that resource's ref count.
                 let vres = &mut virtual_resources[dep_vres_idx];
                 vres.refs -= 1;
-                if vres.reusable  && vres.refs == 0{
-                    temp_resources.recycle(TempResourceKey { kind: vres.id.kind, size: vres.size }, vres.id.index);
+                if let Some(id) = vres.id {
+                    if vres.reusable && vres.refs == 0{
+                        temp_resources.recycle(TempResourceKey { kind: id.kind, size: vres.size }, id.index);
+                    }
                 }
             }
 
@@ -575,15 +901,19 @@ impl RenderGraph {
             }).unwrap_or(0);
 
             commands.push(Command {
-                resources: first_vres_idx .. vres_idx,
+                resources: node.resources.clone(),
+                msaa: node.msaa,
+                depth: node.depth,
+                stencil: node.stencil,
+                label: node.label,
                 node_id: *node_id,
                 task_id: self.tasks[node_id.index()],
-                pass_data,
+                pass_data_index: pass_data,
             });
         }
 
         for root in &self.roots {
-            let offset = self.nodes[root.node_id.index()].first_virtual_resource;
+            let offset = self.nodes[root.node_id.index()].resources.all().start;
             for i in 0..8 {
                 if (root.stored_attachments & (1 << i)) != 0 {
                     virtual_resources[(offset + i) as usize].read_at_least_once = true;
@@ -593,10 +923,10 @@ impl RenderGraph {
 
         let mut resources = Vec::with_capacity(virtual_resources.len());
         for res in &virtual_resources {
-            resources.push(VirtualResourceInfo {
-                resource: res.id,
+            resources.push(res.id.map(|id| NodeResourceInfo {
+                resource: id,
                 store: res.read_at_least_once,
-            });
+            }));
         }
 
         Ok(BuiltGraph {
@@ -624,7 +954,7 @@ impl TemporaryResources {
         }
 
         resource.unwrap_or_else(|| {
-            let res = self.resources.len() as PhysicalResourceIdx;
+            let res = self.resources.len() as PhysicalResourceIndex;
             self.resources.push(descriptor);
             res
         })
@@ -654,13 +984,23 @@ fn test_nested() {
         NodeDescriptor::new().task(TaskId(id))
     }
 
-    const COLOR: ResourceKind = ResourceKind(0);
-    const DEPTH: ResourceKind = ResourceKind(1);
-    let window_size = (1920, 1200);
-    let atlas_size = (2048, 2048);
-    let main = Attachment::External { kind: COLOR, size: window_size, index: 0 };
-    let main_depth = Attachment::Auto { kind: DEPTH, size: window_size, };
-    let color_auto = Attachment::Auto { kind: COLOR, size: atlas_size };
+    let window_size = SurfaceIntSize::new(1920, 1200);
+    let atlas_size = SurfaceIntSize::new(2048, 2048);
+    let main = ColorAttachment {
+        kind: TextureKind::color(),
+        non_msaa: Attachment::External(0),
+        msaa: Attachment::Auto,
+    };
+    let color = ColorAttachment::color();
+
+    //let n42 = graph.add_node(
+    //    &task(42)
+    //        .size(window_size)
+    //        .msaa(true)
+    //        .attachments(&[Attachment::new(COLOR, main)])
+    //        .attachment(Attachment::Auto)
+    //        .depth_stencil(Attachment::Auto)
+    //);
 
     // Ideally the resource allocation would look like this:
     //
@@ -671,40 +1011,44 @@ fn test_nested() {
     //  tmp0  n1     n3         n9
     //          \     \          \
     //  main     n0----n2---------n10
-    let n0 = graph.add_node(&task(0).write(&[main, main_depth]).label("main"));
-    let n1 = graph.add_node(&task(1).write(&[color_auto]).label("atlas"));
-    let n2 = graph.add_node(&task(2).write(&[n0.attachment(0).into(), main_depth]).label("main"));
-    let n3 = graph.add_node(&task(3).write(&[color_auto]).label("atlas"));
-    let n4 = graph.add_node(&task(4).write(&[color_auto]));
-    let n5 = graph.add_node(&task(5).write(&[color_auto]));
-    let n6 = graph.add_node(&task(6).write(&[color_auto]));
-    let n7 = graph.add_node(&task(7).write(&[n6.attachment(0).into()]));
-    let n8 = graph.add_node(&task(8).write(&[color_auto]));
+    let n0 = graph.add_node(&task(0).size(window_size).attachments(&[main]).depth_stencil(Attachment::Auto, true, false).label("main"));
+    let n1 = graph.add_node(&task(1).size(atlas_size).attachments(&[color]).label("atlas"));
+    let n2 = graph.add_node(&task(2).size(window_size).attachments(&[main.with_dependency(n0.color(0))]).depth_stencil(Attachment::Auto, true, false).label("main"));
+    let n3 = graph.add_node(&task(3).size(atlas_size).attachments(&[color]).label("atlas"));
+    let n4 = graph.add_node(&task(4).size(atlas_size).attachments(&[color]));
+    let n5 = graph.add_node(&task(5).size(atlas_size).attachments(&[color]));
+    let n6 = graph.add_node(&task(6).size(atlas_size).attachments(&[color]));
+    let n7 = graph.add_node(&task(7).size(atlas_size).attachments(&[color.with_dependency(n6.color(0))]));
+    let n8 = graph.add_node(&task(8).size(atlas_size).attachments(&[color]));
     let n9 = graph.add_node(
         &task(9)
-            .write(&[color_auto])
-            .read(&[n7.attachment(0)])
+            .size(atlas_size)
+            .attachments(&[color])
+            .read(&[n7.color(0)])
             .label("atlas")
     );
     let n10 = graph.add_node(
         &task(10)
-            .write(&[n2.attachment(0).into(), main_depth])
-            .read(&[n9.attachment(0)])
+            .size(window_size)
+            .attachments(&[color.with_dependency(n2.color(0))])
+            .depth_stencil(Attachment::Auto, true, false)
+            .read(&[n9.color(0)])
             .label("main")
     );
 
     let n11 = graph.add_node(
         &task(11)
-            .write(&[color_auto])
-            .read(&[n9.attachment(0)])
+            .size(atlas_size)
+            .attachments(&[color])
+            .read(&[n9.color(0)])
     );
 
-    graph.add_dependency(n0, n1.attachment(0));
-    graph.add_dependency(n2, n3.attachment(0));
-    graph.add_dependency(n3, n4.attachment(0));
-    graph.add_dependency(n7, n5.attachment(0));
-    graph.add_dependency(n6, n8.attachment(0));
-    graph.add_dependency(n10, n9.attachment(0));
+    graph.add_dependency(n0, n1.color(0));
+    graph.add_dependency(n2, n3.color(0));
+    graph.add_dependency(n3, n4.color(0));
+    graph.add_dependency(n7, n5.color(0));
+    graph.add_dependency(n6, n8.color(0));
+    graph.add_dependency(n10, n9.color(0));
 
     graph.add_root(n10, 1);
 
@@ -719,9 +1063,11 @@ fn test_nested() {
     for command in &commands.commands {
         let label = graph.nodes[command.node_id.index()].label.unwrap_or("");
         println!(" - n{:?} {label}: {:?}", command.node_id.0, command.task_id);
-        for res in &commands.resources[command.resources.clone()] {
-            let kind = if res.resource.kind == COLOR { "color" }
-                else if res.resource.kind == DEPTH { "depth" }
+        for res in &commands.resources[command.resources.all()] {
+            let Some(res) = res else { continue; };
+            let kind = res.resource.kind.as_texture().unwrap();
+            let kind = if kind.is_color() { "color" }
+                else if kind.is_depth_stencil() { "depth" }
                 else { "unknown" };
             println!("   - {:?}({}_{}) store:{}", res.resource.allocation, kind, res.resource.index, res.store);
         }

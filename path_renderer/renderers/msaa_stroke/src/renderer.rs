@@ -10,12 +10,12 @@ use core::{
         }, storage_buffer::{StorageBuffer, StorageKind}, DynBufferRange, Shaders
     },
     //path::Path,
-    pattern::{BindingsId, BuiltPattern},
+    pattern::BuiltPattern,
     resources::GpuResources,
     shape::FilledPath,
     transform::{TransformId, Transforms},
     units::LocalRect,
-    usize_range, wgpu, Point,
+    BindingsId, usize_range, wgpu, Point,
 };
 use lyon::{
     geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment},

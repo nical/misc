@@ -21,11 +21,11 @@ use core::{
     shape::{Circle, FilledPath},
 };
 use core::{
-    StencilMode, SurfacePassConfig,
+    BindingsId, StencilMode, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
     context::{DrawHelper, RendererId, ZIndex},
     gpu::DynBufferRange,
-    pattern::{BindingsId, BuiltPattern},
+    pattern::BuiltPattern,
     transform::TransformId,
     units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect},
 };
