@@ -48,13 +48,27 @@ impl Frame {
             .map(|ds| (ds.1, ds.2))
             .unwrap_or((false, false));
         let mut pass = RenderPassBuilder::new();
+
+        let mut kind = [
+            SurfaceKind::None,
+            SurfaceKind::None,
+            SurfaceKind::None,
+        ];
+        for (idx, attachment) in descriptor.attachments.iter().enumerate() {
+            if attachment.kind.is_color() {
+                kind[idx] = SurfaceKind::Color;
+            } else if attachment.kind.is_alpha() {
+                kind[idx] = SurfaceKind::Alpha;
+            }
+        }
+
         pass.begin(
             descriptor.size.unwrap(),
             SurfacePassConfig {
                 depth,
                 stencil,
                 msaa: descriptor.msaa,
-                kind: SurfaceKind::Color, // TODO
+                attachments: kind,
             }
         );
 

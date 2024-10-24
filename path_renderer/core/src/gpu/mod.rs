@@ -7,8 +7,6 @@ pub use shader::Shaders;
 
 pub use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
-use crate::context::{DepthMode, StencilMode, SurfaceDrawConfig};
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct RenderPassDescriptor {
@@ -175,22 +173,5 @@ impl PipelineDefaults {
 
     pub fn msaa_sample_count(&self) -> u32 {
         self.msaa_samples
-    }
-
-    pub fn surface_config(&self, msaa: bool) -> SurfaceDrawConfig {
-        SurfaceDrawConfig {
-            msaa,
-            depth: if self.depth_buffer {
-                DepthMode::Ignore
-            } else {
-                DepthMode::None
-            },
-            stencil: if self.stencil_buffer {
-                StencilMode::Ignore
-            } else {
-                StencilMode::None
-            },
-            kind: crate::SurfaceKind::Color,
-        }
     }
 }

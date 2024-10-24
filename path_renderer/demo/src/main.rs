@@ -1,7 +1,7 @@
 use core::frame::RenderSurface;
 use core::instance::Instance;
 use core::render_graph::{Allocation, Attachment, BuiltGraph, ColorAttachment, NodeDescriptor, TaskId};
-use core::{context::*, FillPath, Renderer};
+use core::{FillPath, Renderer};
 use core::gpu::shader::BlendMode;
 use core::path::Path;
 use core::frame::Frame;
@@ -553,13 +553,6 @@ impl App {
             _ => false,
         };
 
-        let main_surface_cfg = SurfacePassConfig {
-            depth: self.z_buffer.unwrap_or(self.view.fill_renderer != TILING),
-            msaa: if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default },
-            stencil: self.view.fill_renderer == STENCIL,
-            kind: SurfaceKind::Color,
-        };
-
         let mut frame = self.instance.begin_frame();
 
         self.renderers.begin_frame();
@@ -625,18 +618,18 @@ impl App {
 
         let record_start = Instant::now();
 
+        let depth = self.z_buffer.unwrap_or(self.view.fill_renderer != TILING);
+        let stencil = self.view.fill_renderer == STENCIL;
+        let msaa = if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default };
+
         let attachments = [ColorAttachment::color().with_external(0, false)];
         let mut descriptor = NodeDescriptor::new()
             .task(TaskId(0))
             .size(size)
-            .msaa(main_surface_cfg.msaa)
+            .msaa(msaa)
             .attachments(&attachments);
-        if main_surface_cfg.depth_or_stencil() {
-            descriptor = descriptor.depth_stencil(
-                Attachment::Auto,
-                main_surface_cfg.depth,
-                main_surface_cfg.stencil
-            );
+        if depth || stencil {
+            descriptor = descriptor.depth_stencil(Attachment::Auto, depth, stencil);
         }
 
         let mut main_surface = frame.begin_render_surface(descriptor);

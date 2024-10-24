@@ -71,9 +71,28 @@ pub enum DepthMode {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SurfaceKind {
+    None,
     Color,
     Alpha,
     // TODO: HDRColor, color spaces?
+}
+
+impl SurfaceKind {
+    pub fn to_bits(self) -> u16 {
+        match self {
+            SurfaceKind::None => 0,
+            SurfaceKind::Color => 1,
+            SurfaceKind::Alpha => 2,
+        }
+    }
+
+    pub fn from_bits(bits: u16) -> Self {
+        match bits {
+            1 => SurfaceKind::Color,
+            2 => SurfaceKind::Alpha,
+            _ => SurfaceKind::None,
+        }
+    }
 }
 
 // The surface parameters for draw calls.
@@ -82,11 +101,11 @@ pub struct SurfaceDrawConfig {
     pub msaa: bool,
     pub depth: DepthMode,
     pub stencil: StencilMode,
-    pub kind: SurfaceKind,
+    pub attachments: [SurfaceKind; 3],
 }
 
 impl SurfaceDrawConfig {
-    pub(crate) fn hash(&self) -> u8 {
+    pub(crate) fn hash(&self) -> u16 {
         return if self.msaa { 1 } else { 0 }
             + (match self.depth {
                 DepthMode::Enabled => 1,
@@ -99,13 +118,12 @@ impl SurfaceDrawConfig {
                 StencilMode::Ignore => 3,
                 StencilMode::None => 0,
             } << 3)
-            + (match self.kind {
-                SurfaceKind::Color => 0,
-                SurfaceKind::Alpha => 1,
-            } << 6);
+            + (self.attachments[0].to_bits() << 6)
+            + (self.attachments[1].to_bits() << 9)
+            + (self.attachments[2].to_bits() << 12);
     }
 
-    pub(crate) fn from_hash(val: u8) -> Self {
+    pub(crate) fn from_hash(val: u16) -> Self {
         SurfaceDrawConfig {
             msaa: val & 1 != 0,
             depth: match (val >> 1) & 3 {
@@ -119,10 +137,11 @@ impl SurfaceDrawConfig {
                 3 => StencilMode::Ignore,
                 _ => StencilMode::None,
             },
-            kind: match (val >> 6) & 1 {
-                0 => SurfaceKind::Color,
-                _ => SurfaceKind::Alpha,
-            }
+            attachments: [
+                SurfaceKind::from_bits((val >> 6) & 0b111),
+                SurfaceKind::from_bits((val >> 9) & 0b111),
+                SurfaceKind::from_bits((val >> 12) & 0b111),
+            ],
         }
     }
 
@@ -131,7 +150,11 @@ impl SurfaceDrawConfig {
             msaa: false,
             depth: DepthMode::None,
             stencil: StencilMode::None,
-            kind: SurfaceKind::Color,
+            attachments: [
+                SurfaceKind::Color,
+                SurfaceKind::None,
+                SurfaceKind::None,
+            ],
         }
     }
 
@@ -140,7 +163,11 @@ impl SurfaceDrawConfig {
             msaa: false,
             depth: DepthMode::None,
             stencil: StencilMode::None,
-            kind: SurfaceKind::Color,
+            attachments: [
+                SurfaceKind::Alpha,
+                SurfaceKind::None,
+                SurfaceKind::None,
+            ],
         }
     }
 
@@ -158,6 +185,20 @@ impl SurfaceDrawConfig {
         self.depth = depth;
         self
     }
+
+    pub fn num_color_attachments(&self) -> usize {
+        use SurfaceKind::None;
+        match self.attachments {
+            [None, None, None] => 0,
+            [_, None, None] => 1,
+            [_, _, None] => 2,
+            [_, _, _] => 3,
+        }
+    }
+
+    pub fn color_attachments(&self) -> &[SurfaceKind] {
+        &self.attachments[0..self.num_color_attachments()]
+    }
 }
 
 impl Default for SurfaceDrawConfig {
@@ -172,7 +213,7 @@ pub struct SurfacePassConfig {
     pub depth: bool,
     pub msaa: bool,
     pub stencil: bool,
-    pub kind: SurfaceKind,
+    pub attachments: [SurfaceKind; 3],
 }
 
 impl Default for SurfacePassConfig {
@@ -181,7 +222,11 @@ impl Default for SurfacePassConfig {
             depth: false,
             msaa: false,
             stencil: false,
-            kind: SurfaceKind::Color,
+            attachments: [
+                SurfaceKind::Color,
+                SurfaceKind::None,
+                SurfaceKind::None,
+            ],
         }
     }
 }
@@ -216,7 +261,7 @@ impl SurfacePassConfig {
                     "Attempting to use the stencil buffer on a surface that does not have one"
                 ),
             },
-            kind: self.kind,
+            attachments: self.attachments,
         }
     }
 
@@ -225,7 +270,11 @@ impl SurfacePassConfig {
             msaa: false,
             depth: false,
             stencil: false,
-            kind: SurfaceKind::Color,
+            attachments: [
+                SurfaceKind::Color,
+                SurfaceKind::None,
+                SurfaceKind::None,
+            ],
         }
     }
 
@@ -234,7 +283,11 @@ impl SurfacePassConfig {
             msaa: false,
             depth: false,
             stencil: false,
-            kind: SurfaceKind::Color,
+            attachments: [
+                SurfaceKind::Alpha,
+                SurfaceKind::None,
+                SurfaceKind::None,
+            ],
         }
     }
 
@@ -486,7 +539,8 @@ fn surface_draw_config() {
         for depth in [DepthMode::Enabled, DepthMode::Ignore, DepthMode::None] {
             for stencil in [StencilMode::EvenOdd, StencilMode::NonZero, StencilMode::Ignore, StencilMode::None] {
                 for kind in [SurfaceKind::Color, SurfaceKind::Alpha] {
-                    let surface = SurfaceDrawConfig { msaa, depth, stencil, kind};
+                    let kind = [kind, SurfaceKind::None, SurfaceKind::None];
+                    let surface = SurfaceDrawConfig { msaa, depth, stencil, attachments: kind};
                     assert_eq!(SurfaceDrawConfig::from_hash(surface.hash()), surface);
                 }
             }

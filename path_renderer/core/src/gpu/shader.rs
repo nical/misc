@@ -394,14 +394,22 @@ impl Shaders {
             })
         });
 
-        let color_target = &[Some(wgpu::ColorTargetState {
-            format: match surface.kind {
-                SurfaceKind::Color => self.defaults.color_format(),
-                SurfaceKind::Alpha => self.defaults.mask_format(),
-            },
-            blend: blend_state(blend_mode),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
+        let mut color_targets = [None, None, None];
+        for (idx, kind) in surface.color_attachments().iter().enumerate() {
+            let format = match kind {
+                SurfaceKind::None => None,
+                SurfaceKind::Color => Some(self.defaults.color_format()),
+                SurfaceKind::Alpha => Some(self.defaults.mask_format()),
+            };
+            color_targets[idx] = format.map(|format| {
+                wgpu::ColorTargetState {
+                    format,
+                    blend: blend_state(blend_mode),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }
+            });
+        }
+        let targets = &color_targets[0..surface.num_color_attachments()];
 
         let multisample = if surface.msaa {
             wgpu::MultisampleState {
@@ -515,7 +523,7 @@ impl Shaders {
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: "fs_main",
-                targets: color_target,
+                targets,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: base.primitive,
@@ -1428,7 +1436,7 @@ impl RenderPipelineKey {
     pub fn unpack(&self) -> (BaseShaderId, ShaderPatternId, BlendMode, SurfaceDrawConfig) {
         let base = BaseShaderId((self.0 >> 16) as u16);
         let pattern = ShaderPatternId((self.0 >> 32) as u16);
-        let surf = SurfaceDrawConfig::from_hash(self.0 as u8);
+        let surf = SurfaceDrawConfig::from_hash(self.0 as u16);
         let blend: BlendMode = unsafe { std::mem::transmute((self.0 >> 48) as u8) };
         (base, pattern, blend, surf)
     }

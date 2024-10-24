@@ -120,7 +120,7 @@ impl TileRenderer {
     }
 
     pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
-        surface.kind == SurfaceKind::Color
+        surface.attachments == [SurfaceKind::Color, SurfaceKind::None, SurfaceKind::None]
     }
 
     pub fn begin_frame(&mut self, ctx: &RenderPassBuilder) {
