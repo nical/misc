@@ -1,22 +1,12 @@
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
-    bytemuck,
-    context::{
-        DrawHelper, RendererId,
-        SurfacePassConfig, RenderPassContext, BuiltRenderPass,
-    },
-    gpu::{
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
+    }, gpu::{
         shader::{
-            PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode, BaseShaderId,
+            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
         },
         DynBufferRange,
-    },
-    pattern::BuiltPattern,
-    resources::GpuResources,
-    shape::FilledPath,
-    transform::{TransformId, Transforms},
-    units::{LocalRect, SurfaceIntSize},
-    BindingsId, usize_range, wgpu,
+    }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{LocalRect, SurfaceIntSize}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use lyon_path::{FillRule, traits::PathIterator};
 use wpf_gpu_raster::{PathBuilder, FillMode};
@@ -305,6 +295,14 @@ impl core::FillPath for WpfMeshRenderer {
 }
 
 impl core::Renderer for WpfMeshRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

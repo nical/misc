@@ -5,7 +5,7 @@ use core::{
     }, gpu::{
         shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
         DynBufferRange, GpuStoreHandle,
-    }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu
+    }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu, PrepareContext, UploadContext
 };
 
 use super::resources::Pipelines;
@@ -180,6 +180,14 @@ impl RectangleRenderer {
 }
 
 impl core::Renderer for RectangleRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

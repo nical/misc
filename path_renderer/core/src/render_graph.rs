@@ -1,7 +1,7 @@
 use std::{fmt, ops::Range, u16};
 use smallvec::SmallVec;
 
-use crate::{units::SurfaceIntSize, BindingsId, BindingsNamespace, ResourceKind, TextureKind};
+use crate::{units::SurfaceIntSize, BindingsId, BindingsNamespace, BufferKind, ResourceKind, TextureKind};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);
@@ -97,28 +97,22 @@ pub enum Allocation {
 
 #[derive(Debug)]
 pub struct NodeResourceInfo {
-    /// The actual resource id.
-    pub resource: ResourceIndex,
+    pub kind: ResourceKind,
+    pub resolved_index: ResourceIndex,
     /// True if any render node reads from it.
     pub load: bool,
     pub store: bool,
-    // TODO: pub load
 }
 
-type PhysicalResourceIndex = u16;
-
-// TODO: Rename into ResourceIndex.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ResourceIndex {
-    // TODO: move kind out of PhysicalResourceId so that we can do  BindingsId -> PhsyicalResourceId mapping
-    pub kind: ResourceKind,
     pub allocation: Allocation,
-    pub index: PhysicalResourceIndex,
+    pub index: u16,
 }
 
 impl fmt::Debug for ResourceIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}({:?}:{:?})", self.allocation, self.index, self.kind)
+        write!(f, "{:?}({:?})", self.allocation, self.index)
     }
 }
 
@@ -312,7 +306,7 @@ pub struct BuiltGraph {
 impl BuiltGraph {
     pub fn resolve_binding(&self, binding: BindingsId) -> Option<ResourceIndex> {
         debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
-        self.resources[binding.index()].as_ref().map(|res| res.resource)
+        self.resources[binding.index()].as_ref().map(|res| res.resolved_index)
     }
 }
 
@@ -330,6 +324,7 @@ impl<'l> IntoIterator for &'l BuiltGraph {
 #[derive(Clone, Debug, PartialEq)]
 pub enum GraphError {
     DependencyCycle(NodeId),
+    InvalidTextureSize { label: Option<&'static str>, expected: (u32, u32), got: (u32, u32) },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -543,11 +538,6 @@ impl NodeResources {
     }
 }
 
-struct Root {
-    node_id: NodeId,
-    stored_attachments: u32,
-}
-
 struct NodeResource {
     kind: ResourceKind,
     attachment: Attachment,
@@ -557,7 +547,7 @@ pub struct RenderGraph {
     nodes: Vec<Node>,
     resources: Vec<NodeResource>,
     tasks: Vec<TaskId>,
-    roots: Vec<Root>,
+    roots: Vec<Dependency>,
     next_virtual_resource: u16,
 }
 
@@ -639,11 +629,8 @@ impl RenderGraph {
         self.nodes[node.index()].reads.push(dep);
     }
 
-    pub fn add_root(&mut self, root: NodeId, stored_attachments_mask: u32) {
-        self.roots.push(Root {
-            node_id: root,
-            stored_attachments: stored_attachments_mask,
-        });
+    pub fn add_root(&mut self, root: Dependency) {
+        self.roots.push(root);
     }
 
     /// After this call, no dependency to this node can be added.
@@ -656,7 +643,11 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    fn topological_sort(&self, sorted: &mut Vec<NodeId>) -> Result<(), GraphError> {
+    pub fn get_task_id(&self, node: NodeId) -> TaskId {
+        self.tasks[node.index()]
+    }
+
+    fn topological_sort(&self, sorted: &mut Vec<NodeId>) -> Result<(), Box<GraphError>> {
         sorted.reserve(self.nodes.len());
 
         let mut added = vec![false; self.nodes.len()];
@@ -664,7 +655,7 @@ impl RenderGraph {
         let mut stack: Vec<NodeId> = Vec::with_capacity(self.nodes.len());
 
         for root in &self.roots {
-            let root = root.node_id;
+            let root = root.node;
             //println!("- root {root:?}");
             if added[root.index()] {
                 continue;
@@ -684,7 +675,7 @@ impl RenderGraph {
                         Attachment::Dependency(dep) => {
                             if !added[dep.node.index()] {
                                 if cycle_check[dep.node.index()] {
-                                    return Err(GraphError::DependencyCycle(dep.node));
+                                    return Err(Box::new(GraphError::DependencyCycle(dep.node)));
                                 }
 
                                 stack.push(dep.node);
@@ -697,7 +688,7 @@ impl RenderGraph {
                 for dep in &node.reads {
                     if !added[dep.node.index()] {
                         if cycle_check[dep.node.index()] {
-                            return Err(GraphError::DependencyCycle(dep.node));
+                            return Err(Box::new(GraphError::DependencyCycle(dep.node)));
                         }
 
                         stack.push(dep.node);
@@ -714,19 +705,22 @@ impl RenderGraph {
         Ok(())
     }
 
-    pub fn schedule(&mut self) -> Result<BuiltGraph, GraphError> {
+    pub fn schedule(&self) -> Result<BuiltGraph, Box<GraphError>> {
         // TODO: partial schedule
         let full_schedule = true;
 
         let mut sorted = Vec::new();
         self.topological_sort(&mut sorted)?;
 
+        // TODO: lot of overlap with NodeResourceInfo. Could be split into
+        // the vector of Option<NodeResourceInfo> that is eventually returned
+        // and the remaining members in a side array.
         #[derive(Clone)]
         struct VirtualResource {
             refs: u16,
-            size: (u32, u32),
-            id: Option<ResourceIndex>,
-            read_at_least_once: bool,
+            kind: ResourceKind,
+            resolved_index: Option<ResourceIndex>,
+            store: bool,
             reusable: bool,
             load: bool,
         }
@@ -734,10 +728,10 @@ impl RenderGraph {
         let mut virtual_resources = vec![
             VirtualResource {
                 refs: 0,
-                size: (0, 0),
-                id: None,
-                read_at_least_once: false,
                 reusable: false,
+                resolved_index: None,
+                kind: BufferKind::storage().as_resource(),
+                store: false,
                 load: false,
             };
             self.resources.len()
@@ -759,26 +753,25 @@ impl RenderGraph {
                     Attachment::Auto => {
                         VirtualResource {
                             refs: 0,
-                            size: node.size,
-                            id: None,
+                            reusable: full_schedule || !node.readable,
+                            kind: resource.kind,
+                            resolved_index: None,
                             // Only make the physical resource available again if we
                             // know that no new reference can be added to it.
-                            reusable: full_schedule || !node.readable,
-                            read_at_least_once: false,
+                            store: false,
                             load: false,
                         }
                     }
                     Attachment::External(index) => {
                         VirtualResource {
                             refs: 0,
-                            size: node.size,
-                            id: Some(ResourceIndex {
+                            reusable: false,
+                            kind: resource.kind,
+                            resolved_index: Some(ResourceIndex {
                                 index,
-                                kind: resource.kind,
                                 allocation: Allocation::External,
                             }),
-                            reusable: false,
-                            read_at_least_once: false,
+                            store: false,
                             load: false,
                         }
                     }
@@ -787,14 +780,23 @@ impl RenderGraph {
                         let dep_vres = &mut virtual_resources[dep_node.resources.index(dep.slot)];
                         // For now, rendering on top of the output of another node assumes
                         // that what is rendered on top of must be stored.
-                        dep_vres.read_at_least_once = true;
+                        dep_vres.store = true;
+
+                        if dep_node.size != node.size {
+                            return Err(Box::new(GraphError::InvalidTextureSize {
+                                label: node.label,
+                                expected: dep_node.size,
+                                got: node.size,
+                            }));
+                        }
 
                         VirtualResource {
                             refs: 0,
-                            size: dep_vres.size,
-                            id: dep_vres.id,
                             reusable: false,
-                            read_at_least_once: false,
+
+                            kind: resource.kind,
+                            resolved_index: dep_vres.resolved_index,
+                            store: false,
                             load: true,
                         }
                     }
@@ -809,7 +811,7 @@ impl RenderGraph {
                 // that resource's ref count.
                 let vres = &mut virtual_resources[vres_idx];
                 vres.refs += 1;
-                vres.read_at_least_once = true;
+                vres.store = true;
             }
         }
 
@@ -820,7 +822,6 @@ impl RenderGraph {
         for node_id in &sorted {
             let node = &self.nodes[node_id.index()];
 
-            let mut size = None;
             for idx in node.resources.all() {
                 let res = &self.resources[idx];
                 match res.attachment {
@@ -828,7 +829,7 @@ impl RenderGraph {
                         let virt_res = &mut virtual_resources[idx];
                         let resource = temp_resources.get(TempResourceKey {
                             kind: res.kind,
-                            size: virt_res.size,
+                            size: node.size,
                         });
 
                         // We can skip allocating unused resolve targets.
@@ -843,8 +844,7 @@ impl RenderGraph {
                         };
 
                         if allocate {
-                            virt_res.id = Some(ResourceIndex {
-                                kind: res.kind,
+                            virt_res.resolved_index = Some(ResourceIndex {
                                 allocation: Allocation::Temporary,
                                 index: resource
                             });
@@ -852,9 +852,9 @@ impl RenderGraph {
                     }
                     Attachment::Dependency(dep) => {
                         let dep_node = &self.nodes[dep.node.index()];
-                        let pres = virtual_resources[dep_node.resources.index(dep.slot)].id;
+                        let pres = virtual_resources[dep_node.resources.index(dep.slot)].resolved_index;
 
-                        virtual_resources[idx].id = pres;
+                        virtual_resources[idx].resolved_index = pres;
                     }
                     _ => {}
                 }
@@ -864,16 +864,10 @@ impl RenderGraph {
                 // textures that tend to be used within a render pass but not consumed by
                 // other nodes.
                 let vres = &virtual_resources[idx];
-                if let Some(id) = vres.id {
+                if let Some(id) = vres.resolved_index {
                     if vres.reusable && vres.refs == 0 {
-                        temp_resources.recycle(TempResourceKey { kind: id.kind, size: vres.size }, id.index);
+                        temp_resources.recycle(TempResourceKey { kind: vres.kind, size: node.size }, id.index);
                     }
-                }
-
-                // TODO: using the size of the first output is fragile at best and only
-                // makes sense for render passes.
-                if size.is_none() {
-                    size = Some(vres.size);
                 }
             }
 
@@ -885,30 +879,27 @@ impl RenderGraph {
                 // that resource's ref count.
                 let vres = &mut virtual_resources[dep_vres_idx];
                 vres.refs -= 1;
-                if let Some(id) = vres.id {
+                if let Some(id) = vres.resolved_index {
                     if vres.reusable && vres.refs == 0{
-                        temp_resources.recycle(TempResourceKey { kind: id.kind, size: vres.size }, id.index);
+                        temp_resources.recycle(TempResourceKey { kind: vres.kind, size: node.size }, id.index);
                     }
                 }
             }
 
-            let pass_data = size.map(|size| {
-                let pdata = RenderPassData {
-                    target_size: size,
-                };
+            let pdata = RenderPassData {
+                target_size: node.size,
+            };
 
-                let mut pdata_idx = pass_data.len();
-                for (idx, existing) in pass_data.iter().enumerate() {
-                    if *existing == pdata {
-                        pdata_idx = idx;
-                    }
+            // Deduplicate the render pass data if possible.
+            let mut pdata_idx = pass_data.len();
+            for (idx, existing) in pass_data.iter().enumerate() {
+                if *existing == pdata {
+                    pdata_idx = idx;
                 }
-                if pdata_idx == pass_data.len() {
-                    pass_data.push(pdata);
-                }
-
-                pdata_idx as u16
-            }).unwrap_or(0);
+            }
+            if pdata_idx == pass_data.len() {
+                pass_data.push(pdata);
+            }
 
             commands.push(Command {
                 resources: node.resources.clone(),
@@ -918,25 +909,22 @@ impl RenderGraph {
                 label: node.label,
                 node_id: *node_id,
                 task_id: self.tasks[node_id.index()],
-                pass_data_index: pass_data,
+                pass_data_index: pdata_idx as u16,
             });
         }
 
         for root in &self.roots {
-            let offset = self.nodes[root.node_id.index()].resources.all().start;
-            for i in 0..8 {
-                if (root.stored_attachments & (1 << i)) != 0 {
-                    virtual_resources[(offset + i) as usize].read_at_least_once = true;
-                }
-            }
+            let node = &self.nodes[root.node.index()];
+            virtual_resources[node.resources.index(root.slot)].store = true;
         }
 
         let mut resources = Vec::with_capacity(virtual_resources.len());
         for res in &virtual_resources {
-            resources.push(res.id.map(|id| NodeResourceInfo {
-                resource: id,
+            resources.push(res.resolved_index.map(|id| NodeResourceInfo {
+                kind: res.kind,
+                resolved_index: id,
                 load: res.load,
-                store: res.read_at_least_once,
+                store: res.store,
             }));
         }
 
@@ -965,7 +953,7 @@ impl TemporaryResources {
         }
 
         resource.unwrap_or_else(|| {
-            let res = self.resources.len() as PhysicalResourceIndex;
+            let res = self.resources.len() as u16;
             self.resources.push(descriptor);
             res
         })
@@ -1061,7 +1049,7 @@ fn test_nested() {
     graph.add_dependency(n6, n8.color(0));
     graph.add_dependency(n10, n9.color(0));
 
-    graph.add_root(n10, 1);
+    graph.add_root(n10.color(0));
 
     let mut sorted = Vec::new();
     graph.topological_sort(&mut sorted).unwrap();
@@ -1076,11 +1064,11 @@ fn test_nested() {
         println!(" - n{:?} {label}: {:?}", command.node_id.0, command.task_id);
         for res in &commands.resources[command.resources.all()] {
             let Some(res) = res else { continue; };
-            let kind = res.resource.kind.as_texture().unwrap();
+            let kind = res.kind.as_texture().unwrap();
             let kind = if kind.is_color() { "color" }
                 else if kind.is_depth_stencil() { "depth" }
                 else { "unknown" };
-            println!("   - {:?}({}_{}) store:{}", res.resource.allocation, kind, res.resource.index, res.store);
+            println!("   - {:?}({}_{}) store:{}", res.resolved_index.allocation, kind, res.resolved_index.index, res.store);
         }
     }
 

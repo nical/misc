@@ -11,7 +11,7 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{resources::GpuResources, gpu::shader::{ShaderPatternId, BlendMode}, transform::Transforms, batching::BatchId, context::{RenderPassContext, BuiltRenderPass}};
+use core::{batching::BatchId, context::{BuiltRenderPass, RenderPassContext}, gpu::shader::{BlendMode, ShaderPatternId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -555,6 +555,14 @@ fn generate_cover_geometry(
 }
 
 impl core::Renderer for StencilAndCoverRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

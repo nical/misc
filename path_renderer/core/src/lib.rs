@@ -11,16 +11,19 @@ pub mod shape;
 pub mod stroke;
 pub mod transform;
 pub mod render_graph;
+pub mod frame;
+pub mod instance;
 //pub mod canvas;
 
-use context::RenderPassContext;
+use context::{BuiltRenderPass, RenderPassContext};
+use gpu::{shader::PrepareRenderPipelines, Shaders};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
 pub use bytemuck;
 pub use lyon::geom;
 use pattern::BuiltPattern;
-use resources::AsAny;
+use resources::{AsAny, GpuResources};
 use transform::Transforms;
 pub use wgpu;
 pub use etagere;
@@ -443,15 +446,15 @@ impl BufferKind {
         ResourceKind(self.0)
     }
 
-    pub fn storage(self) -> Self {
+    pub fn storage() -> Self {
         BufferKind(Self::BUFFER)
     }
 
-    pub fn uniform(self) -> Self {
+    pub fn uniform() -> Self {
         BufferKind(Self::BUFFER | Self::UNIFORM)
     }
 
-    pub fn staging(self) -> Self {
+    pub fn staging() -> Self {
         BufferKind(Self::BUFFER | Self::COPY_SRC | Self::COPY_DST)
     }
 
@@ -485,14 +488,39 @@ impl BindingResolver for () {
     fn resolve_attachment(&self, _: BindingsId) -> Option<&wgpu::TextureView> { None }
 }
 
-/// Parameters for the canvas renderers
+/// Parameters for the renderering stage.
 pub struct RenderContext<'l> {
     pub render_pipelines: &'l gpu::shader::RenderPipelines,
     pub resources: &'l resources::GpuResources,
     pub bindings: &'l dyn BindingResolver,
 }
 
+/// Parameters for the renderering stage.
+pub struct PrepareContext<'l> {
+    pub pass: &'l BuiltRenderPass,
+    pub transforms: &'l Transforms,
+    pub pipelines: &'l mut PrepareRenderPipelines,
+}
+
+/// Parameters for the renderering stage.
+pub struct UploadContext<'l> {
+    pub resources: &'l mut GpuResources,
+    pub shaders: &'l Shaders,
+    pub wgpu: WgpuContext<'l>,
+}
+
+#[derive(Copy, Clone)]
+pub struct WgpuContext<'l> {
+    pub device: &'l wgpu::Device,
+    pub queue: &'l wgpu::Queue,
+}
+
 pub trait Renderer: AsAny {
+    fn prepare(&mut self, ctx: &mut PrepareContext);
+
+    fn upload(&mut self, ctx: &mut UploadContext);
+
+    // TODO: this is not wired in anymore.
     fn render_pre_pass(
         &self,
         _index: u32,

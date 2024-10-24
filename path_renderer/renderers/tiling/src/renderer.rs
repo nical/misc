@@ -2,7 +2,7 @@ use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingG
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::batching::SurfaceIndex;
 use core::transform::Transforms;
-use core::{bytemuck, SurfaceKind};
+use core::{bytemuck, PrepareContext, SurfaceKind, UploadContext};
 use core::context::{SurfaceDrawConfig, RenderPassContext, BuiltRenderPass};
 use core::gpu::shader::{RenderPipelineIndex, BaseShaderId, ShaderPatternId, BlendMode};
 use core::wgpu;
@@ -641,6 +641,15 @@ impl TileRenderer {
 }
 
 impl core::Renderer for TileRenderer {
+    fn prepare(&mut self, _: &mut PrepareContext) {
+        // the prepare impl needs access ot the device.
+        todo!();
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render_pre_pass(&self, index: u32, ctx: core::RenderContext, encoder: &mut wgpu::CommandEncoder) {
         let pass = &self.encoder.render_passes[index as usize];
         if pass.color_pre_pass {

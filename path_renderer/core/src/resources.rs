@@ -1,4 +1,4 @@
-use crate::gpu::{DynamicStore, GpuStore, RenderPassDescriptor, PipelineDefaults, Shaders};
+use crate::gpu::{DynamicStore, GpuStoreResources, PipelineDefaults, RenderPassDescriptor, Shaders};
 use crate::render_graph::{RenderPassData, TempResourceKey};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
@@ -16,10 +16,9 @@ pub struct GpuResources {
 impl GpuResources {
     pub fn new(
         device: &wgpu::Device,
-        gpu_store: &GpuStore,
         shaders: &mut crate::gpu::Shaders,
     ) -> Self {
-        let common = CommonGpuResources::new(device, gpu_store, shaders);
+        let common = CommonGpuResources::new(device, shaders);
         let graph = RenderGraphResources::new(device);
 
         GpuResources {
@@ -75,11 +74,10 @@ impl GpuResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         shaders: &Shaders,
-        gpu_store: &GpuStore,
         allocations: &[TempResourceKey],
         pass_data: &[RenderPassData],
     ) {
-        self.graph.upload(device, queue, shaders, gpu_store, allocations, pass_data);
+        self.graph.upload(device, queue, shaders, &self.common, allocations, pass_data);
     }
 
     pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -117,7 +115,8 @@ pub struct CommonGpuResources {
     pub vertices: DynamicStore,
     pub indices: DynamicStore,
 
-    pub gpu_store_view: wgpu::TextureView,
+    pub gpu_store: GpuStoreResources,
+
     pub default_sampler: wgpu::Sampler,
 
     pub msaa_blit_layout: wgpu::PipelineLayout,
@@ -129,7 +128,6 @@ pub struct CommonGpuResources {
 impl CommonGpuResources {
     pub fn new(
         device: &wgpu::Device,
-        gpu_store: &GpuStore,
         shaders: &mut crate::gpu::Shaders,
     ) -> Self {
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
@@ -139,7 +137,7 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let gpu_store_view = gpu_store.create_texture_view();
+        let gpu_store_resources = GpuStoreResources::new(device);
 
         let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("default sampler"),
@@ -228,7 +226,7 @@ impl CommonGpuResources {
             quad_ibo,
             vertices,
             indices,
-            gpu_store_view,
+            gpu_store: gpu_store_resources,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,
             msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
@@ -301,7 +299,7 @@ impl RenderGraphResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         shaders: &Shaders,
-        gpu_store: &GpuStore,
+        resources: &CommonGpuResources,
         allocations: &[TempResourceKey],
         pass_data: &[RenderPassData],
     ) {
@@ -326,9 +324,9 @@ impl RenderGraphResources {
             self.resources.push(resource);
         }
 
-        if self.gpu_store_epoch != gpu_store.epoch() {
-            self.gpu_store_epoch = gpu_store.epoch();
-            // If the gpu store texture changes, we have to re-create the bind groups.
+        if self.gpu_store_epoch != resources.gpu_store.epoch() {
+            self.gpu_store_epoch = resources.gpu_store.epoch();
+            // If the gpu store texture ch_anges, we have to re-create the bind groups.
             self.pass_bind_groups.clear();
         }
 
@@ -363,7 +361,7 @@ impl RenderGraphResources {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
-                            resource: wgpu::BindingResource::TextureView(gpu_store.texture_view()),
+                            resource: wgpu::BindingResource::TextureView(&resources.gpu_store.view),
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,

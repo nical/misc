@@ -1,6 +1,8 @@
 use std::ops::Range;
 use wgpu::BufferAddress;
 
+use crate::units::SurfaceIntSize;
+
 const GPU_STORE_WIDTH: u32 = 2048;
 const FLOATS_PER_ROW: usize = GPU_STORE_WIDTH as usize * 4;
 
@@ -22,47 +24,20 @@ impl GpuStoreHandle {
 }
 
 pub struct GpuStore {
+    // This vector is allocated and potentially grown each frame.
+    // It would be worth switching to a list of fixed-size chunks that are
+    // copied separately.
     data: Vec<f32>,
-
     offset: usize,
-    height: usize,
-
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-
-    epoch: u32,
 }
 
 impl GpuStore {
-    pub fn new(h: u32, device: &wgpu::Device) -> Self {
+    pub fn new(h: u32) -> Self {
         let size = FLOATS_PER_ROW * h as usize;
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gpu store"),
-            size: wgpu::Extent3d {
-                width: GPU_STORE_WIDTH,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            sample_count: 1,
-            mip_level_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[wgpu::TextureFormat::Rgba32Float],
-        });
-
-        let view = texture.create_view(&Default::default());
 
         GpuStore {
             offset: 0,
             data: vec![0.0; size],
-            height: h as usize,
-
-            texture,
-            view,
-
-            epoch: 0,
         }
     }
 
@@ -70,6 +45,7 @@ impl GpuStore {
         let size = (data.len() + 3) & !3;
         if self.data.len() < self.offset + size {
             self.data.resize(self.data.len() * 2, 0.0);
+            println!("Growing the gpu store CPU buffer to {:?}", self.data.len())
         }
 
         self.data[self.offset..self.offset + data.len()].copy_from_slice(data);
@@ -84,7 +60,7 @@ impl GpuStore {
         self.offset = 0;
     }
 
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue, resources: &mut GpuStoreResources) {
         if self.offset == 0 {
             return;
         }
@@ -92,14 +68,14 @@ impl GpuStore {
         let w = 4 * GPU_STORE_WIDTH as usize;
         let rows = self.offset / w + if self.offset % w == 0 { 0 } else { 1 };
 
-        if rows > self.height {
-            self.epoch += 1;
-            self.height = self.data.len() / FLOATS_PER_ROW;
-            self.texture = device.create_texture(&wgpu::TextureDescriptor {
+        if rows > resources.rows as usize {
+            resources.epoch += 1;
+            let height = self.data.len() / FLOATS_PER_ROW + 1;
+            resources.texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("gpu store"),
                 size: wgpu::Extent3d {
                     width: GPU_STORE_WIDTH,
-                    height: self.height as u32,
+                    height: height as u32,
                     depth_or_array_layers: 1,
                 },
                 sample_count: 1,
@@ -109,11 +85,22 @@ impl GpuStore {
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[wgpu::TextureFormat::Rgba32Float],
             });
+
+            resources.view = resources.texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("gpu store"),
+                format: Some(wgpu::TextureFormat::Rgba32Float),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::All,
+                base_mip_level: 0,
+                base_array_layer: 0,
+                mip_level_count: Some(1),
+                array_layer_count: Some(1),
+            });
         }
 
         queue.write_texture(
             wgpu::ImageCopyTexture {
-                texture: &self.texture,
+                texture: &resources.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -132,17 +119,9 @@ impl GpuStore {
         );
     }
 
-    // The epoch changes when the texture is reallocated.
-    pub fn epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.texture
-    }
-
-    pub fn texture_view(&self) -> &wgpu::TextureView {
-        &self.view
+    pub fn texture_size(&self) -> SurfaceIntSize {
+        let height = self.data.len() / FLOATS_PER_ROW + 1;
+        SurfaceIntSize::new(GPU_STORE_WIDTH as i32, height as i32)
     }
 
     pub fn bind_group_layout_entry(
@@ -161,10 +140,36 @@ impl GpuStore {
             count: None,
         }
     }
+}
 
-    // TODO: remove this
-    pub fn create_texture_view(&self) -> wgpu::TextureView {
-        self.texture.create_view(&wgpu::TextureViewDescriptor {
+pub struct GpuStoreResources {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub rows: i32,
+    epoch: u32,
+}
+
+impl GpuStoreResources {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let width = GPU_STORE_WIDTH;
+        let height = 512;
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gpu store"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            mip_level_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[wgpu::TextureFormat::Rgba32Float],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("gpu store"),
             format: Some(wgpu::TextureFormat::Rgba32Float),
             dimension: Some(wgpu::TextureViewDimension::D2),
@@ -173,7 +178,19 @@ impl GpuStore {
             base_array_layer: 0,
             mip_level_count: Some(1),
             array_layer_count: Some(1),
-        })
+        });
+
+        GpuStoreResources {
+            texture,
+            view,
+            rows: height as i32,
+            epoch: 0,
+        }
+    }
+
+    /// The epoch changes when the texture is reallocated.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
     }
 }
 

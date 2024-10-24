@@ -1,23 +1,12 @@
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
-    bytemuck,
-    context::{
-        DrawHelper, RendererId,
-        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
-    },
-    gpu::{
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+    }, gpu::{
         shader::{
-            BaseShaderId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey, BlendMode,
+            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
         },
         DynBufferRange,
-    },
-    path::Path,
-    pattern::BuiltPattern,
-    resources::GpuResources,
-    shape::{Circle, FilledPath},
-    transform::{TransformId, Transforms},
-    units::{point, LocalPoint, LocalRect},
-    BindingsId, usize_range, wgpu,
+    }, path::Path, pattern::BuiltPattern, resources::GpuResources, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use lyon::{
     geom::euclid::vec2,
@@ -479,6 +468,14 @@ impl MeshRenderer {
 }
 
 impl core::Renderer for MeshRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

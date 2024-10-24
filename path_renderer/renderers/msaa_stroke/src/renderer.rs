@@ -1,21 +1,11 @@
 use core::{
-    batching::{BatchFlags, BatchId, BatchList},
-    bytemuck,
-    context::{
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
         BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    },
-    gpu::{
+    }, gpu::{
         shader::{
             BaseShaderId, BindGroupLayoutId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
         }, storage_buffer::{StorageBuffer, StorageKind}, DynBufferRange, Shaders
-    },
-    //path::Path,
-    pattern::BuiltPattern,
-    resources::GpuResources,
-    shape::FilledPath,
-    transform::{TransformId, Transforms},
-    units::LocalRect,
-    BindingsId, usize_range, wgpu, Point,
+    }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use lyon::{
     geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment},
@@ -146,6 +136,7 @@ impl MsaaStrokeRenderer {
         self.path_data.clear();
         self.instance_range = None;
         self.ibo_range = None;
+        self.paths.begin_frame();
     }
 
     pub fn stroke_path<P: Into<FilledPath>>(
@@ -329,6 +320,14 @@ impl MsaaStrokeRenderer {
 }
 
 impl core::Renderer for MsaaStrokeRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.shaders, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

@@ -2,18 +2,9 @@
 //! An empty render that serves as a template for quickly adding new renderers
 
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
-    context::{
-        RenderPassBuilder, DrawHelper, RendererId,
-        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
-    },
-    pattern::BuiltPattern,
-    resources::{CommonGpuResources, GpuResources},
-    shape::FilledPath,
-    transform::{TransformId, Transforms},
-    units::LocalRect,
-    gpu::shader::{RenderPipelineIndex, PrepareRenderPipelines},
-    BindingsId, usize_range, wgpu,
+    batching::{BatchFlags, BatchId, BatchList}, context::{
+        BuiltRenderPass, DrawHelper, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+    }, gpu::shader::{PrepareRenderPipelines, RenderPipelineIndex}, pattern::BuiltPattern, resources::{CommonGpuResources, GpuResources}, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use std::ops::Range;
 
@@ -172,6 +163,15 @@ impl TemplateRenderer {
 }
 
 impl core::Renderer for TemplateRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],

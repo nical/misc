@@ -259,7 +259,7 @@ impl TilingGpuResources {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&common.gpu_store_view),
+                        resource: wgpu::BindingResource::TextureView(&common.gpu_store.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -281,7 +281,7 @@ impl TilingGpuResources {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&common.gpu_store_view),
+                        resource: wgpu::BindingResource::TextureView(&common.gpu_store.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,

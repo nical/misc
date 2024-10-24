@@ -1,14 +1,15 @@
-use core::render_graph::{Allocation, Attachment, BuiltGraph, ColorAttachment, NodeDescriptor, RenderGraph, TaskId};
-use core::{context::*, FillPath};
-use core::gpu::shader::{RenderPipelineBuilder, PrepareRenderPipelines, BlendMode};
-use core::gpu::{GpuStore, Shaders};
+use core::frame::RenderSurface;
+use core::instance::Instance;
+use core::render_graph::{Allocation, Attachment, BuiltGraph, ColorAttachment, NodeDescriptor, TaskId};
+use core::{context::*, FillPath, Renderer};
+use core::gpu::shader::BlendMode;
 use core::path::Path;
-use core::resources::{GpuResource, GpuResources};
+use core::frame::Frame;
+use core::resources::GpuResource;
 use core::shape::*;
 use core::stroke::*;
-use core::transform::Transforms;
 use core::units::{
-    point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntRect, SurfaceIntSize
+    point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
@@ -83,26 +84,6 @@ impl Renderers {
         self.msaa_strokes.begin_frame();
     }
 
-    fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, prep: &mut PrepareRenderPipelines, _device: &wgpu::Device) {
-        //self.tiling.prepare(pass, transforms, prep, &device);
-        self.tiling2.prepare(pass, transforms, prep);
-        self.meshes.prepare(pass, transforms, prep);
-        self.stencil.prepare(pass, transforms, prep);
-        self.rectangles.prepare(pass, prep);
-        self.wpf.prepare(pass, transforms, prep);
-        self.msaa_strokes.prepare(pass, transforms, prep);
-    }
-
-    fn upload(&mut self, gpu_resources: &mut GpuResources, shaders: &Shaders, device: &wgpu::Device, queue: &wgpu::Queue) {
-        //self.tiling.upload(gpu_resources, &device, &queue);
-        self.tiling2.upload(gpu_resources, &device, &queue);
-        self.meshes.upload(gpu_resources, &device, &queue);
-        self.stencil.upload(gpu_resources, &device);
-        self.rectangles.upload(gpu_resources, &device, &queue);
-        self.wpf.upload(gpu_resources, &device, &queue);
-        self.msaa_strokes.upload(gpu_resources, &shaders, &device, &queue);
-    }
-
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
         [
             //&mut self.tiling as &mut dyn FillPath,
@@ -129,47 +110,25 @@ struct App {
     surface: wgpu::Surface<'static>,
     surface_desc: wgpu::SurfaceConfiguration,
 
-    shaders: Shaders,
-    gpu_resources: GpuResources,
+    instance: Instance,
+
     renderers: Renderers,
-    render_pipelines: core::gpu::shader::RenderPipelines,
     patterns: Patterns,
-    gpu_store: GpuStore,
-    transforms: Transforms,
+
+    //shaders: Shaders,
+    //gpu_resources: GpuResources,
+    //render_pipelines: core::gpu::shader::RenderPipelines,
+    //gpu_store: GpuStore,
+
     overlay: Overlay,
     stats_renderer: OverlayRenderer,
     counters: Counters,
     wgpu_counters: counters::wgpu::Ids,
     renderer_counters: counters::render::Ids,
-    main_surface: RenderSurface,
-    atlas: AtlasSurface,
     paths: Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>,
 
-    sum_frame_build_time: Duration,
-    sum_render_time: Duration,
-    sum_present_time: Duration,
     asap: bool,
     z_buffer: Option<bool>,
-}
-
-struct RenderSurface {
-    pass: RenderPassBuilder,
-}
-
-struct AtlasSurface {
-    atlas: core::etagere::AtlasAllocator,
-    pass: RenderPassBuilder,
-    size: SurfaceIntSize,
-}
-
-impl AtlasSurface {
-    pub fn allocate(&mut self, size: SurfaceIntSize) -> Option<SurfaceIntRect> {
-        self.atlas.allocate(size.cast_unit()).map(|alloc| alloc.rectangle.cast_unit())
-    }
-
-    pub fn reset(&mut self) {
-        self.atlas.clear();
-    }
 }
 
 impl ApplicationHandler for AppState {
@@ -329,36 +288,14 @@ impl App {
 
         //tiler_config.view_box = view_box;
 
-        let mut shaders = Shaders::new(&device);
-        let render_pipelines = core::gpu::shader::RenderPipelines::new();
+        let mut instance = Instance::new(&device);
 
         let patterns = Patterns {
-            colors: SolidColorRenderer::register(&mut shaders),
-            gradients: LinearGradientRenderer::register(&mut shaders),
-            checkerboards: CheckerboardRenderer::register(&mut shaders),
-            textures: TextureRenderer::register(&device, &mut shaders),
+            colors: SolidColorRenderer::register(&mut instance.shaders),
+            gradients: LinearGradientRenderer::register(&mut instance.shaders),
+            checkerboards: CheckerboardRenderer::register(&mut instance.shaders),
+            textures: TextureRenderer::register(&device, &mut instance.shaders),
         };
-
-        let main_pass = RenderPassBuilder::new();
-        let transforms = Transforms::new();
-
-        let gpu_store = GpuStore::new(2048, &device);
-
-        let mut gpu_resources = GpuResources::new(
-            &device,
-            &gpu_store,
-            &mut shaders,
-        );
-
-        //let tiling_resources = TilingGpuResources::new(
-        //    &mut gpu_resources.common,
-        //    &device,
-        //    &mut shaders,
-        //    &patterns.textures,
-        //    mask_atlas_size,
-        //    color_atlas_size,
-        //    _use_ssaa4,
-        //);
 
         let stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
             target_format: wgpu::TextureFormat::Bgra8Unorm,
@@ -384,17 +321,17 @@ impl App {
             gpu: z_buffer.unwrap_or(false),
         };
 
-        let rectangles = Rectangles::new(&device, &mut shaders);
-        let tessellation = Tessellation::new(&device, &mut shaders);
-        let tiling = Tiling::new(&device, &mut shaders);
-        let stencil_and_cover = StencilAndCover::new(&mut gpu_resources.common, &device, &mut shaders);
-        let wpf = Wpf::new(&device, &mut shaders);
-        let msaa_stroke = MsaaStroke::new(&device, &mut shaders);
+        let rectangles = Rectangles::new(&device, &mut instance.shaders);
+        let tessellation = Tessellation::new(&device, &mut instance.shaders);
+        let tiling = Tiling::new(&device, &mut instance.shaders);
+        let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &device, &mut instance.shaders);
+        let wpf = Wpf::new(&device, &mut instance.shaders);
+        let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
 
         let mut renderers = Renderers {
             tiling2: tiling.new_renderer(
                 &device,
-                &mut shaders,
+                &mut instance.shaders,
                 0,
                 &tiling2::RendererOptions {
                     tolerance,
@@ -454,30 +391,15 @@ impl App {
             queue,
             surface,
             surface_desc,
-            shaders,
-            gpu_resources,
+            instance,
             renderers,
-            render_pipelines,
             patterns,
-            gpu_store,
-            transforms,
             overlay,
             stats_renderer,
             counters,
             wgpu_counters,
             renderer_counters,
-            main_surface: RenderSurface {
-                pass: main_pass
-            },
-            atlas: AtlasSurface {
-                pass: RenderPassBuilder::new(),
-                atlas: core::etagere::AtlasAllocator::new(ATLAS_SIZE.cast_unit()),
-                size: ATLAS_SIZE,
-            },
             paths,
-            sum_frame_build_time: Duration::ZERO,
-            sum_present_time: Duration::ZERO,
-            sum_render_time: Duration::ZERO,
             asap,
             z_buffer,
         })
@@ -605,7 +527,7 @@ impl App {
         }
         self.view.render = false;
 
-        let frame = match self.surface.get_current_texture() {
+        let wgpu_frame = match self.surface.get_current_texture() {
             Ok(texture) => texture,
             Err(e) => {
                 println!("Swap-chain error: {:?}", e);
@@ -615,8 +537,8 @@ impl App {
 
         //println!("\n\n\n ----- \n\n");
 
-        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.shaders.defaults.color_format()),
+        let frame_view = wgpu_frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.instance.shaders.defaults.color_format()),
             ..Default::default()
         });
 
@@ -637,15 +559,8 @@ impl App {
             stencil: self.view.fill_renderer == STENCIL,
             kind: SurfaceKind::Color,
         };
-        let atlas_surface_cfg = SurfacePassConfig {
-            depth: false,
-            msaa: false,
-            stencil: false,
-            kind: SurfaceKind::Color,
-        };
 
-        self.gpu_store.clear();
-        self.transforms.clear();
+        let mut frame = self.instance.begin_frame();
 
         self.renderers.begin_frame();
 
@@ -708,27 +623,8 @@ impl App {
             self.overlay.finish();
         }
 
-        self.main_surface.pass.begin(size, main_surface_cfg);
-        self.atlas.pass.begin(size, atlas_surface_cfg);
-
-        let mut graph = RenderGraph::new();
-
-        self.gpu_resources.begin_frame();
-
-        let tx = self.view.pan[0].round();
-        let ty = self.view.pan[1].round();
-        let hw = (size.width as f32) * 0.5;
-        let hh = (size.height as f32) * 0.5;
-        let transform = LocalTransform::translation(tx, ty)
-            .then_translate(-vector(hw, hh))
-            .then_scale(self.view.zoom, self.view.zoom)
-            .then_translate(vector(hw, hh));
-
-        let test_stuff = self.view.scene_idx == 0;
-
         let record_start = Instant::now();
 
-        let main_target_binding = BindingsId::external(0);
         let attachments = [ColorAttachment::color().with_external(0, false)];
         let mut descriptor = NodeDescriptor::new()
             .task(TaskId(0))
@@ -743,88 +639,37 @@ impl App {
             );
         }
 
-        let root = graph.add_node(&descriptor);
+        let mut main_surface = frame.begin_render_surface(descriptor);
+        frame.add_root(main_surface.node_id().color(0));
 
-        let _atlas_id = graph.add_node(
-            &NodeDescriptor::new()
-                .task(TaskId(1))
-                .size(SurfaceIntSize::new(2048, 2048))
-                .attachments(&[ColorAttachment::color()])
-        );
+        let tx = self.view.pan[0].round();
+        let ty = self.view.pan[1].round();
+        let hw = (size.width as f32) * 0.5;
+        let hh = (size.height as f32) * 0.5;
+        let transform = LocalTransform::translation(tx, ty)
+            .then_translate(-vector(hw, hh))
+            .then_scale(self.view.zoom, self.view.zoom)
+            .then_translate(vector(hw, hh));
 
-        graph.add_root(root, 1);
+        let test_stuff = self.view.scene_idx == 0;
 
         paint_scene(
             &self.paths,
             self.view.fill_renderer,
             self.view.stroke_renderer,
             test_stuff,
-            &mut self.main_surface.pass,
-            &mut self.transforms,
+            &mut main_surface,
+            &mut frame,
+            &mut self.instance,
             &mut self.renderers,
             &self.patterns,
-            &mut self.gpu_store,
             &transform,
         );
 
+        frame.end_render_surface(main_surface);
+
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
-
-        let mut tasks = Vec::new();
-
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-        struct ColorAttachment2 {
-            view: AttachmentId,
-            resolve_target: Option<AttachmentId>,
-        }
-
-        impl From<AttachmentId> for ColorAttachment2 {
-            fn from(id: AttachmentId) -> Self {
-                ColorAttachment2 { view: id, resolve_target: None, }
-            }
-        }
-
-        let built_graph = graph.schedule().unwrap();
-
-        // TODO: the indices here must match the task id.
-        tasks.push(self.main_surface.pass.end());
-        tasks.push(self.atlas.pass.end());
-
-        let mut prep_pipelines = self.render_pipelines.prepare();
-
-        for pass in &tasks {
-            if pass.is_empty() {
-                continue;
-            }
-            self.renderers.prepare(
-                pass,
-                &self.transforms,
-                &mut prep_pipelines,
-                &self.device,
-            );
-        }
-
-        let changes = prep_pipelines.finish();
-        self.render_pipelines.build(
-            &[&changes],
-            &mut RenderPipelineBuilder(&self.device, &mut self.shaders),
-        );
-
-        let render_start = Instant::now();
-        let frame_build_time = render_start - frame_build_start;
-        self.sum_frame_build_time += frame_build_time;
-
-        self.gpu_resources.upload(
-            &self.device,
-            &self.queue,
-            &self.shaders,
-            &self.gpu_store,
-            &built_graph.temporary_resources,
-            &built_graph.pass_data,
-        );
-
-        self.renderers.upload(&mut self.gpu_resources, &self.shaders, &self.device, &self.queue);
-        self.gpu_store.upload(&self.device, &self.queue);
 
         // TODO
         self.stats_renderer.update(
@@ -838,111 +683,28 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        self.gpu_resources.begin_rendering(&mut encoder);
-
-        let bindings = Bindings {
-            graph: &built_graph,
-            external_inputs: &[],
-            external_attachments: &[
-                Some(&frame_view),
+        let render_stats = self.instance.render(
+            frame,
+            &mut [
+                &mut self.renderers.tiling2 as &mut dyn Renderer,
+                &mut self.renderers.meshes,
+                &mut self.renderers.stencil,
+                &mut self.renderers.rectangles,
+                &mut self.renderers.wpf,
+                &mut self.renderers.msaa_strokes,
             ],
-            resources: &self.gpu_resources.graph.resources(),
-        };
-
-        let mut attachments = Vec::new();
-        for command in &built_graph {
-            let built_pass = &tasks[command.task_id().0 as usize];
-            if built_pass.is_empty() {
-                continue;
-            }
-
-            attachments.clear();
-            for item in command.color_attachments() {
-                let Some(color_attachment) = item.attachment else {
-                    attachments.push(None);
-                    continue;
-                };
-
-                let view = bindings.resolve_attachment(color_attachment.binding()).unwrap();
-
-                let resolve_target = item.resolve_target.and_then(|attachment| {
-                    bindings.resolve_attachment(attachment.binding())
-                });
-
-                attachments.push(Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: if color_attachment.load() {
-                            wgpu::LoadOp::Load
-                        } else {
-                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                        },
-                        store: if color_attachment.store() {
-                            wgpu::StoreOp::Store
-                        } else {
-                            wgpu::StoreOp::Discard
-                        }
-                    }
-                }));
-            }
-
-            let depth_stencil_attachment = command.depth_stencil_attachment().map(|attachment| {
-                let view = bindings.resolve_attachment(attachment.binding()).unwrap();
-
-                wgpu::RenderPassDepthStencilAttachment {
-                    view,
-                    depth_ops: if attachment.depth() {
-                        Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0.0),
-                            store: wgpu::StoreOp::Discard,
-                        })
-                    } else {
-                        None
-                    },
-                    stencil_ops: if attachment.stencil() {
-                        Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(128),
-                            store: wgpu::StoreOp::Discard,
-                        })
-                    } else {
-                        None
-                    },
-                }
-            });
-
-            let pass_descriptor = &wgpu::RenderPassDescriptor {
-                label: command.label(),
-                color_attachments: &attachments,
-                depth_stencil_attachment,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            };
-
-            let mut wgpu_pass = encoder.begin_render_pass(&pass_descriptor);
-
-            built_pass.encode(
-                command.pass_data_index(),
-                &[
-                    &self.renderers.tiling2,
-                    &self.renderers.meshes,
-                    &self.renderers.stencil,
-                    &self.renderers.rectangles,
-                    &self.renderers.wpf,
-                    &self.renderers.msaa_strokes,
-                ],
-                &self.gpu_resources,
-                &bindings,
-                &self.render_pipelines,
-                &mut wgpu_pass,
-            );
-        }
+            &[],
+            &[Some(&frame_view)],
+            &self.device,
+            &self.queue,
+            &mut encoder,
+        );
 
         if self.view.debug_overlay {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Debug overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: bindings.resolve_attachment(main_target_binding).unwrap(),
+                    view: &frame_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -957,24 +719,21 @@ impl App {
             self.stats_renderer.render(&mut render_pass);
         }
 
+        let present_start = Instant::now();
+
         self.queue.submit(Some(encoder.finish()));
 
-        let present_start = Instant::now();
-        let render_time = present_start - render_start;
-        self.sum_render_time += render_time;
-
-        frame.present();
+        wgpu_frame.present();
 
         let present_time = Instant::now() - present_start;
-        self.sum_present_time += present_time;
 
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
         }
 
         let rec_t = ms(record_time);
-        let fbt = ms(frame_build_time);
-        let rt = ms(render_time);
+        let fbt = render_stats.prepare_time_ms;
+        let rt = render_stats.upload_time_ms + render_stats.render_time_ms;
         let pt = ms(present_time);
         self.counters.set(self.renderer_counters.batching(), rec_t);
         self.counters.set(self.renderer_counters.prepare(), fbt);
@@ -986,10 +745,6 @@ impl App {
         debug_overlay::update_wgpu_internal_counters(&mut self.counters, self.wgpu_counters, &wgpu_counters);
 
         self.counters.update();
-
-        std::mem::drop(bindings);
-
-        self.gpu_resources.end_frame();
 
         if self.asap {
             self.window.request_redraw();
@@ -1016,16 +771,16 @@ fn paint_scene(
     fill_renderer: usize,
     stroke_renderer: usize,
     testing: bool,
-    pass: &mut RenderPassBuilder,
-    transforms: &mut Transforms,
+    surface: &mut RenderSurface,
+    frame: &mut Frame,
+    _instance: &mut Instance,
     renderers: &mut Renderers,
     patterns: &Patterns,
-    gpu_store: &mut GpuStore,
     transform: &LocalTransform,
 ) {
     if testing {
         let gradient = patterns.gradients.add(
-            gpu_store,
+            &mut frame.gpu_store,
             LinearGradient {
                 from: point(100.0, 100.0),
                 color0: Color {
@@ -1042,13 +797,13 @@ fn paint_scene(
                     a: 255,
                 },
             }
-            .transformed(&transforms.get_current().matrix().to_untyped()),
+            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
         );
 
-        renderers.tiling2.fill_surface(&mut pass.ctx(), &transforms, gradient);
+        renderers.tiling2.fill_surface(&mut surface.ctx(), &frame.transforms, gradient);
     }
 
-    transforms.push(transform);
+    frame.transforms.push(transform);
 
     for (path, fill, stroke) in paths {
         if let Some(fill) = fill {
@@ -1060,19 +815,19 @@ fn paint_scene(
                     from,
                     to,
                 } => patterns.gradients.add(
-                    gpu_store,
+                    &mut frame.gpu_store,
                     LinearGradient {
                         color0,
                         color1,
                         from,
                         to,
                     }
-                    .transformed(&transforms.get_current().matrix().to_untyped()),
+                    .transformed(&frame.transforms.get_current().matrix().to_untyped()),
                 ),
             };
 
             let path = FilledPath::new(path.clone());
-            renderers.fill(fill_renderer).fill_path(&mut pass.ctx(), transforms, path, pattern);
+            renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), &frame.transforms, path, pattern);
         }
 
         if let Some(stroke) = stroke {
@@ -1087,20 +842,20 @@ fn paint_scene(
                     from,
                     to,
                 } => patterns.gradients.add(
-                    gpu_store,
+                    &mut frame.gpu_store,
                     LinearGradient {
                         color0,
                         color1,
                         from,
                         to,
                     }
-                    .transformed(&transforms.get_current().matrix().to_untyped()),
+                    .transformed(&frame.transforms.get_current().matrix().to_untyped()),
                 ),
             };
 
             match stroke_renderer {
                 crate::INSTANCED => {
-                    renderers.msaa_strokes.stroke_path(&mut pass.ctx(), transforms, path.clone(), pattern, width);
+                    renderers.msaa_strokes.stroke_path(&mut surface.ctx(), &frame.transforms, path.clone(), pattern, width);
                 }
                 crate::STROKE_TO_FILL => {
                     let w = width * 0.5;
@@ -1125,7 +880,7 @@ fn paint_scene(
                     }
                     let stroked_path = stroked_path.build();
                     let path = FilledPath::new(Arc::new(stroked_path));
-                    renderers.fill(fill_renderer).fill_path(&mut pass.ctx(), transforms, path, pattern);
+                    renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), &frame.transforms, path, pattern);
                 }
                 _ => {
                     unimplemented!();
@@ -1136,10 +891,10 @@ fn paint_scene(
 
     if testing {
 
-        transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let transform_handle = transforms.get_current_gpu_handle(gpu_store);
+        frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+        let transform_handle = frame.transforms.get_current_gpu_handle(&mut frame.gpu_store);
         let gradient = patterns.gradients.add(
-            gpu_store,
+            &mut frame.gpu_store,
             LinearGradient {
                 from: point(0.0, 700.0),
                 to: point(0.0, 900.0),
@@ -1159,8 +914,8 @@ fn paint_scene(
         );
 
         renderers.rectangles.fill_rect(
-            &mut pass.ctx(),
-            transforms,
+            &mut surface.ctx(),
+            &frame.transforms,
             &LocalRect {
                 min: point(200.0, 700.0),
                 max: point(300.0, 900.0),
@@ -1170,8 +925,8 @@ fn paint_scene(
             transform_handle,
         );
         renderers.rectangles.fill_rect(
-            &mut pass.ctx(),
-            transforms,
+            &mut surface.ctx(),
+            &frame.transforms,
             &LocalRect {
                 min: point(310.5, 700.5),
                 max: point(410.5, 900.5),
@@ -1180,7 +935,7 @@ fn paint_scene(
             gradient,
             transform_handle,
         );
-        transforms.pop();
+        frame.transforms.pop();
 
         //renderers.tiling.fill_circle(
         //    ctx,
@@ -1217,11 +972,11 @@ fn paint_scene(
 
         let fill: FilledPath = builder.build().into();
         renderers.fill(fill_renderer).fill_path(
-            &mut pass.ctx(),
-            transforms,
+            &mut surface.ctx(),
+            &frame.transforms,
             fill,//.inverted(),
             patterns.checkerboards.add(
-                gpu_store,
+                &mut frame.gpu_store,
                 &Checkerboard {
                     color0: Color {
                         r: 10,
@@ -1233,11 +988,11 @@ fn paint_scene(
                     scale: 25.0,
                     offset: point(0.0, 0.0),
                 }
-                .transformed(&transforms.get_current().matrix().to_untyped()),
+                .transformed(&frame.transforms.get_current().matrix().to_untyped()),
             ).with_blend_mode(BlendMode::Screen),
         );
 
-        transforms.pop();
+        frame.transforms.pop();
 
         //let black = patterns.colors.add(Color::BLACK);
         //renderers.tiling.fill_rect(
@@ -1350,11 +1105,11 @@ fn paint_scene(
 
         if false {
             let offset_path = builder2.build();
-            renderers.tiling2.fill_path(&mut pass.ctx(), transforms, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling2.fill_path(&mut surface.ctx(), &frame.transforms, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
-                &mut pass.ctx(),
-                transforms,
+                &mut surface.ctx(),
+                &frame.transforms,
                 offset_path.clone(),
                 1.0,
                 patterns.colors.add(Color {
@@ -1365,8 +1120,8 @@ fn paint_scene(
                 }),
             );
             renderers.meshes.stroke_path(
-                &mut pass.ctx(),
-                transforms,
+                &mut surface.ctx(),
+                &frame.transforms,
                 path_to_offset.clone(),
                 1.0,
                 patterns.colors.add(Color::BLACK),
@@ -1385,7 +1140,7 @@ fn paint_scene(
             b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
             b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
             b.end(false);
-            renderers.meshes.stroke_path(&mut pass.ctx(), transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+            renderers.meshes.stroke_path(&mut surface.ctx(), &frame.transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
             let green = patterns.colors.add(Color::GREEN);
             let blue = patterns.colors.add(Color::BLUE);
@@ -1394,8 +1149,8 @@ fn paint_scene(
                 match evt {
                     PathEvent::Begin { at } => {
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: at.cast_unit(),
                                 radius: 3.0,
@@ -1406,8 +1161,8 @@ fn paint_scene(
                     }
                     PathEvent::Line { to, .. } => {
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1418,8 +1173,8 @@ fn paint_scene(
                     }
                     PathEvent::Quadratic { ctrl, to, .. } => {
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: ctrl.cast_unit(),
                                 radius: 4.0,
@@ -1428,8 +1183,8 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1442,8 +1197,8 @@ fn paint_scene(
                         ctrl1, ctrl2, to, ..
                     } => {
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: ctrl1.cast_unit(),
                                 radius: 4.0,
@@ -1452,8 +1207,8 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: ctrl2.cast_unit(),
                                 radius: 4.0,
@@ -1462,8 +1217,8 @@ fn paint_scene(
                             blue,
                         );
                         renderers.meshes.fill_circle(
-                            &mut pass.ctx(),
-                            transforms,
+                            &mut surface.ctx(),
+                            &frame.transforms,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 2.0,
@@ -1478,8 +1233,8 @@ fn paint_scene(
         }
     }
 
-    transforms.push(&LocalTransform::translation(10.0, 1.0));
-    transforms.pop();
+    frame.transforms.push(&LocalTransform::translation(10.0, 1.0));
+    frame.transforms.pop();
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

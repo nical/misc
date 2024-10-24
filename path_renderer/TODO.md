@@ -18,7 +18,6 @@
  - [x] Try pathfinder's binning algorithm
  - [ ] Image patterns.
  - [x] Custom masks
- - [ ] Support rasterizing masks with static loops
  - [x] mix tiled and non-tiled draws
  - [x] Fix the CPU rasterizer code path.
  - [ ] Rasterize CPU masks asynchronously.

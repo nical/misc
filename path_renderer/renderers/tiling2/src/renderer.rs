@@ -1,15 +1,7 @@
 use core::{
-    batching::{BatchFlags, BatchList, BatchId},
-    context::{
-        DrawHelper, RendererId,
-        SurfacePassConfig, ZIndex, RenderPassContext, BuiltRenderPass,
-    },
-    pattern::BuiltPattern,
-    resources::GpuResources,
-    shape::FilledPath,
-    transform::{TransformId, Transforms},
-    units::{LocalRect, SurfaceIntRect, SurfaceRect, point},
-    wgpu, gpu::{shader::{RenderPipelineIndex, PrepareRenderPipelines, RenderPipelineKey, BlendMode, BaseShaderId}, DynBufferRange}, bytemuck,
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+    }, gpu::{shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey}, DynBufferRange}, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{point, LocalRect, SurfaceIntRect, SurfaceRect}, wgpu, PrepareContext, UploadContext
 };
 use std::ops::Range;
 
@@ -356,6 +348,14 @@ impl TileRenderer {
 }
 
 impl core::Renderer for TileRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+    }
+
+    fn upload(&mut self, ctx: &mut UploadContext) {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    }
+
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
