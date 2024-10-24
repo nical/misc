@@ -400,10 +400,14 @@ impl Shaders {
                 SurfaceKind::None => None,
                 SurfaceKind::Color => Some(self.defaults.color_format()),
                 SurfaceKind::Alpha => Some(self.defaults.mask_format()),
+                SurfaceKind::HdrColor => Some(self.defaults.hdr_color_format()),
+                SurfaceKind::HdrAlpha => Some(self.defaults.hdr_alpha_format()),
             };
             color_targets[idx] = format.map(|format| {
                 wgpu::ColorTargetState {
                     format,
+                    // TODO: using the blend mode on all attachments is probably
+                    // not the right thing to do.
                     blend: blend_state(blend_mode),
                     write_mask: wgpu::ColorWrites::ALL,
                 }

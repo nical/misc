@@ -98,6 +98,8 @@ impl VertexBuilder {
 pub struct PipelineDefaults {
     color_format: wgpu::TextureFormat,
     mask_format: wgpu::TextureFormat,
+    hdr_color_format: wgpu::TextureFormat,
+    hdr_alpha_format: wgpu::TextureFormat,
     depth_buffer: bool,
     stencil_buffer: bool,
     msaa_samples: u32,
@@ -108,6 +110,8 @@ impl PipelineDefaults {
         PipelineDefaults {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             mask_format: wgpu::TextureFormat::R8Unorm,
+            hdr_color_format: wgpu::TextureFormat::Rgba16Float,
+            hdr_alpha_format: wgpu::TextureFormat::R16Float,
             depth_buffer: true,
             stencil_buffer: true,
             msaa_samples: 4,
@@ -165,6 +169,14 @@ impl PipelineDefaults {
 
     pub fn mask_format(&self) -> wgpu::TextureFormat {
         self.mask_format
+    }
+
+    pub fn hdr_color_format(&self) -> wgpu::TextureFormat {
+        self.hdr_color_format
+    }
+
+    pub fn hdr_alpha_format(&self) -> wgpu::TextureFormat {
+        self.hdr_alpha_format
     }
 
     pub fn msaa_format(&self) -> wgpu::TextureFormat {

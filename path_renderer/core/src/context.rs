@@ -74,7 +74,8 @@ pub enum SurfaceKind {
     None,
     Color,
     Alpha,
-    // TODO: HDRColor, color spaces?
+    HdrColor,
+    HdrAlpha,
 }
 
 impl SurfaceKind {
@@ -83,6 +84,8 @@ impl SurfaceKind {
             SurfaceKind::None => 0,
             SurfaceKind::Color => 1,
             SurfaceKind::Alpha => 2,
+            SurfaceKind::HdrColor => 3,
+            SurfaceKind::HdrAlpha => 4,
         }
     }
 
@@ -90,6 +93,8 @@ impl SurfaceKind {
         match bits {
             1 => SurfaceKind::Color,
             2 => SurfaceKind::Alpha,
+            3 => SurfaceKind::HdrColor,
+            4 => SurfaceKind::HdrAlpha,
             _ => SurfaceKind::None,
         }
     }
