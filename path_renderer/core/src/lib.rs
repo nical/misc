@@ -353,6 +353,7 @@ impl TextureKind {
         Self::alpha().with_binding()
     }
 
+
     pub const fn alpha() -> Self {
         TextureKind(Self::ALPHA)
     }
@@ -387,6 +388,16 @@ impl TextureKind {
 
     pub const fn with_copy_dst(self) -> Self {
         TextureKind(self.0 | Self::COPY_DST)
+    }
+
+    pub fn from_surface_kind(kind: SurfaceKind) -> Self {
+        match kind {
+            SurfaceKind::Color => Self::color(),
+            SurfaceKind::Alpha => Self::alpha(),
+            SurfaceKind::HdrColor => Self::color().with_hdr(),
+            SurfaceKind::HdrAlpha => Self::alpha().with_hdr(),
+            SurfaceKind::None => unimplemented!(),
+        }
     }
 
     pub const fn as_resource(self) -> ResourceKind {

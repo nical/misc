@@ -1,6 +1,7 @@
 use crate::context::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
 use crate::gpu::GpuStore;
-use crate::render_graph::{Dependency, NodeDescriptor, NodeId, RenderGraph, TaskId};
+use crate::render_graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
+use crate::units::SurfaceIntSize;
 use crate::{transform::Transforms, SurfaceKind, SurfacePassConfig};
 
 
@@ -14,12 +15,12 @@ pub struct Frame {
     index: u32,
 }
 
-pub struct RenderSurface {
+pub struct RenderPass {
     node: NodeId,
     pass: RenderPassBuilder,
 }
 
-impl RenderSurface {
+impl RenderPass {
     pub fn node_id(&self) -> NodeId {
         self.node
     }
@@ -40,9 +41,10 @@ impl Frame {
         }
     }
 
-    pub fn begin_render_surface(&mut self, mut descriptor: NodeDescriptor) -> RenderSurface {
+    pub fn begin_render_pass(&mut self, descriptor: RenderNodeDescriptor) -> RenderPass {
         let task_id = TaskId(self.built_render_passes.len() as u64);
-        descriptor = descriptor.task(task_id);
+        let descriptor = descriptor.to_node_descriptor(task_id);
+
         let (depth, stencil) = descriptor
             .depth_stencil
             .map(|ds| (ds.1, ds.2))
@@ -72,13 +74,13 @@ impl Frame {
             }
         );
 
-        RenderSurface {
+        RenderPass {
             pass,
             node: self.graph.add_node(&descriptor),
         }
     }
 
-    pub fn end_render_surface(&mut self, mut surface: RenderSurface) {
+    pub fn end_render_pass(&mut self, mut surface: RenderPass) {
         let index = self.graph.get_task_id(surface.node).0 as usize;
         while self.built_render_passes.len() <= index {
             self.built_render_passes.push(None);
@@ -97,4 +99,81 @@ impl Frame {
     pub fn index(&self) -> u32 {
         self.index
     }
+}
+
+pub struct RenderNodeDescriptor<'l> {
+    pub label: Option<&'static str>,
+    pub reads: &'l[Dependency],
+    pub attachments: &'l[ColorAttachment],
+    pub depth_stencil: Option<(Resource, bool, bool)>,
+    pub msaa_resolve_target: Option<Resource>,
+    pub msaa: bool,
+    pub size: SurfaceIntSize,
+}
+
+impl RenderNodeDescriptor<'static> {
+    pub fn new(size: SurfaceIntSize) -> Self {
+        RenderNodeDescriptor {
+            label: None,
+            reads: &[],
+            attachments: &[],
+            depth_stencil: None,
+            msaa_resolve_target: None,
+            msaa: false,
+            size,
+        }
+    }
+}
+
+impl<'l> RenderNodeDescriptor<'l> {
+    pub fn read<'a>(self, inputs: &'a [Dependency]) -> RenderNodeDescriptor<'a>
+    where 'l : 'a
+    {
+        RenderNodeDescriptor { reads: inputs, .. self }
+    }
+
+    pub fn attachments<'a>(self, attachments: &'a [ColorAttachment]) -> RenderNodeDescriptor<'a>
+    where 'l : 'a
+    {
+        RenderNodeDescriptor { attachments, .. self }
+    }
+
+    pub fn depth_stencil(self, attachment: Resource, depth: bool, stencil: bool) -> Self {
+        RenderNodeDescriptor {
+            depth_stencil: Some((attachment, depth, stencil)),
+            .. self
+        }
+    }
+
+    pub fn label(self, label: &'static str) -> Self {
+        RenderNodeDescriptor { label: Some(label), .. self }
+    }
+
+    pub fn msaa_resolve(self, attachment: Resource) -> Self {
+        RenderNodeDescriptor { msaa_resolve_target: Some(attachment), .. self }
+    }
+
+    pub fn msaa(self, msaa: bool) -> Self {
+        RenderNodeDescriptor { msaa, .. self }
+    }
+
+    fn to_node_descriptor(self, task: TaskId) -> NodeDescriptor<'l> {
+        NodeDescriptor {
+            kind: NodeKind::Render,
+            label: self.label,
+            task: Some(task),
+            reads: self.reads,
+            attachments: self.attachments,
+            depth_stencil: self.depth_stencil,
+            msaa_resolve_target: self.msaa_resolve_target,
+            msaa: self.msaa,
+            size: Some(self.size),
+        }
+    }
+}
+
+pub struct ComputeNodeDescriptor<'l> {
+    pub label: Option<&'static str>,
+    pub reads: &'l[Dependency],
+    pub resources: &'l[Resource],
 }

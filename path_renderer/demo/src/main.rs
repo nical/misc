@@ -1,6 +1,6 @@
-use core::frame::RenderSurface;
+use core::frame::{RenderNodeDescriptor, RenderPass};
 use core::instance::Instance;
-use core::render_graph::{Allocation, Attachment, BuiltGraph, ColorAttachment, NodeDescriptor, TaskId};
+use core::render_graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
 use core::{FillPath, Renderer};
 use core::gpu::shader::BlendMode;
 use core::path::Path;
@@ -623,16 +623,14 @@ impl App {
         let msaa = if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default };
 
         let attachments = [ColorAttachment::color().with_external(0, false)];
-        let mut descriptor = NodeDescriptor::new()
-            .task(TaskId(0))
-            .size(size)
+        let mut descriptor = RenderNodeDescriptor::new(size)
             .msaa(msaa)
             .attachments(&attachments);
         if depth || stencil {
-            descriptor = descriptor.depth_stencil(Attachment::Auto, depth, stencil);
+            descriptor = descriptor.depth_stencil(Resource::Auto, depth, stencil);
         }
 
-        let mut main_surface = frame.begin_render_surface(descriptor);
+        let mut main_surface = frame.begin_render_pass(descriptor);
         frame.add_root(main_surface.node_id().color(0));
 
         let tx = self.view.pan[0].round();
@@ -659,7 +657,7 @@ impl App {
             &transform,
         );
 
-        frame.end_render_surface(main_surface);
+        frame.end_render_pass(main_surface);
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
@@ -764,7 +762,7 @@ fn paint_scene(
     fill_renderer: usize,
     stroke_renderer: usize,
     testing: bool,
-    surface: &mut RenderSurface,
+    surface: &mut RenderPass,
     frame: &mut Frame,
     _instance: &mut Instance,
     renderers: &mut Renderers,
