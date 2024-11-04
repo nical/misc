@@ -454,13 +454,13 @@ fn create_mask_pipeline(
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &fill_module,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
             buffers: &[attributes.buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &fill_module,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             targets,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
@@ -484,13 +484,13 @@ fn create_mask_pipeline(
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &circle_module,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
             buffers: &[attributes.buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &circle_module,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             targets: alpha_target,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
@@ -511,13 +511,13 @@ fn create_mask_pipeline(
         layout: Some(&tile_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &rect_module,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
             buffers: &[attributes.buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &rect_module,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             targets: alpha_target,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),

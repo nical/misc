@@ -68,13 +68,13 @@ impl StencilAndCover {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &stencil_module,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[vertex_attributes.buffer_layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &stencil_module,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),

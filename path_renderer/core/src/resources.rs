@@ -190,13 +190,13 @@ impl CommonGpuResources {
             layout: Some(&msaa_blit_layout),
             vertex: wgpu::VertexState {
                 module: &color_module,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &color_module,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
