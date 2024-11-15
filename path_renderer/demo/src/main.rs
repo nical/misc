@@ -184,7 +184,7 @@ impl App {
         let mut asap = false;
         let mut read_tolerance = false;
         let mut read_fill = false;
-        let mut _use_ssaa4 = false;
+        let mut use_ssaa4 = false;
         let mut read_occlusion = false;
         let mut z_buffer = None;
         let mut cpu_occlusion = None;
@@ -209,7 +209,7 @@ impl App {
             if arg == "--trace" {
                 trace = Some(std::path::Path::new("./trace"));
             }
-            _use_ssaa4 |= arg == "--ssaa";
+            use_ssaa4 |= arg == "--ssaa";
             force_gl |= arg == "--gl";
             force_vk |= arg == "--vulkan";
             asap |= arg == "--asap";
@@ -323,7 +323,7 @@ impl App {
 
         let rectangles = Rectangles::new(&device, &mut instance.shaders);
         let tessellation = Tessellation::new(&device, &mut instance.shaders);
-        let tiling = Tiling::new(&device, &mut instance.shaders);
+        let tiling = Tiling::new(&device, &mut instance.shaders, use_ssaa4);
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);

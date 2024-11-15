@@ -318,6 +318,7 @@ pub type RenderPassDataIndex = u16;
 /// via a an offset into a globals buffer.
 #[derive(Debug, PartialEq)]
 pub struct RenderPassData {
+    // TODO: should be viewport size.
     pub target_size: (u32, u32)
 }
 

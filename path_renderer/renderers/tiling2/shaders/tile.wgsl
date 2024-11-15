@@ -129,6 +129,17 @@ fn rasterize_edge_analytical(p0: vec2<f32>, p1: vec2<f32>) -> f32 {
     return area * (y1 - y0);
 }
 
+fn rasterize_edge_ssaa(upper: vec2<f32>, lower: vec2<f32>) -> f32 {
+    // 1 if the sample is in the edge's y range, 0 otherwise.
+    let y_range_test = step(upper.y, 0.0) * step(0.0, lower.y);
+
+    let v1 = lower - upper;
+    let v2 = upper;
+    let is_right_side = step(0.0, v1.x * v2.y - v2.x * v1.y);
+
+    return y_range_test * is_right_side;
+}
+
 fn even_odd(winding_number: f32) -> f32 {
     return 1.0 - abs((abs(winding_number) % 2.0) - 1.0);
 }
@@ -154,7 +165,11 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
 }
 
 fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
-    var winding_number: f32 = f32(backdrop);
+    #if TILING_SSAA4 {
+        var wn = vec4<f32>(backdrop);
+    } #else {
+        var winding_number: f32 = f32(backdrop);
+    }
 
     var edge_idx = edges.x;
     // This isn't necessary but to be on the safe side and make sure we don't accidentally
@@ -174,18 +189,58 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
 
         edge_idx = edge_idx + 1u;
 
-        // Position of this pixel's top-left corner (in_uv points to the pixel's center).
-        // See comment in tiler.rs about the half-pixel offset.
-        let pixel_offset = uv - vec2<f32>(0.5);
+        #if TILING_SSAA4 {
+            var p0 = edge.xy;
+            var p1 = edge.zw;
 
-        // Move to coordinates local to the current pixel.
-        var p0 = edge.xy - pixel_offset;
-        var p1 = edge.zw - pixel_offset;
+            let s = sign(p1.y - p0.y);
 
-        winding_number = winding_number + rasterize_edge_analytical(p0, p1);
+            let select = step(0.0, s);
+            let upper = mix(p0, p1, 1.0 - select) - uv;
+            let lower = mix(p0, p1, select) - uv;
+            // Sample positions:
+            // +---+---+---+---+
+            // |   |   | b |   |
+            // +---+---+---+---+
+            // | a |   |   |   |
+            // +---+---o---+---+
+            // |   |   |   | c |
+            // +---+---+---+---+
+            // |   | d |   |   |
+            // +---+---+---+---+
+            let a = vec2<f32>(-3.0/8.0, -1.0/8.0);
+            let b = vec2<f32>( 1.0/8.0, -3.0/8.0);
+            let c = vec2<f32>( 3.0/8.0,  1.0/8.0);
+            let d = vec2<f32>(-1.0/8.0,  3.0/8.0);
+            wn.x += s * rasterize_edge_ssaa(upper + a, lower + a);
+            wn.y += s * rasterize_edge_ssaa(upper + b, lower + b);
+            wn.z += s * rasterize_edge_ssaa(upper + c, lower + c);
+            wn.w += s * rasterize_edge_ssaa(upper + d, lower + d);
+        } #else {
+            // Position of this pixel's top-left corner (uv points to the pixel's center).
+            // See comment in tiler.rs about the half-pixel offset.
+            let pixel_offset = uv - vec2<f32>(0.5);
+
+            // Move to coordinates local to the current pixel.
+            var p0 = edge.xy - pixel_offset;
+            var p1 = edge.zw - pixel_offset;
+
+            winding_number += rasterize_edge_analytical(p0, p1);
+        }
     }
 
-    var mask = resolve_mask(winding_number, fill_rule);
+    #if TILING_SSAA4 {
+        var mask = 0.0;
+        if ((fill_rule & 1u) == 0u) {
+            mask = even_odd(wn.x) + even_odd(wn.y) + even_odd(wn.z) + even_odd(wn.w);
+        } else {
+            mask = non_zero(wn.x) + non_zero(wn.y) + non_zero(wn.z) + non_zero(wn.w);
+        }
+
+        mask *= 0.25;
+    } #else {
+        var mask = resolve_mask(winding_number, fill_rule);
+    }
 
     // Debug: uncomment to see the grid in alpha tiles.
     //if (edges.x != edges.y && (min(uv.x, uv.y) < 1.0 || max(uv.x, uv.y) > 15.0)) {

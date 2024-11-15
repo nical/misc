@@ -190,7 +190,7 @@ pub struct Tiling {
 }
 
 impl Tiling {
-    pub fn new(device: &wgpu::Device, shaders: &mut Shaders) -> Self {
+    pub fn new(device: &wgpu::Device, shaders: &mut Shaders, ssaa4: bool) -> Self {
 
         let bind_group_layout = shaders.register_bind_group_layout(BindGroupLayout::new(
             device,
@@ -219,6 +219,11 @@ impl Tiling {
             ],
         ));
 
+        let mut shader_defines = Vec::new();
+        if ssaa4 {
+            shader_defines.push("TILING_SSAA4");
+        }
+
         let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::tile2".into(),
             source: include_str!("../shaders/tile.wgsl").into(),
@@ -233,7 +238,7 @@ impl Tiling {
             ],
             bindings: Some(bind_group_layout),
             primitive: PipelineDefaults::primitive_state(),
-            shader_defines: Vec::new(),
+            shader_defines,
         });
 
         Tiling {

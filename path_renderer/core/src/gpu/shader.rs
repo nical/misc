@@ -153,9 +153,6 @@ pub struct Shaders {
     module_cache: HashMap<ModuleKey, wgpu::ShaderModule>,
     bind_group_layouts: Vec<BindGroupLayout>,
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
-    // TODO: storing base bindings here and letting the common resources set is not great.
-    // TODO: name clash with base shader's bindings. Rename into global bindings?
-    // pub base_bindings: Option<BindGroupLayoutId>,
     pub defaults: PipelineDefaults,
     pub common_bind_group_layouts: CommonBindGroupLayouts,
 }
