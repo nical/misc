@@ -259,11 +259,11 @@ impl Shaders {
             .create_shader_module(device, name, src, defines)
     }
 
-    pub fn print_pipeline_variant(
+    fn generate_pipeline_variant_src(
         &mut self,
         pipeline_id: BaseShaderId,
         pattern_id: ShaderPatternId,
-    ) {
+    ) -> String {
         let base = &self.base_shaders[pipeline_id.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
@@ -295,6 +295,15 @@ impl Shaders {
             .preprocess("generated module", &src, &mut self.sources.source_library)
             .unwrap();
 
+        src
+    }
+
+    pub fn print_pipeline_variant(
+        &mut self,
+        pipeline_id: BaseShaderId,
+        pattern_id: ShaderPatternId,
+    ) {
+        let src = self.generate_pipeline_variant_src(pipeline_id, pattern_id);
         println!("{src}");
     }
 

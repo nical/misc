@@ -184,11 +184,13 @@ impl App {
         let mut asap = false;
         let mut read_tolerance = false;
         let mut read_fill = false;
+        let mut read_shader_name = false;
         let mut use_ssaa4 = false;
         let mut read_occlusion = false;
         let mut z_buffer = None;
         let mut cpu_occlusion = None;
         let mut fill_renderer = 0;
+        let mut print_shader = None;
         for arg in &args {
             if read_tolerance {
                 tolerance = arg.parse::<f32>().unwrap();
@@ -200,6 +202,9 @@ impl App {
             if read_occlusion {
                 cpu_occlusion = Some(arg.contains("cpu") || arg.contains("all"));
                 z_buffer = Some(arg.contains("gpu") || arg.contains("all") || arg.contains("z-buffer"));
+            }
+            if read_shader_name {
+                print_shader = Some(arg.to_string());
             }
             if arg == "--x11" {
                 // This used to get this demo to work in renderdoc (with the gl backend) but now
@@ -215,6 +220,7 @@ impl App {
             asap |= arg == "--asap";
             read_tolerance = arg == "--tolerance";
             read_fill = arg == "--fill";
+            read_shader_name = arg == "--print-shader";
             read_occlusion = arg == "--occlusion";
         }
 
@@ -245,7 +251,9 @@ impl App {
             force_fallback_adapter: false,
         }))
         .unwrap();
-        println!("{:#?}", adapter.get_info());
+        if print_shader.is_none() {
+            println!("{:#?}", adapter.get_info());
+        }
         // create a device and a queue
         let (device, queue) = block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -352,6 +360,13 @@ impl App {
         renderers.msaa_strokes.tolerance = tolerance;
 
         //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
+
+        if let Some(name) = print_shader {
+            let pipeline = instance.shaders.find_base_shader(&name).unwrap();
+            let pattern = instance.shaders.find_pattern("pattern::solid_color");
+            instance.shaders.print_pipeline_variant(pipeline, pattern);
+            return None;
+        }
 
         let surface_desc = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
