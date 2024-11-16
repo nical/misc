@@ -166,6 +166,7 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
 
 fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
     #if TILING_SSAA4 {
+        // Note: This could be packed into a single u32.
         var wn = vec4<f32>(backdrop);
     } #else {
         var winding_number: f32 = f32(backdrop);
@@ -196,8 +197,8 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             let s = sign(p1.y - p0.y);
 
             let select = step(0.0, s);
-            let upper = mix(p0, p1, 1.0 - select) - uv;
-            let lower = mix(p0, p1, select) - uv;
+            var upper = mix(p0, p1, 1.0 - select) - uv;
+            var lower = mix(p0, p1, select) - uv;
             // Sample positions:
             // +---+---+---+---+
             // |   |   | b |   |
@@ -208,14 +209,29 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             // +---+---+---+---+
             // |   | d |   |   |
             // +---+---+---+---+
+            // Instead of expressing a, b, c, and d relative to the pixel center, we
+            // store them as offsets from the previous sample position. This way we don't
+            // need to hold both upper/lower and the result of adding the offset.
+            // This saves 4 VGPR and was just enough to get to 32 VGPR which hit maximum
+            // occupancy with the color pattern on my RDNA3 iGPU, reducing by 10% the GPU
+            // time of the draw call accoring to RGP.
+            // It is still a bit slower (by ~12%) than the non-ssaa code path.
             let a = vec2<f32>(-3.0/8.0, -1.0/8.0);
             let b = vec2<f32>( 1.0/8.0, -3.0/8.0);
             let c = vec2<f32>( 3.0/8.0,  1.0/8.0);
             let d = vec2<f32>(-1.0/8.0,  3.0/8.0);
-            wn.x += s * rasterize_edge_ssaa(upper + a, lower + a);
-            wn.y += s * rasterize_edge_ssaa(upper + b, lower + b);
-            wn.z += s * rasterize_edge_ssaa(upper + c, lower + c);
-            wn.w += s * rasterize_edge_ssaa(upper + d, lower + d);
+            upper += a;
+            lower += a;
+            wn.x += s * rasterize_edge_ssaa(upper, lower);
+            upper += (b - a);
+            lower += (b - a);
+            wn.y += s * rasterize_edge_ssaa(upper, lower);
+            upper += (c - b);
+            lower += (c - b);
+            wn.z += s * rasterize_edge_ssaa(upper, lower);
+            upper += (d - c);
+            lower += (d - c);
+            wn.w += s * rasterize_edge_ssaa(upper, lower);
         } #else {
             // Position of this pixel's top-left corner (uv points to the pixel's center).
             // See comment in tiler.rs about the half-pixel offset.
