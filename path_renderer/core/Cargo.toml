@@ -16,6 +16,7 @@ wgslp = { path = "../../wgslp/lib" }
 bitflags = "2.3.3"
 smallvec = "1.11.2"
 etagere = "0.2.13"
+rayon = "1.10.0"
 
 [profile.release]
 debug=true

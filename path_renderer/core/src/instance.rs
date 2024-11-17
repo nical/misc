@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, Renderer, UploadContext, WgpuContext};
 use crate::frame::Frame;
 use crate::render_graph::{Allocation, BuiltGraph};
@@ -14,11 +15,12 @@ pub struct Instance {
     pub shaders: Shaders,
     render_pipelines: RenderPipelines,
     pub resources: GpuResources,
+    pub workers: Workers,
     next_frame_index: u32,
 }
 
 impl Instance {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, num_workers: usize) -> Self {
         let mut shaders = Shaders::new(&device);
         let render_pipelines = RenderPipelines::new();
         let resources = GpuResources::new(
@@ -26,10 +28,13 @@ impl Instance {
             &mut shaders,
         );
 
+        let workers = Workers::new(num_workers);
+
         Instance {
             shaders,
             render_pipelines,
             resources,
+            workers,
             next_frame_index: 0,
         }
     }
@@ -74,6 +79,7 @@ impl Instance {
                     pass,
                     transforms: &frame.transforms,
                     pipelines: &mut prep_pipelines,
+                    workers: &self.workers,
                 });
             }
         }

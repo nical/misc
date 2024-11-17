@@ -14,6 +14,7 @@ pub mod render_graph;
 pub mod frame;
 pub mod instance;
 //pub mod canvas;
+pub mod worker;
 
 use context::{BuiltRenderPass, RenderPassContext};
 use gpu::{shader::PrepareRenderPipelines, Shaders};
@@ -27,6 +28,7 @@ use resources::{AsAny, GpuResources};
 use transform::Transforms;
 pub use wgpu;
 pub use etagere;
+use worker::Workers;
 
 use std::fmt;
 
@@ -511,6 +513,7 @@ pub struct PrepareContext<'l> {
     pub pass: &'l BuiltRenderPass,
     pub transforms: &'l Transforms,
     pub pipelines: &'l mut PrepareRenderPipelines,
+    pub workers: &'l Workers,
 }
 
 /// Parameters for the renderering stage.

@@ -296,7 +296,7 @@ impl App {
 
         //tiler_config.view_box = view_box;
 
-        let mut instance = Instance::new(&device);
+        let mut instance = Instance::new(&device, 0);
 
         let patterns = Patterns {
             colors: SolidColorRenderer::register(&mut instance.shaders),
