@@ -48,6 +48,10 @@ impl Workers {
             }
         )
     }
+
+    pub fn num_workers(&self) -> usize {
+        self.thread_pool.current_num_threads() + 1
+    }
 }
 
 /// A temporary wrapper for the pointer whihc implements send.
@@ -72,7 +76,7 @@ pub struct Context<'a, CtxData> {
     _marker: PhantomData<&'a ()>,
 }
 
-impl<'a, CtxData> Context<'a, CtxData> {
+impl<'a, CtxData: Send> Context<'a, CtxData> {
     fn worker(ctx_data: CtxDataPtr<CtxData>, _anchor: &'a ()) -> Self {
         Context {
             ctx_data: ctx_data.ptr,
@@ -111,6 +115,65 @@ impl<'a, CtxData> Context<'a, CtxData> {
         )
     }
 
+    pub fn for_each<I: Sync, F>(
+        &mut self,
+        mut iter: impl Iterator<Item = I>,
+        op: &F,
+    )
+    where
+        F: Fn(&mut Context<CtxData>, &I) + Send + Sync,
+    {
+        const BUFFER_SIZE: usize = 1024 * 4; // 4Kb
+        // Process items by batch of n items.
+        // This is not great because we wait for each batch to be done before
+        // starting the next.
+        let n = (BUFFER_SIZE / std::mem::size_of::<I>()).max(1);
+        let mut buffer = Vec::with_capacity(n);
+
+        'outer: loop {
+            for _ in 0..n {
+                if let Some(item) = iter.next() {
+                    buffer.push(item);
+                } else {
+                    break 'outer;
+                }
+            }
+
+            self.slice_for_each(&buffer, op);
+
+            buffer.clear();
+        }
+
+        if !buffer.is_empty() {
+            self.slice_for_each(&buffer, op);
+        }
+    }
+
+    pub fn slice_for_each<I, F>(
+        &mut self,
+        slice: &[I],
+        op: &F
+    )
+    where
+        I: Sync,
+        F: Fn(&mut Context<CtxData>, &I) + Send + Sync
+    {
+        //println!("ctx #{} for each n={}", self.index(), slice.len());
+        if slice.len() <= 8 {
+            for item in slice {
+                op(self, item)
+            }
+            return;
+        }
+        let split = slice.len() / 2;
+        let left = &slice[..split];
+        let right = &slice[split..];
+        self.join(
+            move |ctx| ctx.slice_for_each(left, op),
+            move |ctx| ctx.slice_for_each(right, op),
+        );
+    }
+
     pub fn with_data<'b, Data>(&mut self, data: &'b mut[Data]) -> Context<'b, Data> {
         assert!(data.len() >= rayon::current_num_threads() + 1);
         Context {
@@ -118,4 +181,34 @@ impl<'a, CtxData> Context<'a, CtxData> {
             _marker: PhantomData,
         }
     }
+}
+
+#[test]
+fn par_iter_simple() {
+    use std::sync::atomic::{Ordering, AtomicU32};
+    let workers = Workers::new(8);
+
+    let mut input = Vec::new();
+    let mut expected_result = 0;
+
+    let mut ctx_data = vec![0; 9];
+
+    for i in 0..4096u32 {
+        input.push(i);
+        expected_result += i;
+    }
+
+    let result = AtomicU32::new(0);
+
+    workers.ctx_with(&mut ctx_data).for_each(
+        input.into_iter(),
+        &|ctx, idx| {
+            *ctx.data() += idx;
+            result.fetch_add(*idx, Ordering::Relaxed);
+        }
+    );
+
+    let ctx_data_sum: u32 = ctx_data.into_iter().sum();
+    assert_eq!(result.load(Ordering::SeqCst), expected_result);
+    assert_eq!(ctx_data_sum, expected_result);
 }
