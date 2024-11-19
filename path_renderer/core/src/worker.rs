@@ -21,6 +21,7 @@ impl Workers {
     pub fn ctx<'a>(&'a self) -> Context<'a, ()> {
         Context {
             ctx_data: NonNull::dangling(),
+            slice_split_threshold: 2,
             _marker: PhantomData,
         }
     }
@@ -28,9 +29,10 @@ impl Workers {
     pub fn ctx_with<'a, CtxData>(&'a self, data: &'a mut[CtxData]) -> Context<'a, CtxData>
     where CtxData: Send
     {
-        assert!(data.len() >= rayon::current_num_threads() + 1);
+        assert!(data.len() >= rayon::current_num_threads());
         Context {
             ctx_data: NonNull::new(data.as_mut_ptr()).unwrap(),
+            slice_split_threshold: 2,
             _marker: PhantomData,
         }
     }
@@ -44,13 +46,13 @@ impl Workers {
             |_| {
                 let anchor = ();
                 let ctx_data = CtxDataPtr { ptr: NonNull::dangling() };
-                op(&mut Context::worker(ctx_data, &anchor))
+                op(&mut Context::worker(ctx_data, 2, &anchor))
             }
         )
     }
 
     pub fn num_workers(&self) -> usize {
-        self.thread_pool.current_num_threads() + 1
+        self.thread_pool.current_num_threads()
     }
 }
 
@@ -73,13 +75,15 @@ pub struct Context<'a, CtxData> {
     /// If ctx_data is a dangling unit pointer, accesses (at an offset) won't
     /// produce any actual reads or writes, so it is safe.
     ctx_data: NonNull<CtxData>,
+    slice_split_threshold: usize,
     _marker: PhantomData<&'a ()>,
 }
 
 impl<'a, CtxData: Send> Context<'a, CtxData> {
-    fn worker(ctx_data: CtxDataPtr<CtxData>, _anchor: &'a ()) -> Self {
+    fn worker(ctx_data: CtxDataPtr<CtxData>, split: usize, _anchor: &'a ()) -> Self {
         Context {
             ctx_data: ctx_data.ptr,
+            slice_split_threshold: split,
             _marker: PhantomData,
         }
     }
@@ -101,16 +105,17 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         RB: Send,
         CtxData: Send
     {
+        let split = self.slice_split_threshold;
         let ctx_data_a = CtxDataPtr { ptr: self.ctx_data };
         let ctx_data_b = CtxDataPtr { ptr: self.ctx_data };
         rayon::join(
             move || {
                 let anchor = ();
-                oper_a(&mut Context::worker(ctx_data_a, &anchor))
+                oper_a(&mut Context::worker(ctx_data_a, split, &anchor))
             },
             move || {
                 let anchor = ();
-                oper_b(&mut Context::worker(ctx_data_b, &anchor))
+                oper_b(&mut Context::worker(ctx_data_b, split, &anchor))
             },
         )
     }
@@ -158,8 +163,23 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         I: Sync,
         F: Fn(&mut Context<CtxData>, &I) + Send + Sync
     {
+        self.slice_split_threshold = (slice.len() / rayon::current_num_threads()).max(2);
+        self.slice_for_each_impl(slice, op);
+    }
+
+    #[inline]
+    fn slice_for_each_impl<I, F>(
+        &mut self,
+        slice: &[I],
+        op: &F
+    )
+    where
+        I: Sync,
+        F: Fn(&mut Context<CtxData>, &I) + Send + Sync
+    {
         //println!("ctx #{} for each n={}", self.index(), slice.len());
-        if slice.len() <= 8 {
+        if slice.len() <= self.slice_split_threshold {
+            //println!("ctx #{} job exec n={}", self.index(), slice.len());
             for item in slice {
                 op(self, item)
             }
@@ -169,8 +189,8 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         let left = &slice[..split];
         let right = &slice[split..];
         self.join(
-            move |ctx| ctx.slice_for_each(left, op),
-            move |ctx| ctx.slice_for_each(right, op),
+            move |ctx| ctx.slice_for_each_impl(left, op),
+            move |ctx| ctx.slice_for_each_impl(right, op),
         );
     }
 
@@ -178,6 +198,7 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         assert!(data.len() >= rayon::current_num_threads() + 1);
         Context {
             ctx_data: NonNull::new(data.as_mut_ptr()).unwrap(),
+            slice_split_threshold: self.slice_split_threshold,
             _marker: PhantomData,
         }
     }
