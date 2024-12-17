@@ -586,6 +586,10 @@ impl core::Renderer for StencilAndCoverRenderer {
                         } else {
                             &self.shared.stencil_pipeline
                         };
+                        // TODO: switching the index and vertex buffers here has
+                        // a fair amount of validation overhead in wgpu. It may be
+                        // better to merge the sencil and cover buffers into a
+                        // single pair to avoid rebinding.
                         render_pass.set_index_buffer(
                             ctx.resources.common
                                 .indices
