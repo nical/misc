@@ -236,7 +236,7 @@ impl App {
             wgpu::Backends::all()
         };
         // create an instance
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..wgpu::InstanceDescriptor::default()
         });

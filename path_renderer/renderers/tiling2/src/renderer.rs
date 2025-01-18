@@ -293,14 +293,14 @@ impl TileRenderer {
 
         let rows = (self.tiles.edges.len() / edges_per_row) as u32;
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.resources.edge_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             bytemuck::cast_slice(&self.tiles.edges),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(edges_per_row as u32 * 4),
                 rows_per_image: Some(rows)
@@ -326,14 +326,14 @@ impl TileRenderer {
         let size_of_pathinfo = std::mem::size_of::<EncodedPathInfo>() as u32;
         let size_of_texel = 16;
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.resources.path_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             bytemuck::cast_slice(&self.tiles.paths),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(paths_per_row as u32 * size_of_pathinfo),
                 rows_per_image: Some(rows)

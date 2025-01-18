@@ -95,18 +95,19 @@ impl GpuStore {
                 base_array_layer: 0,
                 mip_level_count: Some(1),
                 array_layer_count: Some(1),
+                usage: None,
             });
         }
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &resources.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             bytemuck::cast_slice(&self.data[..(rows * w)]),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(GPU_STORE_WIDTH * 16),
                 rows_per_image: Some(rows as u32),
@@ -178,6 +179,7 @@ impl GpuStoreResources {
             base_array_layer: 0,
             mip_level_count: Some(1),
             array_layer_count: Some(1),
+            usage: None,
         });
 
         GpuStoreResources {

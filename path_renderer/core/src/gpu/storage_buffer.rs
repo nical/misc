@@ -73,6 +73,7 @@ impl StorageBuffer {
                     base_array_layer: 0,
                     mip_level_count: Some(1),
                     array_layer_count: Some(1),
+                    usage: None,
                 });
 
                 Storage::Texture { texture, view }
@@ -160,14 +161,14 @@ impl StorageBuffer {
 
                 if full_rows > 0 {
                     queue.write_texture(
-                        wgpu::ImageCopyTexture {
+                        wgpu::TexelCopyTextureInfo {
                             texture,
                             mip_level: 0,
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
                         },
                         bytemuck::cast_slice(&data[..split]),
-                        wgpu::ImageDataLayout {
+                        wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(BYTES_PER_ROW),
                             rows_per_image: Some(rows_per_image),
@@ -182,7 +183,7 @@ impl StorageBuffer {
                 if offset % w != 0 {
                     let rem = data.len() - split;
                     queue.write_texture(
-                        wgpu::ImageCopyTexture {
+                        wgpu::TexelCopyTextureInfo {
                             texture,
                             mip_level: 0,
                             origin: wgpu::Origin3d {
@@ -193,7 +194,7 @@ impl StorageBuffer {
                             aspect: wgpu::TextureAspect::All,
                         },
                         bytemuck::cast_slice(&data[split..]),
-                        wgpu::ImageDataLayout {
+                        wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(BYTES_PER_ROW),
                             rows_per_image: Some(rows_per_image),
