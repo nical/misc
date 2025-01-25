@@ -1,9 +1,9 @@
 use crate::{resources::Instance, InstanceFlags};
 use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
+        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
     }, gpu::{
-        shader::{PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey},
+        shader::{RenderPipelineIndex, RenderPipelineKey},
         DynBufferRange, GpuStoreHandle,
     }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu, PrepareContext, UploadContext
 };
@@ -152,7 +152,13 @@ impl RectangleRenderer {
         });
     }
 
-    pub fn prepare(&mut self, _pass: &BuiltRenderPass, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+        if self.batches.is_empty() {
+            return;
+        }
+
+        let shaders = &mut ctx.workers.data().pipelines;
+
         for (_, surface, batch) in self.batches.iter_mut() {
             let pipeline = self.pipelines.get(batch.opaque, batch.edge_aa);
             let idx = shaders.prepare(RenderPipelineKey::new(
@@ -181,7 +187,7 @@ impl RectangleRenderer {
 
 impl core::Renderer for RectangleRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.pipelines);
+        self.prepare_impl(ctx);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {

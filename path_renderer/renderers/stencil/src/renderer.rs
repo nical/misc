@@ -11,12 +11,12 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::BatchId, context::{BuiltRenderPass, RenderPassContext}, gpu::shader::{BlendMode, ShaderPatternId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
+use core::{batching::BatchId, context::RenderPassContext, gpu::shader::{BlendMode, ShaderPatternId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
 use core::wgpu;
 use core::{
     bytemuck,
     gpu::shader::{
-        BaseShaderId, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+        BaseShaderId, RenderPipelineIndex, RenderPipelineKey,
     },
     shape::{Circle, FilledPath},
 };
@@ -253,7 +253,15 @@ impl StencilAndCoverRenderer {
             });
     }
 
-    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+        if self.batches.is_empty() {
+            return;
+        }
+
+        let pass = &ctx.pass;
+        let transforms = &ctx.transforms;
+        let shaders = &mut ctx.workers.data().pipelines;
+
         let mut batches = self.batches.take();
         let id = self.renderer_id;
         for batch_id in pass
@@ -556,7 +564,7 @@ fn generate_cover_geometry(
 
 impl core::Renderer for StencilAndCoverRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+        self.prepare_impl(ctx);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {

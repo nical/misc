@@ -1,9 +1,9 @@
 use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         shader::{
-            BaseShaderId, BindGroupLayoutId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
+            BaseShaderId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         }, storage_buffer::{StorageBuffer, StorageKind}, DynBufferRange, Shaders
     }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
@@ -188,14 +188,19 @@ impl MsaaStrokeRenderer {
         });
     }
 
-    pub fn prepare(&mut self, ctx: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
         if self.batches.is_empty() {
             return;
         }
 
+        let pass = &ctx.pass;
+        let transforms = &ctx.transforms;
+        let shaders = &mut ctx.workers.data().pipelines;
+
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in ctx
+
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -321,7 +326,7 @@ impl MsaaStrokeRenderer {
 
 impl core::Renderer for MsaaStrokeRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+        self.prepare_impl(ctx);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {

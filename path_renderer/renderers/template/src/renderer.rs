@@ -106,7 +106,27 @@ impl TemplateRenderer {
         });
     }
 
-    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
+        let transform = transforms.get(fill.transform).matrix();
+        let z_index = fill.z_index;
+        let pattern = fill.pattern.data;
+
+        // ...
+    }
+
+    pub fn upload(
+        &mut self,
+        resources: &mut GpuResources,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+    }
+}
+
+impl core::Renderer for TemplateRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext) {
+        let pass = &ctx.pass;
+
         if self.batches.is_empty() {
             return;
         }
@@ -133,7 +153,7 @@ impl TemplateRenderer {
                     // self.draws.push(...)
                 }
 
-                self.prepare_fill(fill, transforms);
+                self.prepare_fill(fill, &ctx.transforms);
             }
 
             // if commands to flush...
@@ -143,28 +163,6 @@ impl TemplateRenderer {
         }
 
         self.batches = batches;
-    }
-
-    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
-        let transform = transforms.get(fill.transform).matrix();
-        let z_index = fill.z_index;
-        let pattern = fill.pattern.data;
-
-        // ...
-    }
-
-    pub fn upload(
-        &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-    }
-}
-
-impl core::Renderer for TemplateRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {

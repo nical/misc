@@ -1,3 +1,5 @@
+#![allow(private_bounds)]
+
 use std::{marker::PhantomData, ptr::NonNull, sync::Arc};
 
 pub struct Workers {
@@ -20,18 +22,18 @@ impl Workers {
 
     pub fn ctx<'a>(&'a self) -> Context<'a, ()> {
         Context {
-            ctx_data: NonNull::dangling(),
+            ctx_data: (),
             slice_split_threshold: 2,
             _marker: PhantomData,
         }
     }
 
-    pub fn ctx_with<'a, CtxData>(&'a self, data: &'a mut[CtxData]) -> Context<'a, CtxData>
+    pub fn ctx_with<'a, CtxData>(&'a self, data: &'a mut[CtxData]) -> Context<'a, (CtxData,)>
     where CtxData: Send
     {
         assert!(data.len() >= rayon::current_num_threads());
         Context {
-            ctx_data: NonNull::new(data.as_mut_ptr()).unwrap(),
+            ctx_data: SendPtr { ptr: NonNull::new(data.as_mut_ptr()).unwrap() },
             slice_split_threshold: 2,
             _marker: PhantomData,
         }
@@ -45,8 +47,7 @@ impl Workers {
         self.thread_pool.broadcast(
             |_| {
                 let anchor = ();
-                let ctx_data = CtxDataPtr { ptr: NonNull::dangling() };
-                op(&mut Context::worker(ctx_data, 2, &anchor))
+                op(&mut Context::worker((), 2, &anchor))
             }
         )
     }
@@ -56,15 +57,48 @@ impl Workers {
     }
 }
 
-/// A temporary wrapper for the pointer whihc implements send.
-#[derive(Clone)]
-struct CtxDataPtr<T> {
+/// A temporary wrapper for the pointer which implements send.
+pub(crate) struct SendPtr<T> {
     ptr: NonNull<T>,
 }
 
-unsafe impl<T: Send> Send for CtxDataPtr<T> {}
+impl<T> SendPtr<T> {
+    pub fn from_ptr(p: *mut T) -> Self {
+        Self { ptr: NonNull::new(p).unwrap() }
+    }
+    pub fn ptr(&self) -> *mut T { self.ptr.as_ptr() }
+    pub unsafe fn as_mut(&mut self) -> &mut T { self.ptr.as_mut() }
+}
 
-pub struct Context<'a, CtxData> {
+unsafe impl<T: Send> Send for SendPtr<T> {}
+
+impl<T> Clone for SendPtr<T> {
+    fn clone(&self) -> Self {
+        SendPtr { ptr: self.ptr }
+    }
+}
+
+/// A temporary wrapper for the pointer which implements send.
+pub(crate) struct SendConstPtr<T> {
+    ptr: *const T,
+}
+
+impl<T> SendConstPtr<T> {
+    pub fn new(ptr: *const T) -> Self {
+        Self { ptr }
+    }
+    pub fn ptr(&self) -> *const T { self.ptr }
+}
+
+unsafe impl<T: Send> Send for SendConstPtr<T> {}
+
+impl<T> Clone for SendConstPtr<T> {
+    fn clone(&self) -> Self {
+        SendConstPtr { ptr: self.ptr }
+    }
+}
+
+pub struct Context<'a, CtxData: WorkerData> {
     /// # Safety
     ///
     /// NonNull *must* be either:
@@ -74,15 +108,15 @@ pub struct Context<'a, CtxData> {
     ///
     /// If ctx_data is a dangling unit pointer, accesses (at an offset) won't
     /// produce any actual reads or writes, so it is safe.
-    ctx_data: NonNull<CtxData>,
+    ctx_data: CtxData::Ptr,
     slice_split_threshold: usize,
     _marker: PhantomData<&'a ()>,
 }
 
-impl<'a, CtxData: Send> Context<'a, CtxData> {
-    fn worker(ctx_data: CtxDataPtr<CtxData>, split: usize, _anchor: &'a ()) -> Self {
+impl<'a, CtxData: WorkerData> Context<'a, CtxData> {
+    fn worker(ctx_data: CtxData::Ptr, split: usize, _anchor: &'a ()) -> Self {
         Context {
-            ctx_data: ctx_data.ptr,
+            ctx_data,
             slice_split_threshold: split,
             _marker: PhantomData,
         }
@@ -92,9 +126,8 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         rayon::current_thread_index().unwrap()
     }
 
-    pub fn data(&mut self) -> &mut CtxData {
-        let idx = rayon::current_thread_index().unwrap();
-        unsafe { self.ctx_data.offset(idx as isize).as_mut() }
+    pub fn num_workers(&self) -> usize {
+        rayon::current_num_threads()
     }
 
     pub fn join<A, B, RA, RB>(&self, oper_a: A, oper_b: B) -> (RA, RB)
@@ -106,8 +139,8 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         CtxData: Send
     {
         let split = self.slice_split_threshold;
-        let ctx_data_a = CtxDataPtr { ptr: self.ctx_data };
-        let ctx_data_b = CtxDataPtr { ptr: self.ctx_data };
+        let ctx_data_a = self.ctx_data.clone();
+        let ctx_data_b = self.ctx_data.clone();
         rayon::join(
             move || {
                 let anchor = ();
@@ -120,7 +153,7 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         )
     }
 
-    pub fn for_each<I: Sync, F>(
+    pub fn for_each<I: Send, F>(
         &mut self,
         mut iter: impl Iterator<Item = I>,
         op: &F,
@@ -144,13 +177,64 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
                 }
             }
 
-            self.slice_for_each(&buffer, op);
+            self.slice_for_each(&buffer, &|ctx, slice| {
+                for item in slice {
+                    op(ctx, item)
+                }
+            });
 
             buffer.clear();
         }
 
         if !buffer.is_empty() {
-            self.slice_for_each(&buffer, op);
+            self.slice_for_each(&buffer, &|ctx, slice| {
+                for item in slice {
+                    op(ctx, item)
+                }
+            });
+        }
+    }
+
+    pub fn for_each_mut<'b, I: Sync, F>(
+        &mut self,
+        mut iter: impl Iterator<Item = &'b mut I>,
+        op: &'b F,
+    )
+    where
+        I: Send + 'b,
+        F: Fn(&mut Context<CtxData>, &mut I) + Send + Sync,
+    {
+        const BUFFER_SIZE: usize = 1024 * 4; // 4Kb
+        // Process items by batch of n items.
+        // This is not great because we wait for each batch to be done before
+        // starting the next.
+        let n = (BUFFER_SIZE / std::mem::size_of::<I>()).max(1);
+        let mut buffer = Vec::with_capacity(n);
+
+        'outer: loop {
+            for _ in 0..n {
+                if let Some(item) = iter.next() {
+                    buffer.push(item);
+                } else {
+                    break 'outer;
+                }
+            }
+
+            self.slice_for_each_mut(&mut buffer, &|ctx, slice| {
+                for item in slice {
+                    op(ctx, item)
+                }
+            });
+
+            buffer.clear();
+        }
+
+        if !buffer.is_empty() {
+            self.slice_for_each_mut(&mut buffer, &|ctx, slice| {
+                for item in slice {
+                    op(ctx, item)
+                }
+            });
         }
     }
 
@@ -160,8 +244,8 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         op: &F
     )
     where
-        I: Sync,
-        F: Fn(&mut Context<CtxData>, &I) + Send + Sync
+        I: Send,
+        F: Fn(&mut Context<CtxData>, &[I]) + Send + Sync
     {
         self.slice_split_threshold = (slice.len() / rayon::current_num_threads()).max(2);
         self.slice_for_each_impl(slice, op);
@@ -174,34 +258,172 @@ impl<'a, CtxData: Send> Context<'a, CtxData> {
         op: &F
     )
     where
-        I: Sync,
-        F: Fn(&mut Context<CtxData>, &I) + Send + Sync
+        I: Send,
+        F: Fn(&mut Context<CtxData>, &[I]) + Send + Sync
     {
         //println!("ctx #{} for each n={}", self.index(), slice.len());
         if slice.len() <= self.slice_split_threshold {
             //println!("ctx #{} job exec n={}", self.index(), slice.len());
-            for item in slice {
-                op(self, item)
-            }
+            op(self, slice);
             return;
         }
-        let split = slice.len() / 2;
-        let left = &slice[..split];
-        let right = &slice[split..];
-        self.join(
-            move |ctx| ctx.slice_for_each_impl(left, op),
-            move |ctx| ctx.slice_for_each_impl(right, op),
-        );
+
+        unsafe {
+            let base_ptr = slice.as_ptr();
+            let left = SendConstPtr::new(base_ptr);
+            let left_len = slice.len() / 2;
+            let right = SendConstPtr::new(base_ptr.add(left_len));
+            let right_len = slice.len() - left_len;
+            self.join(
+                move |ctx| {
+                    let slice = std::slice::from_raw_parts(left.ptr(), left_len);
+                    ctx.slice_for_each_impl(slice, op)
+                },
+                move |ctx| {
+                    let slice = std::slice::from_raw_parts(right.ptr(), right_len);
+                    ctx.slice_for_each_impl(slice, op)
+                },
+            );
+        }
     }
 
-    pub fn with_data<'b, Data>(&mut self, data: &'b mut[Data]) -> Context<'b, Data> {
-        assert!(data.len() >= rayon::current_num_threads() + 1);
+    pub fn slice_for_each_mut<I, F>(
+        &mut self,
+        slice: &mut [I],
+        op: &F
+    )
+    where
+        I: Send,
+        F: Fn(&mut Context<CtxData>, &mut [I]) + Send + Sync
+    {
+        self.slice_split_threshold = (slice.len() / rayon::current_num_threads()).max(2);
+        self.slice_for_each_mut_impl(slice, op);
+    }
+
+    #[inline]
+    fn slice_for_each_mut_impl<I, F>(
+        &mut self,
+        slice: &mut [I],
+        op: &F
+    )
+    where
+        I: Send,
+        F: Fn(&mut Context<CtxData>, &mut [I]) + Send + Sync
+    {
+        //println!("ctx #{} for each n={}", self.index(), slice.len());
+        if slice.len() <= self.slice_split_threshold {
+            //println!("ctx #{} job exec n={}", self.index(), slice.len());
+            op(self, slice);
+            return;
+        }
+        unsafe {
+            let base_ptr = slice.as_mut_ptr();
+            let left = SendPtr::from_ptr(base_ptr);
+            let left_len = slice.len() / 2;
+            let right = SendPtr::from_ptr(base_ptr.add(left_len));
+            let right_len = slice.len() - left_len;
+            self.join(
+                move |ctx| {
+                    let slice = std::slice::from_raw_parts_mut(left.ptr(), left_len);
+                    ctx.slice_for_each_mut_impl(slice, op)
+                },
+                move |ctx| {
+                    let slice = std::slice::from_raw_parts_mut(right.ptr(), right_len);
+                    ctx.slice_for_each_mut_impl(slice, op)
+                },
+            );
+        }
+    }
+}
+
+impl<'a> Context<'a, ()> {
+    pub fn data(&mut self) -> () { () }
+
+    pub fn with_data<'b, Data: Send>(&mut self, data: &'b mut[Data]) -> Context<'b, (Data,)> {
+        assert!(data.len() >= rayon::current_num_threads());
         Context {
-            ctx_data: NonNull::new(data.as_mut_ptr()).unwrap(),
+            ctx_data: SendPtr { ptr: NonNull::new(data.as_mut_ptr()).unwrap() },
             slice_split_threshold: self.slice_split_threshold,
             _marker: PhantomData,
         }
     }
+}
+
+impl<'a, D1: Send> Context<'a, (D1,)> {
+    pub fn data(&mut self) -> &mut D1 {
+        let idx = rayon::current_thread_index().unwrap() as isize;
+        unsafe { self.ctx_data.ptr.offset(idx).as_mut() }
+    }
+
+    pub fn with_data<'b, D2: Send>(&mut self, data: &'b mut[D2]) -> Context<'b, (D1, D2)> {
+        assert!(data.len() >= rayon::current_num_threads());
+        Context {
+            ctx_data: (
+                self.ctx_data.clone(),
+                SendPtr { ptr: NonNull::new(data.as_mut_ptr()).unwrap() }
+            ),
+            slice_split_threshold: self.slice_split_threshold,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, D1: Send, D2: Send> Context<'a, (D1, D2)> {
+    pub fn data(&mut self) -> (&mut D1, &mut D2) {
+        let idx = rayon::current_thread_index().unwrap() as isize;
+        unsafe {
+            (
+                self.ctx_data.0.ptr.offset(idx).as_mut(),
+                self.ctx_data.1.ptr.offset(idx).as_mut(),
+            )
+        }
+    }
+
+    pub fn with_data<'b, D3: Send>(&mut self, data: &'b mut[D3]) -> Context<'b, (D1, D2, D3)> {
+        assert!(data.len() >= rayon::current_num_threads() + 1);
+        Context {
+            ctx_data: (
+                self.ctx_data.0.clone(),
+                self.ctx_data.1.clone(),
+                SendPtr { ptr: NonNull::new(data.as_mut_ptr()).unwrap() }
+            ),
+            slice_split_threshold: self.slice_split_threshold,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, D1: Send, D2: Send, D3: Send> Context<'a, (D1, D2, D3)> {
+    pub fn data(&mut self) -> (&mut D1, &mut D2, &mut D3) {
+        let idx = rayon::current_thread_index().unwrap() as isize;
+        unsafe {
+            (
+                self.ctx_data.0.ptr.offset(idx).as_mut(),
+                self.ctx_data.1.ptr.offset(idx).as_mut(),
+                self.ctx_data.2.ptr.offset(idx).as_mut(),
+            )
+        }
+    }
+}
+
+pub(crate) trait WorkerData: Send {
+    type Ptr: Send + Clone;
+}
+
+impl WorkerData for () {
+    type Ptr = ();
+}
+
+impl<A: Send> WorkerData for (A,) {
+    type Ptr = SendPtr<A>;
+}
+
+impl<A: Send, B: Send> WorkerData for (A, B) {
+    type Ptr = (SendPtr<A>, SendPtr<B>);
+}
+
+impl<A: Send, B: Send, C: Send> WorkerData for (A, B, C) {
+    type Ptr = (SendPtr<A>, SendPtr<B>, SendPtr<C>);
 }
 
 #[test]

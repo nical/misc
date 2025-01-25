@@ -1,13 +1,17 @@
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
-    }, gpu::{
-        shader::{
-            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
-        },
-        DynBufferRange,
-    }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{LocalRect, SurfaceIntSize}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
+    bytemuck, usize_range, wgpu, BindingsId, PrepareContext, UploadContext,
+    batching::{BatchFlags, BatchId, BatchList},
+    context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig},
+    gpu::DynBufferRange,
 };
+use core::gpu::shader::{BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
+
+use core::pattern::BuiltPattern;
+use core::resources::GpuResources;
+use core::shape::FilledPath;
+use core::transform::{TransformId, Transforms};
+use core::units::{LocalRect, SurfaceIntSize};
+
 use lyon_path::{FillRule, traits::PathIterator};
 use wpf_gpu_raster::{PathBuilder, FillMode};
 use std::ops::Range;
@@ -134,10 +138,14 @@ impl WpfMeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
         if self.batches.is_empty() {
             return;
         }
+
+        let pass = &ctx.pass;
+        let transforms = &ctx.transforms;
+        let shaders = &mut ctx.workers.data().pipelines;
 
         let surface_size = pass.surface_size();
 
@@ -296,7 +304,7 @@ impl core::FillPath for WpfMeshRenderer {
 
 impl core::Renderer for WpfMeshRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+        self.prepare_impl(ctx);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
