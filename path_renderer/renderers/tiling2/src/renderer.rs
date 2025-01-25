@@ -1,9 +1,9 @@
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+    batching::{BatchFlags, BatchId, BatchIndex, BatchList, SurfaceIndex}, bytemuck, context::{
         BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    }, gpu::{shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey}, DynBufferRange}, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{point, LocalRect, SurfaceIntRect, SurfaceRect}, wgpu, PrepareContext, UploadContext
+    }, gpu::{shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey}, DynBufferRange}, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{point, LocalRect, SurfaceIntRect, SurfaceRect}, wgpu, PrepareContext, PrepareWorkerContext, UploadContext
 };
-use std::ops::Range;
+use std::{ops::Range, sync::atomic::{AtomicBool, Ordering}};
 
 use crate::{tiler::{EncodedPathInfo, Tiler, TilerOutput}, FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
@@ -137,7 +137,15 @@ impl TileRenderer {
         self.no_opaque_batches = options.no_opaque_batches;
     }
 
-    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+        if self.batches.is_empty() {
+            return;
+        }
+
+        let pass = &ctx.pass;
+        let transforms = &ctx.transforms;
+        let shaders = &mut ctx.workers.data().pipelines;
+
         if self.batches.is_empty() {
             return;
         }
@@ -177,6 +185,162 @@ impl TileRenderer {
         }
 
         self.batches = batches;
+    }
+
+    pub fn prepare_parallel(
+        &mut self,
+        pass: &BuiltRenderPass,
+        transforms: &Transforms,
+        workers: &mut PrepareWorkerContext,
+    ) {
+        #[derive(Clone, Debug)]
+        struct Item {
+            instances: Range<u32>,
+            batch_index: BatchIndex,
+            surface_index: SurfaceIndex,
+            worker_index: u8,
+        }
+        struct WorkerData {
+            tiler: Tiler,
+            tiles: TilerOutput,
+            opaque_items: Vec<Item>,
+            masked_items: Vec<Item>,
+        }
+
+        let counter = std::sync::atomic::AtomicI32::new(0);
+
+        let size = pass.surface_size();
+        let mut worker_data = Vec::new();
+        for _ in 0..workers.num_workers() {
+            let mut tiler = Tiler::new();
+            tiler.begin_target(SurfaceIntRect::from_size(size));
+
+            worker_data.push(WorkerData {
+                tiler,
+                tiles: TilerOutput::new(),
+                opaque_items: Vec::with_capacity(2048),
+                masked_items: Vec::with_capacity(2048),
+            });
+        }
+
+        unsafe {
+        self.batches.par_iter_mut(
+            &mut workers.with_data(&mut worker_data),
+            pass, self.renderer_id,
+            &|ctx, batch, commands, surface, info| {
+            let added_opaque_tiles: AtomicBool = AtomicBool::new(false);
+            let added_mask_tiles: AtomicBool = AtomicBool::new(false);
+            ctx.slice_for_each(&commands, &|ctx, fills| {
+                let worker_index = ctx.index() as u8;
+                let (_, tiler_data) = ctx.data();
+                let opaque_tiles_start = tiler_data.tiles.opaque_tiles.len() as u32;
+                let mask_tiles_start = tiler_data.tiles.mask_tiles.len() as u32;
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                for fill in fills {
+                    Self::prepare_fill_impl(
+                        &mut tiler_data.tiler,
+                        &mut tiler_data.tiles,
+                        fill,
+                        transforms,
+                        self.tolerance,
+                    );
+                }
+                let opaque_tiles_end = tiler_data.tiles.opaque_tiles.len() as u32;
+                let mask_tiles_end = tiler_data.tiles.mask_tiles.len() as u32;
+
+                fn add_item(
+                    items: &mut Vec<Item>,
+                    range: Range<u32>,
+                    batch_index: BatchIndex,
+                    surface_index: SurfaceIndex,
+                    worker_index: u8,
+                ) {
+                    if let Some(last) = items.last_mut() {
+                        if last.batch_index == batch_index && last.instances.end == range.start {
+                            last.instances.end = range.end;
+                            return;
+                        }
+                    }
+
+                    items.push(Item {
+                        instances: range.clone(),
+                        batch_index,
+                        surface_index,
+                        worker_index,
+                    });
+                }
+
+                if opaque_tiles_end > opaque_tiles_start {
+                    added_opaque_tiles.store(true, Ordering::Relaxed);
+                    add_item(
+                        &mut tiler_data.opaque_items,
+                        opaque_tiles_start..opaque_tiles_end,
+                        batch.index,
+                        batch.surface,
+                        worker_index
+                    );
+                    // TODO
+                }
+                if mask_tiles_end > mask_tiles_start {
+                    added_mask_tiles.store(true, Ordering::Relaxed);
+                    add_item(
+                        &mut tiler_data.masked_items,
+                        mask_tiles_start..mask_tiles_end,
+                        batch.index,
+                        batch.surface,
+                        worker_index
+                    );
+                    // TODO
+                }
+            });
+
+            let draw_config = surface.draw_config(true, None);
+
+            let (core_data, _tiler_data) = ctx.data();
+
+            if added_opaque_tiles.load(Ordering::Relaxed) {
+                let _pipeline = core_data.pipelines.prepare(RenderPipelineKey::new(
+                    self.base_shader,
+                    info.pattern.shader,
+                    BlendMode::None,
+                    draw_config,
+                ));
+
+                // TODO
+            }
+
+            if added_mask_tiles.load(Ordering::Relaxed) {
+                let _pipleine = core_data.pipelines.prepare(RenderPipelineKey::new(
+                    self.base_shader,
+                    info.pattern.shader,
+                    info.blend_mode.with_alpha(true),
+                    draw_config,
+                ));
+
+                // TODO
+            }
+        });
+        }// unsafe
+
+        println!("tiled using {:?} jobs", counter);
+
+        let mut num_opaque_items = 0;
+        let mut num_masked_items = 0;
+        for worker in &worker_data {
+            num_opaque_items += worker.opaque_items.len();
+            num_masked_items += worker.masked_items.len();
+            println!(" - {:?}/{:?} opaque, {:?}/{:?} masked", worker.tiles.opaque_tiles.len(), worker.opaque_items.len(), worker.tiles.mask_tiles.len(), worker.masked_items.len())
+        }
+
+        let mut ordered_opaque_items = Vec::with_capacity(num_opaque_items);
+        let mut ordered_mask_items = Vec::with_capacity(num_masked_items);
+
+        for worker in &worker_data {
+            ordered_opaque_items.extend_from_slice(&worker.opaque_items);
+            ordered_mask_items.extend_from_slice(&worker.masked_items);
+        }
+
+        // TODO: sort the ordered items
     }
 
     fn prepare_batch(
@@ -234,6 +398,10 @@ impl TileRenderer {
     }
 
     fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
+        Self::prepare_fill_impl(&mut self.tiler, &mut self.tiles, fill, transforms, self.tolerance);
+    }
+
+    fn prepare_fill_impl(tiler: &mut Tiler, tiles: &mut TilerOutput, fill: &Fill, transforms: &Transforms, tolerance: f32) {
         let transform = transforms.get(fill.transform).matrix();
 
         match &fill.shape {
@@ -242,18 +410,18 @@ impl TileRenderer {
                     .with_transform(Some(transform))
                     .with_fill_rule(shape.fill_rule)
                     .with_z_index(fill.z_index)
-                    .with_tolerance(self.tolerance)
+                    .with_tolerance(tolerance)
                     .with_inverted(shape.inverted);
-                self.tiler.fill_path(
+                tiler.fill_path(
                     shape.path.iter(),
                     &options,
                     &fill.pattern,
-                    &mut self.tiles,
+                    tiles,
                 );
             }
             Shape::Surface => {
                 let opacity = 1.0; // TODO
-                self.tiler.fill_surface(&fill.pattern, opacity, fill.z_index, &mut self.tiles);
+                tiler.fill_surface(&fill.pattern, opacity, fill.z_index, tiles);
             }
         }
     }
@@ -349,7 +517,9 @@ impl TileRenderer {
 
 impl core::Renderer for TileRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+        // TODO: Don't run it twice!
+        self.prepare_impl(ctx);
+        self.prepare_parallel(ctx.pass, ctx.transforms, &mut ctx.workers);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
