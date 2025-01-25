@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use std::collections::VecDeque;
 
-use crate::{context::RenderPassContext, SurfacePassConfig};
+use crate::{context::RenderPassContext, worker::SendPtr, SurfacePassConfig};
 
 pub type Rect = crate::units::SurfaceRect;
 
@@ -486,6 +486,38 @@ impl<T, I> BatchList<T, I> {
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &SurfacePassConfig, &mut I)> {
         self.batches.iter_mut().map(|b| (&mut b.0, &b.1, &mut b.2))
+    }
+
+    /// # Safety
+    ///
+    /// batch ids in the render pass must appear at most once.
+    #[allow(private_bounds)]
+    pub unsafe fn par_iter_mut<D, Op>(
+        &mut self,
+        ctx: &mut crate::worker::Context<D>,
+        pass: &crate::context::BuiltRenderPass,
+        renderer_id: RendererId,
+        op: &Op,
+    )
+    where
+        D: crate::worker::WorkerData,
+        I: Send + Sync,
+        T: Send,
+        Op: Fn(&mut crate::worker::Context<D>, BatchId, &[T], &SurfacePassConfig, &mut I) + Send + Sync,
+    {
+        let batches_ptr = self.batches.as_mut_ptr();
+        let batches = pass
+            .batches()
+            .iter()
+            .filter(|batch| batch.renderer == renderer_id)
+            .map(|id| unsafe {
+                (*id, SendPtr::from_ptr(batches_ptr.add(id.index as usize)))
+            });
+
+        ctx.for_each(batches, &|ctx, (id, batch)| {
+            let batch = unsafe { batch.ptr().as_mut().unwrap() };
+            op(ctx, *id,  &batch.0, &batch.1, &mut batch.2)
+        })
     }
 
     pub fn is_empty(&self) -> bool {

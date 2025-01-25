@@ -1,9 +1,9 @@
 use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         shader::{
-            BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey
+            BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         },
         DynBufferRange,
     }, path::Path, pattern::BuiltPattern, resources::GpuResources, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
@@ -221,10 +221,14 @@ impl MeshRenderer {
         });
     }
 
-    pub fn prepare(&mut self, pass: &BuiltRenderPass, transforms: &Transforms, shaders: &mut PrepareRenderPipelines) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
         if self.batches.is_empty() {
             return;
         }
+
+        let pass = &ctx.pass;
+        let transforms = &ctx.transforms;
+        let shaders = &mut ctx.workers.data().pipelines;
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
@@ -469,7 +473,7 @@ impl MeshRenderer {
 
 impl core::Renderer for MeshRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare(ctx.pass, ctx.transforms, ctx.pipelines);
+        self.prepare_impl(ctx);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {

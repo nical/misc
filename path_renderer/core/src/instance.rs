@@ -1,7 +1,9 @@
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::gpu::{StagingBufferPool, Uploader};
 use crate::worker::Workers;
-use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, Renderer, UploadContext, WgpuContext};
+use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, UploadContext, WgpuContext};
 use crate::frame::Frame;
 use crate::render_graph::{Allocation, BuiltGraph};
 use crate::resources::{GpuResource, GpuResources};
@@ -16,6 +18,7 @@ pub struct Instance {
     render_pipelines: RenderPipelines,
     pub resources: GpuResources,
     pub workers: Workers,
+    pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
     next_frame_index: u32,
 }
 
@@ -30,11 +33,16 @@ impl Instance {
 
         let workers = Workers::new(num_workers);
 
+        let staging_buffers = unsafe {
+            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, 1024 * 4, device)))
+        };
+
         Instance {
             shaders,
             render_pipelines,
             resources,
             workers,
+            staging_buffers,
             next_frame_index: 0,
         }
     }
@@ -69,7 +77,14 @@ impl Instance {
 
         let prepare_start = Instant::now();
 
-        let mut prep_pipelines = self.render_pipelines.prepare();
+        let num_workers = self.workers.num_workers();
+        let mut worker_data = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            worker_data.push(PrepareWorkerData {
+                pipelines: self.render_pipelines.prepare(),
+                uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
+            });
+        }
 
         for cmd in &graph {
             let pass = &frame.built_render_passes[cmd.task_id().0 as usize];
@@ -78,15 +93,18 @@ impl Instance {
                 renderer.prepare(&mut PrepareContext {
                     pass,
                     transforms: &frame.transforms,
-                    pipelines: &mut prep_pipelines,
-                    workers: &self.workers,
+                    workers: self.workers.ctx_with(&mut worker_data[..]),
                 });
             }
         }
 
-        let changes = prep_pipelines.finish();
+        let mut pipeline_changes = Vec::with_capacity(worker_data.len());
+        for wd in worker_data {
+            pipeline_changes.push(wd.pipelines.finish());
+        }
+
         self.render_pipelines.build(
-            &[&changes],
+            &pipeline_changes[..],
             &mut RenderPipelineBuilder(device, &mut self.shaders),
         );
 

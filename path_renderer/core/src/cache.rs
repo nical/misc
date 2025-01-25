@@ -84,7 +84,7 @@ impl<Key, Payload> Registry<Key, Payload> {
         None
     }
 
-    pub fn build(&mut self, changes: &[&Changelist<Key>], builder: &mut dyn Build<Key, Payload>)
+    pub fn build(&mut self, changes: &[Changelist<Key>], builder: &mut dyn Build<Key, Payload>)
     where
         Key: Copy + Hash + Eq,
     {
