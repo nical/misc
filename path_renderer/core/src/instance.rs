@@ -19,11 +19,13 @@ pub struct Instance {
     pub resources: GpuResources,
     pub workers: Workers,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
     next_frame_index: u32,
 }
 
 impl Instance {
-    pub fn new(device: &wgpu::Device, num_workers: usize) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize) -> Self {
         let mut shaders = Shaders::new(&device);
         let render_pipelines = RenderPipelines::new();
         let resources = GpuResources::new(
@@ -34,7 +36,7 @@ impl Instance {
         let workers = Workers::new(num_workers);
 
         let staging_buffers = unsafe {
-            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, 1024 * 4, device)))
+            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, 1024 * 4, device.clone())))
         };
 
         Instance {
@@ -43,6 +45,8 @@ impl Instance {
             resources,
             workers,
             staging_buffers,
+            device: device.clone(),
+            queue: queue.clone(),
             next_frame_index: 0,
         }
     }
@@ -59,8 +63,6 @@ impl Instance {
         renderers: &mut[&mut dyn Renderer],
         external_inputs: &[Option<&wgpu::BindGroup>],
         external_attachments: &[Option<&wgpu::TextureView>],
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
     ) -> RenderStats {
         let mut stats = RenderStats {
@@ -102,6 +104,9 @@ impl Instance {
         for wd in worker_data {
             pipeline_changes.push(wd.pipelines.finish());
         }
+
+        let device = &self.device;
+        let queue = &self.queue;
 
         self.render_pipelines.build(
             &pipeline_changes[..],
