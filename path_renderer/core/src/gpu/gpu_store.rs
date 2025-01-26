@@ -434,6 +434,7 @@ struct TransferOp {
     gpu_offset: GpuOffset,
 }
 
+
 pub struct GpuStore2 {
     align_mask: u32,
     offset_shift: u32,
@@ -802,18 +803,14 @@ pub struct StagingBufferPool {
 
     // TODO: In the next wgpu version this will be a regular cloneable
     // Device handle.
-    device: *const wgpu::Device,
+    device: Option<wgpu::Device>,
 }
 
 unsafe impl Send for StagingBufferPool {}
 unsafe impl Sync for StagingBufferPool {}
 
 impl StagingBufferPool {
-    // TODO: Make this take a cloneable device handle by value once
-    // wgpu resources are cloneable and remove the unsafe.
-    // In the mean time the device must not be moved while the pool is
-    // alive.
-    pub unsafe fn new(buffer_size: u32, chunk_size: u32, device: &wgpu::Device) -> Self {
+    pub unsafe fn new(buffer_size: u32, chunk_size: u32, device: wgpu::Device) -> Self {
         StagingBufferPool {
             buffer_size,
             available: Vec::new(),
@@ -828,7 +825,7 @@ impl StagingBufferPool {
             cpu_buffers: Vec::new(),
             current_chunks_offset: 0,
             chunk_size,
-            device: device as _,
+            device: Some(device),
         }
     }
 
@@ -847,19 +844,16 @@ impl StagingBufferPool {
             cpu_buffers: Vec::new(),
             current_chunks_offset: 0,
             chunk_size,
-            device: std::ptr::null(),
+            device: None,
         }
     }
 
     fn device(&self) -> &wgpu::Device {
-        assert!(!self.device.is_null());
-        unsafe {
-            &*self.device
-        }
+        self.device.as_ref().unwrap()
     }
 
     pub fn get_mapped_staging_buffer(&mut self) -> MappedStagingBuffer {
-        if self.device.is_null() {
+        if self.device.is_none() {
             return self.create_cpu_buffer();
         }
 
