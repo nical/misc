@@ -17,7 +17,7 @@ pub mod instance;
 pub mod worker;
 
 use context::{BuiltRenderPass, RenderPassContext};
-use gpu::{shader::PrepareRenderPipelines, GpuStoreWriter, Shaders, Uploader};
+use gpu::{shader::PrepareRenderPipelines, GpuStoreWriter, Shaders};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
@@ -509,7 +509,6 @@ pub struct RenderContext<'l> {
 
 pub struct PrepareWorkerData {
     pub pipelines: PrepareRenderPipelines,
-    pub uploader: Uploader,
     pub gpu_store: GpuStoreWriter,
     // allocator
 }

@@ -646,65 +646,6 @@ impl Clone for GpuStoreWriter {
     }
 }
 
-// TODO: remove the need to pass an Uploader in GpuStoreWriter::push.
-
-/// A bump-allocator into staging buffers, used by a single worker thread at
-/// a time.
-pub struct Uploader {
-    current: MappedStagingBufferChunk,
-    // Relative to the beginning of the current chunk.
-    local_staging_offset: u32,
-    pool: Arc<Mutex<StagingBufferPool>>,
-}
-
-unsafe impl Send for Uploader {}
-
-impl Uploader {
-    pub fn new(pool: Arc<Mutex<StagingBufferPool>>) -> Uploader {
-        Uploader {
-            current: MappedStagingBufferChunk {
-                ptr: std::ptr::null_mut(),
-                id: StagingBufferId(u32::MAX),
-                size: 0,
-                offset: StagingOffset(u32::MAX),
-            },
-            local_staging_offset: 0,
-            pool,
-        }
-    }
-
-    pub fn get_chunk(&mut self, size: u32) -> MappedStagingBufferChunk {
-        let mut local_offset = self.local_staging_offset;
-        self.local_staging_offset += size;
-
-        if self.local_staging_offset > self.current.size {
-            self.replace_chunk();
-            self.local_staging_offset = size;
-            local_offset = 0;
-        }
-
-        //println!("get_chunk current offset: {:?} local offset {:?}", self.current.offset.0, self.local_staging_offset);
-
-        let ptr = unsafe { self.current.ptr.add(local_offset as usize) };
-
-        MappedStagingBufferChunk {
-            ptr,
-            id: self.current.id,
-            offset: StagingOffset(self.current.offset.0 + local_offset),
-            size,
-        }
-    }
-
-    #[cold]
-    fn replace_chunk(&mut self) {
-        self.current = self.pool.lock().unwrap().get_mapped_chunk(4096);
-    }
-
-    pub fn staging_buffer_pool(&self) -> &Arc<Mutex<StagingBufferPool>> {
-        &self.pool
-    }
-}
-
 pub struct MappedStagingBuffer {
     pub ptr: *mut u8,
     // in bytes.
