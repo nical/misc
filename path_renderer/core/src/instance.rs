@@ -56,7 +56,7 @@ impl Instance {
         self.next_frame_index += 1;
         Frame::new(
             idx,
-            self.resources.common.gpu_store2.begin_frame(
+            self.resources.common.gpu_store.begin_frame(
                 self.staging_buffers.clone()
             ),
         )
@@ -90,13 +90,13 @@ impl Instance {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
                 uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
-                gpu_store: frame.gpu_store2.clone(),
+                gpu_store: frame.gpu_store.clone(),
             });
         }
         worker_data.push(PrepareWorkerData {
             pipelines: self.render_pipelines.prepare(),
             uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
-            gpu_store: frame.gpu_store2,
+            gpu_store: frame.gpu_store,
         });
 
         for cmd in &graph {
@@ -128,6 +128,11 @@ impl Instance {
 
         let upload_start = Instant::now();
 
+        unsafe {
+            let mut staging_buffers = self.staging_buffers.lock().unwrap();
+            staging_buffers.unmap_active_buffers();
+        }
+
         self.resources.upload(
             device,
             queue,
@@ -138,7 +143,7 @@ impl Instance {
 
         {
             let staging_buffers = self.staging_buffers.lock().unwrap();
-            self.resources.common.gpu_store2.upload(
+            self.resources.common.gpu_store.upload(
                 &gpu_store_ops,
                 &staging_buffers,
                 &self.device,
@@ -153,8 +158,6 @@ impl Instance {
                 wgpu: WgpuContext { device, queue },
             });
         }
-
-        frame.gpu_store.upload(device, queue, &mut self.resources.common.gpu_store);
 
         self.resources.begin_rendering(encoder);
 
@@ -261,6 +264,12 @@ impl Instance {
         }
 
         self.resources.end_frame();
+
+        {
+            let mut staging_buffers = self.staging_buffers.lock().unwrap();
+            staging_buffers.triage_available_buffers();
+            staging_buffers.recycle_active_buffers();
+        }
 
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
