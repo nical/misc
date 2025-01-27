@@ -54,7 +54,10 @@ impl Instance {
     pub fn begin_frame(&mut self) -> Frame {
         let idx = self.next_frame_index;
         self.next_frame_index += 1;
-        Frame::new(idx)
+        Frame::new(
+            idx,
+            self.resources.common.gpu_store2.begin_frame(),
+        )
     }
 
     pub fn render(
@@ -81,12 +84,18 @@ impl Instance {
 
         let num_workers = self.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
-        for _ in 0..num_workers {
+        for _ in 0..(num_workers - 1) {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
                 uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
+                gpu_store: frame.gpu_store2.clone(),
             });
         }
+        worker_data.push(PrepareWorkerData {
+            pipelines: self.render_pipelines.prepare(),
+            uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
+            gpu_store: frame.gpu_store2,
+        });
 
         for cmd in &graph {
             let pass = &frame.built_render_passes[cmd.task_id().0 as usize];
@@ -100,8 +109,10 @@ impl Instance {
             }
         }
 
+        let mut gpu_store_ops = Vec::with_capacity(worker_data.len());
         let mut pipeline_changes = Vec::with_capacity(worker_data.len());
-        for wd in worker_data {
+        for mut wd in worker_data {
+            gpu_store_ops.push(wd.gpu_store.finish());
             pipeline_changes.push(wd.pipelines.finish());
         }
 
@@ -122,6 +133,16 @@ impl Instance {
             &graph.temporary_resources,
             &graph.pass_data,
         );
+
+        {
+            let staging_buffers = self.staging_buffers.lock().unwrap();
+            self.resources.common.gpu_store2.upload(
+                &gpu_store_ops,
+                &staging_buffers,
+                &self.device,
+                encoder,
+            );
+        }
 
         for renderer in renderers.iter_mut() {
             renderer.upload(&mut UploadContext {
