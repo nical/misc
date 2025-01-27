@@ -1,5 +1,5 @@
 use crate::context::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
-use crate::gpu::GpuStore;
+use crate::gpu::{GpuStore, GpuStoreWriter};
 use crate::render_graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
 use crate::units::SurfaceIntSize;
 use crate::{transform::Transforms, SurfaceKind, SurfacePassConfig};
@@ -8,6 +8,7 @@ use crate::{transform::Transforms, SurfaceKind, SurfacePassConfig};
 
 pub struct Frame {
     pub gpu_store: GpuStore,
+    pub gpu_store2: GpuStoreWriter,
     pub transforms: Transforms,
     pub(crate) graph: RenderGraph,
     pub(crate) built_render_passes: Vec<Option<BuiltRenderPass>>,
@@ -31,12 +32,13 @@ impl RenderPass {
 }
 
 impl Frame {
-    pub(crate) fn new(index: u32) -> Self {
+    pub(crate) fn new(index: u32, gpu_store2: GpuStoreWriter) -> Self {
         Frame {
             index,
             graph: RenderGraph::new(),
             built_render_passes: Vec::new(),
             gpu_store: GpuStore::new(512),
+            gpu_store2,
             transforms: Transforms::new(),
         }
     }
