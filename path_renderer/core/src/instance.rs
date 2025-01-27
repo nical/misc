@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::gpu::{StagingBufferPool, Uploader};
+use crate::gpu::StagingBufferPool;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, UploadContext, WgpuContext};
 use crate::frame::Frame;
@@ -89,13 +89,11 @@ impl Instance {
         for _ in 0..(num_workers - 1) {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
-                uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
                 gpu_store: frame.gpu_store.clone(),
             });
         }
         worker_data.push(PrepareWorkerData {
             pipelines: self.render_pipelines.prepare(),
-            uploader: Uploader::new(Arc::clone(&self.staging_buffers)),
             gpu_store: frame.gpu_store,
         });
 
