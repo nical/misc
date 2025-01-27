@@ -572,7 +572,7 @@ impl GpuStoreResource {
         }
     }
 
-    pub fn begin_frame(&self) -> GpuStoreWriter {
+    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStoreWriter {
 
         debug_assert!(Arc::strong_count(&self.next_gpu_offset) == 1);
         self.next_gpu_offset.store(0, Ordering::Release);
@@ -591,6 +591,7 @@ impl GpuStoreResource {
             offset_shift: self.offset_shift,
             transfer_ops: Vec::new(),
             next_gpu_offset: self.next_gpu_offset.clone(),
+            staging_buffers,
         }
     }
 
@@ -702,17 +703,18 @@ pub struct GpuStoreWriter {
 
     // In bytes
     next_gpu_offset: Arc<AtomicU32>,
+    staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 
 unsafe impl<'l> Send for GpuStoreWriter {}
 
 impl GpuStoreWriter {
-    pub fn push(&mut self, allocator: &mut Uploader, data: &[u8]) -> GpuStoreHandle {
+    pub fn push(&mut self, data: &[u8]) -> GpuStoreHandle {
         let aligned_size = (data.len() + self.align_mask) & !self.align_mask;
         let new_local_offset = self.staging_local_offset + aligned_size as u32;
 
         if new_local_offset > self.chunk_size {
-            self.flush_buffer(allocator);
+            self.flush_buffer();
         }
 
         unsafe {
@@ -728,7 +730,7 @@ impl GpuStoreWriter {
     }
 
     #[cold]
-    fn flush_buffer(&mut self, allocator: &mut Uploader) {
+    fn flush_buffer(&mut self) {
         let size = (self.cursor_gpu_offset.0 - self.chunk_gpu_offset.0) << self.offset_shift;
         if size > 0 {
             self.transfer_ops.push(TransferOp {
@@ -739,7 +741,10 @@ impl GpuStoreWriter {
             });
         }
 
-        let chunk = allocator.get_chunk(self.chunk_size);
+        let chunk = self.staging_buffers
+            .lock()
+            .unwrap()
+            .get_mapped_chunk(self.chunk_size);
 
         //println!("GpuStoreWriter::flush_buffer ptr:{:?} size:{:?} id:{:?} offset:{:?}", chunk.ptr, chunk.size, chunk.id, chunk.offset);
 
@@ -776,6 +781,7 @@ impl Clone for GpuStoreWriter {
             offset_shift: self.offset_shift,
             transfer_ops: Vec::new(),
             next_gpu_offset: self.next_gpu_offset.clone(),
+            staging_buffers: self.staging_buffers.clone(),
         }
     }
 }
@@ -831,7 +837,7 @@ impl Uploader {
 
     #[cold]
     fn replace_chunk(&mut self) {
-        self.current = self.pool.lock().unwrap().get_mapped_chunk();
+        self.current = self.pool.lock().unwrap().get_mapped_chunk(4096);
     }
 
     pub fn staging_buffer_pool(&self) -> &Arc<Mutex<StagingBufferPool>> {
@@ -868,7 +874,6 @@ pub struct StagingBufferPool {
 
     current_chunks: MappedStagingBuffer,
     current_chunks_offset: u32,
-    chunk_size: u32,
 
     cpu_buffers: Vec<Vec<u8>>,
 
@@ -879,7 +884,7 @@ unsafe impl Send for StagingBufferPool {}
 unsafe impl Sync for StagingBufferPool {}
 
 impl StagingBufferPool {
-    pub unsafe fn new(buffer_size: u32, chunk_size: u32, device: wgpu::Device) -> Self {
+    pub unsafe fn new(buffer_size: u32, device: wgpu::Device) -> Self {
         StagingBufferPool {
             buffer_size,
             available: Vec::new(),
@@ -893,12 +898,11 @@ impl StagingBufferPool {
             },
             cpu_buffers: Vec::new(),
             current_chunks_offset: 0,
-            chunk_size,
             device: Some(device),
         }
     }
 
-    pub fn new_for_testing(buffer_size: u32, chunk_size: u32) -> Self {
+    fn new_for_testing(buffer_size: u32) -> Self {
         StagingBufferPool {
             buffer_size,
             available: Vec::new(),
@@ -912,7 +916,6 @@ impl StagingBufferPool {
             },
             cpu_buffers: Vec::new(),
             current_chunks_offset: 0,
-            chunk_size,
             device: None,
         }
     }
@@ -960,13 +963,13 @@ impl StagingBufferPool {
         }
     }
 
-    pub fn get_mapped_chunk(&mut self) -> MappedStagingBufferChunk {
+    pub fn get_mapped_chunk(&mut self, size: u32) -> MappedStagingBufferChunk {
         let mut offset = self.current_chunks_offset;
-        self.current_chunks_offset = offset + self.chunk_size;
+        self.current_chunks_offset = offset + size;
 
         if self.current_chunks_offset >= self.current_chunks.size {
             self.current_chunks = self.get_mapped_staging_buffer();
-            self.current_chunks_offset = self.chunk_size;
+            self.current_chunks_offset = size;
             offset = 0;
         }
 
@@ -975,7 +978,7 @@ impl StagingBufferPool {
         let ptr = unsafe { self.current_chunks.ptr.add(offset as usize) };
         MappedStagingBufferChunk {
             ptr,
-            size: self.chunk_size,
+            size,
             offset: StagingOffset(offset),
             id: self.current_chunks.id,
         }
@@ -1044,7 +1047,7 @@ impl StagingBufferPool {
 #[test]
 fn gpu_store_simple() {
     let staging_buffers = Arc::new(Mutex::new(
-        StagingBufferPool::new_for_testing(1024 * 32, 1024 * 8)
+        StagingBufferPool::new_for_testing(1024 * 32)
     ));
 
     let resource = GpuStoreResource::new_texture(&GpuStoreDescriptor {
@@ -1054,14 +1057,12 @@ fn gpu_store_simple() {
         label: Some("gpu store"),
     });
 
-    let store = resource.begin_frame();
+    let store = resource.begin_frame(staging_buffers.clone());
 
     let mut writers = Vec::new();
-    let mut uploaders = Vec::new();
     let mut expected = Vec::new();
     for _ in 0..4 {
         writers.push(store.clone());
-        uploaders.push(Uploader::new(staging_buffers.clone()));
         expected.push((0u8, 0u8));
     }
 
@@ -1069,11 +1070,10 @@ fn gpu_store_simple() {
         for idx in 0..4 {
             //println!("\nwrite worker:{idx:?} run {c:?}");
             let store = &mut writers[idx];
-            let ctx = &mut uploaders[idx];
             let a = idx as u8;
 
             for b in 0..=255 {
-                store.push(ctx, &[a, b, c, 0, 1, 2, 3, 4]);
+                store.push(&[a, b, c, 0, 1, 2, 3, 4]);
             }
         }
     }

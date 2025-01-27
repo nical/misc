@@ -36,7 +36,7 @@ impl Instance {
         let workers = Workers::new(num_workers);
 
         let staging_buffers = unsafe {
-            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, 1024 * 4, device.clone())))
+            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, device.clone())))
         };
 
         Instance {
@@ -56,7 +56,9 @@ impl Instance {
         self.next_frame_index += 1;
         Frame::new(
             idx,
-            self.resources.common.gpu_store2.begin_frame(),
+            self.resources.common.gpu_store2.begin_frame(
+                self.staging_buffers.clone()
+            ),
         )
     }
 
