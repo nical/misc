@@ -2,7 +2,7 @@ use core::geom::traits::Transformation;
 use core::geom::Point;
 
 use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
-use core::gpu::GpuStore;
+use core::gpu::GpuStoreWriter;
 use core::pattern::BuiltPattern;
 use core::Color;
 
@@ -47,14 +47,14 @@ impl LinearGradientRenderer {
         LinearGradientRenderer { shader }
     }
 
-    pub fn add(&self, gpu_store: &mut GpuStore, gradient: LinearGradient) -> BuiltPattern {
+    pub fn add(&self, gpu_store: &mut GpuStoreWriter, gradient: LinearGradient) -> BuiltPattern {
         let can_stretch_horizontally =
             gradient.from.x == gradient.to.y || gradient.color0 == gradient.color1;
         let is_opaque = gradient.color0.is_opaque() && gradient.color1.is_opaque();
         let color0 = gradient.color0.to_f32();
         let color1 = gradient.color1.to_f32();
 
-        let handle = gpu_store.push(&[
+        let handle = gpu_store.push_f32(&[
             gradient.from.x,
             gradient.from.y,
             gradient.to.x,

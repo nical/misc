@@ -3,7 +3,7 @@ use core::gpu::shader::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
     Varying, BlendMode,
 };
-use core::gpu::GpuStore;
+use core::gpu::GpuStoreWriter;
 use core::pattern::BuiltPattern;
 use core::BindingsId;
 use core::wgpu;
@@ -78,13 +78,13 @@ impl TextureRenderer {
     #[inline]
     pub fn sample_rect(
         &self,
-        gpu_store: &mut GpuStore,
+        gpu_store: &mut GpuStoreWriter,
         src_texture: BindingsId,
         src_rect: &Box2D<f32>,
         dst_rect: &Box2D<f32>,
         is_opaque: bool,
     ) -> BuiltPattern {
-        let handle = gpu_store.push(&[
+        let handle = gpu_store.push_f32(&[
             src_rect.min.x,
             src_rect.min.y,
             src_rect.max.x,

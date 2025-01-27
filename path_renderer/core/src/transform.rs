@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
 use crate::{
-    gpu::{GpuStore, GpuStoreHandle},
+    gpu::{GpuStoreHandle, GpuStoreWriter},
     units::{
         point, vector, LocalPoint, LocalSpace, LocalToSurfaceTransform, LocalTransform,
         SurfacePoint, SurfaceSpace, SurfaceVector, Vector,
@@ -223,7 +223,7 @@ impl Transforms {
         self.current = self.transforms[self.current_id.index()];
     }
 
-    pub fn get_current_gpu_handle(&mut self, gpu_store: &mut GpuStore) -> GpuStoreHandle {
+    pub fn get_current_gpu_handle(&mut self, gpu_store: &mut GpuStoreWriter) -> GpuStoreHandle {
         if self.current.gpu_handle != GpuStoreHandle::INVALID {
             return self.current.gpu_handle;
         }
@@ -235,7 +235,7 @@ impl Transforms {
         };
         let t = &self.current.transform;
 
-        let handle = gpu_store.push(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
+        let handle = gpu_store.push_f32(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
 
         self.current.gpu_handle = handle;
         self.transforms[self.current_id.index()].gpu_handle = handle;

@@ -257,10 +257,7 @@ impl TilingGpuResources {
                             mask_params_ubo.as_entire_buffer_binding(),
                         ),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&common.gpu_store.view),
-                    },
+                    common.gpu_store.as_bind_group_entry(1),
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::Sampler(&common.default_sampler),
@@ -279,10 +276,7 @@ impl TilingGpuResources {
                             color_tiles_params_ubo.as_entire_buffer_binding(),
                         ),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&common.gpu_store.view),
-                    },
+                    common.gpu_store.as_bind_group_entry(1),
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::Sampler(&common.default_sampler),

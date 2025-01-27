@@ -1,4 +1,4 @@
-use crate::gpu::{DynamicStore, GpuStoreDescriptor, GpuStoreResource, GpuStoreResources, PipelineDefaults, RenderPassDescriptor, Shaders};
+use crate::gpu::{DynamicStore, GpuStoreDescriptor, GpuStoreResource, PipelineDefaults, RenderPassDescriptor, Shaders};
 use crate::render_graph::{RenderPassData, TempResourceKey};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
@@ -115,8 +115,7 @@ pub struct CommonGpuResources {
     pub vertices: DynamicStore,
     pub indices: DynamicStore,
 
-    pub gpu_store: GpuStoreResources,
-    pub gpu_store2: GpuStoreResource,
+    pub gpu_store: GpuStoreResource,
 
     pub default_sampler: wgpu::Sampler,
 
@@ -138,10 +137,8 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let gpu_store_resources = GpuStoreResources::new(device);
-
-        let mut gpu_store2 = GpuStoreResource::new_texture(&GpuStoreDescriptor::rgba32_float_texture());
-        gpu_store2.allocate(512, device);
+        let mut gpu_store = GpuStoreResource::new(&GpuStoreDescriptor::rgba32_float_texture());
+        gpu_store.allocate(512, device);
 
         let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("default sampler"),
@@ -230,8 +227,7 @@ impl CommonGpuResources {
             quad_ibo,
             vertices,
             indices,
-            gpu_store: gpu_store_resources,
-            gpu_store2,
+            gpu_store,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,
             msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
@@ -364,10 +360,7 @@ impl RenderGraphResources {
                                 size: wgpu::BufferSize::new(size),
                             }),
                         },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&resources.gpu_store.view),
-                        },
+                        resources.gpu_store.as_bind_group_entry(1),
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: wgpu::BindingResource::Sampler(&self.default_sampler),
