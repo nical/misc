@@ -533,7 +533,6 @@ impl GpuStoreResource {
 }
 
 // Associated with a specific resource.
-// Pushes data into a staging buffer chunk provided by `Uploader`
 pub struct GpuStoreWriter {
     chunk_start: *mut u8,
     // Offset of the current chunk in the destination buffer (not necessarily in bytes)
@@ -567,7 +566,7 @@ impl GpuStoreWriter {
         let mut new_local_offset = self.staging_local_offset + aligned_size as u32;
 
         if new_local_offset > self.chunk_size {
-            self.flush_buffer();
+            self.replace_staging_buffer();
             new_local_offset = self.staging_local_offset + aligned_size as u32;
         }
 
@@ -588,8 +587,9 @@ impl GpuStoreWriter {
         self.push_bytes(bytemuck::cast_slice(data))
     }
 
-    #[cold]
-    fn flush_buffer(&mut self) {
+    // Note: this does not reset the reset the offsets and pointers into
+    // the staging buffer.
+    fn flush_staging_buffer(&mut self) {
         let size = (self.cursor_gpu_offset.0 - self.chunk_gpu_offset.0) << self.offset_shift;
         if size > 0 {
             self.transfer_ops.push(TransferOp {
@@ -599,6 +599,11 @@ impl GpuStoreWriter {
                 gpu_offset: self.chunk_gpu_offset,
             });
         }
+    }
+
+    #[cold]
+    fn replace_staging_buffer(&mut self) {
+        self.flush_staging_buffer();
 
         let chunk = self.staging_buffers
             .lock()
@@ -617,7 +622,14 @@ impl GpuStoreWriter {
     }
 
     pub(crate) fn finish(&mut self) -> TransferOps {
-        self.flush_buffer();
+        self.flush_staging_buffer();
+
+        self.chunk_start = std::ptr::null_mut();
+        self.staging_buffer_id = StagingBufferId(0);
+        self.chunk_gpu_offset = GpuOffset(0);
+        self.cursor_gpu_offset = GpuOffset(0);
+        self.staging_local_offset = self.chunk_size;
+
         TransferOps {
             ops: std::mem::take(&mut self.transfer_ops)
         }
@@ -849,6 +861,8 @@ impl StagingBufferPool {
                 let mut ready = list.lock().unwrap();
                 ready.push((idx as u16, result.is_ok()));
             });
+
+            self.pending[idx] = Some(buffer);
         }
     }
 }

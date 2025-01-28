@@ -263,12 +263,6 @@ impl Instance {
 
         self.resources.end_frame();
 
-        {
-            let mut staging_buffers = self.staging_buffers.lock().unwrap();
-            staging_buffers.triage_available_buffers();
-            staging_buffers.recycle_active_buffers();
-        }
-
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
         }
@@ -278,6 +272,15 @@ impl Instance {
         stats.render_time_ms = ms(Instant::now() - render_start);
 
         stats
+    }
+
+    /// should be called after submitting the frame.
+    pub fn end_frame(&mut self) {
+        {
+            let mut staging_buffers = self.staging_buffers.lock().unwrap();
+            staging_buffers.triage_available_buffers();
+            staging_buffers.recycle_active_buffers();
+        }
     }
 }
 

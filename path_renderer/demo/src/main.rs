@@ -174,6 +174,8 @@ impl ApplicationHandler for AppState {
 
 impl App {
     fn init(window: Arc<Window>) -> Option<Self> {
+        env_logger::init();
+
         let args: Vec<String> = std::env::args().collect();
 
         let mut tolerance = 0.25;
@@ -730,6 +732,8 @@ impl App {
         wgpu_frame.present();
 
         let present_time = Instant::now() - present_start;
+
+        self.instance.end_frame();
 
         fn ms(duration: Duration) -> f32 {
             (duration.as_micros() as f64 / 1000.0) as f32
