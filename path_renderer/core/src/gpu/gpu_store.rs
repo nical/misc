@@ -1,6 +1,10 @@
 use std::{ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32};
 use wgpu::BufferAddress;
 
+use crate::gpu::staging_buffers::{StagingBufferId, StagingOffset};
+
+use super::staging_buffers::StagingBufferPool;
+
 const GPU_STORE_WIDTH: u32 = 2048;
 
 // Packed into 20 bits, leaving 12 bits unused so that it can be packed
@@ -243,11 +247,6 @@ pub struct GpuOffset(pub u32);
 // Offset in bytes into a buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GpuByteOffset(pub u32);
-/// Offset in bytes into a staging buffer.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct StagingOffset(pub u32);
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct StagingBufferId(pub u32);
 
 #[derive(Debug)]
 struct TransferOp {
@@ -268,6 +267,13 @@ pub enum GpuStoreDescriptor {
     Texture {
         format: wgpu::TextureFormat,
         width: u32,
+        label: Option<&'static str>,
+    },
+    Buffers {
+        usages: wgpu::BufferUsages,
+        alignment: u32,
+        min_size: u32,
+        max_size: u32,
         label: Option<&'static str>,
     }
 }
@@ -298,7 +304,7 @@ impl Default for GpuStoreDescriptor {
 
 
 // Lives in the instance.
-pub struct GpuStoreResource {
+pub struct GpuStoreResources {
     storage: Storage,
     align_mask: u32,
     offset_shift: u32,
@@ -317,14 +323,24 @@ enum Storage {
         width: u32,
         bytes_per_px: u32,
         format: wgpu::TextureFormat
+    },
+    Buffers {
+        handles: Vec<GpuBuffer>,
+        alignment: u32,
+        min_size: u32,
+        max_size: u32,
+        usage: wgpu::BufferUsages,
     }
 }
 
-impl GpuStoreResource {
+impl GpuStoreResources {
     pub fn new(desc: &GpuStoreDescriptor) -> Self {
         match desc {
             GpuStoreDescriptor::Texture { format, width, label } => {
                 Self::new_texture(*format, *width, *label)
+            }
+            GpuStoreDescriptor::Buffers { usages, alignment, min_size, max_size, label } => {
+                Self::new_buffers(*usages, *alignment, *min_size, *max_size, *label)
             }
         }
     }
@@ -349,7 +365,7 @@ impl GpuStoreResource {
         let offset_shift = bytes_per_px.trailing_zeros();
 
 
-        GpuStoreResource {
+        GpuStoreResources {
             storage: Storage::Texture {
                 handle: None,
                 view: None,
@@ -367,11 +383,38 @@ impl GpuStoreResource {
         }
     }
 
-    pub fn allocate(&mut self, row_count: u32, device: &wgpu::Device) {
-        let height = row_count;
+    fn new_buffers(
+        usage: wgpu::BufferUsages,
+        alignment: u32,
+        min_size: u32,
+        max_size: u32,
+        label: Option<&'static str>,
+    ) -> Self {
+        let align_mask = alignment - 1;
+        let offset_shift = alignment.trailing_zeros();
 
+        GpuStoreResources {
+            storage: Storage::Buffers {
+                handles: Vec::new(),
+                alignment,
+                min_size,
+                max_size,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+            },
+            align_mask,
+            offset_shift,
+            chunk_size: 8192,
+            epoch: 0,
+            label,
+            next_gpu_offset: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    pub fn allocate(&mut self, size: u32, device: &wgpu::Device) {
         match &mut self.storage {
-            Storage::Texture { handle, view, rows, width, format, .. } => {
+            Storage::Texture { handle, view, rows, width, format, bytes_per_px, .. } => {
+                let height = size / (*width * *bytes_per_px);
+
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
                     label: self.label,
                     size: wgpu::Extent3d {
@@ -400,7 +443,21 @@ impl GpuStoreResource {
                 }));
                 self.epoch += 1;
                 *handle = Some(tex);
-                *rows = row_count;
+                *rows = height;
+            }
+            Storage::Buffers { handles, min_size, usage, .. } => {
+                let usage = *usage;
+                let size = size.min(*min_size);
+                let handle = device.create_buffer(&wgpu::BufferDescriptor {
+                   label: self.label,
+                   size: size as u64,
+                   usage,
+                   mapped_at_creation: false,
+                });
+                handles.push(GpuBuffer {
+                    handle,
+                    size,
+                });
             }
         }
     }
@@ -508,6 +565,9 @@ impl GpuStoreResource {
                     }
                 }
             }
+            Storage::Buffers { handles, .. } => {
+                unimplemented!()
+            }
         }
     }
 
@@ -518,7 +578,8 @@ impl GpuStoreResource {
 
     pub fn as_texture_view(&self) -> Option<&wgpu::TextureView> {
         match &self.storage {
-            Storage::Texture { view, .. } => view.as_ref()
+            Storage::Texture { view, .. } => view.as_ref(),
+            _ => None,
         }
     }
 
@@ -658,214 +719,6 @@ impl Clone for GpuStoreWriter {
     }
 }
 
-pub struct MappedStagingBuffer {
-    pub ptr: *mut u8,
-    // in bytes.
-    pub size: u32,
-    pub id: StagingBufferId,
-}
-
-pub struct MappedStagingBufferChunk {
-    pub ptr: *mut u8,
-    // In bytes.
-    pub size: u32,
-    pub id: StagingBufferId,
-    pub offset: StagingOffset,
-}
-
-pub struct StagingBufferPool {
-    buffer_size: u32,
-
-    // Mapped an ready for use.
-    available: Vec<wgpu::Buffer>,
-    // In use this frame.
-    active: Vec<wgpu::Buffer>,
-    // map_aysnc has been called, waiting for the callback to resolve.
-    pending: Vec<Option<wgpu::Buffer>>,
-
-    ready_list: Arc<Mutex<Vec<(u16, bool)>>>,
-
-    current_chunks: MappedStagingBuffer,
-    current_chunks_offset: u32,
-
-    cpu_buffers: Vec<Vec<u8>>,
-
-    device: Option<wgpu::Device>,
-}
-
-unsafe impl Send for StagingBufferPool {}
-unsafe impl Sync for StagingBufferPool {}
-
-impl StagingBufferPool {
-    pub unsafe fn new(buffer_size: u32, device: wgpu::Device) -> Self {
-        StagingBufferPool {
-            buffer_size,
-            available: Vec::new(),
-            active: Vec::new(),
-            pending: Vec::new(),
-            ready_list: Arc::new(Mutex::new(Vec::new())),
-            current_chunks: MappedStagingBuffer {
-                ptr: std::ptr::null_mut(),
-                id: StagingBufferId(u32::MAX),
-                size: 0,
-            },
-            current_chunks_offset: 0,
-            cpu_buffers: Vec::new(),
-            device: Some(device),
-        }
-    }
-
-    #[allow(unused)]
-    fn new_for_testing(buffer_size: u32) -> Self {
-        StagingBufferPool {
-            buffer_size,
-            available: Vec::new(),
-            active: Vec::new(),
-            pending: Vec::new(),
-            ready_list: Arc::new(Mutex::new(Vec::new())),
-            current_chunks: MappedStagingBuffer {
-                ptr: std::ptr::null_mut(),
-                id: StagingBufferId(u32::MAX),
-                size: 0,
-            },
-            cpu_buffers: Vec::new(),
-            current_chunks_offset: 0,
-            device: None,
-        }
-    }
-
-    fn device(&self) -> &wgpu::Device {
-        self.device.as_ref().unwrap()
-    }
-
-    pub fn get_mapped_staging_buffer(&mut self) -> MappedStagingBuffer {
-        if self.device.is_none() {
-            return self.create_cpu_buffer();
-        }
-
-        let id = StagingBufferId(self.active.len() as u32);
-        let buffer = if let Some(buffer) = self.available.pop() {
-            buffer
-        } else {
-            Self::create_buffer(self.device(), self.buffer_size)
-        };
-
-        let ptr = buffer.slice(..)
-            .get_mapped_range_mut()
-            .as_mut_ptr();
-
-        self.active.push(buffer);
-
-        MappedStagingBuffer {
-            ptr,
-            id,
-            size: self.buffer_size,
-        }
-    }
-
-    fn create_cpu_buffer(&mut self) -> MappedStagingBuffer {
-        let mut buffer = vec![0; self.buffer_size as usize];
-
-        let id = StagingBufferId(self.cpu_buffers.len() as u32);
-        let ptr = buffer.as_mut_ptr();
-        self.cpu_buffers.push(buffer);
-
-        MappedStagingBuffer {
-            ptr,
-            id,
-            size: self.buffer_size,
-        }
-    }
-
-    pub fn get_mapped_chunk(&mut self, size: u32) -> MappedStagingBufferChunk {
-        let mut offset = self.current_chunks_offset;
-        self.current_chunks_offset = offset + size;
-
-        if self.current_chunks_offset >= self.current_chunks.size {
-            self.current_chunks = self.get_mapped_staging_buffer();
-            self.current_chunks_offset = size;
-            offset = 0;
-        }
-
-        //println!("Pool::get_mapped_chunk -> id {:?} offset {:?}", self.current_chunks.id, offset);
-
-        let ptr = unsafe { self.current_chunks.ptr.add(offset as usize) };
-        MappedStagingBufferChunk {
-            ptr,
-            size,
-            offset: StagingOffset(offset),
-            id: self.current_chunks.id,
-        }
-    }
-
-    pub fn get_handle(&self, id: StagingBufferId) -> &wgpu::Buffer {
-        &self.active[id.0 as usize]
-    }
-
-    fn create_buffer(device: &wgpu::Device, size: u32) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging"),
-            size: size as u64,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-            mapped_at_creation: true,
-        })
-    }
-
-    pub fn triage_available_buffers(&mut self) {
-        // Pull pending buffers that are ready and move them into the available list.
-        let mut list = self.ready_list.lock().unwrap();
-        for (index, success) in list.drain(..) {
-            if let Some(buffer) = self.pending[index as usize].take() {
-                if success {
-                    self.available.push(buffer);
-                }
-            }
-        }
-    }
-
-    /// # Safety
-    ///
-    /// No writes to this frame's MappedStagingBuffer can be done
-    /// after this call.
-    pub unsafe fn unmap_active_buffers(&mut self) {
-        self.current_chunks = MappedStagingBuffer {
-            ptr: std::ptr::null_mut(),
-            id: StagingBufferId(u32::MAX),
-            size: 0,
-        };
-        self.current_chunks_offset = 0;
-
-        for buffer in &mut self.active {
-            buffer.unmap();
-        }
-    }
-
-    // unmap_active_buffers must be called before doing this.
-    pub fn recycle_active_buffers(&mut self) {
-        // Move active buffers into the pending list.
-        let mut idx = 0;
-        for buffer in self.active.drain(..) {
-            // Find an index in the pending array.
-            loop {
-                if idx == self.pending.len() || self.pending[idx].is_none() {
-                    break;
-                }
-                idx += 1;
-            }
-            if idx == self.pending.len() {
-                self.pending.push(None);
-            }
-
-            let list = Arc::clone(&self.ready_list);
-            buffer.slice(..).map_async(wgpu::MapMode::Write, move|result| {
-                let mut ready = list.lock().unwrap();
-                ready.push((idx as u16, result.is_ok()));
-            });
-
-            self.pending[idx] = Some(buffer);
-        }
-    }
-}
 
 #[test]
 fn gpu_store_simple() {
@@ -873,7 +726,7 @@ fn gpu_store_simple() {
         StagingBufferPool::new_for_testing(1024 * 32)
     ));
 
-    let resource = GpuStoreResource::new(&GpuStoreDescriptor::Texture {
+    let resource = GpuStoreResources::new(&GpuStoreDescriptor::Texture {
         format: wgpu::TextureFormat::Rgba8Unorm,
         width: 128,
         label: Some("gpu store"),

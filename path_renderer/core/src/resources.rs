@@ -1,4 +1,4 @@
-use crate::gpu::{DynamicStore, GpuStoreDescriptor, GpuStoreResource, PipelineDefaults, RenderPassDescriptor, Shaders};
+use crate::gpu::{DynamicStore, GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders};
 use crate::render_graph::{RenderPassData, TempResourceKey};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
@@ -114,8 +114,10 @@ pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
     pub indices: DynamicStore,
+    pub vertices2: GpuStreamsResources,
+    pub indices2: GpuStreamsResources,
 
-    pub gpu_store: GpuStoreResource,
+    pub gpu_store: GpuStoreResources,
 
     pub default_sampler: wgpu::Sampler,
 
@@ -137,8 +139,8 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let mut gpu_store = GpuStoreResource::new(&GpuStoreDescriptor::rgba32_float_texture());
-        gpu_store.allocate(512, device);
+        let mut gpu_store = GpuStoreResources::new(&GpuStoreDescriptor::rgba32_float_texture());
+        gpu_store.allocate(4096 * 1024, device);
 
         let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("default sampler"),
@@ -157,6 +159,20 @@ impl CommonGpuResources {
 
         let vertices = DynamicStore::new_vertices(4096 * 32);
         let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
+
+        let vertices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
+            usage: wgpu::BufferUsages::VERTEX,
+            buffer_size: 1024 * 128,
+            chunk_size: 1024 * 16,
+            label: Some("vertices"),
+        });
+
+        let indices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
+            usage: wgpu::BufferUsages::INDEX,
+            buffer_size: 1024 * 8,
+            chunk_size: 1024 * 2,
+            label: Some("indices"),
+        });
 
         let msaa_blit_src_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -227,6 +243,8 @@ impl CommonGpuResources {
             quad_ibo,
             vertices,
             indices,
+            vertices2,
+            indices2,
             gpu_store,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,

@@ -59,6 +59,12 @@ impl Instance {
             self.resources.common.gpu_store.begin_frame(
                 self.staging_buffers.clone()
             ),
+            self.resources.common.vertices2.begin_frame(
+                self.staging_buffers.clone()
+            ),
+            self.resources.common.indices2.begin_frame(
+                self.staging_buffers.clone()
+            ),
         )
     }
 
@@ -90,11 +96,15 @@ impl Instance {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
                 gpu_store: frame.gpu_store.clone(),
+                vertices: frame.vertices.clone(),
+                indices: frame.indices.clone(),
             });
         }
         worker_data.push(PrepareWorkerData {
             pipelines: self.render_pipelines.prepare(),
             gpu_store: frame.gpu_store,
+            vertices: frame.vertices,
+            indices: frame.indices,
         });
 
         for cmd in &graph {
@@ -110,9 +120,13 @@ impl Instance {
         }
 
         let mut gpu_store_ops = Vec::with_capacity(worker_data.len());
+        let mut vtx_ops = Vec::with_capacity(worker_data.len());
+        let mut idx_ops = Vec::with_capacity(worker_data.len());
         let mut pipeline_changes = Vec::with_capacity(worker_data.len());
         for mut wd in worker_data {
             gpu_store_ops.push(wd.gpu_store.finish());
+            vtx_ops.push(wd.vertices.finish());
+            idx_ops.push(wd.indices.finish());
             pipeline_changes.push(wd.pipelines.finish());
         }
 
@@ -143,6 +157,18 @@ impl Instance {
             let staging_buffers = self.staging_buffers.lock().unwrap();
             self.resources.common.gpu_store.upload(
                 &gpu_store_ops,
+                &staging_buffers,
+                &self.device,
+                encoder,
+            );
+            self.resources.common.vertices2.upload(
+                &vtx_ops,
+                &staging_buffers,
+                &self.device,
+                encoder,
+            );
+            self.resources.common.indices2.upload(
+                &idx_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,
