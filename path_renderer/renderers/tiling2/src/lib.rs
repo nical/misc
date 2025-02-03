@@ -315,7 +315,8 @@ impl Tiling {
             tiles: crate::tiler::TilerOutput::new(),
             batches: core::batching::BatchList::new(renderer_id),
             base_shader: self.base_shader,
-            instances: None,
+            mask_instances: None,
+            opaque_instances: None,
 
             resources: TileGpuResources {
                 edge_texture,

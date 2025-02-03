@@ -163,13 +163,13 @@ impl CommonGpuResources {
         let vertices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
             usage: wgpu::BufferUsages::VERTEX,
             buffer_size: 1024 * 128,
-            chunk_size: 1024 * 16,
+            chunk_size: 1024 * 8,
             label: Some("vertices"),
         });
 
         let indices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
             usage: wgpu::BufferUsages::INDEX,
-            buffer_size: 1024 * 8,
+            buffer_size: 1024 * 16,
             chunk_size: 1024 * 2,
             label: Some("indices"),
         });

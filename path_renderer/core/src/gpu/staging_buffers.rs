@@ -1,10 +1,24 @@
 use std::sync::{Arc, Mutex};
+use std::fmt;
 
 /// Offset in bytes into a staging buffer.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct StagingOffset(pub u32);
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct StagingBufferId(pub u32);
+
+impl std::fmt::Debug for StagingBufferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+impl std::fmt::Debug for StagingOffset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 
 pub struct MappedStagingBuffer {
     pub ptr: *mut u8,

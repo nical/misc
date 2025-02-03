@@ -1,11 +1,20 @@
-use core::{
-    batching::{BatchFlags, BatchId, BatchIndex, BatchList, SurfaceIndex}, bytemuck, context::{
-        BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    }, gpu::{shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey}, DynBufferRange}, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::{point, LocalRect, SurfaceIntRect, SurfaceRect}, wgpu, PrepareContext, PrepareWorkerContext, UploadContext
-};
-use std::{ops::Range, sync::atomic::{AtomicBool, Ordering}};
+use core::batching::{BatchFlags, BatchId, BatchIndex, BatchList, SurfaceIndex};
+use core::context::{BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex};
+use core::gpu::shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey};
+use core::gpu::StreamId;
+use core::pattern::BuiltPattern;
+use core::resources::GpuResources;
+use core::shape::FilledPath;
+use core::transform::{TransformId, Transforms};
+use core::units::{point, LocalRect, SurfaceIntRect, SurfaceRect};
+use core::{bytemuck, wgpu, PrepareContext, PrepareWorkerContext, UploadContext};
 
-use crate::{tiler::{EncodedPathInfo, Tiler, TilerOutput}, FillOptions, Occlusion, RendererOptions, TileGpuResources};
+use crate::tiler::{EncodedPathInfo, Tiler, TilerOutput};
+use crate::{FillOptions, Occlusion, RendererOptions, TileGpuResources};
+
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 
 pub(crate) struct BatchInfo {
     pattern: BuiltPattern,
@@ -52,7 +61,8 @@ pub struct TileRenderer {
 
     pub(crate) batches: BatchList<Fill, BatchInfo>,
     pub(crate) base_shader: BaseShaderId,
-    pub(crate) instances: Option<DynBufferRange>,
+    pub(crate) mask_instances: Option<StreamId>,
+    pub(crate) opaque_instances: Option<StreamId>,
 
     pub(crate) resources: TileGpuResources,
 }
@@ -68,7 +78,8 @@ impl TileRenderer {
 
     pub fn begin_frame(&mut self) {
         self.batches.clear();
-        self.instances = None;
+        self.mask_instances = None;
+        self.opaque_instances = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
@@ -144,7 +155,9 @@ impl TileRenderer {
 
         let pass = &ctx.pass;
         let transforms = &ctx.transforms;
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let vertices = &mut worker_data.vertices;
 
         if self.batches.is_empty() {
             return;
@@ -183,6 +196,19 @@ impl TileRenderer {
                 self.prepare_batch(*batch_id, transforms, shaders, &mut batches);
             }
         }
+
+        let mask_stream = vertices.next_stream_id();
+        let opaque_stream = vertices.next_stream_id();
+        {
+            let mut writer = vertices.write(mask_stream, 0);
+            writer.push_bytes(bytemuck::cast_slice(&self.tiles.mask_tiles));
+        }
+        {
+            let mut writer = vertices.write(opaque_stream, 0);
+            writer.push_bytes(bytemuck::cast_slice(&self.tiles.opaque_tiles));
+        }
+        self.mask_instances = Some(mask_stream);
+        self.opaque_instances = Some(opaque_stream);
 
         self.batches = batches;
     }
@@ -348,7 +374,7 @@ impl TileRenderer {
         batch_id: BatchId,
         transforms: &Transforms,
         shaders: &mut PrepareRenderPipelines,
-        batches: &mut BatchList<Fill, BatchInfo>
+        batches: &mut BatchList<Fill, BatchInfo>,
     ) {
         let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
@@ -443,13 +469,6 @@ impl TileRenderer {
         //    self.tiles.mask_tiles.len(),
         //);
 
-        self.instances = resources.common.vertices.upload_multiple(device,
-            &[
-                bytemuck::cast_slice(&self.tiles.mask_tiles),
-                bytemuck::cast_slice(&self.tiles.opaque_tiles)
-            ]
-        );
-
         let edges_per_row = 1024;
         let rem = edges_per_row - self.tiles.edges.len() % edges_per_row;
         if rem != edges_per_row {
@@ -519,7 +538,7 @@ impl core::Renderer for TileRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
         // TODO: Don't run it twice!
         self.prepare_impl(ctx);
-        self.prepare_parallel(ctx.pass, ctx.transforms, &mut ctx.workers);
+        //self.prepare_parallel(ctx.pass, ctx.transforms, &mut ctx.workers);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
@@ -533,7 +552,7 @@ impl core::Renderer for TileRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        if self.instances.is_none() {
+        if self.mask_instances.is_none() && self.opaque_instances.is_none() {
             return;
         }
 
@@ -544,11 +563,14 @@ impl core::Renderer for TileRenderer {
             wgpu::IndexFormat::Uint16,
         );
 
-        render_pass.set_vertex_buffer(
-            0,
-            common_resources
-                .vertices
-                .get_buffer_slice(self.instances.as_ref().unwrap()),
+        // TODO: previous version was grouping the mask and opaque instances
+        // in a single instance range which made avoided the need to re-bind.
+        let mask_instances = self.mask_instances.map(|id|
+            common_resources.vertices2.resolve(id)
+        );
+
+        let opaque_instances = self.opaque_instances.map(|id|
+            common_resources.vertices2.resolve(id)
         );
 
         render_pass.set_bind_group(
@@ -564,21 +586,28 @@ impl core::Renderer for TileRenderer {
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {
-                let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
-                let mut instances = opaque.tiles.clone();
-                let offset = self.tiles.mask_tiles.len() as u32;
-                instances.start += offset;
-                instances.end += offset;
+                let (opaque_buffer, opaque_byte_range) = opaque_instances.as_ref().unwrap();
+                render_pass.set_vertex_buffer(
+                    0,
+                    opaque_buffer.slice(opaque_byte_range.start as u64 .. opaque_byte_range.end as u64)
+                );
 
-                //println!("draw opaque instances {instances:?}");
+                let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
+                let instances = opaque.tiles.clone();
+
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
             }
             if let Some(masked) = &batch.masked_draw {
+                let (mask_buffer, mask_byte_range) = mask_instances.as_ref().unwrap();
+                render_pass.set_vertex_buffer(
+                    0,
+                    mask_buffer.slice(mask_byte_range.start as u64 .. mask_byte_range.end as u64)
+                );
+
                 let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();
                 let instances = masked.tiles.clone();
 
-                //println!("draw mask instances {instances:?}");
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
             }

@@ -238,7 +238,13 @@ fn align(size: BufferAddress, alignment: BufferAddress) -> BufferAddress {
     }
 }
 
-
+fn round_up_to_power_of_two(val: u32) -> u32 {
+    if val.is_power_of_two() {
+        val
+    } else {
+        val.next_power_of_two()
+    }
+}
 
 // Offset in number of items (not necessarily bytes) into a buffer.
 // TODO: this is redundant with GpuStoreHandle
@@ -499,7 +505,7 @@ impl GpuStoreResources {
                 let bytes_per_row = *width * *bytes_per_px;
                 let cap = *rows * bytes_per_row;
                 if cap < total_size_bytes {
-                    let height = total_size_bytes / bytes_per_row + 1;
+                    let height = round_up_to_power_of_two(total_size_bytes / bytes_per_row + 1);
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
                         label: self.label,
                         size: wgpu::Extent3d {
