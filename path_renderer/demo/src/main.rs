@@ -182,6 +182,7 @@ impl App {
         let trace = wgpu::Trace::Off;
         let mut force_gl = false;
         let mut force_vk = false;
+        let mut force_d3d12 = false;
         let mut asap = false;
         let mut read_tolerance = false;
         let mut read_fill = false;
@@ -225,6 +226,7 @@ impl App {
             }
             force_gl |= arg == "--gl";
             force_vk |= arg == "--vulkan";
+            force_d3d12 |= arg == "--d3d12";
             asap |= arg == "--asap";
             read_tolerance = arg == "--tolerance";
             read_fill = arg == "--fill";
@@ -241,6 +243,8 @@ impl App {
             wgpu::Backends::GL
         } else if force_vk {
             wgpu::Backends::VULKAN
+        } else if force_d3d12 {
+            wgpu::Backends::DX12
         } else {
             wgpu::Backends::all()
         };
