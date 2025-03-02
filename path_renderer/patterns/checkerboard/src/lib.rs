@@ -52,7 +52,7 @@ impl CheckerboardRenderer {
         let is_opaque = pattern.color0.is_opaque() && pattern.color1.is_opaque();
         let color0 = pattern.color0.to_f32();
         let color1 = pattern.color1.to_f32();
-        let handle = gpu_store.push_f32(&[
+        let handle = gpu_store.push(&[
             color0[0],
             color0[1],
             color0[2],

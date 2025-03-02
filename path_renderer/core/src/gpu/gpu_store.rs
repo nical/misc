@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32};
+use std::{cell::RefCell, ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32};
 use wgpu::BufferAddress;
 
 use crate::gpu::staging_buffers::{StagingBufferId, StagingOffset};
@@ -468,24 +468,16 @@ impl GpuStoreResources {
         }
     }
 
-    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStoreWriter {
+    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStore {
 
         debug_assert!(Arc::strong_count(&self.next_gpu_offset) == 1);
         self.next_gpu_offset.store(0, Ordering::Release);
 
-        GpuStoreWriter {
-            chunk_start: std::ptr::null_mut(),
-            chunk_gpu_offset: GpuOffset(0),
-            cursor_gpu_offset: GpuOffset(0),
-            // Initialze to chunk_size so that it triggers flush
-            // at the first push.
-            staging_local_offset: self.chunk_size,
+        GpuStore {
             chunk_size: self.chunk_size,
-            staging_buffer_id: StagingBufferId(0),
-            staging_buffer_offset: StagingOffset(0),
             align_mask: self.align_mask as usize,
             offset_shift: self.offset_shift,
-            transfer_ops: Vec::new(),
+            ops: RefCell::new(Vec::new()),
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers,
         }
@@ -572,7 +564,8 @@ impl GpuStoreResources {
                 }
             }
             Storage::Buffers { handles, .. } => {
-                unimplemented!()
+                // TODO: unimplemented!
+                return;
             }
         }
     }
@@ -599,8 +592,75 @@ impl GpuStoreResources {
     }
 }
 
+// TODO: if each writer manages its own staging buffer chunks, then a lot of
+// space will be wasted as they are rather short lived. So there needs to be
+// a way to recycle chunks that have enough free space when a writer is dropped.
+// It could be done in by the staging buffer pool, or using a worker-local
+// pool of available chunks.
+
+// TODO: Add a reserve(size) API to GpuStoreWriter and GpuStreamWriter that
+// asks for a larger staging buffer (and ensure in the case of GpuStore that
+// the push within the reseved space will be contiguous).
+
+pub struct GpuStore {
+    ops: RefCell<Vec<TransferOp>>,
+    // In bytes.
+    chunk_size: u32,
+    align_mask: usize,
+    offset_shift: u32,
+    // In bytes.
+    next_gpu_offset: Arc<AtomicU32>,
+    staging_buffers: Arc<Mutex<StagingBufferPool>>,
+}
+
+impl GpuStore {
+    pub fn write(&self) -> GpuStoreWriter {
+        GpuStoreWriter {
+            store: self,
+            chunk_start: std::ptr::null_mut(),
+            chunk_gpu_offset: GpuOffset(0),
+            cursor_gpu_offset: GpuOffset(0),
+            // Initialze to chunk_size so that it triggers flush
+            // at the first push.
+            staging_local_offset: self.chunk_size,
+            chunk_size: self.chunk_size,
+            staging_buffer_id: StagingBufferId(0),
+            staging_buffer_offset: StagingOffset(0),
+            align_mask: self.align_mask as usize,
+            offset_shift: self.offset_shift,
+            next_gpu_offset: self.next_gpu_offset.clone(),
+            staging_buffers: self.staging_buffers.clone(),
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> TransferOps {
+        TransferOps {
+            ops: std::mem::take(&mut self.ops.borrow_mut())
+        }
+    }
+}
+
+unsafe impl Send for GpuStore {}
+
+impl Clone for GpuStore {
+    fn clone(&self) -> Self {
+        GpuStore {
+            ops: RefCell::new(Vec::new()),
+            // In bytes.
+            chunk_size: self.chunk_size,
+            align_mask: self.align_mask.clone(),
+            offset_shift: self.offset_shift.clone(),
+            // In bytes.
+            next_gpu_offset: self.next_gpu_offset.clone(),
+            staging_buffers: self.staging_buffers.clone(),
+        }
+    }
+}
+
 // Associated with a specific resource.
-pub struct GpuStoreWriter {
+pub struct GpuStoreWriter<'l> {
+    store: &'l GpuStore,
+
     chunk_start: *mut u8,
     // Offset of the current chunk in the destination buffer (not necessarily in bytes)
     chunk_gpu_offset: GpuOffset,
@@ -618,17 +678,17 @@ pub struct GpuStoreWriter {
     // to obtain the final offset.
     offset_shift: u32,
 
-    transfer_ops: Vec<TransferOp>,
-
     // In bytes
     next_gpu_offset: Arc<AtomicU32>,
     staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 
-unsafe impl<'l> Send for GpuStoreWriter {}
-
-impl GpuStoreWriter {
+impl<'l> GpuStoreWriter<'l> {
     pub fn push_bytes(&mut self, data: &[u8]) -> GpuStoreHandle {
+        if data.len() > self.chunk_size as usize {
+            return self.push_bytes_large(data);
+        }
+
         let aligned_size = (data.len() + self.align_mask) & !self.align_mask;
         let mut new_local_offset = self.staging_local_offset + aligned_size as u32;
 
@@ -650,8 +710,66 @@ impl GpuStoreWriter {
         GpuStoreHandle(address.0)
     }
 
-    pub fn push_f32(&mut self, data: &[f32]) -> GpuStoreHandle {
+    pub fn push<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuStoreHandle {
         self.push_bytes(bytemuck::cast_slice(data))
+    }
+
+    fn push_bytes_large(&mut self, data: &[u8]) -> GpuStoreHandle {
+        self.flush_staging_buffer();
+        self.chunk_start = std::ptr::null_mut();
+        self.staging_buffer_offset = StagingOffset(0);
+        self.staging_local_offset = self.chunk_size;
+
+        let gpu_byte_offset = self.next_gpu_offset.fetch_add(data.len() as u32, Ordering::Relaxed);
+
+        let mut src_offset = 0;
+        let mut dst_offset = gpu_byte_offset;
+        loop {
+            let chunk = {
+                self.store.staging_buffers
+                    .lock()
+                    .unwrap()
+                    .get_mapped_chunk(self.chunk_size)
+            };
+
+            let len = (self.chunk_size as usize).min(data.len() - src_offset);
+            let src = &data[src_offset .. (src_offset + len)];
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut(chunk.ptr, len);
+                dst.copy_from_slice(src);
+            }
+
+            // If we are writing to the staing buffer chunk directly after the
+            // previous one, grow the previus copy op instead of pushing a new
+            // one. This reduces the number of buffer copy operations submitted
+            // to the GPU.
+            let mut ops = self.store.ops.borrow_mut();
+            let mut merged = false;
+            if let Some(last) = ops.last_mut() {
+                if last.staging_id == chunk.id && (last.staging_offset.0 + last.size) == chunk.offset.0 {
+                    merged = true;
+                    last.size += len as u32;
+                }
+            }
+
+            if !merged {
+                ops.push(TransferOp {
+                    staging_id: chunk.id,
+                    staging_offset: chunk.offset,
+                    size: len as u32,
+                    gpu_offset: GpuOffset(dst_offset >> self.offset_shift),
+                });
+            }
+
+            src_offset += len;
+            dst_offset += len as u32;
+
+            if src_offset >= data.len() {
+                break;
+            }
+        }
+
+        GpuStoreHandle(gpu_byte_offset >> self.offset_shift)
     }
 
     // Note: this does not reset the reset the offsets and pointers into
@@ -659,7 +777,7 @@ impl GpuStoreWriter {
     fn flush_staging_buffer(&mut self) {
         let size = (self.cursor_gpu_offset.0 - self.chunk_gpu_offset.0) << self.offset_shift;
         if size > 0 {
-            self.transfer_ops.push(TransferOp {
+            self.store.ops.borrow_mut().push(TransferOp {
                 staging_id: self.staging_buffer_id,
                 staging_offset: self.staging_buffer_offset,
                 size,
@@ -672,7 +790,7 @@ impl GpuStoreWriter {
     fn replace_staging_buffer(&mut self) {
         self.flush_staging_buffer();
 
-        let chunk = self.staging_buffers
+        let chunk = self.store.staging_buffers
             .lock()
             .unwrap()
             .get_mapped_chunk(self.chunk_size);
@@ -687,27 +805,19 @@ impl GpuStoreWriter {
         self.cursor_gpu_offset = self.chunk_gpu_offset;
         self.staging_local_offset = 0;
     }
+}
 
-    pub(crate) fn finish(&mut self) -> TransferOps {
+impl<'l> Drop for GpuStoreWriter<'l> {
+    fn drop(&mut self) {
         self.flush_staging_buffer();
-
-        self.chunk_start = std::ptr::null_mut();
-        self.staging_buffer_id = StagingBufferId(0);
-        self.chunk_gpu_offset = GpuOffset(0);
-        self.cursor_gpu_offset = GpuOffset(0);
-        self.staging_local_offset = self.chunk_size;
-
-        TransferOps {
-            ops: std::mem::take(&mut self.transfer_ops)
-        }
     }
 }
 
-impl Clone for GpuStoreWriter {
-    fn clone(&self) -> GpuStoreWriter {
-        let ptr = std::ptr::null_mut();
+impl<'l> Clone for GpuStoreWriter<'l> {
+    fn clone(&self) -> Self {
         GpuStoreWriter {
-            chunk_start: ptr,
+            store: self.store,
+            chunk_start: std::ptr::null_mut(),
             chunk_gpu_offset: GpuOffset(0),
             cursor_gpu_offset: GpuOffset(0),
             // Initialze to chunk_size so that it triggers flush
@@ -718,7 +828,6 @@ impl Clone for GpuStoreWriter {
             staging_buffer_offset: StagingOffset(0),
             align_mask: self.align_mask,
             offset_shift: self.offset_shift,
-            transfer_ops: Vec::new(),
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers: self.staging_buffers.clone(),
         }
@@ -740,31 +849,35 @@ fn gpu_store_simple() {
 
     let store = resource.begin_frame(staging_buffers.clone());
 
+    let mut stores = Vec::new();
     let mut writers = Vec::new();
     let mut expected = Vec::new();
     for _ in 0..4 {
-        writers.push(store.clone());
+        stores.push(store.clone());
         expected.push((0u8, 0u8));
+    }
+    for store in &stores {
+        writers.push(store.write());
     }
 
     for c in 0..16 {
         for idx in 0..4 {
             //println!("\nwrite worker:{idx:?} run {c:?}");
-            let store = &mut writers[idx];
+            let writer = &mut writers[idx];
             let a = idx as u8;
 
             for b in 0..=255 {
-                store.push_bytes(&[a, b, c, 0, 1, 2, 3, 4]);
+                writer.push_bytes(&[a, b, c, 0, 1, 2, 3, 4]);
             }
         }
     }
 
     let pool = staging_buffers.lock().unwrap();
     for idx in 0..4 {
-        let writer = &writers[idx];
+        let store = &stores[idx];
         let expected = &mut expected[idx];
         //println!("worker {idx:?}:");
-        for op in &writer.transfer_ops {
+        for op in &*store.ops.borrow() {
             let buf = &pool.cpu_buffers[op.staging_id.0 as usize];
             let start = op.staging_offset.0 as usize;
             let chunk = &buf[start .. start + op.size as usize];

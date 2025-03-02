@@ -84,7 +84,7 @@ impl TextureRenderer {
         dst_rect: &Box2D<f32>,
         is_opaque: bool,
     ) -> BuiltPattern {
-        let handle = gpu_store.push_f32(&[
+        let handle = gpu_store.push(&[
             src_rect.min.x,
             src_rect.min.y,
             src_rect.max.x,

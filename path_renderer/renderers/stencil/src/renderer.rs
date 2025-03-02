@@ -11,7 +11,7 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::BatchId, context::RenderPassContext, gpu::shader::{BlendMode, ShaderPatternId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
+use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStreamWriter, StreamId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -120,6 +120,11 @@ struct Fill {
     z_index: ZIndex,
 }
 
+struct Geometry<'l> {
+    vertices: (), // TODO
+    indices: GpuStreamWriter<'l>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub commands: u32,
@@ -131,6 +136,7 @@ pub struct Stats {
 pub struct StencilAndCoverRenderer {
     commands: Vec<Fill>,
     renderer_id: RendererId,
+    stencil_vertices: Option<StreamId>,
     stencil_geometry: VertexBuffers<StencilVertex, u32>,
     cover_geometry: VertexBuffers<CoverVertex, u32>,
     draws: Vec<Draw>,
@@ -153,6 +159,7 @@ impl StencilAndCoverRenderer {
         StencilAndCoverRenderer {
             commands: Vec::new(),
             renderer_id,
+            stencil_vertices: None,
             stencil_geometry: VertexBuffers::new(),
             cover_geometry: VertexBuffers::new(),
             draws: Vec::new(),
@@ -181,6 +188,7 @@ impl StencilAndCoverRenderer {
         self.commands.clear();
         self.draws.clear();
         self.batches.clear();
+        self.stencil_vertices = None;
         self.stencil_geometry.vertices.clear();
         self.stencil_geometry.indices.clear();
         self.cover_geometry.vertices.clear();
@@ -260,7 +268,20 @@ impl StencilAndCoverRenderer {
 
         let pass = &ctx.pass;
         let transforms = &ctx.transforms;
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let vertices = &mut worker_data.vertices;
+        let indices = &mut worker_data.indices;
+
+        let idx_stream = indices.next_stream_id();
+        let mut stencil = Geometry {
+            vertices: (),
+            indices: indices.write(idx_stream, 0),
+        };
+        let mut cover = Geometry {
+            vertices: (),
+            indices: indices.write(idx_stream, 1),
+        };
 
         let mut batches = self.batches.take();
         let id = self.renderer_id;
@@ -277,7 +298,7 @@ impl StencilAndCoverRenderer {
             let cover_idx_start = self.cover_geometry.indices.len() as u32;
 
             for fill in commands.iter() {
-                self.prepare_fill(transforms, fill);
+                self.prepare_fill(transforms, fill, &mut stencil, &mut cover);
             }
 
             let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
@@ -309,7 +330,7 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
     }
 
-    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill) {
+    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, colver: &mut Geometry) {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
@@ -322,6 +343,7 @@ impl StencilAndCoverRenderer {
                     transform.matrix(),
                     self.tolerance,
                     &transformed_aabb,
+                    stencil,
                     &mut self.stencil_geometry,
                 );
             }
@@ -380,11 +402,12 @@ impl StencilAndCoverRenderer {
     }
 }
 
-pub fn generate_stencil_geometry(
+fn generate_stencil_geometry(
     path: PathSlice,
     transform: &LocalToSurfaceTransform,
     tolerance: f32,
     aabb: &SurfaceRect,
+    stencil: &mut Geometry,
     stencil_geometry: &mut VertexBuffers<StencilVertex, u32>,
 ) {
     let transform = &transform.to_untyped();

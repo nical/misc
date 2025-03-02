@@ -1,10 +1,62 @@
-use std::{ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32, u64};
+use std::{cell::RefCell, ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32, u64};
 
 use super::{StagingBufferId, StagingBufferPool, StagingOffset};
 
-
 // Associated with a specific resource.
-pub struct GpuStreamsWriter {
+pub struct GpuStreams {
+    ops: RefCell<Vec<CopyOp>>,
+    chunk_size: u32,
+    next_stream_id: Arc<AtomicU32>,
+    staging_buffers: Arc<Mutex<StagingBufferPool>>,
+}
+
+unsafe impl<'l> Send for GpuStreams {}
+
+impl GpuStreams {
+    pub fn next_stream_id(&self) -> StreamId {
+        StreamId(self.next_stream_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn write(&self, stream: StreamId, sort_key: u32) -> GpuStreamWriter {
+        GpuStreamWriter {
+            chunk_start: std::ptr::null_mut(),
+            // Initialze to chunk_size so that it triggers flush
+            // at the first push.
+            staging_local_offset: self.chunk_size,
+            staging_local_start_offset: self.chunk_size,
+            chunk_size: self.chunk_size,
+            staging_buffer_id: StagingBufferId(0),
+            staging_buffer_offset: StagingOffset(0),
+            current_sort_key: u64::MAX,
+            chunk_idx: 0,
+
+            streams: self,
+            key: (stream.0 as u64) << 48 | sort_key as u64
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> StreamOps {
+        StreamOps {
+            ops: std::mem::take(&mut self.ops.borrow_mut())
+        }
+    }
+}
+
+impl Clone for GpuStreams {
+    fn clone(&self) -> GpuStreams {
+        GpuStreams {
+            chunk_size: self.chunk_size,
+            ops: RefCell::new(Vec::new()),
+            staging_buffers: self.staging_buffers.clone(),
+            next_stream_id: self.next_stream_id.clone(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StreamId(u32);
+
+pub struct GpuStreamWriter<'l> {
     chunk_start: *mut u8,
     // Offset of the cursor relative to the beginning of the current chunk, in bytes.
     staging_local_offset: u32,
@@ -15,33 +67,27 @@ pub struct GpuStreamsWriter {
     staging_buffer_offset: StagingOffset,
     staging_buffer_id: StagingBufferId,
 
-    ops: Vec<StreamOp>,
-
     current_sort_key: u64,
     // Index of the current chunk in the stream. It is used to ensure that multiple
     // chunks within a stream remain in the same order after sorting.
     chunk_idx: u32,
 
-    next_stream_id: Arc<AtomicU32>,
-    staging_buffers: Arc<Mutex<StagingBufferPool>>,
+    streams: &'l GpuStreams,
+    key: u64,
 }
 
-unsafe impl<'l> Send for GpuStreamsWriter {}
-
-impl GpuStreamsWriter {
-    pub fn next_stream_id(&self) -> StreamId {
-        StreamId(self.next_stream_id.fetch_add(1, Ordering::Relaxed))
+impl<'l> GpuStreamWriter<'l> {
+    #[inline]
+    pub fn push_bytes(&mut self, data: &[u8]) {
+        self.push_bytes_impl(self.key, data);
     }
 
-    pub fn write(&mut self, stream: StreamId, sort_key: u32) -> GpuStreamWriter {
-        self.chunk_idx = 0;
-        GpuStreamWriter {
-            streams: self,
-            key: (stream.0 as u64) << 48 | sort_key as u64
-        }
+    #[inline]
+    pub fn push_f32(&mut self, data: &[f32]) {
+        self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
     }
 
-    fn push_bytes(&mut self, sort_key: u64, data: &[u8]) {
+    fn push_bytes_impl(&mut self, sort_key: u64, data: &[u8]) {
         let size = data.len() as u32;
         if size > self.chunk_size {
             self.push_bytes_large(sort_key, data);
@@ -70,12 +116,13 @@ impl GpuStreamsWriter {
         self.staging_buffer_offset = StagingOffset(0);
         self.staging_local_offset = self.chunk_size;
         self.staging_local_start_offset = self.chunk_size;
+        let mut can_merge = self.current_sort_key == sort_key;
         self.current_sort_key = sort_key;
 
         let mut src_offset = 0;
         loop {
             let chunk = {
-                self.staging_buffers
+                self.streams.staging_buffers
                     .lock()
                     .unwrap()
                     .get_mapped_chunk(self.chunk_size)
@@ -92,16 +139,19 @@ impl GpuStreamsWriter {
             // previous one, grow the previus copy op instead of pushing a new
             // one. This reduces the number of buffer copy operations submitted
             // to the GPU.
+            let mut ops = self.streams.ops.borrow_mut();
             let mut merged = false;
-            if let Some(last) = self.ops.last_mut() {
-                if last.staging_id == chunk.id && (last.staging_offset.0 + last.size) == chunk.offset.0 {
+            if let Some(last) = ops.last_mut() {
+                if can_merge
+                    && last.staging_id == chunk.id
+                    && (last.staging_offset.0 + last.size) == chunk.offset.0 {
                     merged = true;
                     last.size += len as u32;
                 }
             }
 
             if !merged {
-                self.ops.push(StreamOp {
+                ops.push(CopyOp {
                     staging_id: chunk.id,
                     staging_offset: chunk.offset,
                     size: len as u32,
@@ -109,6 +159,7 @@ impl GpuStreamsWriter {
                 });
             }
 
+            can_merge = true;
             self.chunk_idx += 1;
 
             src_offset += len;
@@ -124,7 +175,7 @@ impl GpuStreamsWriter {
     fn flush_staging_buffer(&mut self) {
         let size = self.staging_local_offset - self.staging_local_start_offset;
         if size > 0 {
-            self.ops.push(StreamOp {
+            self.streams.ops.borrow_mut().push(CopyOp {
                 staging_id: self.staging_buffer_id,
                 staging_offset: StagingOffset(self.staging_buffer_offset.0 + self.staging_local_start_offset),
                 size,
@@ -139,7 +190,7 @@ impl GpuStreamsWriter {
     fn replace_staging_buffer(&mut self) {
         self.flush_staging_buffer();
 
-        let chunk = self.staging_buffers
+        let chunk = self.streams.staging_buffers
             .lock()
             .unwrap()
             .get_mapped_chunk(self.chunk_size);
@@ -152,63 +203,23 @@ impl GpuStreamsWriter {
         self.staging_local_offset = 0;
         self.staging_local_start_offset = 0;
     }
+}
 
-    pub(crate) fn finish(&mut self) -> StreamOps {
+impl<'l> Drop for GpuStreamWriter<'l> {
+    fn drop(&mut self) {
         self.flush_staging_buffer();
-        StreamOps {
-            ops: std::mem::take(&mut self.ops)
-        }
     }
 }
 
-impl Clone for GpuStreamsWriter {
-    fn clone(&self) -> GpuStreamsWriter {
-        let ptr = std::ptr::null_mut();
-        GpuStreamsWriter {
-            chunk_start: ptr,
-            // Initialze to chunk_size so that it triggers flush
-            // at the first push.
-            staging_local_offset: self.chunk_size,
-            staging_local_start_offset: self.chunk_size,
-            chunk_size: self.chunk_size,
-            staging_buffer_id: StagingBufferId(0),
-            staging_buffer_offset: StagingOffset(0),
-            ops: Vec::new(),
-            staging_buffers: self.staging_buffers.clone(),
-            next_stream_id: self.next_stream_id.clone(),
-            current_sort_key: u64::MAX,
-            chunk_idx: 0,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StreamId(u32);
-
-pub struct GpuStreamWriter<'l> {
-    streams: &'l mut GpuStreamsWriter,
-    key: u64,
-}
-
-impl<'l> GpuStreamWriter<'l> {
-    #[inline]
-    pub fn push_bytes(&mut self, data: &[u8]) {
-        self.streams.push_bytes(self.key, data);
-    }
-
-    #[inline]
-    pub fn push_f32(&mut self, data: &[f32]) {
-        self.streams.push_bytes(self.key, bytemuck::cast_slice(data));
-    }
-}
 
 pub struct GpuStreamsDescritptor {
-    pub usage: wgpu::BufferUsages,
+    pub usages: wgpu::BufferUsages,
     pub buffer_size: u32,
     pub chunk_size: u32,
     pub label: Option<&'static str>,
 }
 
+#[derive(Debug)]
 struct StreamInfo {
     buffer_index: u32,
     offset: u32,
@@ -239,7 +250,7 @@ impl GpuStreamsResources {
             buffers: Vec::new(),
             chunk_size: descriptor.chunk_size,
             buffer_size: descriptor.buffer_size,
-            usage: descriptor.usage | wgpu::BufferUsages::COPY_DST,
+            usage: descriptor.usages | wgpu::BufferUsages::COPY_DST,
             label: descriptor.label,
 
             stream_info: Vec::new(),
@@ -247,20 +258,13 @@ impl GpuStreamsResources {
         }
     }
 
-    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStreamsWriter {
+    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStreams {
         self.next_stream_id.store(0, Ordering::Release);
-        GpuStreamsWriter {
-            chunk_start: std::ptr::null_mut(),
-            staging_local_offset: self.chunk_size,
-            staging_local_start_offset: self.chunk_size,
+        GpuStreams {
             chunk_size: self.chunk_size,
-            staging_buffer_id: StagingBufferId(0),
-            staging_buffer_offset: StagingOffset(0),
-            ops: Vec::new(),
+            ops: RefCell::new(Vec::new()),
             staging_buffers,
             next_stream_id: self.next_stream_id.clone(),
-            current_sort_key: 0,
-            chunk_idx: 0,
         }
     }
 
@@ -272,7 +276,6 @@ impl GpuStreamsResources {
         encoder: &mut wgpu::CommandEncoder,
     ) {
         let num_streams = self.next_stream_id.load(Ordering::Acquire) as usize;
-
         self.stream_info.clear();
         self.stream_info.reserve(num_streams);
         for _ in 0..num_streams {
@@ -295,7 +298,7 @@ impl GpuStreamsResources {
 
         ops.sort_by_key(|op| op.sort_key);
         // Push a dummy op at the end to flush the last stream.
-        ops.push(StreamOp {
+        ops.push(CopyOp {
             sort_key: u64::MAX,
             size: 0,
             staging_id: StagingBufferId(u32::MAX),
@@ -379,6 +382,9 @@ impl GpuStreamsResources {
         let info = &self.stream_info[stream.0 as usize];
         let idx = info.buffer_index;
         (
+            // TODO: we panic here with an invalid index if a user of the
+            // stream resolves a stream in which nothin was pushed. This is
+            // error prone.
             &self.buffers[idx as usize].handle,
             info.offset .. (info.offset + info.size),
         )
@@ -388,7 +394,7 @@ impl GpuStreamsResources {
 
 
 #[derive(Clone, Debug)]
-struct StreamOp {
+struct CopyOp {
     staging_id: StagingBufferId,
     // In bytes.
     staging_offset: StagingOffset,
@@ -398,7 +404,7 @@ struct StreamOp {
 }
 
 pub struct StreamOps {
-    ops: Vec<StreamOp>,
+    ops: Vec<CopyOp>,
 }
 
 fn align(size: u32, alignment: u32) -> u32 {

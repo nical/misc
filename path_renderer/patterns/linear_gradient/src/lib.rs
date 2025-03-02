@@ -54,7 +54,7 @@ impl LinearGradientRenderer {
         let color0 = gradient.color0.to_f32();
         let color1 = gradient.color1.to_f32();
 
-        let handle = gpu_store.push_f32(&[
+        let handle = gpu_store.push(&[
             gradient.from.x,
             gradient.from.y,
             gradient.to.x,

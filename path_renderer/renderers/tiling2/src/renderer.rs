@@ -157,7 +157,7 @@ impl TileRenderer {
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
-        let vertices = &mut worker_data.vertices;
+        let instances = &mut worker_data.instances;
 
         if self.batches.is_empty() {
             return;
@@ -197,18 +197,18 @@ impl TileRenderer {
             }
         }
 
-        let mask_stream = vertices.next_stream_id();
-        let opaque_stream = vertices.next_stream_id();
-        {
-            let mut writer = vertices.write(mask_stream, 0);
+        if !self.tiles.mask_tiles.is_empty() {
+            let mask_stream = instances.next_stream_id();
+            let mut writer = instances.write(mask_stream, 0);
             writer.push_bytes(bytemuck::cast_slice(&self.tiles.mask_tiles));
+            self.mask_instances = Some(mask_stream);
         }
-        {
-            let mut writer = vertices.write(opaque_stream, 0);
+        if !self.tiles.opaque_tiles.is_empty() {
+            let opaque_stream = instances.next_stream_id();
+            let mut writer = instances.write(opaque_stream, 0);
             writer.push_bytes(bytemuck::cast_slice(&self.tiles.opaque_tiles));
+            self.opaque_instances = Some(opaque_stream);
         }
-        self.mask_instances = Some(mask_stream);
-        self.opaque_instances = Some(opaque_stream);
 
         self.batches = batches;
     }
@@ -566,11 +566,11 @@ impl core::Renderer for TileRenderer {
         // TODO: previous version was grouping the mask and opaque instances
         // in a single instance range which made avoided the need to re-bind.
         let mask_instances = self.mask_instances.map(|id|
-            common_resources.vertices2.resolve(id)
+            common_resources.instances.resolve(id)
         );
 
         let opaque_instances = self.opaque_instances.map(|id|
-            common_resources.vertices2.resolve(id)
+            common_resources.instances.resolve(id)
         );
 
         render_pass.set_bind_group(

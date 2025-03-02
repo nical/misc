@@ -65,6 +65,9 @@ impl Instance {
             self.resources.common.indices2.begin_frame(
                 self.staging_buffers.clone()
             ),
+            self.resources.common.instances.begin_frame(
+                self.staging_buffers.clone()
+            ),
         )
     }
 
@@ -98,6 +101,7 @@ impl Instance {
                 gpu_store: frame.gpu_store.clone(),
                 vertices: frame.vertices.clone(),
                 indices: frame.indices.clone(),
+                instances: frame.instances.clone(),
             });
         }
         worker_data.push(PrepareWorkerData {
@@ -105,6 +109,7 @@ impl Instance {
             gpu_store: frame.gpu_store,
             vertices: frame.vertices,
             indices: frame.indices,
+            instances: frame.instances,
         });
 
         for cmd in &graph {
@@ -122,11 +127,13 @@ impl Instance {
         let mut gpu_store_ops = Vec::with_capacity(worker_data.len());
         let mut vtx_ops = Vec::with_capacity(worker_data.len());
         let mut idx_ops = Vec::with_capacity(worker_data.len());
+        let mut inst_ops = Vec::with_capacity(worker_data.len());
         let mut pipeline_changes = Vec::with_capacity(worker_data.len());
         for mut wd in worker_data {
             gpu_store_ops.push(wd.gpu_store.finish());
             vtx_ops.push(wd.vertices.finish());
             idx_ops.push(wd.indices.finish());
+            inst_ops.push(wd.instances.finish());
             pipeline_changes.push(wd.pipelines.finish());
         }
 
@@ -169,6 +176,12 @@ impl Instance {
             );
             self.resources.common.indices2.upload(
                 &idx_ops,
+                &staging_buffers,
+                &self.device,
+                encoder,
+            );
+            self.resources.common.instances.upload(
+                &inst_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,

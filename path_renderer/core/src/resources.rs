@@ -114,8 +114,9 @@ pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
     pub indices: DynamicStore,
-    pub vertices2: GpuStreamsResources,
+    pub vertices2: GpuStoreResources,
     pub indices2: GpuStreamsResources,
+    pub instances: GpuStreamsResources,
 
     pub gpu_store: GpuStoreResources,
 
@@ -160,18 +161,26 @@ impl CommonGpuResources {
         let vertices = DynamicStore::new_vertices(4096 * 32);
         let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
 
-        let vertices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
-            usage: wgpu::BufferUsages::VERTEX,
-            buffer_size: 1024 * 128,
-            chunk_size: 1024 * 8,
+        let vertices2 = GpuStoreResources::new(&GpuStoreDescriptor::Buffers {
+            usages: wgpu::BufferUsages::VERTEX,
+            alignment: 8,
+            min_size: 1024 * 128,
+            max_size: 1024 * 128,
             label: Some("vertices"),
         });
 
         let indices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
-            usage: wgpu::BufferUsages::INDEX,
+            usages: wgpu::BufferUsages::INDEX,
             buffer_size: 1024 * 16,
             chunk_size: 1024 * 2,
             label: Some("indices"),
+        });
+
+        let instances = GpuStreamsResources::new(&GpuStreamsDescritptor {
+            usages: wgpu::BufferUsages::VERTEX,
+            buffer_size: 1024 * 128,
+            chunk_size: 1024 * 2,
+            label: Some("instances"),
         });
 
         let msaa_blit_src_bind_group_layout =
@@ -245,6 +254,7 @@ impl CommonGpuResources {
             indices,
             vertices2,
             indices2,
+            instances,
             gpu_store,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,

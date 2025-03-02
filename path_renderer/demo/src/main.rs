@@ -729,6 +729,7 @@ impl App {
 
         self.queue.submit(Some(encoder.finish()));
 
+        self.window.pre_present_notify();
         wgpu_frame.present();
 
         let present_time = Instant::now() - present_start;
@@ -786,9 +787,10 @@ fn paint_scene(
     patterns: &Patterns,
     transform: &LocalTransform,
 ) {
+    let mut gpu_store = frame.gpu_store.write();
     if testing {
         let gradient = patterns.gradients.add(
-            &mut frame.gpu_store,
+            &mut gpu_store,
             LinearGradient {
                 from: point(100.0, 100.0),
                 color0: Color {
@@ -823,7 +825,7 @@ fn paint_scene(
                     from,
                     to,
                 } => patterns.gradients.add(
-                    &mut frame.gpu_store,
+                    &mut gpu_store,
                     LinearGradient {
                         color0,
                         color1,
@@ -850,7 +852,7 @@ fn paint_scene(
                     from,
                     to,
                 } => patterns.gradients.add(
-                    &mut frame.gpu_store,
+                    &mut gpu_store,
                     LinearGradient {
                         color0,
                         color1,
@@ -900,9 +902,9 @@ fn paint_scene(
     if testing {
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let transform_handle = frame.transforms.get_current_gpu_handle(&mut frame.gpu_store);
+        let transform_handle = frame.transforms.get_current_gpu_handle(&mut gpu_store);
         let gradient = patterns.gradients.add(
-            &mut frame.gpu_store,
+            &mut gpu_store,
             LinearGradient {
                 from: point(0.0, 700.0),
                 to: point(0.0, 900.0),
@@ -984,7 +986,7 @@ fn paint_scene(
             &frame.transforms,
             fill,//.inverted(),
             patterns.checkerboards.add(
-                &mut frame.gpu_store,
+                &mut gpu_store,
                 &Checkerboard {
                     color0: Color {
                         r: 10,
