@@ -9,6 +9,11 @@ pub mod sedeberg;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod parabola_approx;
+#[cfg(test)]
+pub mod testing;
+#[cfg(test)]
+pub mod edge_count;
+
 
 pub struct CubicBezierPolynomial {
     pub a0: Vector<f32>,
