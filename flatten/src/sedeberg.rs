@@ -38,7 +38,7 @@ pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callbac
     let mut from = curve.from;
     for _ in 0..(n as u32 - 1) {
         let t = prev + step;
-        let to = poly.sample(t);
+        let to = poly.sample_fma(t);
         callback(&mut LineSegment { from, to });
         from = to;
         prev = t;

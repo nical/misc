@@ -8,6 +8,7 @@ use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
 use lyon_path::geom::euclid::default::{Box2D, Transform2D};
 use lyon_path::math::Point;
 use lyon_path::{Path, PathEvent};
+use flatten::testing::*;
 
 use flatten::Flatten;
 
@@ -44,10 +45,10 @@ fn cubic_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("recursive", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Recursive>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fwd-iff", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::FwdDiff>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::HybridFwdDiff>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("pa", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::ParabolaApprox>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::ParabolaApprox>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("sedebrg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Sedeberg>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("sedeberg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Sedeberg>(&curves, *tol)) });
     }
 }
 
@@ -59,8 +60,8 @@ fn quad_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("fwd-diff", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::FwdDiff>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Levien>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienSimd>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("linear2", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Linear>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("cagd", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Sedeberg>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Linear>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("sedeberg", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Sedeberg>(&curves, *tol)) });
     }
 }
 

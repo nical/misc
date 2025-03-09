@@ -9,11 +9,29 @@ pub mod sedeberg;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod parabola_approx;
-#[cfg(test)]
+#[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(test)]
 pub mod edge_count;
 
+// Using mul_add causes a large perf regression on x86_64.
+// By default the regression is huge for sedeberg and even
+// with `-C target-feature=+fma` passed (for example using
+// the `RUSTFLAGS` environment variable), the regression is
+// quite large.
+// TODO: Am I doing something wrong?
+
+#[cfg(not(target_feature="fma"))]
+#[inline(always)]
+pub fn fma(val: f32, mul: f32, add: f32) -> f32 {
+    val * mul + add
+}
+
+#[cfg(target_feature="fma")]
+#[inline(always)]
+pub fn fma(val: f32, mul: f32, add: f32) -> f32 {
+    val.mul_add(mul, add)
+}
 
 pub struct CubicBezierPolynomial {
     pub a0: Vector<f32>,
@@ -44,6 +62,22 @@ impl CubicBezierPolynomial {
         v += self.a3 * t2;
 
         v.to_point()
+    }
+
+    pub fn sample_fma(&self, t: f32) -> Point<f32> {
+        let mut vx = self.a1.x;
+        let mut vy = self.a1.y;
+        let mut t2 = t;
+        vx = fma(self.a1.x, t2, vx);
+        vy = fma(self.a1.y, t2, vy);
+        t2 *= t;
+        vx = fma(self.a2.x, t2, vx);
+        vy = fma(self.a2.y, t2, vy);
+        t2 *= t;
+        vx = fma(self.a3.x, t2, vx);
+        vy = fma(self.a3.y, t2, vy);
+
+        Point::new(vx, vy)
     }
 }
 
