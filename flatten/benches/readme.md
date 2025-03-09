@@ -1,3 +1,8 @@
+# Caveats
+
+- I suspect that there may be a bug in `hain`'s implementation, so the results for that one are probably wrong.
+- `levien-simd` was a half-baked attempt at sprinkling some sse in `levien`'s algorithm with underwhelming results. Raph levien has [a work in progress](https://gist.github.com/raphlinus/5f4e9feb85fd79bafc72da744571ec0e) avx2 version that is more promising.
+
 # Performance
 
 To run the benchmakrs: `cargo bench --features=testing`
@@ -163,6 +168,8 @@ quadratic/sedeberg/1    time:   [44.325 µs 44.384 µs 44.450 µs]
 ```
 
 # Edge count
+
+`rec_hfd` and `rec_agg` stands for `recursive` using the flatness criteria from `hfd` and `agg` respectively.
 
 Cubic bézier curves:
 
