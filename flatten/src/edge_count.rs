@@ -1,5 +1,5 @@
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Flatten, FwdDiff, HybridFwdDiff, ParabolaApprox, Sedeberg, Recursive, Linear, Levien};
+use crate::{Flatten, FwdDiff, HybridFwdDiff, Hain, Sedeberg, Recursive, Linear, Levien};
 use crate::testing::*;
 
 static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
@@ -33,7 +33,7 @@ fn flatten_edge_count() {
     let mut hfd = Vec::new();
     let mut sedeberg = Vec::new();
     for tolerance in TOLERANCES {
-        hain.push(count_edges_cubic::<ParabolaApprox>(&curves, tolerance));
+        hain.push(count_edges_cubic::<Hain>(&curves, tolerance));
         rec.push(count_edges_cubic::<Recursive>(&curves, tolerance));
         linear.push(count_edges_cubic::<Linear>(&curves, tolerance));
         levien.push(count_edges_cubic::<Levien>(&curves, tolerance));
@@ -85,7 +85,7 @@ fn flatten_edge_count() {
     print_edges_csv("linear    ", &linear);
     print_edges_csv("levien    ", &levien);
     print_edges_csv("sedeberg  ", &sedeberg);
-    print_edges_csv("hain      ", &hain);
+    print_edges_csv("hain     ", &hain);
     print_edges_csv("fwd-diff  ", &fd);
     print_edges_csv("hfd       ", &hfd);
 

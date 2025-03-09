@@ -8,7 +8,7 @@ pub mod recursive;
 pub mod sedeberg;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
-pub mod parabola_approx;
+pub mod hain;
 #[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(test)]
@@ -205,9 +205,9 @@ impl Flatten for Linear {
     }
 }
 
-pub struct ParabolaApprox;
-impl Flatten for ParabolaApprox {
+pub struct Hain;
+impl Flatten for Hain {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::parabola_approx::flatten_cubic(curve, tolerance, cb);
+        crate::hain::flatten_cubic(curve, tolerance, cb);
     }
 }

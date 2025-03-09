@@ -75,14 +75,14 @@ fn no_inflection_flattening_step(bezier: &CubicBezierSegment<f32>, tolerance: f3
 
     // To remove divisions and check for divide-by-zero, this is optimized from:
     // s2 = (v2.x * v1.y - v2.y * v1.x) / hypot(v1.x, v1.y);
-    // t = 2 * sqrt(tolerance / (3. * abs(s2)));
+    // t = sqrt(tolerance / (3. * abs(s2)));
     let v2_cross_v1 = v2.cross(v1);
     if v2_cross_v1 == 0.0 {
         return 1.0;
     }
-    let s2inv = v1.x.hypot(v1.y) / v2_cross_v1;
+    let s2inv = v1.x.hypot(v1.y) / (3.0 * v2_cross_v1);
 
-    let t = 2.0 * f32::sqrt(tolerance * f32::abs(s2inv) / 3.0);
+    let t = f32::sqrt(tolerance * f32::abs(s2inv));
 
     // TODO: We start having floating point precision issues if this constant
     // is closer to 1.0 with a small enough tolerance threshold.
