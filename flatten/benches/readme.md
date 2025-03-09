@@ -6,6 +6,7 @@ Benchmark results on an AMD Ryzen 7 PRO 6850U:
 
 ![Cubic bézier benchmark results](results-cubic.svg)
 
+```
 cubic/recursive/0.01    time:   [597.02 µs 597.63 µs 598.34 µs]
 cubic/fwd-iff/0.01      time:   [110.54 µs 110.71 µs 110.91 µs]
 cubic/hfd/0.01          time:   [522.42 µs 523.04 µs 523.76 µs]
@@ -85,9 +86,11 @@ cubic/hain/1            time:   [153.23 µs 153.44 µs 153.68 µs]
 cubic/levien/1          time:   [124.91 µs 125.09 µs 125.31 µs]
 cubic/linear/1          time:   [40.705 µs 40.769 µs 40.838 µs]
 cubic/sedeberg/1        time:   [28.975 µs 29.022 µs 29.091 µs]
+```
 
 ![Quadratic bézier benchmark results](results-quadratic.svg)
 
+```
 quadratic/recursive/0.01 time:   [403.35 µs 403.86 µs 404.49 µs]
 quadratic/fwd-diff/0.01 time:    [89.051 µs 89.164 µs 89.307 µs]
 quadratic/levien/0.01   time:    [223.21 µs 223.50 µs 223.85 µs]
@@ -157,6 +160,7 @@ quadratic/levien/1      time:   [47.062 µs 47.134 µs 47.206 µs]
 quadratic/levien-simd/1 time:   [72.472 µs 72.613 µs 72.786 µs]
 quadratic/linear2/1     time:   [17.986 µs 18.010 µs 18.038 µs]
 quadratic/sedeberg/1    time:   [44.325 µs 44.384 µs 44.450 µs]
+```
 
 # Edge count
 
