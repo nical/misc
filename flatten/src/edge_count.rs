@@ -68,6 +68,7 @@ fn flatten_edge_count() {
         for tolerance in &TOLERANCES {
             print!("{}, ", tolerance);
         }
+        println!("");
     }
 
     fn print_edges_csv(name: &str, vals: &[u32]) {
@@ -81,12 +82,12 @@ fn flatten_edge_count() {
     println!("Cubic bézier curves:");
     print_first_row_csv();
     print_edges_csv("recursive ", &rec);
+    print_edges_csv("linear    ", &linear);
+    print_edges_csv("levien    ", &levien);
+    print_edges_csv("sedeberg  ", &sedeberg);
+    print_edges_csv("hain      ", &hain);
     print_edges_csv("fwd-diff  ", &fd);
     print_edges_csv("hfd       ", &hfd);
-    print_edges_csv("hain      ", &hain);
-    print_edges_csv("levien    ", &levien);
-    print_edges_csv("linear    ", &linear);
-    print_edges_csv("sedeberg  ", &sedeberg);
 
     println!();
 
@@ -95,19 +96,22 @@ fn flatten_edge_count() {
     let mut levien = Vec::new();
     let mut fd = Vec::new();
     let mut cagd = Vec::new();
+    let mut lin = Vec::new();
     for tolerance in TOLERANCES {
         rec.push(count_edges_quad::<Recursive>(&curves, tolerance));
         levien.push(count_edges_quad::<Levien>(&curves, tolerance));
         fd.push(count_edges_quad::<FwdDiff>(&curves, tolerance));
         cagd.push(count_edges_quad::<Sedeberg>(&curves, tolerance));
+        lin.push(count_edges_quad::<Linear>(&curves, tolerance));
     }
 
     println!("Quadratic bézier curves:");
     print_first_row_csv();
     print_edges_csv("recursive ", &rec);
-    print_edges_csv("fwd-diff  ", &fd);
-    print_edges_csv("levien    ", &levien);
+    print_edges_csv("linear ",    &lin);
     print_edges_csv("sedeberg  ", &cagd);
+    print_edges_csv("levien    ", &levien);
+    print_edges_csv("fwd-diff  ", &fd);
 
     panic!();
 }
