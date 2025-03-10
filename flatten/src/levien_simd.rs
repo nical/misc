@@ -5,7 +5,7 @@
 //! in the profiles so far.
 
 use lyon_path::geom::{LineSegment, QuadraticBezierSegment};
-use lyon_path::math::{Point, point};
+use lyon_path::math::point;
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86 as arch;
@@ -115,70 +115,12 @@ pub fn flatten_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb
     }
 }
 
-/// Compute an approximation to integral (1 + 4x^2) ^ -0.25 dx used in the flattening code.
-fn approx_parabola_integral_ref(x: f32) -> f32 {
-    let d = 0.67;
-    let quarter = 0.25;
-    x / (1.0 - d + (d*d*d*d + quarter * x * x).sqrt().sqrt())
-}
-
-/// Approximate the inverse of the function above.
-fn approx_parabola_inv_integral_ref(x: f32) -> f32 {
-    let b = 0.39;
-    let quarter = 0.25;
-    x * (1.0 - b + (b * b + quarter * x * x).sqrt())
-}
-
-pub fn flatten_quad_ref(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(Point)) {
-    // Map the quadratic bézier segment to y = x^2 parabola.
-    let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
-    let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
-    let cross = (curve.to.x - curve.from.x) * ddy - (curve.to.y - curve.from.y) * ddx;
-    let parabola_from =
-        ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) / cross;
-    let parabola_to =
-        ((curve.to.x - curve.ctrl.x) * ddx + (curve.to.y - curve.ctrl.y) * ddy) / cross;
-    // Note, scale can be NaN, for example with straight lines. When it happens the NaN will
-    // propagate to other parameters. We catch it all by setting the iteration count to zero
-    // and leave the rest as garbage.
-    //let scale = cross.abs() / (ddx.hypot(ddy) * (parabola_to - parabola_from).abs());
-    let scale = (cross / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from))).abs();
-
-    let integral_from = approx_parabola_integral_ref(parabola_from);
-    let integral_to = approx_parabola_integral_ref(parabola_to);
-    let integral_diff = integral_to - integral_from;
-
-    let inv_integral_from = approx_parabola_inv_integral_ref(integral_from);
-    let inv_integral_to = approx_parabola_inv_integral_ref(integral_to);
-    let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
-
-    // We could store this as an integer but the generic code makes that awkward and we'll
-    // use it as a scalar again while iterating, so it's kept as a scalar.
-    let mut count = (0.5 * integral_diff.abs() * (scale / tolerance).sqrt()).ceil();
-    // If count is NaN the curve can be approximated by a single straight line or a point.
-    if !count.is_finite() {
-        count = 0.0;
-    }
-
-    let integral_step = integral_diff / count;
-
-    let mut i = 1.0;
-    for _ in 1..(count as u32) {
-        let u = approx_parabola_inv_integral_ref(integral_from + integral_step * i);
-        let t = (u - inv_integral_from) * div_inv_integral_diff;
-        i += 1.0;
-        cb(curve.sample(t));
-    }
-
-    cb(curve.to);
-}
-
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn flatten_simd() {
     unsafe {
         let (_, _, _, a) = unpack(approx_parabola_inv_integral(splat(0.5)));
-        let aref = approx_parabola_inv_integral_ref(0.5);
+        let aref = crate::levien::approx_parabola_inv_integral(0.5);
 
         println!("{} {}", a, aref);
 
@@ -189,15 +131,15 @@ fn flatten_simd() {
         };
 
         let mut n0: u32 = 0;
-        flatten_quadratic(&curve, 0.01, &mut |p| {
-            println!("{:?}", p);
+        flatten_quadratic(&curve, 0.01, &mut |_p| {
+            //println!("{:?}", _p);
             n0 += 1;
         });
 
-        println!("-----");
+        //println!("-----");
         let mut n1: u32 = 0;
-        flatten_quad_ref(&curve, 0.01, &mut |p| {
-            println!("{:?}", p);
+        crate::levien::flatten_quad_scalar(&curve, 0.01, &mut |_p| {
+            //println!("{:?}", _p);
             n1 += 1;
         });
 

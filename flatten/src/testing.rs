@@ -3,24 +3,40 @@ use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
 use lyon_path::geom::euclid::default::{Box2D, Transform2D};
 use lyon_path::math::Point;
 use lyon_path::{Path, PathEvent};
+use usvg::TreeParsing;
 
 pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
-    let (_, paths) = load_svg("tiger.svg", 1.0);
 
     let mut curves = Vec::new();
-    for (path, _) in paths {
-        for evt in path.iter() {
-            match evt {
-                PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
-                    curves.push(CubicBezierSegment { from, ctrl1, ctrl2, to });
+
+    for asset in &[
+        "tiger.svg",
+        "nehab_blender.svg",
+        "nehab_lorenz.svg",
+        "nehab_roads.svg",
+        "nehab_spiral.svg",
+        "nehab_spirograph.svg",
+        "nehab_waves.svg",
+    ] {
+        let file = format!("assets/{asset}");
+        let (_, paths) = load_svg(&file, 1.0);
+        println!("{file}: {:?} paths", paths.len());
+        for path in &paths {
+            for evt in path.iter() {
+                match evt {
+                    PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+                        curves.push(CubicBezierSegment { from, ctrl1, ctrl2, to });
+                    }
+                    PathEvent::Quadratic { from, ctrl, to } => {
+                        curves.push(QuadraticBezierSegment { from, ctrl, to }.to_cubic());
+                    }
+                    _ => {}
                 }
-                PathEvent::Quadratic { from, ctrl, to } => {
-                    curves.push(QuadraticBezierSegment { from, ctrl, to }.to_cubic());
-                }
-                _ => {}
             }
         }
     }
+
+    println!("generated {:?} cubic bézier curves", curves.len());
 
     curves
 }
@@ -48,106 +64,74 @@ pub enum SvgPattern {
     Gradient { color0: Color, color1: Color, from: Point, to: Point },
 }
 
-pub fn load_svg(filename: &str, scale_factor: f32) -> (Box2D<f32>, Vec<(Path, SvgPattern)>) {
+pub fn load_svg(
+    filename: &str,
+    scale_factor: f32,
+) -> (
+    Box2D<f32>,
+    Vec<Path>,
+) {
     let opt = usvg::Options::default();
-    let file_data = std::fs::read(filename).unwrap();
-    let rtree = usvg::Tree::from_data(&file_data, &opt).unwrap();
+
+    let svg_src = std::fs::read_to_string(filename).unwrap();
+    let rtree = usvg::Tree::from_str(&svg_src, &opt).unwrap();
     let mut paths = Vec::new();
 
     let s = scale_factor;
 
-    let mut gradients = std::collections::HashMap::new();
-
-    let view_box = rtree.svg_node().view_box;
-    for node in rtree.root().descendants() {
+    let view_box = rtree.view_box;
+    for node in rtree.root.descendants() {
         use usvg::NodeExt;
         let t = node.transform();
         let transform = Transform2D::new(
-            t.a as f32, t.b as f32,
-            t.c as f32, t.d as f32,
-            t.e as f32, t.f as f32,
+            t.sx as f32, t.kx as f32, t.ky as f32, t.sy as f32, t.tx as f32, t.ty as f32,
         );
 
         match *node.borrow() {
-            usvg::NodeKind::LinearGradient(ref gradient) => {
-                let color0 = gradient.base.stops.first().map(|stop| {
-                    (
-                        stop.color.red,
-                        stop.color.green,
-                        stop.color.blue,
-                        (stop.opacity.value() * 255.0) as u8,
-                    )
-                }).unwrap_or(FALLBACK_COLOR);
-                let color1 = gradient.base.stops.last().map(|stop| {
-                    (
-                        stop.color.red,
-                        stop.color.green,
-                        stop.color.blue,
-                        (stop.opacity.value() * 255.0) as u8,
-                    )
-                }).unwrap_or(FALLBACK_COLOR);
-                gradients.insert(gradient.id.clone(), SvgPattern::Gradient {
-                    color0,
-                    color1,
-                    from: point(gradient.x1 as f32, gradient.y1 as f32),
-                    to: point(gradient.x2 as f32, gradient.y2 as f32),
-                });
-            }
             usvg::NodeKind::Path(ref usvg_path) => {
-                let pattern = match usvg_path.fill {
-                    Some(ref fill) => {
-                        match fill.paint {
-                            usvg::Paint::Color(c) => SvgPattern::Color((c.red, c.green, c.blue, 255)),
-                            usvg::Paint::Link(ref id) => {
-                                gradients.get(id).cloned().unwrap_or_else(|| {
-                                    println!("Could not find pattern {:?}", id);
-                                    SvgPattern::Color(FALLBACK_COLOR)
-                                })
-                            }
-                        }
-                    }
-                    None => {
-                        continue;
-                    }
-                };
-
                 let mut builder = Path::builder().with_svg();
-                for segment in usvg_path.data.iter() {
-                    match *segment {
-                        usvg::PathSegment::MoveTo { x, y } => {
-                            builder.move_to(transform.transform_point(point(x as f32, y as f32)) * s);
+                for segment in usvg_path.data.segments() {
+                    use usvg::tiny_skia_path::PathSegment;
+                    match segment {
+                        PathSegment::MoveTo(p) => {
+                            builder
+                                .move_to(transform.transform_point(point(p.x, p.y)) * s);
                         }
-                        usvg::PathSegment::LineTo { x, y } => {
-                            builder.line_to(transform.transform_point(point(x as f32, y as f32)) * s);
+                        PathSegment::LineTo(p) => {
+                            builder
+                                .line_to(transform.transform_point(point(p.x, p.y)) * s);
                         }
-                        usvg::PathSegment::CurveTo { x1, y1, x2, y2, x, y, } => {
-                            builder.cubic_bezier_to(
-                                transform.transform_point(point(x1 as f32, y1 as f32)) * s,
-                                transform.transform_point(point(x2 as f32, y2 as f32)) * s,
-                                transform.transform_point(point(x as f32, y as f32)) * s,
+                        PathSegment::QuadTo (ctrl, to) => {
+                            builder.quadratic_bezier_to(
+                                transform.transform_point(point(ctrl.x, ctrl.y)) * s,
+                                transform.transform_point(point(to.x, to.y)) * s,
                             );
                         }
-                        usvg::PathSegment::ClosePath => {
+                        PathSegment::CubicTo (ctrl1, ctrl2, to) => {
+                            builder.cubic_bezier_to(
+                                transform.transform_point(point(ctrl1.x, ctrl1.y)) * s,
+                                transform.transform_point(point(ctrl2.x, ctrl2.y)) * s,
+                                transform.transform_point(point(to.x, to.y)) * s,
+                            );
+                        }
+                        PathSegment::Close => {
                             builder.close();
                         }
                     }
                 }
                 let path = builder.build();
 
-                paths.push((path, pattern));
+                paths.push(path);
             }
             _ => {}
         }
     }
 
     let vb = Box2D {
-        min: point(
-            view_box.rect.x() as f32 * s,
-            view_box.rect.y() as f32 * s,
-        ),
+        min: point(view_box.rect.x() * s, view_box.rect.y() * s),
         max: point(
-            view_box.rect.x() as f32 + view_box.rect.width() as f32 * s,
-            view_box.rect.y() as f32 + view_box.rect.height() as f32 * s,
+            view_box.rect.x() + view_box.rect.width() * s,
+            view_box.rect.y() + view_box.rect.height() * s,
         ),
     };
 

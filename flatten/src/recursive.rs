@@ -1,6 +1,6 @@
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Point};
 
-/// The Flatten the using a simple recursive algorithm
+/// Flatten using a simple recursive algorithm
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
     F:  FnMut(&LineSegment<f32>)
@@ -27,7 +27,7 @@ where
 }
 
 
-/// The Flatten the using a simple recursive algorithm
+/// Flatten using a simple recursive algorithm
 pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
     F:  FnMut(&LineSegment<f32>)

@@ -80,7 +80,7 @@ fn no_inflection_flattening_step(bezier: &CubicBezierSegment<f32>, tolerance: f3
     if v2_cross_v1 == 0.0 {
         return 1.0;
     }
-    let s2inv = v1.x.hypot(v1.y) / (3.0 * v2_cross_v1);
+    let s2inv = (v1.x * v1.x + v1.y * v1.y).sqrt() / (3.0 * v2_cross_v1);
 
     let t = f32::sqrt(tolerance * f32::abs(s2inv));
 

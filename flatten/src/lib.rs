@@ -9,7 +9,6 @@ pub mod sedeberg;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod hain;
-#[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(test)]
 pub mod edge_count;
@@ -171,7 +170,7 @@ impl Flatten for Sedeberg {
 pub struct Levien;
 impl Flatten for Levien {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_cubic(curve, tolerance, cb);
+        crate::levien::flatten_cubic_19(curve, tolerance, cb);
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien::flatten_quadratic(curve, tolerance, cb);
@@ -182,6 +181,26 @@ pub struct LevienSimd;
 impl Flatten for LevienSimd {
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+    }
+}
+
+pub struct Levien37;
+impl Flatten for Levien37 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_cubic_37(curve, tolerance, cb);
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_quadratic(curve, tolerance, cb);
+    }
+}
+
+pub struct Levien55;
+impl Flatten for Levien55 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_cubic_55(curve, tolerance, cb);
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_quadratic(curve, tolerance, cb);
     }
 }
 
