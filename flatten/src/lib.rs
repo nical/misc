@@ -11,6 +11,8 @@ pub mod hybrid_fwd_diff;
 pub mod hain;
 pub mod testing;
 #[cfg(test)]
+pub mod show;
+#[cfg(test)]
 pub mod edge_count;
 
 // Using mul_add causes a large perf regression on x86_64.
@@ -64,8 +66,8 @@ impl CubicBezierPolynomial {
     }
 
     pub fn sample_fma(&self, t: f32) -> Point<f32> {
-        let mut vx = self.a1.x;
-        let mut vy = self.a1.y;
+        let mut vx = self.a0.x;
+        let mut vy = self.a0.y;
         let mut t2 = t;
         vx = fma(self.a1.x, t2, vx);
         vy = fma(self.a1.y, t2, vy);

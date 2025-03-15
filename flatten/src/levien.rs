@@ -1,3 +1,4 @@
+use arrayvec::ArrayVec;
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment};
 
 pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
@@ -6,17 +7,6 @@ where
 {
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
-    curve.for_each_quadratic_bezier(quads_tolerance, &mut |quad| {
-        flatten_quad_scalar(quad, flatten_tolerance, callback);
-    });
-}
-
-pub fn flatten_cubic_28<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
-where
-    F:  FnMut(&LineSegment<f32>)
-{
-    let quads_tolerance = tolerance * 0.2;
-    let flatten_tolerance = tolerance * 0.8;
     curve.for_each_quadratic_bezier(quads_tolerance, &mut |quad| {
         flatten_quad_scalar(quad, flatten_tolerance, callback);
     });
@@ -66,7 +56,164 @@ pub(crate) fn approx_parabola_inv_integral(x: f32) -> f32 {
     x * (1.0 - b + (b * b + quarter * x * x).sqrt())
 }
 
+pub struct FlatteningParams {
+    // Edge count * 2 * sqrt(tolerance).
+    scaled_count: f32,
+    integral_from: f32,
+    integral_to: f32,
+    inv_integral_from: f32,
+    div_inv_integral_diff: f32,
+}
+
+impl FlatteningParams {
+    pub fn new(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> Self {
+        // Map the quadratic bézier segment to y = x^2 parabola.
+        let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
+        let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
+        let cross = (curve.to.x - curve.from.x) * ddy - (curve.to.y - curve.from.y) * ddx;
+        let parabola_from =
+            ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) / cross;
+        let parabola_to =
+            ((curve.to.x - curve.ctrl.x) * ddx + (curve.to.y - curve.ctrl.y) * ddy) / cross;
+
+        let scale = (cross / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from))).abs();
+
+        let integral_from = approx_parabola_integral(parabola_from);
+        let integral_to = approx_parabola_integral(parabola_to);
+
+        let inv_integral_from = approx_parabola_inv_integral(integral_from);
+        let inv_integral_to = approx_parabola_inv_integral(integral_to);
+        let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
+
+        // Note: lyon's version doesn't have the cup handling path.
+        let scaled_count = if scale.is_finite() {
+            let integral_diff = (integral_to - integral_from).abs();
+            let sqrt_scale = scale.sqrt();
+            if parabola_from.signum() == parabola_to.signum() {
+                integral_diff * sqrt_scale
+            } else {
+                // Handle cusp case (segment contains curvature maximum)
+                let sqrt_tol = tolerance.sqrt(); // TODO: in kurbo this is hoisted out at the cubic bézier level.
+                let xmin = sqrt_tol / sqrt_scale;
+                sqrt_tol * integral_diff / approx_parabola_integral(xmin)
+            }
+        } else {
+            0.0
+        };
+
+        FlatteningParams {
+            scaled_count,
+            integral_from,
+            integral_to,
+            inv_integral_from,
+            div_inv_integral_diff,
+        }
+    }
+
+    fn get_t(&self, norm_step: f32) -> f32 {
+        let u = approx_parabola_inv_integral(self.integral_from + (self.integral_to - self.integral_from) * norm_step);
+        let t = (u - self.inv_integral_from) * self.div_inv_integral_diff;
+
+        t
+    }
+}
+
 pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+    let params = FlatteningParams::new(curve, tolerance);
+
+    let sqrt_tol = tolerance.sqrt();
+    let n = ((0.5 * params.scaled_count / sqrt_tol).ceil() as u32).max(1);
+    let step = 1.0 / (n as f32);
+    let mut from = curve.from;
+    for i in 1..n {
+        let u = (i as f32) * step;
+        let t = params.get_t(u);
+        let to = curve.sample(t);
+        cb(&LineSegment { from, to });
+        from = to;
+    }
+
+    cb(&LineSegment { from, to: curve.to });
+}
+
+pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+    let quads_tolerance = tolerance * 0.1;
+    let flatten_tolerance = tolerance * 0.9;
+    let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
+
+    let num_quadratics = num_quadratics_impl(curve, quads_tolerance);
+
+    let mut quads: ArrayVec<(QuadraticBezierSegment<f32>, FlatteningParams), 16> = ArrayVec::new();
+
+    let quad_step = 1.0 / num_quadratics;
+    let num_quadratics = num_quadratics as u32;
+    let mut quad_idx = 0;
+    let mut t0 = 0.0;
+
+    let mut from = curve.from;
+
+    loop {
+        let mut sum = 0.0;
+        while quad_idx < num_quadratics {
+            let t1 = t0 + quad_step;
+            let quad = curve.split_range(t0..t1).to_quadratic();
+            let params = FlatteningParams::new(&quad, flatten_tolerance);
+            sum += params.scaled_count;
+            quads.push((quad, params));
+            t0 = t1;
+            quad_idx += 1;
+            if quads.capacity() == 0 {
+                break;
+            }
+        }
+
+        let num_edges = ((0.5 * sum / sqrt_flatten_tolerance).ceil() as u32).max(1);
+
+        // Iterate through the quadratics, outputting the points of
+        // subdivisions that fall within that quadratic.
+        let step = sum / (num_edges as f32);
+        let mut i = 1;
+        let mut scaled_count_sum = 0.0;
+        for (quad, params) in &quads {
+            let mut target = (i as f32) * step;
+            let recip_scaled_count = params.scaled_count.recip();
+            while target < scaled_count_sum + params.scaled_count {
+                let u = (target - scaled_count_sum) * recip_scaled_count;
+                let t = params.get_t(u);
+                let to = quad.sample(t);
+                cb(&LineSegment { from, to });
+                from = to;
+                i += 1;
+                if i == num_edges + 1 {
+                    break;
+                }
+                target = (i as f32) * step;
+            }
+            scaled_count_sum += params.scaled_count;
+        }
+
+        cb(&LineSegment { from, to: quads.last().unwrap().0.to });
+
+        if quad_idx == num_quadratics {
+            break;
+        }
+    }
+}
+
+fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+    debug_assert!(tolerance > 0.0);
+
+    let x = curve.from.x - 3.0 * curve.ctrl1.x + 3.0 * curve.ctrl2.x - curve.to.x;
+    let y = curve.from.y - 3.0 * curve.ctrl1.y + 3.0 * curve.ctrl2.y - curve.to.y;
+
+    let err = x * x + y * y;
+
+    (err / (432.0 * tolerance * tolerance))
+        .powf(1.0 / 6.0)
+        .ceil()
+        .max(1.0)
+}
+/*
     // Map the quadratic bézier segment to y = x^2 parabola.
     let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
     let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
@@ -111,4 +258,5 @@ pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment<f32>, tolerance: f32, 
     }
 
     cb(&LineSegment { from, to: curve.to });
-}
+    }
+ */

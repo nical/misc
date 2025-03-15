@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 arrayvec = "0.7.6"
 lyon_path = "1.0.7"
+svg_fmt = "0.4.4"
 usvg = "0.36.0"
 
 [dev-dependencies]
