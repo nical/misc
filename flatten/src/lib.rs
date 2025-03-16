@@ -114,6 +114,46 @@ impl QuadraticBezierPolynomial {
     }
 }
 
+/// Returns true if the curve can be approximated with a single line segment, given
+/// a tolerance threshold.
+pub fn cubic_is_linear(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
+    // Similar to Line::square_distance_to_point, except we keep
+    // the sign of c1 and c2 to compute tighter upper bounds as we
+    // do in fat_line_min_max.
+    let baseline = curve.to - curve.from;
+    let v1 = curve.ctrl1 - curve.from;
+    let v2 = curve.ctrl2 - curve.from;
+    let v3 = curve.ctrl2 - curve.to;
+
+    // TODO: This check is missing from CubicBezierSegment::is_linear, which
+    // misses flat-ish curves with control points that aren't between the
+    // endpoints.
+    if baseline.dot(v1) < -0.01 || baseline.dot(v3) > 0.01 {
+        return false;
+    }
+
+    let c1 = baseline.cross(v1);
+    let c2 = baseline.cross(v2);
+    // TODO: it would be faster to multiply the threshold with baseline_len2
+    // instead of dividing d1 and d2, but it changes the behavior when the
+    // baseline length is zero in ways that breaks some of the cubic intersection
+    // tests.
+    let inv_baseline_len2 = 1.0 / baseline.square_length();
+    let d1 = (c1 * c1) * inv_baseline_len2;
+    let d2 = (c2 * c2) * inv_baseline_len2;
+
+    let factor = if (c1 * c2) > 0.0 {
+        3.0 / 4.0
+    } else {
+        4.0 / 9.0
+    };
+
+    let f2 = factor * factor;
+    let threshold = tolerance * tolerance;
+
+    d1 * f2 <= threshold && d2 * f2 <= threshold
+}
+
 /// Just approcimate the curve with a single line segment.
 pub fn flatten_noop<F>(curve: &CubicBezierSegment<f32>, _tolerance: f32, callback: &mut F)
 where

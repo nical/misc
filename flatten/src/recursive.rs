@@ -1,5 +1,7 @@
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Point};
 
+use crate::cubic_is_linear;
+
 /// Flatten using a simple recursive algorithm
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
@@ -13,7 +15,7 @@ fn flatten_recursive_cubic_impl<F>(curve: &CubicBezierSegment<f32>, tolerance: f
 where
     F:  FnMut(&LineSegment<f32>)
 {
-    if curve.is_linear(tolerance) {
+    if cubic_is_linear(curve, tolerance) {
         callback(&LineSegment { from: *prev, to: curve.to });
         *prev = curve.to;
         return;
