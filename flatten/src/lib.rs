@@ -1,3 +1,4 @@
+use flatness::{AggFlatness, DefaultFlatness, HfdFlatness};
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Vector, Point};
 use std::ops::Range;
 
@@ -10,6 +11,7 @@ pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod hain;
 pub mod testing;
+pub mod flatness;
 #[cfg(test)]
 pub mod show;
 #[cfg(test)]
@@ -114,47 +116,8 @@ impl QuadraticBezierPolynomial {
     }
 }
 
-/// Returns true if the curve can be approximated with a single line segment, given
-/// a tolerance threshold.
-pub fn cubic_is_linear(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
-    // Similar to Line::square_distance_to_point, except we keep
-    // the sign of c1 and c2 to compute tighter upper bounds as we
-    // do in fat_line_min_max.
-    let baseline = curve.to - curve.from;
-    let v1 = curve.ctrl1 - curve.from;
-    let v2 = curve.ctrl2 - curve.from;
-    let v3 = curve.ctrl2 - curve.to;
 
-    // TODO: This check is missing from CubicBezierSegment::is_linear, which
-    // misses flat-ish curves with control points that aren't between the
-    // endpoints.
-    if baseline.dot(v1) < -0.01 || baseline.dot(v3) > 0.01 {
-        return false;
-    }
-
-    let c1 = baseline.cross(v1);
-    let c2 = baseline.cross(v2);
-    // TODO: it would be faster to multiply the threshold with baseline_len2
-    // instead of dividing d1 and d2, but it changes the behavior when the
-    // baseline length is zero in ways that breaks some of the cubic intersection
-    // tests.
-    let inv_baseline_len2 = 1.0 / baseline.square_length();
-    let d1 = (c1 * c1) * inv_baseline_len2;
-    let d2 = (c2 * c2) * inv_baseline_len2;
-
-    let factor = if (c1 * c2) > 0.0 {
-        3.0 / 4.0
-    } else {
-        4.0 / 9.0
-    };
-
-    let f2 = factor * factor;
-    let threshold = tolerance * tolerance;
-
-    d1 * f2 <= threshold && d2 * f2 <= threshold
-}
-
-/// Just approcimate the curve with a single line segment.
+/// Just approximate the curve with a single line segment.
 pub fn flatten_noop<F>(curve: &CubicBezierSegment<f32>, _tolerance: f32, callback: &mut F)
 where
     F:  FnMut(&LineSegment<f32>, Range<f32>)
@@ -179,6 +142,51 @@ pub trait Flatten {
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(_curve: &QuadraticBezierSegment<f32>, _tolerance: f32, _cb: &mut Cb) {
         unimplemented!()
+    }
+}
+
+pub struct Fixed1;
+impl Flatten for Fixed1 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, _: f32, cb: &mut Cb) {
+        cb(&curve.baseline());
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, _: f32, cb: &mut Cb) {
+        cb(&curve.baseline());
+    }
+}
+
+pub struct Fixed16;
+impl Flatten for Fixed16 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, _: f32, cb: &mut Cb) {
+        let poly = polynomial_form_cubic(curve);
+        let step = 1.0 / 16.0;
+
+        let mut t = step;
+        let mut from = curve.from;
+        for _ in 0..15 {
+            let to = poly.sample_fma(t);
+            cb(&LineSegment { from, to });
+            from = to;
+            t += step;
+        }
+
+        cb(&LineSegment { from, to: curve.to });
+    }
+
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, _: f32, cb: &mut Cb) {
+        let poly = polynomial_form_quadratic(curve);
+        let step = 1.0 / 16.0;
+
+        let mut t = step;
+        let mut from = curve.from;
+        for _ in 0..15 {
+            let to = poly.sample(t);
+            cb(&LineSegment { from, to });
+            from = to;
+            t += step;
+        }
+
+        cb(&LineSegment { from, to: curve.to });
     }
 }
 
@@ -219,6 +227,16 @@ impl Flatten for Levien {
     }
 }
 
+pub struct Levien2;
+impl Flatten for Levien2 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_cubic_scalar(curve, tolerance, cb);
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien::flatten_quadratic(curve, tolerance, cb);
+    }
+}
+
 pub struct LevienSimd;
 impl Flatten for LevienSimd {
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
@@ -249,22 +267,51 @@ impl Flatten for Levien55 {
 pub struct Recursive;
 impl Flatten for Recursive {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::recursive::flatten_cubic(curve, tolerance, cb);
+        crate::recursive::flatten_cubic::<DefaultFlatness, _>(curve, tolerance, cb);
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::recursive::flatten_quadratic(curve, tolerance, cb);
     }
 }
 
+pub struct RecursiveHfd;
+impl Flatten for RecursiveHfd {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::recursive::flatten_cubic::<HfdFlatness, _>(curve, tolerance, cb);
+    }
+}
+
+pub struct RecursiveAgg;
+impl Flatten for RecursiveAgg {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::recursive::flatten_cubic::<AggFlatness, _>(curve, tolerance, cb);
+    }
+}
+
 pub struct Linear;
 impl Flatten for Linear {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::linear::flatten_cubic(curve, tolerance, cb);
+        crate::linear::flatten_cubic::<DefaultFlatness, _>(curve, tolerance, cb);
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::linear::flatten_quadratic(curve, tolerance, cb);
     }
 }
+
+pub struct LinearHfd;
+impl Flatten for LinearHfd {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::linear::flatten_cubic::<HfdFlatness, _>(curve, tolerance, cb);
+    }
+}
+
+pub struct LinearAgg;
+impl Flatten for LinearAgg {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::linear::flatten_cubic::<AggFlatness, _>(curve, tolerance, cb);
+    }
+}
+
 
 pub struct Hain;
 impl Flatten for Hain {

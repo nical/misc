@@ -1,10 +1,11 @@
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment};
+use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
 
-use crate::cubic_is_linear;
+use crate::flatness::{CubicFlatness};
 
 /// Same as `flatten_linear` with an optimization to more quickly find the split point.
-pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<Flat, F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
+    Flat: CubicFlatness,
     F:  FnMut(&LineSegment<f32>)
 {
     let mut rem = *curve;
@@ -12,14 +13,14 @@ where
 
     let mut split = 0.5;
     loop {
-        if cubic_is_linear(&rem, tolerance) {
+        if Flat::is_flat(&rem, tolerance) {
             callback(&LineSegment { from, to: rem.to });
             return;
         }
 
         loop {
             let sub = rem.before_split(split);
-            if cubic_is_linear(&sub, tolerance) {
+            if Flat::is_flat(&sub, tolerance) {
                 callback(&LineSegment { from, to: sub.to });
                 from = sub.to;
                 rem = rem.after_split(split);

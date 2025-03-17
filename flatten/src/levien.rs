@@ -154,7 +154,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
 
     loop {
         let mut sum = 0.0;
-        while quad_idx < num_quadratics {
+        while quad_idx < num_quadratics && quads.capacity() > quads.len() {
             let t1 = t0 + quad_step;
             let quad = curve.split_range(t0..t1).to_quadratic();
             let params = FlatteningParams::new(&quad, flatten_tolerance);
@@ -162,9 +162,6 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
             quads.push((quad, params));
             t0 = t1;
             quad_idx += 1;
-            if quads.capacity() == 0 {
-                break;
-            }
         }
 
         let num_edges = ((0.5 * sum / sqrt_flatten_tolerance).ceil() as u32).max(1);
@@ -193,10 +190,11 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
         }
 
         cb(&LineSegment { from, to: quads.last().unwrap().0.to });
-
         if quad_idx == num_quadratics {
             break;
         }
+
+        quads.clear();
     }
 }
 
