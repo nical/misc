@@ -1,5 +1,5 @@
 use arrayvec::ArrayVec;
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment};
+use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
 
 pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
@@ -86,7 +86,9 @@ impl FlatteningParams {
         let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
 
         // Note: lyon's version doesn't have the cup handling path.
-        let scaled_count = if scale.is_finite() {
+        // TODO: Kurbo does not not check for zero scale here. However
+        // that would cause scaled_count to be NaN when dividing by sqrt_scale.
+        let scaled_count = if scale != 0.0 && scale.is_finite() {
             let integral_diff = (integral_to - integral_from).abs();
             let sqrt_scale = scale.sqrt();
             if parabola_from.signum() == parabola_to.signum() {
@@ -100,6 +102,8 @@ impl FlatteningParams {
         } else {
             0.0
         };
+
+        debug_assert!(scaled_count.is_finite());
 
         FlatteningParams {
             scaled_count,
@@ -142,6 +146,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
     let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
 
     let num_quadratics = num_quadratics_impl(curve, quads_tolerance);
+    //println!("{num_quadratics:?} quads");
 
     let mut quads: ArrayVec<(QuadraticBezierSegment<f32>, FlatteningParams), 16> = ArrayVec::new();
 
@@ -159,6 +164,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
             let quad = curve.split_range(t0..t1).to_quadratic();
             let params = FlatteningParams::new(&quad, flatten_tolerance);
             sum += params.scaled_count;
+            //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
             quads.push((quad, params));
             t0 = t1;
             quad_idx += 1;
@@ -171,19 +177,22 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
         let step = sum / (num_edges as f32);
         let mut i = 1;
         let mut scaled_count_sum = 0.0;
+        //println!("------ {num_edges:?} edges step {step:?}");
         for (quad, params) in &quads {
             let mut target = (i as f32) * step;
+            //println!("  target {target} ({i})");
             let recip_scaled_count = params.scaled_count.recip();
             while target < scaled_count_sum + params.scaled_count {
                 let u = (target - scaled_count_sum) * recip_scaled_count;
                 let t = params.get_t(u);
                 let to = quad.sample(t);
+                //println!("     u={u}, t={t}");
                 cb(&LineSegment { from, to });
                 from = to;
-                i += 1;
-                if i == num_edges + 1 {
+                if i == num_edges {
                     break;
                 }
+                i += 1;
                 target = (i as f32) * step;
             }
             scaled_count_sum += params.scaled_count;
@@ -258,3 +267,17 @@ fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
     cb(&LineSegment { from, to: curve.to });
     }
  */
+
+#[test]
+fn flat_cusp() {
+    let curve = CubicBezierSegment {
+        from: point(0.0, 10.0),
+        ctrl1: point(-10.0, 10.0),
+        ctrl2: point(180.0, 10.0),
+        to: point(60.0, 10.0),
+    };
+
+    flatten_cubic_scalar(&curve, 0.1, &mut |seg| {
+        println!(" - {seg:?}");
+    });
+}

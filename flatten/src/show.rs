@@ -1,6 +1,6 @@
-use std::io::{self, Stdout, Write};
+use std::io::{self, Write};
 
-use lyon_path::geom::{euclid::{default::Rect, Vector2D}, CubicBezierSegment, Point};
+use lyon_path::geom::{euclid::Vector2D, CubicBezierSegment, Point};
 use svg_fmt::{Circle, Color, Fill, Stroke, PathOp, Style};
 
 use crate::Flatten;
@@ -96,9 +96,20 @@ fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolera
         output
     );
 
+    if false {
+        x += 115;
+        print_card(output, &(x, y, 110, 110), "Kurbo");
+        let _ = show_cubic::<crate::Kurbo>(
+            curve,
+            tolerance,
+            (x as f32 + 5.0, y as f32 + 5.0),
+            output
+        );
+    }
+
     x += 115;
-    print_card(output, &(x, y, 110, 110), "Levien2");
-    let _ = show_cubic::<crate::Levien2>(
+    print_card(output, &(x, y, 110, 110), "Levien-quads");
+    let _ = show_cubic::<crate::LevienQuads>(
         curve,
         tolerance,
         (x as f32 + 5.0, y as f32 + 5.0),
@@ -154,13 +165,13 @@ fn print_cubics() {
         }
     }
 
-    let _ = write!(output, "{}", svg_fmt::BeginSvg { w: 580.0, h: 800.0 });
+    let _ = write!(output, "{}", svg_fmt::BeginSvg { w: 700.0, h: 800.0 });
 
     let tol = 0.5;
     let mut y = 15;
     let row_h = 125;
 
-    let _ = write!(output, "{}", svg_fmt::rectangle(0.0, 0.0, 580.0, 800.0)
+    let _ = write!(output, "{}", svg_fmt::rectangle(0.0, 0.0, 700.0, 800.0)
         .border_radius(4.0)
         .fill(Fill::Color(Color { r: 230, g: 230, b: 230 }))
     );

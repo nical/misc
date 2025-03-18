@@ -1,5 +1,5 @@
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Levien, Levien2, Levien37, Levien55, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Sedeberg};
+use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, LevienQuads, Levien, Levien37, Levien55, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Sedeberg};
 use crate::testing::*;
 
 static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
@@ -52,8 +52,8 @@ fn flatten_edge_count() {
         linear.push(count_edges_cubic::<Linear>(&curves, tolerance));
         linear_hfd.push(count_edges_cubic::<LinearHfd>(&curves, tolerance));
         linear_agg.push(count_edges_cubic::<LinearAgg>(&curves, tolerance));
-        levien19.push(count_edges_cubic::<Levien>(&curves, tolerance));
-        levien_partial.push(count_edges_cubic::<Levien2>(&curves, tolerance));
+        levien19.push(count_edges_cubic::<LevienQuads>(&curves, tolerance));
+        levien_partial.push(count_edges_cubic::<Levien>(&curves, tolerance));
         levien37.push(count_edges_cubic::<Levien37>(&curves, tolerance));
         levien55.push(count_edges_cubic::<Levien55>(&curves, tolerance));
         fd.push(count_edges_cubic::<FwdDiff>(&curves, tolerance));
@@ -107,8 +107,8 @@ fn flatten_edge_count() {
     print_edges_md(" linear     ", &linear);
     print_edges_md(" linear-agg ", &linear_agg);
     print_edges_md(" linear-hfd ", &linear_hfd);
-    print_edges_md(" levien-19  ", &levien19);
-    print_edges_md(" levien-partial", &levien_partial);
+    print_edges_md(" levien", &levien_partial);
+    print_edges_md(" levien-quads  ", &levien19);
     //print_edges_md(" levien-37  ", &levien37);
     //print_edges_md(" levien-55  ", &levien55);
     print_edges_md(" hain       ", &hain);
@@ -127,7 +127,7 @@ fn flatten_edge_count() {
     let mut lin = Vec::new();
     for tolerance in TOLERANCES {
         rec.push(count_edges_quad::<Recursive>(&curves, tolerance));
-        levien.push(count_edges_quad::<Levien>(&curves, tolerance));
+        levien.push(count_edges_quad::<LevienQuads>(&curves, tolerance));
         fd.push(count_edges_quad::<FwdDiff>(&curves, tolerance));
         cagd.push(count_edges_quad::<Sedeberg>(&curves, tolerance));
         lin.push(count_edges_quad::<Linear>(&curves, tolerance));

@@ -1,5 +1,5 @@
 use flatness::{AggFlatness, DefaultFlatness, HfdFlatness};
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Vector, Point};
+use lyon_path::{geom::{CubicBezierSegment, LineSegment, Point, QuadraticBezierSegment, Vector}, math::point};
 use std::ops::Range;
 
 pub mod linear;
@@ -217,8 +217,8 @@ impl Flatten for Sedeberg {
     }
 }
 
-pub struct Levien;
-impl Flatten for Levien {
+pub struct LevienQuads;
+impl Flatten for LevienQuads {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien::flatten_cubic_19(curve, tolerance, cb);
     }
@@ -227,8 +227,8 @@ impl Flatten for Levien {
     }
 }
 
-pub struct Levien2;
-impl Flatten for Levien2 {
+pub struct Levien;
+impl Flatten for Levien {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien::flatten_cubic_scalar(curve, tolerance, cb);
     }
@@ -317,5 +317,58 @@ pub struct Hain;
 impl Flatten for Hain {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::hain::flatten_cubic(curve, tolerance, cb);
+    }
+}
+
+pub struct Kurbo;
+impl Flatten for Kurbo {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        let mut from = curve.from;
+        kurbo::flatten(
+            [
+                kurbo::PathEl::MoveTo(kurbo::Point { x: curve.from.x as f64, y: curve.from.y as f64 }),
+                kurbo::PathEl::CurveTo(
+                    kurbo::Point { x: curve.ctrl1.x as f64, y: curve.ctrl1.y as f64 },
+                    kurbo::Point { x: curve.ctrl2.x as f64, y: curve.ctrl2.y as f64 },
+                    kurbo::Point { x: curve.to.x as f64, y: curve.to.y as f64 },
+                ),
+            ],
+            tolerance as f64,
+            &mut |elt| {
+                match elt {
+                    kurbo::PathEl::LineTo(p) => {
+                        let to = point(p.x as f32, p.y as f32);
+                        cb(&LineSegment { from, to });
+                        from = to;
+                    }
+                    kurbo::PathEl::MoveTo(_) => {}
+                    kurbo::PathEl::ClosePath => {}
+                    _ => { unreachable!() }
+                }
+        });
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        let mut from = curve.from;
+        kurbo::flatten(
+            [
+                kurbo::PathEl::MoveTo(kurbo::Point { x: curve.from.x as f64, y: curve.from.y as f64 }),
+                kurbo::PathEl::QuadTo(
+                    kurbo::Point { x: curve.ctrl.x as f64, y: curve.ctrl.y as f64 },
+                    kurbo::Point { x: curve.to.x as f64, y: curve.to.y as f64 },
+                ),
+            ],
+            tolerance as f64,
+            &mut |elt| {
+                match elt {
+                    kurbo::PathEl::LineTo(p) => {
+                        let to = point(p.x as f32, p.y as f32);
+                        cb(&LineSegment { from, to });
+                        from = to;
+                    }
+                    kurbo::PathEl::MoveTo(_) => {}
+                    kurbo::PathEl::ClosePath => {}
+                    _ => { unreachable!() }
+                }
+        });
     }
 }
