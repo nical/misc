@@ -6,7 +6,7 @@ use core::{pattern::BuiltPattern, units::point};
 use lyon::geom::{LineSegment, QuadraticBezierSegment, CubicBezierSegment, Box2D};
 use lyon::{path::PathEvent, geom::euclid::Transform2D};
 
-use crate::flatten::Flattener;
+use crate::flatten::{Flattener, FlattenerLevien};
 use crate::{FillOptions, FillRule, Transform, TilePosition};
 use crate::occlusion::OcclusionBuffer;
 
@@ -165,7 +165,7 @@ impl Tiler {
         let square_tolerance = self.tolerance * self.tolerance;
 
         self.point_buffer.clear();
-        let mut flattener = Flattener::new(self.tolerance);
+        let mut flattener = FlattenerLevien::new(self.tolerance);
         let mut force_flush = false;
         let mut skipped = None;
 
