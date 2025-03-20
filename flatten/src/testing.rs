@@ -9,7 +9,14 @@ pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
 
     let mut curves = Vec::new();
 
-    for asset in &[
+    let mut filter = None;
+    for (var, val) in std::env::vars() {
+        if var == "FLATTEN_INPUT" {
+            filter = Some(val);
+        }
+    }
+
+    for asset in [
         "tiger.svg",
         "nehab_blender.svg",
         "nehab_lorenz.svg",
@@ -19,7 +26,9 @@ pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
         "nehab_waves.svg",
         "fonts-12.svg",
         "inkscape-about.svg",
-    ] {
+    ].iter().filter(|name| {
+        filter.as_ref().map(|f| name.contains(f.as_str())).unwrap_or(true)
+    }) {
         let file = format!("assets/{asset}");
         let (_, paths) = load_svg(&file, 1.0);
         println!("{file}: {:?} paths", paths.len());
