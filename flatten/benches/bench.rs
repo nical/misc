@@ -3,11 +3,7 @@ extern crate lyon_path;
 extern crate criterion;
 
 use criterion::Criterion;
-use lyon_path::geom::euclid::point2 as point;
 use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
-use lyon_path::geom::euclid::default::{Box2D, Transform2D};
-use lyon_path::math::Point;
-use lyon_path::{Path, PathEvent};
 use flatten::testing::*;
 
 use flatten::Flatten;
@@ -51,7 +47,7 @@ fn cubic_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear-agg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearAgg>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear-hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearHfd>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("sedeberg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Sedeberg>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Wang>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fixed-16", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Fixed16>(&curves, *tol)) });
     }
 }
@@ -65,7 +61,7 @@ fn quad_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienQuads>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienSimd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Linear>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("sedeberg", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Sedeberg>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Wang>(&curves, *tol)) });
     }
 }
 

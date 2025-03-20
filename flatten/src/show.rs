@@ -118,7 +118,7 @@ fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolera
 
     x += 115;
     print_card(output, &(x, y, 110, 110), "Sedeberg");
-    let _ = show_cubic::<crate::Sedeberg>(
+    let _ = show_cubic::<crate::Wang>(
         curve,
         tolerance,
         (x as f32 + 5.0, y as f32 + 5.0),

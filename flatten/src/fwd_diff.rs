@@ -12,7 +12,7 @@ where
     F:  FnMut(&LineSegment<f32>)
 {
     let poly = polynomial_form_cubic(&curve);
-    let n = crate::sedeberg::num_segments_cubic(curve, tolerance);
+    let n = crate::wang::num_segments_cubic(curve, tolerance);
     let dt = 1.0 / n;
 
     let mut from = curve.from;
@@ -45,7 +45,7 @@ where
     F:  FnMut(&LineSegment<f32>)
 {
     let poly = polynomial_form_quadratic(&curve);
-    let n = crate::sedeberg::num_segments_quadratic(curve, tolerance);
+    let n = crate::wang::num_segments_quadratic(curve, tolerance);
     let dt = 1.0 / n;
 
     let mut from = curve.from;

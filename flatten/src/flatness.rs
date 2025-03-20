@@ -76,6 +76,17 @@ pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
     let f2 = factor * factor;
     let threshold = tolerance * tolerance;
 
+    // Check whether the curve is a point.
+    // TODO: It is not great to have to do this at each step
+    // it would probably be better to check this early in the
+    // flattening algorithms and then only check that the
+    // subdivision is not an empty range.
+    // if baseline.square_length() < tolerance
+    //     && v1.square_length() < tolerance
+    //     && v2.square_length() < tolerance {
+    //     return true;
+    // }
+
     d1 * f2 <= threshold
         && d2 * f2 <= threshold
         // TODO: This check is missing from CubicBezierSegment::is_linear, which

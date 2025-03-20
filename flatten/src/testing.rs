@@ -17,6 +17,8 @@ pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
         "nehab_spiral.svg",
         "nehab_spirograph.svg",
         "nehab_waves.svg",
+        "fonts-12.svg",
+        "inkscape-about.svg",
     ] {
         let file = format!("assets/{asset}");
         let (_, paths) = load_svg(&file, 1.0);

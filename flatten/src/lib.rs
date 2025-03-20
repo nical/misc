@@ -6,7 +6,7 @@ pub mod linear;
 pub mod levien;
 pub mod levien_simd;
 pub mod recursive;
-pub mod sedeberg;
+pub mod wang;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod hain;
@@ -207,13 +207,13 @@ impl Flatten for HybridFwdDiff {
     }
 }
 
-pub struct Sedeberg;
-impl Flatten for Sedeberg {
+pub struct Wang;
+impl Flatten for Wang {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::sedeberg::flatten_cubic(curve, tolerance, cb);
+        crate::wang::flatten_cubic(curve, tolerance, cb);
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::sedeberg::flatten_quadratic(curve, tolerance, cb);
+        crate::wang::flatten_quadratic(curve, tolerance, cb);
     }
 }
 

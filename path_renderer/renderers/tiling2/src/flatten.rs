@@ -383,7 +383,6 @@ impl FlatteningParams {
         let inv_integral_to = approx_parabola_inv_integral(integral_to);
         let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
 
-        // Note: lyon's version doesn't have the cup handling path.
         // TODO: Kurbo does not not check for zero scale here. However
         // that would cause scaled_count to be NaN when dividing by sqrt_scale.
         let scaled_count = if scale != 0.0 && scale.is_finite() {

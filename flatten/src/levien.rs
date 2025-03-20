@@ -1,5 +1,5 @@
 use arrayvec::ArrayVec;
-use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
+use lyon_path::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
 
 pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
@@ -85,7 +85,7 @@ impl FlatteningParams {
         let inv_integral_to = approx_parabola_inv_integral(integral_to);
         let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
 
-        // Note: lyon's version doesn't have the cup handling path.
+        // Note: lyon's version doesn't have the cusp handling path.
         // TODO: Kurbo does not not check for zero scale here. However
         // that would cause scaled_count to be NaN when dividing by sqrt_scale.
         let scaled_count = if scale != 0.0 && scale.is_finite() {
@@ -270,6 +270,7 @@ fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
 
 #[test]
 fn flat_cusp() {
+    use lyon_path::math::point;
     let curve = CubicBezierSegment {
         from: point(0.0, 10.0),
         ctrl1: point(-10.0, 10.0),

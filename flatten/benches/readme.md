@@ -2,7 +2,6 @@
 
 - I suspect that there may be a bug in `hain`'s implementation, so the results for that one are probably wrong.
 - `levien-simd` was a half-baked attempt at sprinkling some sse in `levien`'s algorithm with underwhelming results. Raph levien has [a work in progress](https://gist.github.com/raphlinus/5f4e9feb85fd79bafc72da744571ec0e) avx2 version that is more promising.
-- Sedeberg should be named Wang instead.
 
 # Algorthms
 
@@ -19,7 +18,7 @@
 
 `Hain` is an implementation of [Hain's paper: Precise flattening of cubic bézier curve segments](http://www.cccg.ca/proceedings/2004/36.pdf).
 
-`Sedeberg` is a fixed step flattening algorithm using Wang's formula to compute the number of subdivisions required to satisfy the tolerance parameter.
+`Wang` is a fixed step flattening algorithm using Wang's formula to compute the number of subdivisions required to satisfy the tolerance parameter.
 
 `Fwd-diff` is a simple implementation of forward differencing using Wang's formulat to compute the fixed flattening step.
 
@@ -54,7 +53,7 @@ Cubic bézier curves:
 | levien     | 1675005 | 1064467 | 755259 | 620322 | 538777 | 441602 | 383721 | 344255 | 247813 | 178658 |
 | levien-quads|1708642 | 1086097 | 772832 | 633980 | 550557 | 452222 | 393435 | 353538 | 254570 | 183731 |
 | hain       | 3135836 | 1988972 | 1411183 | 1155309 | 1002741 | 821859 | 714078 | 640544 | 458168 | 329181 |
-| sedeberg   | 3206955 | 2032625 | 1440607 | 1178565 | 1022101 | 836656 | 726281 | 651107 | 463860 | 331359 |
+| wang       | 3206955 | 2032625 | 1440607 | 1178565 | 1022101 | 836656 | 726281 | 651107 | 463860 | 331359 |
 | fwd-diff   | 3206955 | 2032625 | 1440607 | 1178565 | 1022101 | 836656 | 726281 | 651107 | 463860 | 331359 |
 | hfd        | 2616409 | 1734954 | 1215441 | 1034111 | 871491 | 681503 | 611250 | 562894 | 379582 | 284342 |
 | fixed-16   | 380928 | 380928 | 380928 | 380928 | 380928 | 380928 | 380928 | 380928 | 380928 | 380928 |
@@ -66,7 +65,7 @@ Quadratic bézier curves:
 |-----------| -----:| -----:| -----:| -----:| -----:| -----:| -----:| -----:| -----:| -----:|
 | recursive | 2269505 | 1351843 | 1046285 | 818341 | 676775 | 583200 | 524826 | 465572 | 311350 | 237241 |
 | linear    | 2236352 | 1401608 | 992695 | 802519 | 698060 | 573823 | 494841 | 440007 | 314960 | 223257 |
-| sedeberg  | 1667590 | 1059932 | 753645 | 618369 | 536873 | 440975 | 383910 | 344832 | 248102 | 180451 |
+| wang      | 1667590 | 1059932 | 753645 | 618369 | 536873 | 440975 | 383910 | 344832 | 248102 | 180451 |
 | levien    | 1584246 | 1007326 | 716521 | 587875 | 510817 | 419637 | 365498 | 328538 | 237055 | 172876 |
 | fwd-diff  | 1667590 | 1059932 | 753645 | 618369 | 536873 | 440975 | 383910 | 344832 | 248102 | 180451 |
 
