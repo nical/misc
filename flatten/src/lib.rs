@@ -239,6 +239,9 @@ impl Flatten for Levien {
 
 pub struct LevienSimd;
 impl Flatten for LevienSimd {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        crate::levien_simd::flatten_cubic_sse2(curve, tolerance, cb);
+    }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
     }

@@ -56,21 +56,25 @@ pub(crate) fn approx_parabola_inv_integral(x: f32) -> f32 {
     x * (1.0 - b + (b * b + quarter * x * x).sqrt())
 }
 
+#[derive(Debug)]
 pub struct FlatteningParams {
     // Edge count * 2 * sqrt(tolerance).
-    scaled_count: f32,
-    integral_from: f32,
-    integral_to: f32,
-    inv_integral_from: f32,
-    div_inv_integral_diff: f32,
+    pub scaled_count: f32,
+    pub integral_from: f32,
+    pub integral_to: f32,
+    pub inv_integral_from: f32,
+    pub div_inv_integral_diff: f32,
 }
 
 impl FlatteningParams {
-    pub fn new(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> Self {
+    pub fn new(curve: &QuadraticBezierSegment<f32>, sqrt_tolerance: f32) -> Self {
+        //println!("quad: {curve:?}");
         // Map the quadratic bézier segment to y = x^2 parabola.
         let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
         let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
+        //println!("ddx {ddx:?} ddy {ddy:?}");
         let cross = (curve.to.x - curve.from.x) * ddy - (curve.to.y - curve.from.y) * ddx;
+        //println!("cross {cross:?}");
         let parabola_from =
             ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) / cross;
         let parabola_to =
@@ -80,6 +84,8 @@ impl FlatteningParams {
 
         let integral_from = approx_parabola_integral(parabola_from);
         let integral_to = approx_parabola_integral(parabola_to);
+        //println!("parabola_to {parabola_to:?} parabola_from {parabola_from:?}");
+        //println!("intergal_to {integral_to:?} integral_from {integral_from:?}");
 
         let inv_integral_from = approx_parabola_inv_integral(integral_from);
         let inv_integral_to = approx_parabola_inv_integral(integral_to);
@@ -92,12 +98,13 @@ impl FlatteningParams {
             let integral_diff = (integral_to - integral_from).abs();
             let sqrt_scale = scale.sqrt();
             if parabola_from.signum() == parabola_to.signum() {
+                //println!("case A integral diff {integral_diff:?} sqrt_scale {sqrt_scale:?}");
                 integral_diff * sqrt_scale
             } else {
+                //println!("case B (cusp) integral diff {integral_diff:?} sqrt_scale {sqrt_scale:?}");
                 // Handle cusp case (segment contains curvature maximum)
-                let sqrt_tol = tolerance.sqrt(); // TODO: in kurbo this is hoisted out at the cubic bézier level.
-                let xmin = sqrt_tol / sqrt_scale;
-                sqrt_tol * integral_diff / approx_parabola_integral(xmin)
+                let xmin = sqrt_tolerance / sqrt_scale;
+                sqrt_tolerance * integral_diff / approx_parabola_integral(xmin)
             }
         } else {
             0.0
@@ -114,7 +121,7 @@ impl FlatteningParams {
         }
     }
 
-    fn get_t(&self, norm_step: f32) -> f32 {
+    pub fn get_t(&self, norm_step: f32) -> f32 {
         let u = approx_parabola_inv_integral(self.integral_from + (self.integral_to - self.integral_from) * norm_step);
         let t = (u - self.inv_integral_from) * self.div_inv_integral_diff;
 
@@ -123,7 +130,7 @@ impl FlatteningParams {
 }
 
 pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
-    let params = FlatteningParams::new(curve, tolerance);
+    let params = FlatteningParams::new(curve, tolerance.sqrt());
 
     let sqrt_tol = tolerance.sqrt();
     let n = ((0.5 * params.scaled_count / sqrt_tol).ceil() as u32).max(1);
@@ -162,7 +169,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
         while quad_idx < num_quadratics && quads.capacity() > quads.len() {
             let t1 = t0 + quad_step;
             let quad = curve.split_range(t0..t1).to_quadratic();
-            let params = FlatteningParams::new(&quad, flatten_tolerance);
+            let params = FlatteningParams::new(&quad, sqrt_flatten_tolerance);
             sum += params.scaled_count;
             //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
             quads.push((quad, params));
@@ -207,7 +214,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
     }
 }
 
-fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+pub fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
     debug_assert!(tolerance > 0.0);
 
     let x = curve.from.x - 3.0 * curve.ctrl1.x + 3.0 * curve.ctrl2.x - curve.to.x;

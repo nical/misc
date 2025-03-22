@@ -1,5 +1,5 @@
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, Levien37, Levien55, LevienQuads, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang};
+use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, Levien37, Levien55, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang};
 use crate::testing::*;
 
 static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
@@ -39,6 +39,7 @@ fn flatten_edge_count() {
     let mut levien19 = Vec::new();
     let mut kurbo = Vec::new();
     let mut levien_partial = Vec::new();
+    let mut levien_simd = Vec::new();
     let mut levien37 = Vec::new();
     let mut levien55 = Vec::new();
     let mut fd = Vec::new();
@@ -54,6 +55,7 @@ fn flatten_edge_count() {
         linear_hfd.push(count_edges_cubic::<LinearHfd>(&curves, tolerance));
         linear_agg.push(count_edges_cubic::<LinearAgg>(&curves, tolerance));
         levien19.push(count_edges_cubic::<LevienQuads>(&curves, tolerance));
+        levien_simd.push(count_edges_cubic::<LevienSimd>(&curves, tolerance));
         kurbo.push(count_edges_cubic::<Kurbo>(&curves, tolerance));
         levien_partial.push(count_edges_cubic::<Levien>(&curves, tolerance));
         levien37.push(count_edges_cubic::<Levien37>(&curves, tolerance));
@@ -112,6 +114,7 @@ fn flatten_edge_count() {
     print_edges_md(" levien       ", &levien_partial);
     print_edges_md(" kurbo        ", &kurbo);
     print_edges_md(" levien-quads ", &levien19);
+    print_edges_md(" levien-simd  ", &levien_simd);
     //print_edges_md(" levien-37  ", &levien37);
     //print_edges_md(" levien-55  ", &levien55);
     print_edges_md(" hain         ", &hain);

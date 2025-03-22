@@ -10,7 +10,7 @@
  - `recrusive-hfd`: The flatness criterion from "Hybrid forward differencing"
  - `recursive-agg`: The flatness criterion from [Antigrain Geometry](https://agg.sourceforge.net/antigrain.com/research/adaptive_bezier/index.html)
 
-`Linear` i a rather naive sequential algorithm searching of the next split point at each step and splitting the flat part out of the curve once found. This algorithm is also implemented with the same three flatness criteria.
+`Linear` is a rather naive sequential algorithm searching of the next split point at each step and splitting the flat part out of the curve once found. This algorithm is also implemented with the same three flatness criteria.
 
 `Levien` is Raph Levien's flattening algorithm as implemented in Kurbo. It includes the fractional subdivision scheme when flattening cubic curves.
 
@@ -47,6 +47,8 @@ Benchmark results on an AMD Ryzen 7 PRO 6850U:
 # Edge count
 
 To produce the edge counts: `cargo test -- --nocapture`
+
+The `FLATTEN_INPUT` environment variable to filter the input data set also applies.
 
 Cubic bézier curves:
 
