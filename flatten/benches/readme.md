@@ -50,6 +50,16 @@ Benchmark results on an AMD Ryzen Threadripper PRO 3975WXs desktop:
 
 ![Quadratic bézier benchmark results](results-quadratic-all-threadripper.svg)
 
+Still on the AMD Ryzen Threadripper PRO 3975WXs desktop, let's focus on fewer algorithms and more specific test cases:
+
+`fonts-12.svg`:
+
+![Cubic bézier fonts benchmark results](results-cubic-fonts-threadripper.svg)
+
+GhostScript tiger:
+
+![Cubic bézier fonts benchmark results](results-cubic-tiger-threadripper.svg)
+
 # Edge count
 
 To produce the edge counts: `cargo test -- --nocapture`
