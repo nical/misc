@@ -60,6 +60,11 @@ GhostScript tiger:
 
 ![Cubic bézier fonts benchmark results](results-cubic-tiger-threadripper.svg)
 
+Nehab test set:
+
+![Cubic bézier fonts benchmark results](results-cubic-nehab-threadripper.svg)
+
+
 # Edge count
 
 To produce the edge counts: `cargo test -- --nocapture`
