@@ -38,11 +38,17 @@ FLATTEN_INPUT=nehab_ cargo bench
 
 Will only use the files with "nehab_" in their name.
 
-Benchmark results on an AMD Ryzen 7 PRO 6850U:
+Benchmark results on an AMD Ryzen 7 PRO 6850U laptop:
 
-![Cubic bézier benchmark results](results-cubic.svg)
+![Cubic bézier benchmark results](results-cubic-all-zen3.svg)
 
-![Quadratic bézier benchmark results](results-quadratic.svg)
+![Quadratic bézier benchmark results](results-quadratic-all-zen3.svg)
+
+Benchmark results on an AMD Ryzen Threadripper PRO 3975WXs desktop:
+
+![Cubic bézier benchmark results](results-cubic-all-threadripper.svg)
+
+![Quadratic bézier benchmark results](results-quadratic-all-threadripper.svg)
 
 # Edge count
 
