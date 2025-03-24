@@ -1,5 +1,7 @@
 use arrayvec::ArrayVec;
-use lyon_path::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
+use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::{point, Point}};
+
+use crate::{polynomial_form_quadratic, QuadraticBezierPolynomial};
 
 pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
@@ -155,7 +157,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
     let num_quadratics = num_quadratics_impl(curve, quads_tolerance);
     //println!("{num_quadratics:?} quads");
 
-    let mut quads: ArrayVec<(QuadraticBezierSegment<f32>, FlatteningParams), 16> = ArrayVec::new();
+    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
 
     let quad_step = 1.0 / num_quadratics;
     let num_quadratics = num_quadratics as u32;
@@ -165,6 +167,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
     let mut from = curve.from;
 
     loop {
+        let mut last_quad_to = point(0.0, 0.0);
         let mut sum = 0.0;
         while quad_idx < num_quadratics && quads.capacity() > quads.len() {
             let t1 = t0 + quad_step;
@@ -172,7 +175,8 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
             let params = FlatteningParams::new(&quad, sqrt_flatten_tolerance);
             sum += params.scaled_count;
             //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
-            quads.push((quad, params));
+            last_quad_to = quad.to;
+            quads.push((params, polynomial_form_quadratic(&quad)));
             t0 = t1;
             quad_idx += 1;
         }
@@ -185,7 +189,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
         let mut i = 1;
         let mut scaled_count_sum = 0.0;
         //println!("------ {num_edges:?} edges step {step:?}");
-        for (quad, params) in &quads {
+        for (params, quad) in &quads {
             let mut target = (i as f32) * step;
             //println!("  target {target} ({i})");
             let recip_scaled_count = params.scaled_count.recip();
@@ -205,7 +209,74 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
             scaled_count_sum += params.scaled_count;
         }
 
-        cb(&LineSegment { from, to: quads.last().unwrap().0.to });
+        cb(&LineSegment { from, to: last_quad_to });
+        if quad_idx == num_quadratics {
+            break;
+        }
+
+        quads.clear();
+    }
+}
+
+pub fn flatten_cubic_scalar2(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+    let quads_tolerance = tolerance * 0.1;
+    let flatten_tolerance = tolerance * 0.9;
+    let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
+
+    let num_quadratics = num_quadratics_impl(curve, quads_tolerance);
+    //println!("{num_quadratics:?} quads");
+
+    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
+
+    let quad_step = 1.0 / num_quadratics;
+    let num_quadratics = num_quadratics as u32;
+    let mut quad_idx = 0;
+    let mut t0 = 0.0;
+
+    let mut from = curve.from;
+
+    loop {
+        let mut last_quad_to = point(0.0, 0.0);
+        let mut sum = 0.0;
+        while quad_idx < num_quadratics && quads.capacity() > quads.len() {
+            let t1 = t0 + quad_step;
+            let quad = curve.split_range(t0..t1).to_quadratic();
+            let params = FlatteningParams::new(&quad, sqrt_flatten_tolerance);
+            sum += params.scaled_count;
+            //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
+            last_quad_to = quad.to;
+            let poly = polynomial_form_quadratic(&quad);
+            quads.push((params, poly));
+            t0 = t1;
+            quad_idx += 1;
+        }
+
+        let num_edges = ((0.5 * sum / sqrt_flatten_tolerance).ceil() as u32).max(1);
+
+        // Iterate through the quadratics, outputting the points of
+        // subdivisions that fall within that quadratic.
+        let step = sum / (num_edges as f32);
+        let mut i = 1;
+        let mut scaled_count_sum = 0.0;
+        //println!("------ {num_edges:?} edges step {step:?}");
+        for (params, quad) in &quads {
+            //println!("  target {target} ({i})");
+            let recip_scaled_count = params.scaled_count.recip();
+            let n = u32::min(num_edges, ((scaled_count_sum + params.scaled_count) / step).ceil() as u32);
+            while i < n {
+                let target = (i as f32) * step;
+                let u = (target - scaled_count_sum) * recip_scaled_count;
+                let t = params.get_t(u);
+                let to = quad.sample(t);
+                //println!("     u={u}, t={t}");
+                cb(&LineSegment { from, to });
+                from = to;
+                i += 1;
+            }
+            scaled_count_sum += params.scaled_count;
+        }
+
+        cb(&LineSegment { from, to: last_quad_to });
         if quad_idx == num_quadratics {
             break;
         }
@@ -227,53 +298,6 @@ pub fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f
         .ceil()
         .max(1.0)
 }
-/*
-    // Map the quadratic bézier segment to y = x^2 parabola.
-    let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
-    let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
-    let cross = (curve.to.x - curve.from.x) * ddy - (curve.to.y - curve.from.y) * ddx;
-    let parabola_from =
-        ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) / cross;
-    let parabola_to =
-        ((curve.to.x - curve.ctrl.x) * ddx + (curve.to.y - curve.ctrl.y) * ddy) / cross;
-    // Note, scale can be NaN, for example with straight lines. When it happens the NaN will
-    // propagate to other parameters. We catch it all by setting the iteration count to zero
-    // and leave the rest as garbage.
-    //let scale = cross.abs() / (ddx.hypot(ddy) * (parabola_to - parabola_from).abs());
-    let scale = (cross / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from))).abs();
-
-    let integral_from = approx_parabola_integral(parabola_from);
-    let integral_to = approx_parabola_integral(parabola_to);
-    let integral_diff = integral_to - integral_from;
-
-    let inv_integral_from = approx_parabola_inv_integral(integral_from);
-    let inv_integral_to = approx_parabola_inv_integral(integral_to);
-    let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
-
-    // We could store this as an integer but the generic code makes that awkward and we'll
-    // use it as a scalar again while iterating, so it's kept as a scalar.
-    let mut count = (0.5 * integral_diff.abs() * (scale / tolerance).sqrt()).ceil();
-    // If count is NaN the curve can be approximated by a single straight line or a point.
-    if !count.is_finite() {
-        count = 0.0;
-    }
-
-    let integral_step = integral_diff / count;
-
-    let mut from = curve.from;
-    let mut i = 1.0;
-    for _ in 1..(count as u32) {
-        let u = approx_parabola_inv_integral(integral_from + integral_step * i);
-        let t = (u - inv_integral_from) * div_inv_integral_diff;
-        i += 1.0;
-        let to = curve.sample(t);
-        cb(&LineSegment { from, to });
-        from = to;
-    }
-
-    cb(&LineSegment { from, to: curve.to });
-    }
- */
 
 #[test]
 fn flat_cusp() {
@@ -288,4 +312,29 @@ fn flat_cusp() {
     flatten_cubic_scalar(&curve, 0.1, &mut |seg| {
         println!(" - {seg:?}");
     });
+}
+
+#[test]
+fn flatten_v2() {
+    use lyon_path::math::point;
+    let curve = CubicBezierSegment {
+        from: point(0.0, 10.0),
+        ctrl1: point(-10.0, 10.0),
+        ctrl2: point(180.0, 10.0),
+        to: point(60.0, 10.0),
+    };
+
+    let mut p1 = Vec::new();
+    let mut p2 = Vec::new();
+    flatten_cubic_scalar(&curve, 0.01, &mut|segment| {
+        p1.push(segment.to);
+    });
+    flatten_cubic_scalar2(&curve, 0.01, &mut|segment| {
+        p2.push(segment.to);
+    });
+
+    println!("p1: {p1:?}\np2: {p2:?}");
+    for (v1, v2) in p1.iter().zip(p2.iter()) {
+        assert!(v1.distance_to(*v2) < 0.001);
+    }
 }

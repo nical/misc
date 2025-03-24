@@ -112,9 +112,9 @@ fn flatten_edge_count() {
     print_edges_md(" linear-agg   ", &linear_agg);
     print_edges_md(" linear-hfd   ", &linear_hfd);
     print_edges_md(" levien       ", &levien_partial);
+    print_edges_md(" levien-simd  ", &levien_simd);
     print_edges_md(" kurbo        ", &kurbo);
     print_edges_md(" levien-quads ", &levien19);
-    print_edges_md(" levien-simd  ", &levien_simd);
     //print_edges_md(" levien-37  ", &levien37);
     //print_edges_md(" levien-55  ", &levien55);
     print_edges_md(" hain         ", &hain);

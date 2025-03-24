@@ -230,7 +230,7 @@ impl Flatten for LevienQuads {
 pub struct Levien;
 impl Flatten for Levien {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_cubic_scalar(curve, tolerance, cb);
+        crate::levien::flatten_cubic_scalar2(curve, tolerance, cb);
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         crate::levien::flatten_quadratic(curve, tolerance, cb);
@@ -240,10 +240,14 @@ impl Flatten for Levien {
 pub struct LevienSimd;
 impl Flatten for LevienSimd {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien_simd::flatten_cubic_sse2(curve, tolerance, cb);
+        unsafe {
+            crate::levien_simd::flatten_cubic_sse2(curve, tolerance, cb);
+        }
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+        unsafe {
+            crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+        }
     }
 }
 
