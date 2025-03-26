@@ -1,5 +1,5 @@
 use arrayvec::ArrayVec;
-use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::{point, Point}};
+use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
 
 use crate::{polynomial_form_quadratic, QuadraticBezierPolynomial};
 

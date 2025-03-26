@@ -10,6 +10,7 @@ pub mod wang;
 pub mod fwd_diff;
 pub mod hybrid_fwd_diff;
 pub mod hain;
+pub mod simd4;
 pub mod testing;
 pub mod flatness;
 #[cfg(test)]
@@ -18,7 +19,7 @@ pub mod show;
 pub mod edge_count;
 
 // Using mul_add causes a large perf regression on x86_64.
-// By default the regression is huge for sedeberg and even
+// By default the regression is huge for wang and even
 // with `-C target-feature=+fma` passed (for example using
 // the `RUSTFLAGS` environment variable), the regression is
 // quite large.
@@ -43,7 +44,7 @@ pub struct CubicBezierPolynomial {
     pub a3: Vector<f32>,
 }
 
-#[inline]
+#[inline(always)]
 pub fn polynomial_form_cubic(curve: &CubicBezierSegment<f32>) -> CubicBezierPolynomial {
     CubicBezierPolynomial {
         a0: curve.from.to_vector(),
@@ -54,6 +55,7 @@ pub fn polynomial_form_cubic(curve: &CubicBezierSegment<f32>) -> CubicBezierPoly
 }
 
 impl CubicBezierPolynomial {
+    #[inline(always)]
     pub fn sample(&self, t: f32) -> Point<f32> {
         // Horner's method.
         let mut v = self.a0;
@@ -67,6 +69,7 @@ impl CubicBezierPolynomial {
         v.to_point()
     }
 
+    #[inline(always)]
     pub fn sample_fma(&self, t: f32) -> Point<f32> {
         let mut vx = self.a0.x;
         let mut vy = self.a0.y;
@@ -104,6 +107,7 @@ pub struct QuadraticBezierPolynomial {
 }
 
 impl QuadraticBezierPolynomial {
+    #[inline(always)]
     pub fn sample(&self, t: f32) -> Point<f32> {
         // Horner's method.
         let mut v = self.a0;
@@ -127,6 +131,7 @@ where
 
 /// Returns whether the curve can be approximated with a single point, given
 /// a tolerance threshold.
+#[inline]
 pub(crate) fn cubic_is_a_point(&curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
     let tolerance_squared = tolerance * tolerance;
     // Use <= so that tolerance can be zero.
@@ -134,7 +139,6 @@ pub(crate) fn cubic_is_a_point(&curve: &CubicBezierSegment<f32>, tolerance: f32)
         && (curve.from - curve.ctrl1).square_length() <= tolerance_squared
         && (curve.to - curve.ctrl2).square_length() <= tolerance_squared
 }
-
 
 pub trait Flatten {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(_curve: &CubicBezierSegment<f32>, _tolerance: f32, _cb: &mut Cb) {
@@ -217,6 +221,15 @@ impl Flatten for Wang {
     }
 }
 
+pub struct WangSimd4;
+impl Flatten for WangSimd4 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        unsafe {
+            crate::wang::flatten_cubic_simd4(curve, tolerance, cb);
+        }
+    }
+}
+
 pub struct LevienQuads;
 impl Flatten for LevienQuads {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
@@ -241,7 +254,7 @@ pub struct LevienSimd;
 impl Flatten for LevienSimd {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         unsafe {
-            crate::levien_simd::flatten_cubic_sse2(curve, tolerance, cb);
+            crate::levien_simd::flatten_cubic_simd4(curve, tolerance, cb);
         }
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {

@@ -1,5 +1,5 @@
 use lyon_path::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
-use crate::flatness::CubicFlatness;
+use crate::flatness::{quadratic_is_flat, CubicFlatness};
 
 pub fn flatten_cubic<Flat, F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
 where
@@ -15,7 +15,10 @@ where
 
     let mut split = 0.5;
     loop {
-        if Flat::is_flat(&rem, tolerance) {
+        // Only check flatness of the entire remaining chunk if
+        // we are not in the process of doing very fine subdivision.
+        // This gives a 9% improvement.
+        if split >= 0.25 && Flat::is_flat(&rem, tolerance) {
             callback(&LineSegment { from, to: rem.to });
             return;
         }
@@ -46,14 +49,14 @@ where
 
     let mut split = 0.5;
     loop {
-        if rem.is_linear(tolerance) {
+        if split >= 0.25 && quadratic_is_flat(&rem, tolerance) {
             callback(&LineSegment { from, to: rem.to });
             return;
         }
 
         loop {
             let sub = rem.before_split(split);
-            if sub.is_linear(tolerance) {
+            if quadratic_is_flat(&sub, tolerance) {
                 callback(&LineSegment { from, to: sub.to });
                 from = sub.to;
                 rem = rem.after_split(split);

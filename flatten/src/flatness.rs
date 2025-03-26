@@ -1,4 +1,4 @@
-use lyon_path::geom::{CubicBezierSegment, Vector};
+use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment, Vector};
 
 
 pub trait CubicFlatness {
@@ -11,6 +11,7 @@ pub trait QuadraticFlatness {
 
 pub struct DefaultFlatness;
 impl CubicFlatness for DefaultFlatness {
+    #[inline]
     fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
         cubic_is_flat(curve, tolerance)
     }
@@ -18,6 +19,7 @@ impl CubicFlatness for DefaultFlatness {
 
 pub struct HfdFlatness;
 impl CubicFlatness for HfdFlatness {
+    #[inline]
     fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
         fn approx_norm(v: &Vector<f32>) -> f32 {
             v.x.abs().max(v.y.abs())
@@ -35,6 +37,7 @@ impl CubicFlatness for HfdFlatness {
 /// The flatness criterion described in https://agg.sourceforge.net/antigrain.com/research/adaptive_bezier/index.html
 pub struct AggFlatness;
 impl CubicFlatness for AggFlatness {
+    #[inline]
     fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
         let baseline = curve.to - curve.from;
         let c1 = baseline.cross(curve.ctrl1 - curve.to);
@@ -48,6 +51,8 @@ impl CubicFlatness for AggFlatness {
 
 /// Returns true if the curve can be approximated with a single line segment, given
 /// a tolerance threshold.
+// Note: The inline annotation here makes a huge difference for `linear`.
+#[inline]
 pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
     // Similar to Line::square_distance_to_point, except we keep
     // the sign of c1 and c2 to compute tighter upper bounds as we
@@ -59,13 +64,13 @@ pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
 
     let c1 = baseline.cross(v1);
     let c2 = baseline.cross(v2);
-    // TODO: it would be faster to multiply the threshold with baseline_len2
-    // instead of dividing d1 and d2, but it changes the behavior when the
-    // baseline length is zero in ways that breaks some of the cubic intersection
-    // tests.
-    let inv_baseline_len2 = 1.0 / baseline.square_length();
-    let d1 = (c1 * c1) * inv_baseline_len2;
-    let d2 = (c2 * c2) * inv_baseline_len2;
+    // TODO: it is faster to multiply the threshold with baseline_len2
+    // instead of dividing d1 and d2, as done in lyon, but it changes
+    // the behavior when the baseline length is zero in ways that breaks
+    // some of the cubic intersection tests.
+    let baseline_len2 = baseline.square_length();
+    let d1 = c1 * c1;
+    let d2 = c2 * c2;
 
     let factor = if (c1 * c2) > 0.0 {
         3.0 / 4.0
@@ -74,7 +79,7 @@ pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
     };
 
     let f2 = factor * factor;
-    let threshold = tolerance * tolerance;
+    let threshold = baseline_len2 * tolerance * tolerance;
 
     // Check whether the curve is a point.
     // TODO: It is not great to have to do this at each step
@@ -94,4 +99,17 @@ pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
         // endpoints.
         && baseline.dot(v1) > -tolerance
         && baseline.dot(v3) < tolerance
+}
+
+// Note: The inline annotation here makes a huge difference for `linear`.
+#[inline]
+pub fn quadratic_is_flat(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> bool {
+    let baseline = curve.to - curve.from;
+    let v = curve.ctrl - curve.from;
+    let c = baseline.cross(v);
+
+    let baseline_len2 = baseline.square_length();
+    let threshold = baseline_len2 * tolerance * tolerance;
+
+    c * c * 0.25 <= threshold
 }

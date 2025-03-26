@@ -49,6 +49,7 @@ fn cubic_flatten(c: &mut Criterion) {
         //g.bench_with_input(BenchmarkId::new("linear-agg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearAgg>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearHfd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Wang>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("wang-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::WangSimd4>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("fixed-16", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Fixed16>(&curves, *tol)) });
     }
 }
