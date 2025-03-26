@@ -85,8 +85,8 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
 ///  - Avoiding the cost of extracting each lane from the
 ///    SIMD result.
 ///  - Avoiding the callback in the tight simd loop.
-#[target_feature(enable = "avx")]
-#[target_feature(enable = "fma")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
     where
     F:  FnMut(&LineSegment<f32>)

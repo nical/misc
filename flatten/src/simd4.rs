@@ -1,5 +1,6 @@
 
 
+#[cfg(target_arch = "x86_64")]
 pub mod x86_64 {
     use std::arch::x86_64 as arch;
     use arch::*;
@@ -137,7 +138,60 @@ pub mod x86_64 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64 {
+    use std::arch::aarch64 as arch;
+
+    #[allow(non_camel_case_types)]
+    pub type f32x4 = arch::float32x4_t;
+
+    pub use arch::vmovq_n_f32 as splat;
+    #[inline(always)]
+    pub unsafe fn vec4(a: f32, b: f32, c: f32, d: f32) -> f32x4 {
+        let v = [a, b, c, d];
+        arch::vld1q_f32(v.as_ptr())
+    }
+
+    #[inline(always)]
+    pub unsafe fn unpack(lanes: f32x4) -> (f32, f32, f32, f32) {
+        std::mem::transmute(lanes)
+    }    
+
+
+    pub use arch::vaddq_f32 as add;
+    pub use arch::vsubq_f32 as sub;
+    pub use arch::vmulq_f32 as mul;
+    pub use arch::vdivq_f32 as div;
+
+    pub use arch::vsqrtq_f32 as sqrt;
+    pub use arch::vrndq_f32 as floor;
+    //pub use arch::_mm_ceil_ps as ceil;
+    pub use arch::vrecpeq_f32 as recip;
+    pub use arch::vceqq_f32 as eq;
+    //pub use arch::_mm_cmpneq_ps as neq;
+    //pub use arch::_mm_cmplt_ps as lt;
+    //pub use arch::_mm_cmpgt_ps as gt;
+    //pub use arch::_mm_and_ps as and;
+    //pub use arch::_mm_andnot_ps as and_not;
+    //pub use arch::_mm_or_ps as or;
+    //pub use arch::_mm_cvt_ss2si as get_first_as_int;
+    pub use arch::vst1q_f32 as aligned_store;
+    pub use arch::vst1q_f32 as unaligned_store;
+    pub use arch::vld1q_f32 as aligned_load;
+    pub use arch::vld1q_f32 as unaligned_load;
+
+
+    pub use arch::vfmaq_f32 as mul_add;
+    pub use arch::vfmsq_f32 as mul_sub;
+
+}
+
+#[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
+
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::*;
+
 
 #[inline(always)]
 pub unsafe fn sample_cubic_horner_simd4(

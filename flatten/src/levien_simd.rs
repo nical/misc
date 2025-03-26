@@ -14,7 +14,7 @@ use std::arch::x86 as arch;
 use std::f32;
 use std::ops::Range;
 
-use crate::simd4::{sample_cubic_horner_simd4, interleave_splat, sample_quadratic_horner_simd4, x86_64::*};
+use crate::simd4::*;
 
 use crate::levien::FlatteningParams;
 use crate::{polynomial_form_cubic, QuadraticBezierPolynomial};
@@ -31,7 +31,8 @@ unsafe fn approx_parabola_inv_integral(x: f32x4) -> f32x4 {
     mul(x, add(splat(1.0 - 0.39), sqrt(add(splat(0.39 * 0.39), mul(splat(0.25), mul(x, x))))))
 }
 
-#[target_feature(enable = "avx")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 pub unsafe fn flatten_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
 
     let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
@@ -331,8 +332,8 @@ unsafe fn flattening_params_simd4(
     (point(to_x.3, to_y.3), sum)
 }
 
-#[target_feature(enable = "avx")]
-#[target_feature(enable = "fma")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
 
     let quads_tolerance = tolerance * 0.1;
@@ -446,8 +447,8 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
     }
 }
 
-#[target_feature(enable = "avx")]
-#[target_feature(enable = "fma")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 pub unsafe fn flatten_cubic_simd4_no_point_buffer(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
 
     let quads_tolerance = tolerance * 0.1;
