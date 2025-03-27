@@ -4,7 +4,7 @@ use std::ops::Range;
 
 pub mod linear;
 pub mod levien;
-#[cfg(target_arch = "x86_64")]
+//#[cfg(target_arch = "x86_64")]
 pub mod levien_simd;
 pub mod recursive;
 pub mod wang;
@@ -261,7 +261,6 @@ impl Flatten for Levien {
 }
 
 pub struct LevienSimd;
-#[cfg(target_arch = "x86_64")]
 impl Flatten for LevienSimd {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         unsafe {

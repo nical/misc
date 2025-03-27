@@ -43,7 +43,6 @@ fn cubic_flatten(c: &mut Criterion) {
         //g.bench_with_input(BenchmarkId::new("hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::HybridFwdDiff>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Hain>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
-        #[cfg(target_arch = "x86_64")]
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd2>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
@@ -64,7 +63,6 @@ fn quad_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("recursive", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Recursive>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fwd-diff", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::FwdDiff>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienQuads>(&curves, *tol)) });
-        #[cfg(target_arch = "x86_64")]
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienSimd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Linear>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Wang>(&curves, *tol)) });

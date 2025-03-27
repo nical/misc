@@ -110,8 +110,8 @@ pub unsafe fn flatten_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: 
 }
 
 #[inline(never)]
-#[target_feature(enable = "avx")]
-#[target_feature(enable = "fma")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 unsafe fn flattening_params_simd4(
     curve: &CubicBezierSegment<f32>,
     s_num_quads: f32,
@@ -225,7 +225,7 @@ unsafe fn flattening_params_simd4(
     }
 
     // Handle another kind of cusp.
-    scaled_count = and(is_finite(scale), scaled_count);
+    scaled_count = select_or_zero(is_finite(scale), scaled_count);
 
     // Convert the quadratic curves into polynomial form.
     let a1_x = mul(sub(ctrl_x, from_x), two);

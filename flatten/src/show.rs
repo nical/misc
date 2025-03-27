@@ -96,7 +96,6 @@ fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolera
         output
     );
 
-    #[cfg(target_arch = "x86_64")]
     if false {
         x += 115;
         print_card(output, &(x, y, 110, 110), "Leven-simd");

@@ -39,7 +39,6 @@ fn flatten_edge_count() {
     let mut levien19 = Vec::new();
     let mut kurbo = Vec::new();
     let mut levien_partial = Vec::new();
-    #[cfg(target_arch = "x86_64")]
     let mut levien_simd = Vec::new();
     let mut levien37 = Vec::new();
     let mut levien55 = Vec::new();
@@ -56,7 +55,6 @@ fn flatten_edge_count() {
         linear_hfd.push(count_edges_cubic::<LinearHfd>(&curves, tolerance));
         linear_agg.push(count_edges_cubic::<LinearAgg>(&curves, tolerance));
         levien19.push(count_edges_cubic::<LevienQuads>(&curves, tolerance));
-        #[cfg(target_arch = "x86_64")]
         levien_simd.push(count_edges_cubic::<LevienSimd>(&curves, tolerance));
         kurbo.push(count_edges_cubic::<Kurbo>(&curves, tolerance));
         levien_partial.push(count_edges_cubic::<Levien>(&curves, tolerance));
@@ -114,7 +112,6 @@ fn flatten_edge_count() {
     print_edges_md(" linear-agg   ", &linear_agg);
     print_edges_md(" linear-hfd   ", &linear_hfd);
     print_edges_md(" levien       ", &levien_partial);
-    #[cfg(target_arch = "x86_64")]
     print_edges_md(" levien-simd  ", &levien_simd);
     print_edges_md(" kurbo        ", &kurbo);
     print_edges_md(" levien-quads ", &levien19);
