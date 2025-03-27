@@ -45,12 +45,14 @@ fn cubic_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
         #[cfg(target_arch = "x86_64")]
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd2>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-agg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearAgg>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearHfd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Wang>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::WangSimd4>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("wang-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::WangSimd42>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("fixed-16", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Fixed16>(&curves, *tol)) });
     }
 }

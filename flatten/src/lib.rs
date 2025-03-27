@@ -231,6 +231,15 @@ impl Flatten for WangSimd4 {
     }
 }
 
+pub struct WangSimd42;
+impl Flatten for WangSimd42 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        unsafe {
+            crate::wang::flatten_cubic_simd4_with_point_buffer(curve, tolerance, cb);
+        }
+    }
+}
+
 pub struct LevienQuads;
 impl Flatten for LevienQuads {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
@@ -257,6 +266,20 @@ impl Flatten for LevienSimd {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         unsafe {
             crate::levien_simd::flatten_cubic_simd4(curve, tolerance, cb);
+        }
+    }
+    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        unsafe {
+            crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+        }
+    }
+}
+
+pub struct LevienSimd2;
+impl Flatten for LevienSimd2 {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        unsafe {
+            crate::levien_simd::flatten_cubic_simd4_with_point_buffer(curve, tolerance, cb);
         }
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {

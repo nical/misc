@@ -1,5 +1,7 @@
 use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
 
+use crate::simd4::unpack;
+
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
 pub fn num_segments_cubic(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
@@ -77,7 +79,7 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
 /// Wang's formula itself remains scalar, but the loop over
 /// the curve to split at regular t inverval is manually
 /// vectorized.
-/// The strflatten::wang::num_segments_cubicategy is to evaluate the curve for two points
+/// The strategy is to evaluate the curve for two points
 /// at a time and write the result into a scratch buffer.
 /// A second loop traverses the scratch buffer and emmits
 /// the callback. The motivations behind the scratch buffer
@@ -85,9 +87,11 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
 ///  - Avoiding the cost of extracting each lane from the
 ///    SIMD result.
 ///  - Avoiding the callback in the tight simd loop.
+/// In practice this point buffer approach is only a win at
+/// very low tolerance threshods and is a regression overall.
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub unsafe fn flatten_cubic_simd4_with_point_buffer<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
     where
     F:  FnMut(&LineSegment<f32>)
 {
@@ -142,6 +146,51 @@ pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance:
             callback(&LineSegment { from, to});
             from = to;
         }
+    }
+
+    let to = curve.to;
+    callback(&mut LineSegment { from, to });
+}
+
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
+pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+    where
+    F:  FnMut(&LineSegment<f32>)
+{
+    use crate::simd4::{vec4, splat, interleave_splat, add, mul};
+
+    let poly = crate::polynomial_form_cubic(&curve);
+    let n = num_segments_cubic(curve, tolerance);
+    let mut from = curve.from;
+
+    let a0 = interleave_splat(poly.a0.x, poly.a0.y);
+    let a1 = interleave_splat(poly.a1.x, poly.a1.y);
+    let a2 = interleave_splat(poly.a2.x, poly.a2.y);
+    let a3 = interleave_splat(poly.a3.x, poly.a3.y);
+    let step = 1.0 / n;
+    let step = splat(step);
+    let mut t = mul(step, vec4(1.0, 1.0, 2.0, 2.0));
+    let step = add(step, step);
+
+    // minus one because we'll add the last point explicitly
+    let mut n = n as i32 - 1;
+    while n > 0 {
+        let p = crate::simd4::sample_cubic_horner_interlaved_simd4(a0, a1, a2, a3, t);
+        let (x0, y0, x1, y1) = unpack(p);
+
+        let to = point(x0, y0);
+        callback(&LineSegment { from, to});
+        from = to;
+
+        if n > 1 {
+            let to = point(x1, y1);
+            callback(&LineSegment { from, to});
+            from = to;
+        }
+
+        t = add(t, step);
+        n -= 2;
     }
 
     let to = curve.to;

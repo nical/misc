@@ -334,7 +334,7 @@ unsafe fn flattening_params_simd4(
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
 
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
@@ -449,7 +449,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4_no_point_buffer(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
 
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
