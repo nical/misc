@@ -12,12 +12,51 @@ use lyon_path::math::{point, Point, Vector};
 use std::arch::x86 as arch;
 #[cfg(target_arch = "x86_64")]
 use std::f32;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 
 use crate::simd4::*;
 
 use crate::levien::FlatteningParams;
+use crate::testing::{counters_inc, NUM_COUNTERS};
 use crate::{polynomial_form_cubic, QuadraticBezierPolynomial};
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn fast_recip(a: f32) -> f32 {
+    use std::arch::x86_64::*;
+    let a = _mm_set_ss(a);
+    let r = _mm_rcp_ss(a);
+    _mm_cvtss_f32(r)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub unsafe fn fast_rcp(a: f32) -> f32 {
+    1.0 / a
+}
+
+
+#[repr(align(16))]
+pub struct AlignedBuf(MaybeUninit<[f32; NUM_QUADS]>);
+
+impl AlignedBuf {
+    #[inline(always)]
+    fn new() -> Self {
+        AlignedBuf(MaybeUninit::uninit())
+    }
+
+    #[inline(always)]
+    unsafe fn get(&self, offset: usize) -> f32 {
+        *self.0.assume_init_ref().as_ptr().add(offset)
+    }
+
+    #[inline(always)]
+    unsafe fn ptr(&mut self, offset: usize) -> *mut f32 {
+        self.0.assume_init_mut().as_mut_ptr().add(offset)
+    }
+
+}
+
 
 #[inline(always)]
 unsafe fn approx_parabola_integral(x: f32x4) -> f32x4 {
@@ -332,30 +371,27 @@ unsafe fn flattening_params_simd4(
     (point(to_x.3, to_y.3), sum)
 }
 
+#[inline(never)]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut dyn FnMut(&LineSegment<f32>)) {
 
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
     let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
+    let inv_sqrt_flatten_tolerance = fast_recip(sqrt_flatten_tolerance);
 
     let num_quadratics = crate::levien::num_quadratics_impl(curve, quads_tolerance);
     //println!("{num_quadratics:?} quads");
 
-    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
-    let mut point_buffer: [f32; 64] = [0.0; 64];
-    let mut points_buffer_ptr: *mut f32 = &mut point_buffer[0];
-    let offset = points_buffer_ptr.align_offset(16);
-    points_buffer_ptr = points_buffer_ptr.add(offset);
-    let points_base_cap = 32 - offset as i32;
-    let points_base_ptr = points_buffer_ptr;
+    counters_inc((num_quadratics as usize).min(NUM_COUNTERS - 1).max(0) as usize);
 
-    let quad_step = 1.0 / num_quadratics;
+    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
+
+    let quad_step = fast_recip(num_quadratics);
     let num_quadratics = num_quadratics as u32;
     let mut quad_idx = 0;
     let mut from = curve.from;
-    let sqrt_tolerance = tolerance.sqrt();
 
     loop {
         let mut sum = 0.0;
@@ -366,7 +402,7 @@ pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f
                 (num_quadratics - quad_idx).min(4) as f32,
                 quad_idx as f32,
                 quad_step,
-                sqrt_tolerance,
+                sqrt_flatten_tolerance,
                 &mut quads
             );
             sum += s;
@@ -376,7 +412,7 @@ pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f
             quad_idx += 4;
         }
 
-        let num_edges = ((0.5 * sum / sqrt_flatten_tolerance).ceil() as u32).max(1);
+        let num_edges = ((0.5 * sum * inv_sqrt_flatten_tolerance).ceil() as u32).max(1);
 
         // Iterate through the quadratics, outputting the points of
         // subdivisions that fall within that quadratic.
@@ -386,135 +422,31 @@ pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f
         let v_step = splat(step);
         //println!("------ {num_edges:?} edges step {step:?}");
         for (params, quad) in &quads {
-            let recip_scaled_count = splat(params.scaled_count.recip());
             let n = u32::min(num_edges, ((scaled_count_sum + params.scaled_count) / step).ceil() as u32);
 
             if i < n {
+                let recip_scaled_count = splat(fast_recip(params.scaled_count));
                 let quad_a0 = interleave_splat(quad.a0.x, quad.a0.y);
                 let quad_a1 = interleave_splat(quad.a1.x, quad.a1.y);
                 let quad_a2 = interleave_splat(quad.a2.x, quad.a2.y);
-
-                while i < n {
-                    // Set up the point buffer
-                    let mut points_cap = points_base_cap;
-                    let mut points_out_ptr = points_base_ptr;
-                    let copy_count = (points_cap / 2).min(n as i32) as usize;
-
-                    while i < n && points_cap >= 4 {
-                        let i1 = i as f32;
-                        let i2 = i1 + 1.0;
-                        let targets = mul(vec4(i1, i1, i2, i2), v_step);
-                        let u = mul(sub(targets, splat(scaled_count_sum)), recip_scaled_count);
-
-                        // Note: if we were processing 4 points at a time instead of
-                        // interleaving x and y, approx_parabola_inv_integral would
-                        // process 4 points instead of 2 as many points at the same
-                        // cost.
-                        let u = approx_parabola_inv_integral(mul_add(splat(params.integral_to - params.integral_from), u, splat(params.integral_from)));
-                        let t = mul(sub(u, splat(params.inv_integral_from)), splat(params.div_inv_integral_diff));
-
-                        let p = sample_quadratic_horner_simd4(quad_a0, quad_a1, quad_a2, t);
-                        aligned_store(points_out_ptr, p);
-
-                        points_cap -= 4;
-                        points_out_ptr = points_out_ptr.add(4);
-                        i = (i + 2).min(n);
-                    }
-
-                    // Go over the point buffer a invoke the callback.
-                    let mut ptr = points_base_ptr;
-                    for _ in 0..copy_count {
-                        let x = ptr.read();
-                        let y = ptr.add(1).read();
-                        ptr = ptr.add(2);
-
-                        let to = point(x, y);
-
-                        cb(&LineSegment { from, to});
-                        from = to;
-                    }
-                }
-            }
-            scaled_count_sum += params.scaled_count;
-        }
-
-        cb(&LineSegment { from, to: quads_last_to });
-        if quad_idx >= num_quadratics {
-            break;
-        }
-
-        quads.clear();
-    }
-}
-
-#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
-#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
-
-    let quads_tolerance = tolerance * 0.1;
-    let flatten_tolerance = tolerance * 0.9;
-    let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
-
-    let num_quadratics = crate::levien::num_quadratics_impl(curve, quads_tolerance);
-    //println!("{num_quadratics:?} quads");
-
-    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
-
-    let quad_step = 1.0 / num_quadratics;
-    let num_quadratics = num_quadratics as u32;
-    let mut quad_idx = 0;
-    let mut from = curve.from;
-    let sqrt_tolerance = tolerance.sqrt();
-
-    loop {
-        let mut sum = 0.0;
-        let mut quads_last_to = point(0.0, 0.0);
-        while quad_idx < num_quadratics && quads.capacity() > quads.len() {
-            let (to, s) = flattening_params_simd4(
-                curve,
-                (num_quadratics - quad_idx).min(4) as f32,
-                quad_idx as f32,
-                quad_step,
-                sqrt_tolerance,
-                &mut quads
-            );
-            sum += s;
-            quads_last_to = to;
-
-            //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
-            quad_idx += 4;
-        }
-
-        let num_edges = ((0.5 * sum / sqrt_flatten_tolerance).ceil() as u32).max(1);
-
-        // Iterate through the quadratics, outputting the points of
-        // subdivisions that fall within that quadratic.
-        let step = sum / (num_edges as f32);
-        let mut i = 1;
-        let mut scaled_count_sum = 0.0;
-        let v_step = splat(step);
-        //println!("------ {num_edges:?} edges step {step:?}");
-        for (params, quad) in &quads {
-            let recip_scaled_count = splat(params.scaled_count.recip());
-            let n = u32::min(num_edges, ((scaled_count_sum + params.scaled_count) / step).ceil() as u32);
-
-            if i < n {
-                let quad_a0 = interleave_splat(quad.a0.x, quad.a0.y);
-                let quad_a1 = interleave_splat(quad.a1.x, quad.a1.y);
-                let quad_a2 = interleave_splat(quad.a2.x, quad.a2.y);
+                let integral_from = splat(params.integral_from);
+                let integral_diff = splat(params.integral_to - params.integral_from);
+                let inv_integral_from = splat(params.inv_integral_from);
+                let div_inv_integral_diff = splat(params.div_inv_integral_diff);
+                let v_scaled_count_sum = splat(scaled_count_sum);
 
                 while i < n {
                     let i1 = i as f32;
                     let i2 = i1 + 1.0;
                     let targets = mul(vec4(i1, i1, i2, i2), v_step);
-                    let u = mul(sub(targets, splat(scaled_count_sum)), recip_scaled_count);
+                    let u = mul(sub(targets, v_scaled_count_sum), recip_scaled_count);
 
                     // Note: if we were processing 4 points at a time instead of
                     // interleaving x and y, approx_parabola_inv_integral would
                     // process 4 points instead of 2 as many points at the same
                     // cost.
-                    let u = approx_parabola_inv_integral(mul_add(splat(params.integral_to - params.integral_from), u, splat(params.integral_from)));
-                    let t = mul(sub(u, splat(params.inv_integral_from)), splat(params.div_inv_integral_diff));
+                    let u = approx_parabola_inv_integral(mul_add(integral_diff, u, integral_from));
+                    let t = mul(sub(u, inv_integral_from), div_inv_integral_diff);
 
                     let p = sample_quadratic_horner_simd4(quad_a0, quad_a1, quad_a2, t);
 
@@ -547,6 +479,408 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
         }
 
         quads.clear();
+    }
+}
+
+const NUM_QUADS: usize = 16;
+
+pub struct FlatteningParamsSimd {
+    //quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16>,
+    count: usize,
+    a0_x: AlignedBuf,
+    a0_y: AlignedBuf,
+    a1_x: AlignedBuf,
+    a1_y: AlignedBuf,
+    a2_x: AlignedBuf,
+    a2_y: AlignedBuf,
+    scaled_count: AlignedBuf,
+    integral_from: AlignedBuf,
+    integral_to: AlignedBuf,
+    inv_integral_from: AlignedBuf,
+    div_inv_integral_diff: AlignedBuf,
+}
+
+#[inline(never)]
+#[target_feature(enable = "avx")]
+#[target_feature(enable = "fma")]
+unsafe fn flattening_params_simd4_v2(
+    curve: &CubicBezierSegment<f32>,
+    s_num_quads: u32,
+    s_first_quad: u32,
+    s_quad_step: f32,
+    sqrt_tolerance: f32,
+    output: &mut FlatteningParamsSimd,
+) -> (Point, f32) {
+    let mut quad_idx = s_first_quad;
+    let mut last_x = 0.0;
+    let mut last_y = 0.0;
+    let quad_step = splat(s_quad_step);
+    while quad_idx < s_num_quads && output.count < NUM_QUADS {
+        let t0 = mul(add(splat(quad_idx as f32), vec4(0.0, 1.0, 2.0, 3.0)), quad_step);
+        let t1 = add(t0, quad_step);
+
+        // polynomial_form:
+        let s_poly = polynomial_form_cubic(curve);
+        let a0_x = splat(s_poly.a0.x);
+        let a0_y = splat(s_poly.a0.y);
+        let a1_x = splat(s_poly.a1.x);
+        let a1_y = splat(s_poly.a1.y);
+        let a2_x = splat(s_poly.a2.x);
+        let a2_y = splat(s_poly.a2.y);
+        let a3_x = splat(s_poly.a3.x);
+        let a3_y = splat(s_poly.a3.y);
+
+        let (from_x, from_y) = sample_cubic_horner_simd4(a0_x, a0_y, a1_x, a1_y, a2_x, a2_y, a3_x, a3_y, t0);
+        // TODO: 3 out of 4 values are already in from_
+        let (to_x, to_y) = sample_cubic_horner_simd4(a0_x, a0_y, a1_x, a1_y, a2_x, a2_y, a3_x, a3_y, t1);
+
+        // Compute the control points of the sub-curves.
+
+        // CubicBezierSegment::split_range
+        let qx0 = splat(curve.ctrl1.x - curve.from.x);
+        let qy0 = splat(curve.ctrl1.y - curve.from.y);
+        let qx1 = splat(curve.ctrl2.x - curve.ctrl1.x);
+        let qy1 = splat(curve.ctrl2.y - curve.ctrl1.y);
+        let qx2 = splat(curve.to.x - curve.ctrl2.x);
+        let qy2 = splat(curve.to.y - curve.ctrl2.y);
+
+        let one = splat(1.0);
+        let two = splat(2.0);
+
+        // QuadraticBezierSegment::sample(t0)
+        let t0_2 = mul(t0, t0);
+        let one_t0 = sub(one, t0);
+        let one_t0_2 = mul(one_t0, one_t0);
+        let two_t0_one_t0 = mul(two, mul(one_t0, t0));
+        let qx = add(mul_add(qx0, one_t0_2, mul(qx1, two_t0_one_t0)), mul(qx2, t0_2));
+        let qy = add(mul_add(qy0, one_t0_2, mul(qy1, two_t0_one_t0)), mul(qy2, t0_2));
+
+        let ctrl1_x = mul_add(qx, quad_step, from_x);
+        let ctrl1_y = mul_add(qy, quad_step, from_y);
+
+        // QuadraticBezierSegment::sample(t1)
+        let t1_2 = mul(t1, t1);
+        let one_t1 = sub(one, t1);
+        let one_t1_2 = mul(one_t1, one_t1);
+        let two_t1_one_t1 = mul(two, mul(one_t1, t1));
+        let qx = add(mul_add(qx0, one_t1_2, mul(qx1, two_t1_one_t1)), mul(qx2, t1_2));
+        let qy = add(mul_add(qy0, one_t1_2, mul(qy1, two_t1_one_t1)), mul(qy2, t1_2));
+
+        let ctrl2_x = sub(to_x, mul(qx, quad_step));
+        let ctrl2_y = sub(to_y, mul(qy, quad_step));
+
+        // Approximate the sub-curves with quadratics
+        let three = splat(3.0);
+        let half = splat(0.5);
+        let c1x = mul(mul_sub(ctrl1_x, three, from_x), half);
+        let c1y = mul(mul_sub(ctrl1_y, three, from_y), half);
+        let c2x = mul(mul_sub(ctrl2_x, three, to_x), half);
+        let c2y = mul(mul_sub(ctrl2_y, three, to_y), half);
+
+        let ctrl_x = mul(add(c1x, c2x), half);
+        let ctrl_y = mul(add(c1y, c2y), half);
+
+        // Now that we have our four quadratics, compute the flattening parameters
+        let ddx = sub(mul_sub(two, ctrl_x, from_x), to_x);
+        let ddy = sub(mul_sub(two, ctrl_y, from_y), to_y);
+        //println!("ddx {ddx:?} ddy {ddy:?}");
+        let cross = mul_sub(sub(to_x, from_x), ddy, mul(sub(to_y, from_y), ddx));
+        //println!("cross {cross:?}");
+        let rcp_cross = recip(cross);
+        let parabola_from = mul(mul_add(sub(ctrl_x, from_x), ddx, mul(sub(ctrl_y, from_y), ddy)), rcp_cross);
+        let parabola_to = mul(mul_add(sub(to_x, ctrl_x), ddx, mul(sub(to_y, ctrl_y), ddy)), rcp_cross);
+        let parabola_diff = sub(parabola_to, parabola_from);
+        let scale = abs(div(cross, mul(sqrt(mul_add(ddx, ddx, mul(ddy, ddy))), parabola_diff)));
+
+        let integral_from = approx_parabola_integral(parabola_from);
+        let integral_to = approx_parabola_integral(parabola_to);
+        //println!("parabola_to {parabola_to:?} parabola_from {parabola_from:?}");
+        //println!("intergal_to {integral_to:?} integral_from {integral_from:?}");
+
+        let inv_integral_from = approx_parabola_inv_integral(integral_from);
+        let inv_integral_to = approx_parabola_inv_integral(integral_to);
+
+        let div_inv_integral_diff = recip(sub(inv_integral_to, inv_integral_from));
+
+        let sqrt_tolerance = splat(sqrt_tolerance);
+        let integral_diff = abs(sub(integral_to, integral_from));
+        let sqrt_scale = sqrt(scale);
+
+        let mut scaled_count = mul(integral_diff, sqrt_scale);
+
+        let is_cusp = neq(signum(parabola_from), signum(parabola_to));
+        // Handle a cusp case (segment contains curvature maximum)
+        // Assuming the cusp case is fairly rare and because it is expensive
+        // we add a branch to test wether any of the lanes need to take it
+        // and skip it otherwise.
+        if any(is_cusp) {
+            let xmin = div(sqrt_tolerance, sqrt_scale);
+            let scaled_count2 = mul(sqrt_tolerance, div(integral_diff, approx_parabola_integral(xmin)));
+            scaled_count = select(is_cusp, scaled_count2, scaled_count);
+        }
+
+        // Handle another kind of cusp.
+        scaled_count = select_or_zero(is_finite(scale), scaled_count);
+
+        // Convert the quadratic curves into polynomial form.
+        let a1_x = mul(sub(ctrl_x, from_x), two);
+        let a1_y = mul(sub(ctrl_y, from_y), two);
+        let a2_x = sub(add(from_x, to_x), mul(ctrl_x, two));
+        let a2_y = sub(add(from_y, to_y), mul(ctrl_y, two));
+
+        // Go back to scalar land to produce the output.
+
+        let offset = output.count;
+        aligned_store(output.scaled_count.ptr(offset), scaled_count);
+        aligned_store(output.integral_from.ptr(offset), integral_from);
+        aligned_store(output.integral_to.ptr(offset), integral_to);
+        aligned_store(output.inv_integral_from.ptr(offset), inv_integral_from);
+        aligned_store(output.div_inv_integral_diff.ptr(offset), div_inv_integral_diff);
+
+        aligned_store(output.a0_x.ptr(offset), from_x);
+        aligned_store(output.a0_y.ptr(offset), from_y);
+        aligned_store(output.a1_x.ptr(offset), a1_x);
+        aligned_store(output.a1_y.ptr(offset), a1_y);
+        aligned_store(output.a2_x.ptr(offset), a2_x);
+        aligned_store(output.a2_y.ptr(offset), a2_y);
+
+        let mut tmp_to_x = Aligned([0.0; 4]);
+        let mut tmp_to_y = Aligned([0.0; 4]);
+        aligned_store(tmp_to_x.0.as_mut_ptr(), to_x);
+        aligned_store(tmp_to_y.0.as_mut_ptr(), to_y);
+
+        let count = u32::min(s_num_quads - quad_idx, 4) as usize;
+
+        last_x = tmp_to_x.0[count - 1];
+        last_y = tmp_to_y.0[count - 1];
+
+        output.count += count;
+        quad_idx += 4;
+    }
+
+    let count = usize::min((s_num_quads - s_first_quad) as usize, NUM_QUADS);
+    let sum = output.scaled_count.0.assume_init_mut()[0..count].iter().sum();
+
+    (point(last_x, last_y), sum)
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
+pub unsafe fn flatten_cubic_simd4_with_point_buffer(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut dyn FnMut(&LineSegment<f32>)) {
+
+    let quads_tolerance = tolerance * 0.1;
+    let flatten_tolerance = tolerance * 0.9;
+    let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
+    let inv_sqrt_flatten_tolerance = fast_recip(sqrt_flatten_tolerance);
+
+    let num_quadratics = crate::levien::num_quadratics_impl(curve, quads_tolerance);
+    //println!("{num_quadratics:?} quads");
+
+    let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
+    let mut point_buffer: Aligned<[f32; 64]> = Aligned([0.0; 64]);
+
+    let quad_step = fast_recip(num_quadratics);
+    let num_quadratics = num_quadratics as u32;
+    let mut quad_idx = 0;
+    let mut from = curve.from;
+
+    loop {
+        let mut sum = 0.0;
+        let mut quads_last_to = point(0.0, 0.0);
+        while quad_idx < num_quadratics && quads.capacity() > quads.len() {
+            let (to, s) = flattening_params_simd4(
+                curve,
+                (num_quadratics - quad_idx).min(4) as f32,
+                quad_idx as f32,
+                quad_step,
+                sqrt_flatten_tolerance,
+                &mut quads
+            );
+            sum += s;
+            quads_last_to = to;
+
+            //println!(" + {quad:?} {t0} .. {t1} scaled count: {:?}", params.scaled_count);
+            quad_idx += 4;
+        }
+
+        let num_edges = ((0.5 * sum * inv_sqrt_flatten_tolerance).ceil() as u32).max(1);
+
+        // Iterate through the quadratics, outputting the points of
+        // subdivisions that fall within that quadratic.
+        let step = sum / (num_edges as f32);
+        let mut i = 1;
+        let mut scaled_count_sum = 0.0;
+        let v_step = splat(step);
+        //println!("------ {num_edges:?} edges step {step:?}");
+        for (params, quad) in &quads {
+            let recip_scaled_count = splat(fast_recip(params.scaled_count));
+            let n = u32::min(num_edges, ((scaled_count_sum + params.scaled_count) / step).ceil() as u32);
+
+            if i < n {
+                let quad_a0 = interleave_splat(quad.a0.x, quad.a0.y);
+                let quad_a1 = interleave_splat(quad.a1.x, quad.a1.y);
+                let quad_a2 = interleave_splat(quad.a2.x, quad.a2.y);
+
+                while i < n {
+                    // Set up the point buffer
+                    let mut points_cap = 64;
+                    let mut points_out_ptr = point_buffer.0.as_mut_ptr();
+                    let copy_count = (points_cap / 2).min((n - i) as i32) as usize;
+
+                    while i < n && points_cap >= 4 {
+                        let i1 = i as f32;
+                        let i2 = i1 + 1.0;
+                        let targets = mul(vec4(i1, i1, i2, i2), v_step);
+                        let u = mul(sub(targets, splat(scaled_count_sum)), recip_scaled_count);
+
+                        // Note: if we were processing 4 points at a time instead of
+                        // interleaving x and y, approx_parabola_inv_integral would
+                        // process 4 points instead of 2 as many points at the same
+                        // cost.
+                        let u = approx_parabola_inv_integral(mul_add(splat(params.integral_to - params.integral_from), u, splat(params.integral_from)));
+                        let t = mul(sub(u, splat(params.inv_integral_from)), splat(params.div_inv_integral_diff));
+
+                        let p = sample_quadratic_horner_simd4(quad_a0, quad_a1, quad_a2, t);
+                        aligned_store(points_out_ptr, p);
+
+                        points_cap -= 4;
+                        points_out_ptr = points_out_ptr.add(4);
+                        i = (i + 2).min(n);
+                    }
+
+                    // Go over the point buffer a invoke the callback.
+                    let mut ptr = point_buffer.0.as_mut_ptr();
+                    for _ in 0..copy_count {
+                        let x = ptr.read();
+                        let y = ptr.add(1).read();
+                        ptr = ptr.add(2);
+
+                        let to = point(x, y);
+
+                        cb(&LineSegment { from, to});
+                        from = to;
+                    }
+                }
+            }
+            scaled_count_sum += params.scaled_count;
+        }
+
+        cb(&LineSegment { from, to: quads_last_to });
+        if quad_idx >= num_quadratics {
+            break;
+        }
+
+        quads.clear();
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
+pub unsafe fn flatten_cubic_simd4_v2(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut dyn FnMut(&LineSegment<f32>)) {
+
+    let quads_tolerance = tolerance * 0.1;
+    let flatten_tolerance = tolerance * 0.9;
+    let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
+    let inv_sqrt_flatten_tolerance = fast_recip(sqrt_flatten_tolerance);
+
+    let num_quadratics = crate::levien::num_quadratics_impl(curve, quads_tolerance);
+    //println!("{num_quadratics:?} quads");
+
+    let mut params = FlatteningParamsSimd {
+        count: 0,
+        a0_x: AlignedBuf::new(),
+        a0_y: AlignedBuf::new(),
+        a1_x: AlignedBuf::new(),
+        a1_y: AlignedBuf::new(),
+        a2_x: AlignedBuf::new(),
+        a2_y: AlignedBuf::new(),
+        scaled_count: AlignedBuf::new(),
+        integral_from: AlignedBuf::new(),
+        integral_to: AlignedBuf::new(),
+        inv_integral_from: AlignedBuf::new(),
+        div_inv_integral_diff: AlignedBuf::new(),
+    };
+
+    let quad_step = fast_recip(num_quadratics);
+    let num_quadratics = num_quadratics as u32;
+    let mut quad_idx = 0;
+    let mut from = curve.from;
+
+    loop {
+        let (quads_last_to, sum) = flattening_params_simd4_v2(
+            curve,
+            num_quadratics,
+            quad_idx,
+            quad_step,
+            sqrt_flatten_tolerance,
+            &mut params
+        );
+
+        let num_edges = ((0.5 * sum * inv_sqrt_flatten_tolerance).ceil() as u32).max(1);
+
+        // Iterate through the quadratics, outputting the points of
+        // subdivisions that fall within that quadratic.
+        let step = sum / (num_edges as f32);
+        let mut i = 1;
+        let mut scaled_count_sum = 0.0;
+        let v_step = splat(step);
+        //println!("------ {num_edges:?} edges step {step:?}");
+        //assert!(params.count <= NUM_QUADS);
+        for idx in 0..params.count {
+            let n = u32::min(num_edges, ((scaled_count_sum + params.scaled_count.get(idx)) / step).ceil() as u32);
+
+            if i < n {
+                let recip_scaled_count = splat(fast_recip(params.scaled_count.get(idx)));
+                let quad_a0 = interleave_splat(params.a0_x.get(idx), params.a0_y.get(idx));
+                let quad_a1 = interleave_splat(params.a1_x.get(idx), params.a1_y.get(idx));
+                let quad_a2 = interleave_splat(params.a2_x.get(idx), params.a2_y.get(idx));
+                let integral_from = splat(params.integral_from.get(idx));
+                let integral_diff = splat(params.integral_to.get(idx) - params.integral_from.get(idx));
+                let div_inv_integral_diff = splat(params.div_inv_integral_diff.get(idx));
+                let inv_integral_from = splat(params.inv_integral_from.get(idx));
+                let v_scaled_count_sum = splat(scaled_count_sum);
+
+                while i < n {
+                    let i1 = i as f32;
+                    let i2 = i1 + 1.0;
+                    let targets = mul(vec4(i1, i1, i2, i2), v_step);
+                    let u = mul(sub(targets, v_scaled_count_sum), recip_scaled_count);
+
+                    // Note: if we were processing 4 points at a time instead of
+                    // interleaving x and y, approx_parabola_inv_integral would
+                    // process 4 points instead of 2 at the same cost.
+                    let u = approx_parabola_inv_integral(mul_add(integral_diff, u, integral_from));
+                    let t = mul(sub(u, inv_integral_from), div_inv_integral_diff);
+
+                    let p = sample_quadratic_horner_simd4(quad_a0, quad_a1, quad_a2, t);
+
+                    let (x0, y0, x1, y1) = unpack(p);
+                    let to = point(x0, y0);
+                    cb(&LineSegment { from, to });
+                    from = to;
+
+                    if i + 1 < n {
+                        let to = point(x1, y1);
+                        cb(&LineSegment { from, to });
+                        from = to;
+                        i += 1;
+                    }
+
+                    i += 1;
+                }
+            }
+            scaled_count_sum += params.scaled_count.get(idx);
+        }
+
+        cb(&LineSegment { from, to: quads_last_to });
+        quad_idx += params.count as u32;
+        params.count = 0;
+
+        if quad_idx >= num_quadratics {
+            break;
+        }
     }
 }
 

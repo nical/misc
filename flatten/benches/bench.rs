@@ -32,7 +32,7 @@ fn bench_flatten_quad<A: Flatten>(curves: &[QuadraticBezierSegment<f32>], tolera
 
 use criterion::BenchmarkId;
 
-static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
+static TOLERANCES: [f32; 10] = [0.15, 0.2, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0];
 
 fn cubic_flatten(c: &mut Criterion) {
     let curves = generate_bezier_curves();
@@ -44,7 +44,7 @@ fn cubic_flatten(c: &mut Criterion) {
         //g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Hain>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd>(&curves, *tol)) });
-        g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd2>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimdBuf>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-agg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearAgg>(&curves, *tol)) });

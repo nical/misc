@@ -5,6 +5,7 @@ use crate::testing::*;
 static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
 
 fn count_edges_cubic<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: f32) -> u32 {
+    counters_reset();
     let mut count = 0;
     for curve in curves {
         let start = count;
@@ -18,6 +19,7 @@ fn count_edges_cubic<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: 
 }
 
 fn count_edges_quad<F: Flatten>(curves: &[QuadraticBezierSegment<f32>], tolerance: f32) -> u32 {
+    counters_reset();
     let mut count = 0;
     for curve in curves {
         F::quadratic(curve, tolerance, &mut |_| { count += 1; });
@@ -56,6 +58,14 @@ fn flatten_edge_count() {
         linear_agg.push(count_edges_cubic::<LinearAgg>(&curves, tolerance));
         levien19.push(count_edges_cubic::<LevienQuads>(&curves, tolerance));
         levien_simd.push(count_edges_cubic::<LevienSimd>(&curves, tolerance));
+        //#[cfg(feature = "stats")] {
+        //    print!("| {tolerance:?} | ");
+        //    for i in 0..NUM_COUNTERS {
+        //        print!(" {} |", counters_get(i));
+        //    }
+        //    println!("");
+        //}
+
         kurbo.push(count_edges_cubic::<Kurbo>(&curves, tolerance));
         levien_partial.push(count_edges_cubic::<Levien>(&curves, tolerance));
         levien37.push(count_edges_cubic::<Levien37>(&curves, tolerance));
@@ -147,4 +157,5 @@ fn flatten_edge_count() {
     print_edges_md(" wang      ", &cagd);
     print_edges_md(" levien    ", &levien);
     print_edges_md(" fwd-diff  ", &fd);
+
 }

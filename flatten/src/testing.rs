@@ -1,9 +1,90 @@
+use std::sync::atomic::AtomicI32;
+
 use lyon_path::geom::euclid::point2 as point;
 use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
 use lyon_path::geom::euclid::default::{Box2D, Transform2D};
 use lyon_path::math::Point;
 use lyon_path::{Path, PathEvent};
 use usvg::TreeParsing;
+
+#[cfg(feature="stats")]
+use std::sync::atomic::Ordering;
+
+#[cfg(feature="stats")]
+pub const NUM_COUNTERS: usize = 16;
+#[cfg(not(feature="stats"))]
+pub const NUM_COUNTERS: usize = 0;
+
+#[cfg(feature="stats")]
+static s_counters: [AtomicI32; NUM_COUNTERS] = [
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+/*
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+    AtomicI32::new(0),
+*/
+];
+
+#[cfg(feature="stats")]
+pub fn counters_inc(id: usize) {
+    s_counters[id].fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature="stats")]
+pub fn counters_reset() {
+    for i in 0..NUM_COUNTERS {
+        s_counters[i].store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(feature="stats")]
+pub fn counters_get(id: usize) -> i32 {
+    s_counters[id].load(Ordering::SeqCst)
+}
+
+#[cfg(not(feature="stats"))]
+#[inline(always)]
+pub fn counters_inc(_id: usize) {}
+#[cfg(not(feature="stats"))]
+#[inline(always)]
+pub fn counters_reset() {}
+#[cfg(not(feature="stats"))]
+#[inline(always)]
+pub fn counters_get(_id: usize) -> i32 { 0 }
 
 pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
 

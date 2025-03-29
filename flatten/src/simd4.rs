@@ -60,6 +60,11 @@ pub mod x86_64 {
     }
 
     #[inline(always)]
+    pub unsafe fn unpack_u32(lanes: f32x4) -> (u32, u32, u32, u32) {
+        std::mem::transmute(lanes)
+    }
+
+    #[inline(always)]
     pub unsafe fn select(cond: f32x4, a: f32x4, b: f32x4) -> f32x4 {
         or(
             arch::_mm_andnot_ps(cond, b),
@@ -148,12 +153,12 @@ pub mod aarch64 {
     #[inline(always)]
     pub unsafe fn unpack(lanes: f32x4) -> (f32, f32, f32, f32) {
         std::mem::transmute(lanes)
-    }    
+    }
 
     #[inline(always)]
     pub unsafe fn unpack_u32(lanes: u32x4) -> (u32, u32, u32, u32) {
         std::mem::transmute(lanes)
-    }    
+    }
 
 
     pub use arch::vaddq_f32 as add;
@@ -317,6 +322,9 @@ pub unsafe fn sample_quadratic_horner_simd4(
 pub unsafe fn interleave_splat(a: f32, b: f32) -> f32x4 {
     vec4(a, b, a, b)
 }
+
+#[repr(align(16))]
+pub struct Aligned<T>(pub T);
 
 #[test]
 pub fn sanity_check() {

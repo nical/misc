@@ -88,18 +88,18 @@ fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolera
         &format!("M {} {} C {} {}  {} {}  {} {}", curve.from.x, curve.from.y, curve.ctrl1.x, curve.ctrl1.y, curve.ctrl2.x, curve.ctrl2.y, curve.to.x, curve.to.y)
     ));
 
-    print_card(output, &(x, y, 110, 110), "Levien");
-    let _ = show_cubic::<crate::Levien>(
+    print_card(output, &(x, y, 110, 110), "Levien-simd");
+    let _ = show_cubic::<crate::LevienSimd>(
         curve,
         tolerance,
         (x as f32 + 5.0, y as f32 + 5.0),
         output
     );
 
-    if false {
+    if true {
         x += 115;
-        print_card(output, &(x, y, 110, 110), "Leven-simd");
-        let _ = show_cubic::<crate::LevienSimd>(
+        print_card(output, &(x, y, 110, 110), "Leven-simd-v2");
+        let _ = show_cubic::<crate::LevienSimdBuf>(
             curve,
             tolerance,
             (x as f32 + 5.0, y as f32 + 5.0),

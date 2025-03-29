@@ -278,12 +278,21 @@ pub struct LevienSimd2;
 impl Flatten for LevienSimd2 {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         unsafe {
-            crate::levien_simd::flatten_cubic_simd4_with_point_buffer(curve, tolerance, cb);
+            crate::levien_simd::flatten_cubic_simd4_v2(curve, tolerance, cb);
         }
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
         unsafe {
             crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+        }
+    }
+}
+
+pub struct LevienSimdBuf;
+impl Flatten for LevienSimdBuf {
+    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
+        unsafe {
+            crate::levien_simd::flatten_cubic_simd4_with_point_buffer(curve, tolerance, cb);
         }
     }
 }
