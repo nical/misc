@@ -39,7 +39,7 @@ fn flatten_cubic(curve, tolerance, callback) {
 
 # Notes
 
-This algorithm produces the "nicest" output, and is generally the most optimal in terms of number of line segments produced per curve. The up-front cost of the algorithm, however, is quite high. This cost is well amortized for curves that require a lot of line segments, but this algorithm probably does not hit the best tradeoff when dealing with a lot of very small curves that will produce few segments. See for example the [benchmark results for the font dataset](../bench/results-cubic-font-threadripper.svg). Thankfully, it should be fairly cheap to evaluate a rough proxy for the size of the curve and pick a different algorithm if it is very small.
+This algorithm produces the "nicest" output, and is generally the most optimal in terms of number of line segments produced per curve. The up-front cost of the algorithm, however, is quite high. This cost is well amortized for curves that require a lot of line segments, but this algorithm probably does not hit the best tradeoff when dealing with a lot of very small curves that will produce few segments. See for example the [benchmark results for the font dataset](../benches/results-cubic-font-threadripper.svg). Thankfully, it should be fairly cheap to evaluate a rough proxy for the size of the curve and pick a different algorithm if it is very small.
 
 # Stats
 

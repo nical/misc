@@ -23,7 +23,7 @@
 
 # Performance
 
-See [the benchmark results](../bench/readme.md)
+See [the benchmark results](../benches/readme.md)
 
 # Flattening quality
 
