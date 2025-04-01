@@ -297,25 +297,32 @@ impl Flatten for LevienSimdBuf {
     }
 }
 
-pub struct Levien37;
-impl Flatten for Levien37 {
+pub struct LevienLinear;
+impl Flatten for LevienLinear {
     fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_cubic_37(curve, tolerance, cb);
+        unsafe {
+            let dx = (curve.to.x - curve.from.x).abs();
+            let dy = (curve.to.y - curve.from.y).abs();
+            if dx + dy > 64.0 * tolerance {
+                crate::levien_simd::flatten_cubic_simd4(curve, tolerance, cb);
+            } else {
+                crate::linear::flatten_cubic::<DefaultFlatness, _>(curve, tolerance, cb);
+            }
+        }
     }
     fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_quadratic(curve, tolerance, cb);
+        unsafe {
+            let dx = (curve.to.x - curve.from.x).abs();
+            let dy = (curve.to.y - curve.from.y).abs();
+            if dx + dy > 64.0 * tolerance {
+                crate::levien_simd::flatten_quadratic(curve, tolerance, cb);
+            } else {
+                crate::linear::flatten_quadratic(curve, tolerance, cb);
+            }
+        }
     }
 }
 
-pub struct Levien55;
-impl Flatten for Levien55 {
-    fn cubic<Cb: FnMut(&LineSegment<f32>)>(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_cubic_55(curve, tolerance, cb);
-    }
-    fn quadratic<Cb: FnMut(&LineSegment<f32>)>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut Cb) {
-        crate::levien::flatten_quadratic(curve, tolerance, cb);
-    }
-}
 
 pub struct Recursive;
 impl Flatten for Recursive {

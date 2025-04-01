@@ -1,3 +1,4 @@
+#[cfg(feature="stats")]
 use std::sync::atomic::AtomicI32;
 
 use lyon_path::geom::euclid::point2 as point;
@@ -61,7 +62,7 @@ static s_counters: [AtomicI32; NUM_COUNTERS] = [
 
 #[cfg(feature="stats")]
 pub fn counters_inc(id: usize) {
-    s_counters[id].fetch_add(1, Ordering::Relaxed);
+    s_counters[id.max(NUM_COUNTERS - 1)].fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(feature="stats")]
@@ -137,7 +138,7 @@ pub fn generate_quadratic_curves() -> Vec<QuadraticBezierSegment<f32>> {
     let cubics = generate_bezier_curves();
     let mut quads = Vec::new();
     for cubic in &cubics {
-        cubic.for_each_quadratic_bezier(0.25, &mut |quad| {
+        cubic.for_each_quadratic_bezier(2.0, &mut |quad| {
             quads.push(*quad);
         })
     }

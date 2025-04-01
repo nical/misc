@@ -18,7 +18,7 @@ use std::ops::Range;
 use crate::simd4::*;
 
 use crate::levien::FlatteningParams;
-use crate::testing::{counters_inc, NUM_COUNTERS};
+use crate::testing::counters_inc;
 use crate::{polynomial_form_cubic, QuadraticBezierPolynomial};
 
 #[inline(always)]
@@ -384,7 +384,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
     let num_quadratics = crate::levien::num_quadratics_impl(curve, quads_tolerance);
     //println!("{num_quadratics:?} quads");
 
-    counters_inc((num_quadratics as usize).min(NUM_COUNTERS - 1).max(0) as usize);
+    //counters_inc(num_quadratics.max(0.0) as usize);
 
     let mut quads: ArrayVec<(FlatteningParams, QuadraticBezierPolynomial), 16> = ArrayVec::new();
 
