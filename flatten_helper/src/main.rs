@@ -120,13 +120,6 @@ fn main() {
     let mut _in_file = None;
     let input_reader: Option<&mut dyn std::io::Read> = if cmd.as_str() != "criterion" {
         Some(match &input {
-            None => {
-                if verbose {
-                    println!("reading from stdin");
-                }
-                _std_in = Some(std::io::stdin().lock());
-                _std_in.as_mut().unwrap()
-            }
             Some(file_name) => {
                 if verbose {
                     println!("reading from file {file_name:?}");
@@ -134,6 +127,13 @@ fn main() {
                 let path: PathBuf = file_name.into();
                 _in_file = Some(std::fs::File::open(path).unwrap());
                 _in_file.as_mut().unwrap()
+            }
+            _ => {
+                if verbose {
+                    println!("reading from stdin");
+                }
+                _std_in = Some(std::io::stdin().lock());
+                _std_in.as_mut().unwrap()
             }
         })
     } else {

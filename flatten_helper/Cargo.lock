@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "graph"
+name = "flatten-helper"
 version = "0.1.0"
 dependencies = [
  "serde",

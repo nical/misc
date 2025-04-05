@@ -19,6 +19,10 @@ pub mod show;
 #[cfg(test)]
 pub mod edge_count;
 
+pub static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
+pub static REORDERED_TOLERANCES: [f32; 10] = [0.2, 0.25, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.5, 1.0];
+
+
 // Using mul_add causes a large perf regression on x86_64.
 // By default the regression is huge for wang and even
 // with `-C target-feature=+fma` passed (for example using

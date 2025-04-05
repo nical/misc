@@ -3,6 +3,8 @@ extern crate lyon_path;
 extern crate criterion;
 
 use criterion::Criterion;
+use flatten::REORDERED_TOLERANCES;
+use flatten::TOLERANCES;
 use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
 use flatten::testing::*;
 
@@ -32,12 +34,11 @@ fn bench_flatten_quad<A: Flatten>(curves: &[QuadraticBezierSegment<f32>], tolera
 
 use criterion::BenchmarkId;
 
-static TOLERANCES: [f32; 10] = [0.15, 0.2, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0];
-
 fn cubic_flatten(c: &mut Criterion) {
     let curves = generate_bezier_curves();
     let mut g = c.benchmark_group("cubic");
-    for tol in &TOLERANCES {
+
+    for tol in &REORDERED_TOLERANCES {
         g.bench_with_input(BenchmarkId::new("recursive", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Recursive>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fwd-diff", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::FwdDiff>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::HybridFwdDiff>(&curves, *tol)) });
@@ -60,7 +61,7 @@ fn cubic_flatten(c: &mut Criterion) {
 fn quad_flatten(c: &mut Criterion) {
     let curves = generate_quadratic_curves();
     let mut g = c.benchmark_group("quadratic");
-    for tol in &TOLERANCES {
+    for tol in &REORDERED_TOLERANCES {
         g.bench_with_input(BenchmarkId::new("recursive", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::Recursive>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fwd-diff", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::FwdDiff>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten_quad::<flatten::LevienQuads>(&curves, *tol)) });

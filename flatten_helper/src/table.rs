@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -172,8 +173,23 @@ pub fn print_markdown_table(results: &BenchResults, output: &mut dyn Write) -> s
         write!(output, "| ------:")?;
     }
     writeln!(output, "|")?;
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
     for algo in ALGORITHMS {
-        if let Some(scores) = results.get(*algo) {
+        if results.contains_key(*algo) {
+            seen.insert(*algo);
+            ordered.push(*algo);
+        }
+    }
+    for algo in results.keys() {
+        if seen.contains(algo.as_str()) {
+            ordered.push(algo.as_str());
+        }
+    }
+
+    for algo in ordered {
+        if let Some(scores) = results.get(algo) {
+            seen.insert(algo);
             write!(output, "|{}", algo)?;
             if algo.len() < ALGO_CHARS {
                 for _ in 0..ALGO_CHARS - algo.len() {
@@ -189,6 +205,7 @@ pub fn print_markdown_table(results: &BenchResults, output: &mut dyn Write) -> s
             writeln!(output, "|")?;
         }
     }
+
 
     Ok(())
 }

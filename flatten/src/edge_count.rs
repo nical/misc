@@ -1,8 +1,9 @@
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang};
-use crate::testing::*;
+use std::io::Write;
+use std::path::PathBuf;
 
-static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
+use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
+use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang, TOLERANCES};
+use crate::testing::*;
 
 fn count_edges_cubic<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: f32) -> u32 {
     counters_reset();
@@ -28,8 +29,40 @@ fn count_edges_quad<F: Flatten>(curves: &[QuadraticBezierSegment<f32>], toleranc
     count
 }
 
+fn print_first_row_md(output: &mut dyn Write) {
+    let _ = write!(output, "| tolerance  ");
+    for tolerance in &TOLERANCES {
+        let _ = write!(output, "|  {} ", tolerance);
+    }
+    let _ = writeln!(output, "|");
+    let _ = write!(output, "|-----------");
+    for _ in 0..TOLERANCES.len() {
+        let _ = write!(output, "| -----:");
+    }
+    let _ = writeln!(output, "|");
+}
+
+fn print_edges_md(output: &mut dyn Write, name: &str, vals: &[u32]) {
+    let _ = write!(output, "|{}", name);
+    for val in vals {
+        let _ = write!(output, "| {:.2} ", val);
+    }
+    let _ = writeln!(output, "|");
+}
+
+fn get_flatten_output() -> Option<String> {
+    let mut out_name = None;
+    for (var, val) in std::env::vars() {
+        if var == "FLATTEN_OUTPUT" {
+            out_name = Some(val);
+        }
+    }
+
+    out_name
+}
+
 #[test]
-fn flatten_edge_count() {
+fn edge_count_cubic() {
     let curves = generate_bezier_curves();
     let mut hain = Vec::new();
     let mut rec = Vec::new();
@@ -74,60 +107,39 @@ fn flatten_edge_count() {
         fixed_16.push(count_edges_cubic::<Fixed16>(&curves, tolerance));
     }
 
-    fn print_first_row_md() {
-        print!("| tolerance  ");
-        for tolerance in &TOLERANCES {
-            print!("|  {:.2} ", tolerance);
-        }
-        println!("|");
-        print!("|-----------");
-        for _ in 0..TOLERANCES.len() {
-            print!("| -----:");
-        }
-        println!("|");
-    }
+    let out_name = get_flatten_output();
 
-    fn print_edges_md(name: &str, vals: &[u32]) {
-        print!("|{}", name);
-        for val in vals {
-            print!("| {:.2} ", val);
+    let mut _std_out = None;
+    let mut _out_file = None;
+    let output: &mut dyn std::io::Write = match out_name {
+        None => {
+            _std_out = Some(std::io::stdout().lock());
+            _std_out.as_mut().unwrap()
         }
-        println!("|");
-    }
-
-    fn _print_first_row_csv() {
-        print!("tolerance, ");
-        for tolerance in &TOLERANCES {
-            print!("{}, ", tolerance);
+        Some(file_name) => {
+            let path: PathBuf = file_name.into();
+            _out_file = Some(std::fs::File::create(path).unwrap());
+            _out_file.as_mut().unwrap()
         }
-        println!("");
-    }
-
-    fn _print_edges_csv(name: &str, vals: &[u32]) {
-        print!("{}, ", name);
-        for val in vals {
-            print!("{:.2}, ", val);
-        }
-        println!(",");
-    }
+    };
 
     println!("Cubic bézier curves:\n");
-    print_first_row_md();
-    print_edges_md(" recursive    ", &rec);
-    print_edges_md(" recursive-agg", &rec_agg);
-    print_edges_md(" recursive-hfd", &rec_hfd);
-    print_edges_md(" linear       ", &linear);
-    print_edges_md(" linear-agg   ", &linear_agg);
-    print_edges_md(" linear-hfd   ", &linear_hfd);
-    print_edges_md(" levien       ", &levien_partial);
-    print_edges_md(" levien-simd  ", &levien_simd);
-    print_edges_md(" kurbo        ", &kurbo);
-    print_edges_md(" levien-quads ", &levien19);
-    print_edges_md(" levien-linear", &levien_linear);
-    print_edges_md(" hain         ", &hain);
-    print_edges_md(" wang         ", &wang);
-    print_edges_md(" fwd-diff     ", &fd);
-    print_edges_md(" hfd          ", &hfd);
+    print_first_row_md(output);
+    print_edges_md(output, " recursive    ", &rec);
+    print_edges_md(output, " recursive-agg", &rec_agg);
+    print_edges_md(output, " recursive-hfd", &rec_hfd);
+    print_edges_md(output, " linear       ", &linear);
+    print_edges_md(output, " linear-agg   ", &linear_agg);
+    print_edges_md(output, " linear-hfd   ", &linear_hfd);
+    print_edges_md(output, " levien       ", &levien_partial);
+    print_edges_md(output, " levien-simd  ", &levien_simd);
+    print_edges_md(output, " kurbo        ", &kurbo);
+    print_edges_md(output, " levien-quads ", &levien19);
+    print_edges_md(output, " levien-linear", &levien_linear);
+    print_edges_md(output, " hain         ", &hain);
+    print_edges_md(output, " wang         ", &wang);
+    print_edges_md(output, " fwd-diff     ", &fd);
+    print_edges_md(output, " hfd          ", &hfd);
     //print_edges_md(" fixed-16     ", &fixed_16);
 
     println!();
@@ -147,15 +159,48 @@ fn flatten_edge_count() {
         cagd.push(count_edges_quad::<Wang>(&curves, tolerance));
         lin.push(count_edges_quad::<Linear>(&curves, tolerance));
     }
+}
 
-    println!("");
-    println!("Quadratic bézier curves:\n");
-    print_first_row_md();
-    print_edges_md(" recursive ", &rec);
-    print_edges_md(" levien    ", &levien);
-    print_edges_md(" linear    ", &lin);
-    print_edges_md(" levien-linear", &levien_linear);
-    print_edges_md(" wang      ", &cagd);
-    print_edges_md(" fwd-diff  ", &fd);
+#[test]
+fn edge_count_quadratic() {
+    let out_name = get_flatten_output();
+
+    let mut _std_out = None;
+    let mut _out_file = None;
+    let output: &mut dyn std::io::Write = match out_name {
+        None => {
+            _std_out = Some(std::io::stdout().lock());
+            _std_out.as_mut().unwrap()
+        }
+        Some(file_name) => {
+            let path: PathBuf = file_name.into();
+            _out_file = Some(std::fs::File::create(path).unwrap());
+            _out_file.as_mut().unwrap()
+        }
+    };
+
+    let curves = generate_quadratic_curves();
+    let mut rec = Vec::new();
+    let mut levien = Vec::new();
+    let mut levien_linear = Vec::new();
+    let mut fd = Vec::new();
+    let mut cagd = Vec::new();
+    let mut lin = Vec::new();
+    for tolerance in TOLERANCES {
+        rec.push(count_edges_quad::<Recursive>(&curves, tolerance));
+        levien.push(count_edges_quad::<LevienQuads>(&curves, tolerance));
+        levien_linear.push(count_edges_quad::<LevienLinear>(&curves, tolerance));
+        fd.push(count_edges_quad::<FwdDiff>(&curves, tolerance));
+        cagd.push(count_edges_quad::<Wang>(&curves, tolerance));
+        lin.push(count_edges_quad::<Linear>(&curves, tolerance));
+    }
+
+    print_first_row_md(output);
+    print_edges_md(output, " recursive ", &rec);
+    print_edges_md(output, " levien    ", &levien);
+    print_edges_md(output, " linear    ", &lin);
+    print_edges_md(output, " levien-linear", &levien_linear);
+    print_edges_md(output, " wang      ", &cagd);
+    print_edges_md(output, " fwd-diff  ", &fd);
 
 }
