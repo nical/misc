@@ -182,7 +182,7 @@ pub fn print_markdown_table(results: &BenchResults, output: &mut dyn Write) -> s
         }
     }
     for algo in results.keys() {
-        if seen.contains(algo.as_str()) {
+        if !seen.contains(algo.as_str()) {
             ordered.push(algo.as_str());
         }
     }

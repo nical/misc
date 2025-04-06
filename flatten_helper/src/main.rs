@@ -18,20 +18,20 @@ const ALGORITHMS: &[&str] = &[
     "hain",
     "wang",
     "wang-simd",
-    "fwd-dff",
+    "fwd-diff",
     "hfd",
 ];
 
-//svg::rgb(253, 204, 229)
-//svg::rgb(139, 211, 199)
 const USE_COLORS: &[(&str, (u8, u8, u8))] = &[
-    ("levien",      (253, 127, 111)),
+    ("levien",      (50, 125, 209)),
     ("levien-simd", (126, 176, 213)),
-    ("wang",        (178, 224, 97)),
-    ("wang-simd",   (189, 126, 190)),
-    ("linear",      (255, 181, 90)),
+    ("levien-linear",(119, 211, 179)),
+    ("wang",        (253, 204, 229)),
+    ("wang-simd",   (199, 126, 190)),
+    ("linear",      (128, 214, 87)),
     ("recursive",   (255, 238, 101)),
-    ("fwd-diff",    (190, 185, 219)),
+    ("fwd-diff",    (253, 127, 111)),
+    ("hain",        (255, 181, 90)),
 ];
 
 pub type BenchResults = HashMap<String, HashMap<ToleranceKey, f32>>;
@@ -93,7 +93,7 @@ fn main() {
             "--light" => {
                 color_scheme = graph::ColorScheme::Light;
             }
-            "-v | --vrebose" => {
+            "-v" | "--verbose" => {
                 verbose = true;
             }
             "--help" => {

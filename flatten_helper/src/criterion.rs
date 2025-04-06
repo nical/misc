@@ -21,10 +21,10 @@ pub struct BenchmarkResult {
 #[derive(Deserialize)]
 pub struct BenchmarkResults {
     pub mean: BenchmarkResult,
-    pub median: BenchmarkResult,
-    pub median_abs_dev: BenchmarkResult,
-    pub slope: BenchmarkResult,
-    pub std_dev: BenchmarkResult,
+    pub median: Option<BenchmarkResult>,
+    pub median_abs_dev: Option<BenchmarkResult>,
+    pub slope: Option<BenchmarkResult>,
+    pub std_dev: Option<BenchmarkResult>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

@@ -42,12 +42,12 @@ fn cubic_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("recursive", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Recursive>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("fwd-diff", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::FwdDiff>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::HybridFwdDiff>(&curves, *tol)) });
-        //g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Hain>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Hain>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimdBuf>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienLinear>(&curves, *tol)) });
-        //g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-agg", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearAgg>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("linear-hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearHfd>(&curves, *tol)) });
