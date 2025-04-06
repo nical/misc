@@ -93,7 +93,7 @@ pub fn generate_bezier_curves() -> Vec<CubicBezierSegment<f32>> {
 
     let mut filter = None;
     for (var, val) in std::env::vars() {
-        if var == "FLATTEN_INPUT" {
+        if var == "FLATTEN_INPUT" && val.as_str() != "all" {
             filter = Some(val);
         }
     }

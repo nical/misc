@@ -1,11 +1,11 @@
 #!/bin/sh
 
 echo "-------------------------------------"
-echo "$1"
+echo "$1: $2"
 echo "Running the benchmarks..."
-FLATTEN_INPUT="$1" cargo bench cubic
+FLATTEN_INPUT="$2" cargo bench $1
 echo "Extracting benchmark results..."
-flatten-helper criterion -i . -o notes/results/bench-cubic-$1-$2.md
+flatten-helper criterion -i . -o notes/results/bench-$1-$2-$3.md
 echo "Making graphs..."
-flatten-helper graph -i notes/results/bench-cubic-$1-$2.md -o notes/results/bench-cubic-$1-$2.svg
-echo "$1 done."
+flatten-helper graph -i notes/results/bench-$1-$2-$3.md -o notes/results/bench-$1-$2-$3.svg
+echo "$2 done."
