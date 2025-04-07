@@ -1,4 +1,4 @@
-Benchmark results on an AMD Ryzen Threadripper PRO 3975WXs desktop:
+Benchmark results on an AMD Ryzen Threadripper PRO 3975WXs (zen 2) desktop:
 
 ## Inkscape
 
@@ -9,7 +9,8 @@ Benchmark results on an AMD Ryzen Threadripper PRO 3975WXs desktop:
 
 ### Quadratic bézier curves:
 
-TODO
+![Inkscape dataset](results/bench-quadratic-inkscape-threadripper.svg)
+[Data](results/bench-quadratic-inkscape-threadripper.md)
 
 ## Nehab
 
@@ -20,7 +21,8 @@ TODO
 
 #### Quadratic bézier curves:
 
-TODO
+![Nehab dataset](results/bench-quadratic-nehab-threadripper.svg)
+[Data](results/bench-quadratic-nehab-threadripper.md)
 
 ## Tiger
 
@@ -31,7 +33,8 @@ TODO
 
 ### Quadratic bézier curves:
 
-TODO
+![Tiger dataset](results/bench-quadratic-tiger-threadripper.svg)
+[Data](results/bench-quadratic-tiger-threadripper.md)
 
 ## Fonts
 
@@ -42,7 +45,8 @@ TODO
 
 ### Quadratic bézier curves:
 
-TODO
+![Fonts dataset](results/bench-quadratic-font-threadripper.svg)
+[Data](results/bench-quadratic-font-threadripper.md)
 
 ## All
 
@@ -53,4 +57,5 @@ TODO
 
 ### Quadratic bézier curves:
 
-TODO
+![Merged dataset](results/bench-quadratic-all-threadripper.svg)
+[Data](results/bench-quadratic-all-threadripper.md)
