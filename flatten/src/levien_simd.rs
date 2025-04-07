@@ -31,7 +31,7 @@ pub unsafe fn fast_recip(a: f32) -> f32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn fast_rcp(a: f32) -> f32 {
+pub unsafe fn fast_recip(a: f32) -> f32 {
     1.0 / a
 }
 
@@ -501,8 +501,8 @@ pub struct FlatteningParamsSimd {
 }
 
 #[inline(never)]
-#[target_feature(enable = "avx")]
-#[target_feature(enable = "fma")]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 unsafe fn flattening_params_simd4_v2(
     curve: &CubicBezierSegment<f32>,
     s_num_quads: u32,

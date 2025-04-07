@@ -6,12 +6,15 @@ See [algorithms.md](algorithms.md)
 
 Benchmark results:
 - [AMD Ryzen Threadripper PRO 3975WXs desktop](bench-threadripper.md)
-- AMD Ryzen 7 PRO 6850U laptop (TODO)
-- Apple M1 Max laptop (TODO)
+- [Apple M1 Max laptop](bench-m1max.md)
 
 # Flattening quality
 
 See [a comparison of the number of generated line segments for each test case](edge_count.md)
+
+# Datasets
+
+[Dataset page](../assets/readme.md)
 
 # Visualization
 
