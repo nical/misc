@@ -15,7 +15,7 @@ use std::f32;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 
-use crate::simd4::*;
+use crate::{polynomial_form_quadratic, simd4::*};
 
 use crate::levien::FlatteningParams;
 use crate::testing::counters_inc;
@@ -33,6 +33,20 @@ pub unsafe fn fast_recip(a: f32) -> f32 {
 #[cfg(not(target_arch = "x86_64"))]
 pub unsafe fn fast_recip(a: f32) -> f32 {
     1.0 / a
+}
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn fast_recip_sqrt(a: f32) -> f32 {
+    use std::arch::x86_64::*;
+    let a = _mm_set_ss(a);
+    let r = _mm_rsqrt_ss(a);
+    _mm_cvtss_f32(r)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub unsafe fn fast_recip_sqrt(a: f32) -> f32 {
+    1.0 / a.sqrt()
 }
 
 
@@ -77,66 +91,60 @@ pub unsafe fn flatten_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: 
     let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
     let ddy = 2.0 * curve.ctrl.y - curve.from.y - curve.to.y;
     let cross = (curve.to.x - curve.from.x) * ddy - (curve.to.y - curve.from.y) * ddx;
-    let parabola_from = ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) / cross;
-    let parabola_to = ((curve.to.x - curve.ctrl.x) * ddx + (curve.to.y - curve.ctrl.y) * ddy) / cross;
+    let inv_cross = fast_recip(cross);
+
+    // Attempting to vectorize these two lines did not improve performance.
+    let parabola_from = ((curve.ctrl.x - curve.from.x) * ddx + (curve.ctrl.y - curve.from.y) * ddy) * inv_cross;
+    let parabola_to   = ((curve.to.x   - curve.ctrl.x) * ddx + (curve.to.y   - curve.ctrl.y) * ddy) * inv_cross;
+
     // Note, scale can be NaN, for example with straight lines. When it happens the NaN will
     // propagate to other parameters. We catch it all by setting the iteration count to zero
     // and leave the rest as garbage.
-    let scale = cross.abs() / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from).abs());
+    //let scale = cross.abs() / ((ddx * ddx + ddy * ddy).sqrt() * (parabola_to - parabola_from).abs());
+    let scale = cross.abs() * fast_recip_sqrt(ddx * ddx + ddy * ddy) * fast_recip((parabola_to - parabola_from).abs());
 
     let integral = approx_parabola_integral(vec4(parabola_from, parabola_to, 0.0, 0.0));
-    let (integral_to, integral_from, _, _) = unpack(integral);
     let inv_integral = approx_parabola_inv_integral(integral);
+    let (integral_to, integral_from, _, _) = unpack(integral);
     let (inv_integral_to, inv_integral_from, _, _) = unpack(inv_integral);
 
     let integral_diff = integral_to - integral_from;
-    let div_inv_integral_diff = 1.0 / (inv_integral_to - inv_integral_from);
+    let div_inv_integral_diff = fast_recip(inv_integral_to - inv_integral_from);
 
-    let mut count = (0.5 * integral_diff.abs() * (scale / tolerance).sqrt()).ceil();
+    let mut count = (0.5 * integral_diff.abs() * (scale * fast_recip(tolerance)).sqrt()).ceil();
     // If count is NaN the curve can be approximated by a single straight line or a point.
     if !count.is_finite() {
         count = 0.0;
     }
 
+    let poly = polynomial_form_quadratic(curve);
+    let quad_a0x = splat(poly.a0.x);
+    let quad_a0y = splat(poly.a0.y);
+    let quad_a1x = splat(poly.a1.x);
+    let quad_a1y = splat(poly.a1.y);
+    let quad_a2x = splat(poly.a2.x);
+    let quad_a2y = splat(poly.a2.y);
+
     let integral_from = splat(integral_from);
-    let integral_step = splat(integral_diff / count);
+    let integral_step = splat(integral_diff * fast_recip(count));
     let mut iteration = vec4(1.0, 2.0, 3.0, 4.0);
     let mut i = 1;
     let count = count as usize;
     let mut from = curve.from;
     while i < count {
-
         let integ = add(integral_from, mul(integral_step, iteration));
         let u = approx_parabola_inv_integral(integ);
 
-        // TODO: Use the polynomial form instead.
         let t = mul(sub(u, splat(inv_integral_from)), splat(div_inv_integral_diff));
-        let t2 = mul(t, t);
-        let one_t = sub(splat(1.0), t);
-        let one_t2 = mul(one_t, one_t);
 
-        let x = add(
-            mul(splat(curve.from.x), one_t2),
-            add(
-                mul(mul(mul(splat(curve.ctrl.x), splat(2.0)), one_t), t),
-                mul(splat(curve.to.x), t2)
-            )
-        );
+        let x = sample_quadratic_horner_simd4(quad_a0x, quad_a1x, quad_a2x, t);
+        let y = sample_quadratic_horner_simd4(quad_a0y, quad_a1y, quad_a2y, t);
 
-        let y = add(
-            mul(splat(curve.from.y), one_t2),
-            add(
-                mul(mul(mul(splat(curve.ctrl.y), splat(2.0)), one_t), t),
-                mul(splat(curve.to.y), t2)
-            )
-        );
-
-        // TODO: write into a point buffer
         let x: [f32; 4] = std::mem::transmute(x);
         let y: [f32; 4] = std::mem::transmute(y);
 
-        for i in 0..(count - i).min(4) {
-            let p = point(x[i], y[i]);
+        for (x, y) in x.iter().zip(y.iter()).take((count - i).min(4)) {
+            let p = point(*x, *y);
             cb(&LineSegment {from, to: p });
             from = p;
         }
