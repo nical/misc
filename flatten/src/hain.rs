@@ -304,3 +304,21 @@ fn inflection_approximation_range(
     *t_min = t - r;
     *t_max = t + r;
 }
+
+
+// A few curves that produce poor approximations with this algorithm (tolerance 0.01):
+// CubicBezierSegment { from: (523.588, 182.392), ctrl1: (523.588, 182.481), ctrl2: (523.554, 182.549), to: (523.554, 182.631) }, error = 157.79745
+// CubicBezierSegment { from: (523.588, 182.392), ctrl1: (523.588, 182.481), ctrl2: (523.554, 182.549), to: (523.554, 182.631) }, error = 224.91916
+// CubicBezierSegment { from: (525.16, 186.036), ctrl1: (525.21, 186.081), ctrl2: (525.209, 186.165), to: (525.227, 186.23) }, error = 160.81334
+// CubicBezierSegment { from: (525.16, 186.036), ctrl1: (525.21, 186.081), ctrl2: (525.209, 186.165), to: (525.227, 186.23) }, error = 265.02643
+// CubicBezierSegment { from: (525.16, 186.036), ctrl1: (525.21, 186.081), ctrl2: (525.209, 186.165), to: (525.227, 186.23) }, error = 341.30396
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 276.2007
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 370.13004
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 490.8672
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 644.92163
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 840.21936
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 1086.4247
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 1395.3298
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 1781.3925
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 2262.2986
+// CubicBezierSegment { from: (517.937, 185.96), ctrl1: (517.965, 185.859), ctrl2: (518.033, 185.777), to: (518.055, 185.676) }, error = 2859.9673

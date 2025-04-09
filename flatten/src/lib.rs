@@ -15,6 +15,8 @@ pub mod hain;
 pub mod yzerman;
 pub mod simd4;
 pub mod testing;
+pub mod correctness;
+pub mod table;
 pub mod flatness;
 #[cfg(test)]
 pub mod show;
