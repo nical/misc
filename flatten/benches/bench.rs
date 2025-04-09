@@ -4,7 +4,6 @@ extern crate criterion;
 
 use criterion::Criterion;
 use flatten::REORDERED_TOLERANCES;
-use flatten::TOLERANCES;
 use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment};
 use flatten::testing::*;
 
@@ -45,7 +44,7 @@ fn cubic_flatten(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("hain", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Hain>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Levien>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd>(&curves, *tol)) });
-        //g.bench_with_input(BenchmarkId::new("levien-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimdBuf>(&curves, *tol)) });
+        //g.bench_with_input(BenchmarkId::new("levien-simd3", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienSimd3>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienLinear>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("levien-quads", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LevienQuads>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("linear", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Linear>(&curves, *tol)) });
@@ -53,6 +52,8 @@ fn cubic_flatten(c: &mut Criterion) {
         //g.bench_with_input(BenchmarkId::new("linear-hfd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::LinearHfd>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Wang>(&curves, *tol)) });
         g.bench_with_input(BenchmarkId::new("wang-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::WangSimd4>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("yzerman", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Yzerman>(&curves, *tol)) });
+        g.bench_with_input(BenchmarkId::new("yzerman-simd", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::YzermanSimd4>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("wang-simd2", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::WangSimd42>(&curves, *tol)) });
         //g.bench_with_input(BenchmarkId::new("fixed-16", tol), tol, |b, tol| { b.iter(|| bench_flatten::<flatten::Fixed16>(&curves, *tol)) });
     }

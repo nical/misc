@@ -34,7 +34,7 @@ The `FLATTEN_INPUT` environment variable to filter the input data set also appli
 
 ### Cubic bézier curves:
 
-![Tiger dataset](results/edge-results/count-cubic-tiger.svg)
+![Tiger dataset](results/edge-count-cubic-tiger.svg)
 [Data](results/edge-count-cubic-tiger.md) ([Normalized](results/edge-count-cubic-tiger-normalized.md))
 
 ### Quadratic bézier curves:

@@ -29,6 +29,8 @@ pub mod x86_64 {
     pub use arch::_mm_cvt_ss2si as get_first_as_int;
     pub use arch::_mm_store_ps as aligned_store;
     pub use arch::_mm_storeu_ps as unaligned_store;
+    pub use arch::_mm_load_ps as aligned_load;
+    pub use arch::_mm_loadu_ps as unaligned_load;
 
     //#[cfg(target_feature="fma")]
     pub use arch::_mm_fmadd_ps as mul_add;
@@ -125,6 +127,12 @@ pub mod x86_64 {
     #[inline(always)]
     pub unsafe fn shift_lower(val: f32x4) -> f32x4 {
         const MASK: i32 = shuffle_mask(1, 2, 3, 0);
+        arch::_mm_shuffle_ps::<MASK>(val, val)
+    }
+
+    #[inline(always)]
+    pub unsafe fn shift_up(val: f32x4) -> f32x4 {
+        const MASK: i32 = shuffle_mask(3, 0, 1, 2);
         arch::_mm_shuffle_ps::<MASK>(val, val)
     }
 }

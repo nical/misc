@@ -59,7 +59,7 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
     let poly = crate::polynomial_form_quadratic(curve);
     let n = num_segments_quadratic(curve, tolerance);
     let step = 1.0 / n;
-    let mut prev = 1.0;
+    let mut prev = 0.0;
     let mut from = curve.from;
     for _ in 0..(n as u32 - 1) {
         let t = prev + step;
@@ -191,6 +191,52 @@ pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance:
 
         t = add(t, step);
         n -= 2;
+    }
+
+    let to = curve.to;
+    callback(&mut LineSegment { from, to });
+}
+
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
+pub unsafe fn flatten_quadratic_simd4<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+    where
+    F:  FnMut(&LineSegment<f32>)
+{
+    use crate::simd4::{vec4, splat, add, mul};
+
+    let poly = crate::polynomial_form_quadratic(&curve);
+    let n = num_segments_quadratic(curve, tolerance);
+    let mut from = curve.from;
+
+    let a0x = splat(poly.a0.x);
+    let a0y = splat(poly.a0.y);
+    let a1x = splat(poly.a1.x);
+    let a1y = splat(poly.a1.y);
+    let a2x = splat(poly.a2.x);
+    let a2y = splat(poly.a2.y);
+    let step = 1.0 / n;
+    let step = splat(step);
+    let mut t = mul(step, vec4(1.0, 2.0, 3.0, 4.0));
+    let step4 = mul(step, splat(4.0));
+
+    // minus one because we'll add the last point explicitly
+    let mut n = n as i32 - 1;
+    while n > 0 {
+        let x = crate::simd4::sample_quadratic_horner_simd4(a0x, a1x, a2x, t);
+        let y = crate::simd4::sample_quadratic_horner_simd4(a0y, a1y, a2y, t);
+
+        let x: [f32; 4] = std::mem::transmute(x);
+        let y: [f32; 4] = std::mem::transmute(y);
+
+        for (x, y) in x.iter().zip(y.iter()).take(n.min(4) as usize) {
+            let p = point(*x, *y);
+            callback(&LineSegment { from, to: p });
+            from = p;
+        }
+
+        t = add(t, step4);
+        n -= 4;
     }
 
     let to = curve.to;

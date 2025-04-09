@@ -11,7 +11,10 @@
 
 `Levien-quads` is Raph Levien's flattening algorithm without the fractional subdivision scheme. Cubic bézier curves are approximated with quadratics which are flattened independently.
 
+attempts into their own file)
 `Wang` is a fixed step flattening algorithm using Wang's formula to compute the number of subdivisions required to satisfy the tolerance parameter.
+
+`Yzerman` is the flattening algorithm described by Fabian Yzerman in [Fast approaches to simplify and offset Bézier curves within specified error limits](https://blend2d.com/research/simplify_and_offset_bezier_curves.pdf).
 
 `Fwd-diff` is a simple implementation of forward differencing using Wang's formulat to compute the fixed flattening step.
 
