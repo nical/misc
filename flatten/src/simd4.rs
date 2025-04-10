@@ -19,6 +19,8 @@ pub mod x86_64 {
     pub use arch::_mm_sqrt_ps as sqrt;
     pub use arch::_mm_ceil_ps as ceil;
     pub use arch::_mm_rcp_ps as recip;
+    pub use arch::_mm_min_ps as min;
+    pub use arch::_mm_max_ps as max;
     pub use arch::_mm_cmpeq_ps as eq;
     pub use arch::_mm_cmpneq_ps as neq;
     pub use arch::_mm_cmplt_ps as lt;
@@ -180,6 +182,8 @@ pub mod aarch64 {
     pub use arch::vrndq_f32 as floor;
     //pub use arch::_mm_ceil_ps as ceil;
     pub use arch::vrecpeq_f32 as recip;
+    pub use arch::vmin_f32 as min;
+    pub use arch::vmax_f32 as max;
     pub use arch::vceqq_f32 as eq;
     pub use arch::vcltq_f32 as lt;
     pub use arch::vcgtq_f32 as gt;
@@ -255,6 +259,7 @@ pub mod aarch64 {
     }
 }
 
+use std::mem::MaybeUninit;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
@@ -333,6 +338,29 @@ pub unsafe fn interleave_splat(a: f32, b: f32) -> f32x4 {
 
 #[repr(align(16))]
 pub struct Aligned<T>(pub T);
+
+#[repr(align(16))]
+pub struct AlignedBuf(pub MaybeUninit<[f32; 16]>);
+
+impl AlignedBuf {
+    #[inline(always)]
+    pub fn new() -> Self {
+        AlignedBuf(MaybeUninit::uninit())
+    }
+
+    #[inline(always)]
+    pub unsafe fn get(&self, offset: usize) -> f32 {
+        *self.0.assume_init_ref().as_ptr().add(offset)
+    }
+
+    #[inline(always)]
+    pub unsafe fn ptr(&mut self, offset: usize) -> *mut f32 {
+        self.0.assume_init_mut().as_mut_ptr().add(offset)
+    }
+
+}
+
+
 
 #[test]
 pub fn sanity_check() {

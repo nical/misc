@@ -34,28 +34,6 @@ pub unsafe fn fast_recip(a: f32) -> f32 {
 }
 
 
-#[repr(align(16))]
-pub struct AlignedBuf(MaybeUninit<[f32; NUM_QUADS]>);
-
-impl AlignedBuf {
-    #[inline(always)]
-    fn new() -> Self {
-        AlignedBuf(MaybeUninit::uninit())
-    }
-
-    #[inline(always)]
-    unsafe fn get(&self, offset: usize) -> f32 {
-        *self.0.assume_init_ref().as_ptr().add(offset)
-    }
-
-    #[inline(always)]
-    unsafe fn ptr(&mut self, offset: usize) -> *mut f32 {
-        self.0.assume_init_mut().as_mut_ptr().add(offset)
-    }
-
-}
-
-
 #[inline(always)]
 unsafe fn approx_parabola_integral(x: f32x4) -> f32x4 {
     let d_pow4 = splat(0.67 * 0.67 * 0.67 * 0.67);

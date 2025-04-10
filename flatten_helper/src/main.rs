@@ -18,6 +18,8 @@ const ALGORITHMS: &[&str] = &[
     "hain",
     "wang",
     "wang-simd",
+    "yzerman",
+    "yzerman-simd",
     "fwd-diff",
     "hfd",
 ];
@@ -28,6 +30,8 @@ const USE_COLORS: &[(&str, (u8, u8, u8))] = &[
     ("levien-linear",(119, 211, 179)),
     ("wang",        (253, 204, 229)),
     ("wang-simd",   (199, 126, 190)),
+    ("yzerman",     (120, 68, 33)),
+    ("yzerman-simd",(200, 113, 55)),
     ("linear",      (128, 214, 87)),
     ("recursive",   (255, 238, 101)),
     ("fwd-diff",    (253, 127, 111)),
@@ -40,6 +44,10 @@ fn main() {
     let mut args = std::env::args();
     let _first = args.next().unwrap();
     let cmd = args.next().expect("Expected a command (table, graph)");
+    let mut curve_kind = None;
+    if cmd == "criterion" {
+        curve_kind = Some(args.next().expect("Expected the benchmark kind (cubic|quadratic)"));
+    }
 
     let mut arg_title = false;
     let mut arg_subtitle = false;
@@ -169,6 +177,7 @@ fn main() {
             let mut results: BenchResults = HashMap::new();
 
             criterion::read_criterion_results(
+                curve_kind.unwrap().as_str(),
                 &current_dir,
                 &base_dir,
                 verbose,

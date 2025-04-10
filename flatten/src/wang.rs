@@ -25,6 +25,7 @@ pub fn num_segments_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f3
     num_steps.ceil().max(1.0)
 }
 
+
 /// Flatten the curve by precomputing a number of segments and splitting the curve
 /// at regular `t` intervals.
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)

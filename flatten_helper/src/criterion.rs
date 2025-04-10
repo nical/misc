@@ -48,6 +48,7 @@ pub fn read_bench(path: &PathBuf) -> Result<BenchmarkResults, Box<dyn Error>> {
 }
 
 pub fn read_criterion_results(
+    kind: &str,
     current_dir: &PathBuf,
     base_dir: &str,
     verbose: bool,
@@ -57,7 +58,7 @@ pub fn read_criterion_results(
         for tol in TOLERANCES {
             let mut path = current_dir.clone();
             path.push(base_dir);
-            path.push(&format!("target/criterion/cubic/{algo}/{tol}/new/estimates.json"));
+            path.push(&format!("target/criterion/{kind}/{algo}/{tol}/new/estimates.json"));
 
             match read_bench(&path) {
                 Ok(res) => {

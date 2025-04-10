@@ -98,8 +98,8 @@ fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolera
 
     if true {
         x += 115;
-        print_card(output, &(x, y, 110, 110), "Leven-simd-v3");
-        let _ = show_cubic::<crate::LevienSimd3>(
+        print_card(output, &(x, y, 110, 110), "Yzerman");
+        let _ = show_cubic::<crate::YzermanSimd4>(
             curve,
             tolerance,
             (x as f32 + 5.0, y as f32 + 5.0),
