@@ -5,8 +5,12 @@ See [algorithms.md](algorithms.md)
 # Performance
 
 Benchmark results:
-- [AMD Ryzen Threadripper PRO 3975WXs desktop](bench-threadripper.md)
-- [Apple M1 Max laptop](bench-m1max.md)
+- Cubic bézier curves:
+  - [AMD Ryzen Threadripper PRO 3975WXs desktop](bench-cubic-threadripper.md)
+  - Apple M1 Max laptop (TODO)
+- Quadratic bézier curves:
+  - [AMD Ryzen Threadripper PRO 3975WXs desktop](bench-quadratic-threadripper.md)
+  - Apple M1 Max laptop (TODO)
 
 # Flattening quality
 
