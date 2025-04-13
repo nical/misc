@@ -22,6 +22,7 @@ pub mod flatness;
 pub mod show;
 #[cfg(test)]
 pub mod edge_count;
+pub mod misc;
 
 pub static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
 pub static REORDERED_TOLERANCES: [f32; 10] = [0.2, 0.25, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.5, 1.0];
@@ -45,6 +46,86 @@ pub fn fma(val: f32, mul: f32, add: f32) -> f32 {
 pub fn fma(val: f32, mul: f32, add: f32) -> f32 {
     val.mul_add(mul, add)
 }
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub fn fast_recip(a: f32) -> f32 {
+    use std::arch::x86_64::*;
+    unsafe { _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(a))) }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn fast_recip(a: f32) -> f32 {
+    1.0 / a
+}
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub fn fast_ceil(x: f32) -> f32 {
+    // For some reason this is not inlined.
+    x.ceil()
+
+    // This is slower.
+    // It actually produces a fair amount of instructions.
+    //(x + 0.5) as i32 as f32
+
+    // This is slower and so is using _mm_ceil_ps.
+    //use std::arch::x86_64::*;
+    //unsafe {
+    //    _mm_cvtss_f32(_mm_ceil_ss(simd4::splat(0.0), _mm_set_ss(x)))
+    //}
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn fast_ceil(x: f32) -> f32 {
+    x.ceil()
+}
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub fn fast_recip_sqrt(x: f32) -> f32 {
+    use std::arch::x86_64::*;
+    unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(x))) }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn fast_recip_sqrt(x: f32) -> f32 {
+    1.0 / x.sqrt()
+}
+
+// This is pretty expensive but I haven't found a faster alternative
+// yet.
+#[inline(always)]
+#[cfg(not(feature = "approx"))]
+pub fn fast_cubic_root(x: f32) -> f32 {
+    x.powf(1.0/3.0)
+}
+
+// From https://github.com/666rayen999/x-math/blob/main/src/lib.rs
+// So far this version has not shown any performance improvement
+// over `x.powf(1.0/3.0)` and I have not evaluated how it affects
+// precision.
+#[inline]
+#[cfg(feature = "approx")]
+pub fn fast_cubic_root(x: f32) -> f32 {
+    const A: f32 = f32::from_bits(0x3fe04c03);
+    const B: f32 = f32::from_bits(0x3f0266d9);
+    const C: f32 = f32::from_bits(0xbfa01f36);
+    let xi = x.to_bits();
+    let sx = (xi & 0x80000000) | 0x3f800000;
+    let ax = xi & 0x7fffffff;
+    let i = 0x548c2b4b - (ax / 3);
+    let y = f32::from_bits(i);
+    let c = x * y * y * y;
+    let y = y * (A + c * (B * c + C));
+    let d = x * y * y;
+    let c = d - d * d * y;
+    let c = c * f32::from_bits(0x3eaaaaab) + d;
+    f32::from_bits(sx) * c
+}
+
 
 pub struct CubicBezierPolynomial {
     pub a0: Vector<f32>,
@@ -454,5 +535,25 @@ impl Flatten for Kurbo {
                     _ => { unreachable!() }
                 }
         });
+    }
+}
+
+#[repr(align(16))]
+pub struct AlignedBuf<const N: usize>(std::mem::MaybeUninit<[f32; N]>);
+
+impl<const N: usize> AlignedBuf<N> {
+    #[inline(always)]
+    pub fn new() -> Self {
+        AlignedBuf(std::mem::MaybeUninit::uninit())
+    }
+
+    #[inline(always)]
+    pub unsafe fn get(&self, offset: usize) -> f32 {
+        *self.0.assume_init_ref().as_ptr().add(offset)
+    }
+
+    #[inline(always)]
+    pub unsafe fn ptr(&mut self, offset: usize) -> *mut f32 {
+        self.0.assume_init_mut().as_mut_ptr().add(offset)
     }
 }

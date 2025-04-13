@@ -20,3 +20,4 @@ harness = false
 [features]
 fma = []
 stats = []
+approx = []

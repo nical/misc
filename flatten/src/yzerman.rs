@@ -1,9 +1,11 @@
 use lyon_path::{geom::{LineSegment, CubicBezierSegment, QuadraticBezierSegment}, math::point};
 
+use crate::{fast_ceil, fast_cubic_root, fast_recip};
+
 fn num_quadratics(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
     let q = curve.from - curve.to + (curve.ctrl2 - curve.ctrl1) * 3.0;
-    const K: f32 = 0.048112522; // 1.0 / (12.0 * 3.0f32.sqrt());
-    (tolerance / K * q.length()).powf(1.0 / 3.0).ceil().max(1.0)
+    const K: f32 = 20.784609691; // (12.0 * 3.0f32.sqrt());
+    fast_ceil(fast_cubic_root(tolerance * K * q.length())).max(1.0) // TODO: looks like ceil is not inlined.
 }
 
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
@@ -14,8 +16,7 @@ where
     let flatten_tolerance = tolerance - simplify_tolerance;
 
     let num_quads = num_quadratics(curve, simplify_tolerance);
-    let step = 1.0 / num_quads;
-
+    let step = fast_recip(num_quads);
     let mut t0 = 0.0;
     while t0 < 1.0 {
         let mut t1 = t0 + step;
@@ -66,7 +67,7 @@ where
     let mut a2y = AlignedBuf::new();
 
     let num_quads = num_quadratics(curve, simplify_tolerance);
-    let quad_step = 1.0 / num_quads;
+    let quad_step = fast_recip(num_quads);
 
     let mut from = curve.from;
     let mut quad_offset = 0;
@@ -99,7 +100,7 @@ where
             let a2x = splat(a2x.get(i));
             let a2y = splat(a2y.get(i));
             let num_segments = num_segments.get(i);
-            let flatten_step = 1.0 / num_segments;
+            let flatten_step = fast_recip(num_segments);
             let flatten_step = splat(flatten_step);
             let mut t = mul(flatten_step, vec4(1.0, 2.0, 3.0, 4.0));
             let flatten_step4 = mul(flatten_step, splat(4.0));

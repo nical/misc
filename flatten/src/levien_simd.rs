@@ -14,39 +14,11 @@ use std::arch::x86 as arch;
 use std::f32;
 use std::ops::Range;
 
-use crate::{polynomial_form_quadratic, simd4::*};
+use crate::{fast_recip, fast_recip_sqrt, polynomial_form_quadratic, simd4::*};
 
 use crate::levien::FlatteningParams;
 //use crate::testing::counters_inc;
 use crate::{polynomial_form_cubic, QuadraticBezierPolynomial};
-
-#[inline(always)]
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn fast_recip(a: f32) -> f32 {
-    use std::arch::x86_64::*;
-    let a = _mm_set_ss(a);
-    let r = _mm_rcp_ss(a);
-    _mm_cvtss_f32(r)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn fast_recip(a: f32) -> f32 {
-    1.0 / a
-}
-
-#[inline(always)]
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn fast_recip_sqrt(a: f32) -> f32 {
-    use std::arch::x86_64::*;
-    let a = _mm_set_ss(a);
-    let r = _mm_rsqrt_ss(a);
-    _mm_cvtss_f32(r)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn fast_recip_sqrt(a: f32) -> f32 {
-    1.0 / a.sqrt()
-}
 
 
 #[inline(always)]

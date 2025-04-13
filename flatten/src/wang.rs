@@ -1,5 +1,7 @@
 use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
 
+use crate::{fast_ceil, fast_recip};
+
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
 pub fn num_segments_cubic(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
@@ -8,9 +10,9 @@ pub fn num_segments_cubic(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f3
     let ctrl2 = curve.ctrl2.to_vector();
     let to = curve.to.to_vector();
     let l = (from - ctrl1 * 2.0 + to).max(ctrl1 - ctrl2 * 2.0 + to) * 6.0;
-    let num_steps = f32::sqrt(l.length() / (8.0 * tolerance));
+    let num_steps = f32::sqrt(l.length() * fast_recip(8.0 * tolerance));
 
-    num_steps.ceil().max(1.0)
+    fast_ceil(num_steps).max(1.0)
 }
 
 /// Computes the number of line segments required to build a flattened approximation
@@ -20,9 +22,9 @@ pub fn num_segments_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f3
     let ctrl = curve.ctrl.to_vector();
     let to = curve.to.to_vector();
     let l = (from - ctrl * 2.0 + to) * 2.0;
-    let num_steps = f32::sqrt(l.length() / (8.0 * tolerance));
+    let num_steps = f32::sqrt(l.length() * fast_recip(8.0 * tolerance));
 
-    num_steps.ceil().max(1.0)
+    fast_ceil(num_steps).max(1.0)
 }
 
 
@@ -34,7 +36,7 @@ pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callbac
 {
     let poly = crate::polynomial_form_cubic(&curve);
     let n = num_segments_cubic(curve, tolerance);
-    let step = 1.0 / n;
+    let step = fast_recip(n);
     let mut prev = 0.0;
     let mut from = curve.from;
     for _ in 0..(n as u32 - 1) {
@@ -57,7 +59,7 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
 {
     let poly = crate::polynomial_form_quadratic(curve);
     let n = num_segments_quadratic(curve, tolerance);
-    let step = 1.0 / n;
+    let step = fast_recip(n);
     let mut prev = 0.0;
     let mut from = curve.from;
     for _ in 0..(n as u32 - 1) {
@@ -93,7 +95,7 @@ pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance:
     let a2y = splat(poly.a2.y);
     let a3x = splat(poly.a3.x);
     let a3y = splat(poly.a3.y);
-    let step = 1.0 / n;
+    let step = fast_recip(n);
     let step = splat(step);
     let mut t = mul(step, vec4(1.0, 2.0, 3.0, 4.0));
     let step4 = mul(step, splat(4.0));
@@ -138,7 +140,7 @@ pub unsafe fn flatten_quadratic_simd4<F>(curve: &QuadraticBezierSegment<f32>, to
     let a1y = splat(poly.a1.y);
     let a2x = splat(poly.a2.x);
     let a2y = splat(poly.a2.y);
-    let step = 1.0 / n;
+    let step = fast_recip(n);
     let step = splat(step);
     let mut t = mul(step, vec4(1.0, 2.0, 3.0, 4.0));
     let step4 = mul(step, splat(4.0));

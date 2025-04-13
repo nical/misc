@@ -12,27 +12,12 @@ use lyon_path::math::{point, Point, Vector};
 use std::arch::x86 as arch;
 #[cfg(target_arch = "x86_64")]
 use std::f32;
-use std::mem::MaybeUninit;
 
 use crate::simd4::*;
 
 use crate::levien::FlatteningParams;
 use crate::{polynomial_form_cubic, QuadraticBezierPolynomial};
-
-#[inline(always)]
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn fast_recip(a: f32) -> f32 {
-    use std::arch::x86_64::*;
-    let a = _mm_set_ss(a);
-    let r = _mm_rcp_ss(a);
-    _mm_cvtss_f32(r)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn fast_recip(a: f32) -> f32 {
-    1.0 / a
-}
-
+use crate::fast_recip;
 
 #[inline(always)]
 unsafe fn approx_parabola_integral(x: f32x4) -> f32x4 {
