@@ -20,7 +20,7 @@ rectangles = { path = "../renderers/rectangles" }
 msaa_stroke = { path = "../renderers/msaa_stroke" }
 wpf = { path = "../renderers/wpf" }
 #debug_overlay = { path = "/home/nical/dev/rust/rust_debug/font/overlay", features = ["wgpu"] }
-debug_overlay = { version = "0.8", features = ["wgpu"] }
+debug_overlay = { version = "0.9", features = ["wgpu"] }
 
 pattern_color = { path = "../patterns/color" }
 pattern_linear_gradient = { path = "../patterns/linear_gradient" }
@@ -29,7 +29,7 @@ pattern_texture = { path = "../patterns/texture" }
 
 lyon = "1.0.0"
 winit = "0.30"
-wgpu = { version = "24.0", features = ["counters"] }
+wgpu = { version = "25.0", features = ["counters"] }
 usvg = "0.36"
 profiling = "1.0.4"
 futures = "0.3.5"

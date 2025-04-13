@@ -1019,7 +1019,7 @@ impl BindGroupLayout {
                 wgpu::BindingType::StorageTexture { .. } => {
                     todo!();
                 }
-                wgpu::BindingType::AccelerationStructure => {
+                wgpu::BindingType::AccelerationStructure { .. } => {
                     unimplemented!();
                 }
             }

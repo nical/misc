@@ -178,7 +178,7 @@ impl App {
 
         let mut tolerance = 0.25;
 
-        let mut trace = None;
+        let mut trace = wgpu::Trace::Off;
         let mut force_gl = false;
         let mut force_vk = false;
         let mut asap = false;
@@ -211,9 +211,9 @@ impl App {
                 // it runs into new issues.
                 std::env::set_var("WINIT_UNIX_BACKEND", "x11");
             }
-            if arg == "--trace" {
-                trace = Some(std::path::Path::new("./trace"));
-            }
+            //if arg == "--trace" {
+            //    trace = wgpu::Trace::On(std::path::Path::new("./trace"));
+            //}
             use_ssaa4 |= arg == "--ssaa";
             force_gl |= arg == "--gl";
             force_vk |= arg == "--vulkan";
@@ -261,8 +261,8 @@ impl App {
                 required_features: wgpu::Features::default(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace,
             },
-            trace,
         ))
         .unwrap();
 
@@ -756,7 +756,7 @@ impl App {
             self.window.request_redraw();
         }
 
-        self.device.poll(wgpu::Maintain::Poll);
+        self.device.poll(wgpu::PollType::Poll).unwrap();
     }
 }
 
