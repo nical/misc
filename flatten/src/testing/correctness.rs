@@ -1,14 +1,14 @@
 #[cfg(test)]
 use std::path::PathBuf;
 
-use lyon_path::{geom::CubicBezierSegment, math::Point};
+use crate::{CubicBezierSegment, Point};
 #[cfg(test)]
-use crate::table::{print_first_row_md, print_row_md};
+use crate::testing::table::{print_first_row_md, print_row_md};
 #[cfg(test)]
 use crate::testing::generate_bezier_curves;
 use crate::Flatten;
 
-fn compute_error(curve: &CubicBezierSegment<f32>, approximation: &[Point]) -> (f32, f32) {
+fn compute_error(curve: &CubicBezierSegment, approximation: &[Point]) -> (f32, f32) {
     let mut quads = Vec::new();
     curve.for_each_quadratic_bezier(0.0001, &mut |quad| {
         quads.push(quad.to_f64());
@@ -41,7 +41,7 @@ fn compute_error(curve: &CubicBezierSegment<f32>, approximation: &[Point]) -> (f
     (max_error, avg)
 }
 
-fn compute_cubic_error<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: f32) -> f32 {
+fn compute_cubic_error<F: Flatten>(curves: &[CubicBezierSegment], tolerance: f32) -> f32 {
     let mut poly = Vec::new();
     let mut max_error: f32 = 0.0;
     for curve in curves {
@@ -79,7 +79,7 @@ fn cubic_error() {
         hain.push(compute_cubic_error::<crate::Hain>(&curves, tolerance));
     }
 
-    let out_name = crate::table::get_flatten_output();
+    let out_name = crate::testing::table::get_flatten_output();
 
     let mut _std_out = None;
     let mut _out_file = None;

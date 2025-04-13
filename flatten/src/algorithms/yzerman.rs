@@ -1,16 +1,15 @@
-use lyon_path::{geom::{LineSegment, CubicBezierSegment, QuadraticBezierSegment}, math::point};
+use crate::{LineSegment, CubicBezierSegment, point};
+use crate::{fast_ceil, fast_cubic_root, fast_recip, split_range};
 
-use crate::{fast_ceil, fast_cubic_root, fast_recip};
-
-fn num_quadratics(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+fn num_quadratics(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
     let q = curve.from - curve.to + (curve.ctrl2 - curve.ctrl1) * 3.0;
     const K: f32 = 20.784609691; // (12.0 * 3.0f32.sqrt());
     fast_ceil(fast_cubic_root(tolerance * K * q.length())).max(1.0) // TODO: looks like ceil is not inlined.
 }
 
-pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let simplify_tolerance = tolerance * 0.2;
     let flatten_tolerance = tolerance - simplify_tolerance;
@@ -49,9 +48,9 @@ const NUM_QUADS: usize = 16;
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     use crate::simd4::*;
 
@@ -148,7 +147,7 @@ struct FlatteningParams {
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 unsafe fn flattening_params_simd4(
-    curve: &CubicBezierSegment<f32>,
+    curve: &CubicBezierSegment,
     s_num_quads: f32,
     s_first_quad: f32,
     s_quad_step: f32,
@@ -251,30 +250,5 @@ unsafe fn flattening_params_simd4(
         t0 = add(t0, quad_step_4);
         t1 = add(t1, quad_step_4);
         quad_idx += 4;
-    }
-}
-
-
-#[inline(always)]
-pub fn split_range(curve: &CubicBezierSegment<f32>, t_range: std::ops::Range<f32>) -> CubicBezierSegment<f32> {
-    let (t0, t1) = (t_range.start, t_range.end);
-    let from = curve.sample(t0);
-    let to = curve.sample(t1);
-
-    let d = QuadraticBezierSegment {
-        from: (curve.ctrl1 - curve.from).to_point(),
-        ctrl: (curve.ctrl2 - curve.ctrl1).to_point(),
-        to: (curve.to - curve.ctrl2).to_point(),
-    };
-
-    let dt = t1 - t0;
-    let ctrl1 = from + d.sample(t0).to_vector() * dt;
-    let ctrl2 = to - d.sample(t1).to_vector() * dt;
-
-    CubicBezierSegment {
-        from,
-        ctrl1,
-        ctrl2,
-        to,
     }
 }

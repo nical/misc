@@ -1,12 +1,12 @@
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Point};
+use crate::{QuadraticBezierSegment, CubicBezierSegment, LineSegment, Point};
 
 use crate::flatness::CubicFlatness;
 
 /// Flatten using a simple recursive algorithm
-pub fn flatten_cubic<Flatness, F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<Flatness, F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
     Flatness: CubicFlatness,
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     if crate::cubic_is_a_point(&curve, tolerance) {
         return;
@@ -15,10 +15,10 @@ where
     flatten_recursive_cubic_impl::<Flatness, _>(curve, tolerance, callback, &mut prev, 0.0, 1.0);
 }
 
-fn flatten_recursive_cubic_impl<Flatness, F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F, prev: &mut Point<f32>, t0: f32, t1: f32)
+fn flatten_recursive_cubic_impl<Flatness, F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F, prev: &mut Point, t0: f32, t1: f32)
 where
     Flatness: CubicFlatness,
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     if t1 < t0 + 0.001 || Flatness::is_flat(curve, tolerance) {
         callback(&LineSegment { from: *prev, to: curve.to });
@@ -35,17 +35,17 @@ where
 
 
 /// Flatten using a simple recursive algorithm
-pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let mut prev = curve.from;
     flatten_recursive_quadratic_impl(curve, tolerance, callback, &mut prev, 0.0, 1.0);
 }
 
-fn flatten_recursive_quadratic_impl<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F, prev: &mut Point<f32>, t0: f32, t1: f32)
+fn flatten_recursive_quadratic_impl<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F, prev: &mut Point, t0: f32, t1: f32)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     if curve.is_linear(tolerance) {
         callback(&LineSegment { from: *prev, to: curve.to });

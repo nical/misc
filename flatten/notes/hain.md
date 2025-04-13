@@ -1,7 +1,7 @@
 # Fast, Precise Flattening of Cubic Bézier Segment Offset Curves
 
 [Paper](http://sibgrapi.sid.inpe.br/col/sid.inpe.br/banon/2004/08.13.18.12/doc/BezierOffsetRendering.pdf)
-[Implementation in this repository](https://github.com/nical/misc/blob/master/flatten/src/hain.rs)
+[Implementation in this repository](https://github.com/nical/misc/blob/master/flatten/src/algorithms/hain.rs)
 
 
 The idea behind this algorithm is that for a "small enough step", the third order term in the equation of a cubic bezier curve is insignificantly small. This can then be approximated by a quadratic equation for which the maximum difference from a linear approximation can be much more easily determined.

@@ -1,18 +1,18 @@
-use lyon_path::geom::{CubicBezierSegment, QuadraticBezierSegment, Vector};
+use crate::{CubicBezierSegment, QuadraticBezierSegment, Vector};
 
 
 pub trait CubicFlatness {
-    fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool;
+    fn is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool;
 }
 
 pub trait QuadraticFlatness {
-    fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool;
+    fn is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool;
 }
 
 pub struct DefaultFlatness;
 impl CubicFlatness for DefaultFlatness {
     #[inline]
-    fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
+    fn is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool {
         cubic_is_flat(curve, tolerance)
     }
 }
@@ -20,8 +20,8 @@ impl CubicFlatness for DefaultFlatness {
 pub struct HfdFlatness;
 impl CubicFlatness for HfdFlatness {
     #[inline]
-    fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
-        fn approx_norm(v: &Vector<f32>) -> f32 {
+    fn is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool {
+        fn approx_norm(v: &Vector) -> f32 {
             v.x.abs().max(v.y.abs())
         }
 
@@ -38,7 +38,7 @@ impl CubicFlatness for HfdFlatness {
 pub struct AggFlatness;
 impl CubicFlatness for AggFlatness {
     #[inline]
-    fn is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
+    fn is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool {
         let baseline = curve.to - curve.from;
         let c1 = baseline.cross(curve.ctrl1 - curve.to);
         let c2 = baseline.cross(curve.ctrl2 - curve.to);
@@ -53,7 +53,7 @@ impl CubicFlatness for AggFlatness {
 /// a tolerance threshold.
 // Note: The inline annotation here makes a huge difference for `linear`.
 #[inline]
-pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
+pub fn cubic_is_flat(curve: &CubicBezierSegment, tolerance: f32) -> bool {
     // Similar to Line::square_distance_to_point, except we keep
     // the sign of c1 and c2 to compute tighter upper bounds as we
     // do in fat_line_min_max.
@@ -92,7 +92,7 @@ pub fn cubic_is_flat(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
 
 // Note: The inline annotation here makes a huge difference for `linear`.
 #[inline]
-pub fn quadratic_is_flat(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> bool {
+pub fn quadratic_is_flat(curve: &QuadraticBezierSegment, tolerance: f32) -> bool {
     let baseline = curve.to - curve.from;
     let v = curve.ctrl - curve.from;
     let c = baseline.cross(v);

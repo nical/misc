@@ -1,11 +1,11 @@
 use arrayvec::ArrayVec;
-use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
+use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment, point};
 
 use crate::{polynomial_form_quadratic, QuadraticBezierPolynomial};
 
-pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic_19<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
@@ -14,9 +14,9 @@ where
     });
 }
 
-pub fn flatten_cubic_37<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic_37<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let quads_tolerance = tolerance * 0.3;
     let flatten_tolerance = tolerance * 0.7;
@@ -25,9 +25,9 @@ where
     });
 }
 
-pub fn flatten_cubic_55<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic_55<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let quads_tolerance = tolerance * 0.5;
     let flatten_tolerance = tolerance * 0.5;
@@ -36,9 +36,9 @@ where
     });
 }
 
-pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     flatten_quad_scalar(curve, tolerance, callback);
 }
@@ -69,7 +69,7 @@ pub struct FlatteningParams {
 }
 
 impl FlatteningParams {
-    pub fn new(curve: &QuadraticBezierSegment<f32>, sqrt_tolerance: f32) -> Self {
+    pub fn new(curve: &QuadraticBezierSegment, sqrt_tolerance: f32) -> Self {
         //println!("quad: {curve:?}");
         // Map the quadratic bézier segment to y = x^2 parabola.
         let ddx = 2.0 * curve.ctrl.x - curve.from.x - curve.to.x;
@@ -131,7 +131,7 @@ impl FlatteningParams {
     }
 }
 
-pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment, tolerance: f32, cb: &mut impl FnMut(&LineSegment)) {
     let params = FlatteningParams::new(curve, tolerance.sqrt());
 
     let sqrt_tol = tolerance.sqrt();
@@ -149,7 +149,7 @@ pub fn flatten_quad_scalar(curve: &QuadraticBezierSegment<f32>, tolerance: f32, 
     cb(&LineSegment { from, to: curve.to });
 }
 
-pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub fn flatten_cubic_scalar(curve: &CubicBezierSegment, tolerance: f32, cb: &mut impl FnMut(&LineSegment)) {
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
     let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
@@ -218,7 +218,7 @@ pub fn flatten_cubic_scalar(curve: &CubicBezierSegment<f32>, tolerance: f32, cb:
     }
 }
 
-pub fn flatten_cubic_scalar2(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut impl FnMut(&LineSegment<f32>)) {
+pub fn flatten_cubic_scalar2(curve: &CubicBezierSegment, tolerance: f32, cb: &mut impl FnMut(&LineSegment)) {
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
     let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
@@ -285,7 +285,7 @@ pub fn flatten_cubic_scalar2(curve: &CubicBezierSegment<f32>, tolerance: f32, cb
     }
 }
 
-pub fn num_quadratics_impl(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+pub fn num_quadratics_impl(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
     debug_assert!(tolerance > 0.0);
 
     let x = curve.from.x - 3.0 * curve.ctrl1.x + 3.0 * curve.ctrl2.x - curve.to.x;

@@ -1,10 +1,10 @@
-use lyon_path::{geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment}, math::point};
+use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment, point};
 
 use crate::{fast_ceil, fast_recip};
 
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
-pub fn num_segments_cubic(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+pub fn num_segments_cubic(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
     let from = curve.from.to_vector();
     let ctrl1 = curve.ctrl1.to_vector();
     let ctrl2 = curve.ctrl2.to_vector();
@@ -17,7 +17,7 @@ pub fn num_segments_cubic(curve: &CubicBezierSegment<f32>, tolerance: f32) -> f3
 
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
-pub fn num_segments_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> f32 {
+pub fn num_segments_quadratic(curve: &QuadraticBezierSegment, tolerance: f32) -> f32 {
     let from = curve.from.to_vector();
     let ctrl = curve.ctrl.to_vector();
     let to = curve.to.to_vector();
@@ -30,9 +30,9 @@ pub fn num_segments_quadratic(curve: &QuadraticBezierSegment<f32>, tolerance: f3
 
 /// Flatten the curve by precomputing a number of segments and splitting the curve
 /// at regular `t` intervals.
-pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
     where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let poly = crate::polynomial_form_cubic(&curve);
     let n = num_segments_cubic(curve, tolerance);
@@ -53,9 +53,9 @@ pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callbac
 
 /// Flatten the curve by precomputing a number of segments and splitting the curve
 /// at regular `t` intervals.
-pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
     where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let poly = crate::polynomial_form_quadratic(curve);
     let n = num_segments_quadratic(curve, tolerance);
@@ -77,9 +77,9 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32,
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
     where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     use crate::simd4::{vec4, splat, add, mul};
 
@@ -124,9 +124,9 @@ pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment<f32>, tolerance:
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
-pub unsafe fn flatten_quadratic_simd4<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub unsafe fn flatten_quadratic_simd4<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
     where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     use crate::simd4::{vec4, splat, add, mul};
 

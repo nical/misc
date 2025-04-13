@@ -1,4 +1,4 @@
-use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment};
+use crate::{QuadraticBezierSegment, CubicBezierSegment, LineSegment};
 
 use crate::{polynomial_form_cubic, polynomial_form_quadratic};
 
@@ -7,9 +7,9 @@ use crate::{polynomial_form_cubic, polynomial_form_quadratic};
 /// This is the simple (non-adaptative) version of the forward difference
 /// algorithm, pre-calculating the number of edges using the formula given
 /// in section 10.6 of CAGD.
-pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let poly = polynomial_form_cubic(&curve);
     let n = crate::wang::num_segments_cubic(curve, tolerance);
@@ -40,9 +40,9 @@ where
 /// This is the simple (non-adaptative) version of the forward difference
 /// algorithm, pre-calculating the number of edges using the formula given
 /// in section 10.6 of CAGD.
-pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let poly = polynomial_form_quadratic(&curve);
     let n = crate::wang::num_segments_quadratic(curve, tolerance);

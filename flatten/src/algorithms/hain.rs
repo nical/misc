@@ -7,7 +7,7 @@
 /// then be approximated by a quadratic equation for which the maximum
 /// difference from a linear approximation can be much more easily determined.
 
-use lyon_path::geom::{CubicBezierSegment, LineSegment};
+use crate::{CubicBezierSegment, LineSegment};
 
 const EPSILON: f32 = 1e-4;
 
@@ -17,8 +17,8 @@ fn in_range(t: f32) -> bool {
 }
 
 
-pub fn flatten_cubic<F: FnMut(&LineSegment<f32>)>(
-    bezier: &CubicBezierSegment<f32>,
+pub fn flatten_cubic<F: FnMut(&LineSegment)>(
+    bezier: &CubicBezierSegment,
     tolerance: f32,
     call_back: &mut F,
 ) {
@@ -99,8 +99,8 @@ pub fn flatten_cubic<F: FnMut(&LineSegment<f32>)>(
     }
 }
 
-fn flatten_cubic_no_inflection<F: FnMut(&LineSegment<f32>)>(
-    mut curve: CubicBezierSegment<f32>,
+fn flatten_cubic_no_inflection<F: FnMut(&LineSegment)>(
+    mut curve: CubicBezierSegment,
     tolerance: f32,
     call_back: &mut F,
 ) {
@@ -121,7 +121,7 @@ fn flatten_cubic_no_inflection<F: FnMut(&LineSegment<f32>)>(
     }
 }
 
-fn no_inflection_flattening_step(bezier: &CubicBezierSegment<f32>, tolerance: f32) -> f32 {
+fn no_inflection_flattening_step(bezier: &CubicBezierSegment, tolerance: f32) -> f32 {
     let v1 = bezier.ctrl1 - bezier.from;
     let v2 = bezier.ctrl2 - bezier.from;
 
@@ -170,7 +170,7 @@ fn no_inflection_flattening_step(bezier: &CubicBezierSegment<f32>, tolerance: f3
 
 // Find the inflection points of a cubic bezier curve.
 pub(crate) fn find_cubic_bezier_inflection_points(
-    bezier: &CubicBezierSegment<f32>,
+    bezier: &CubicBezierSegment,
     t1: &mut f32,
     t2: &mut f32,
 ) -> u32 {
@@ -258,7 +258,7 @@ pub(crate) fn find_cubic_bezier_inflection_points(
 // Find the range around the start of the curve where the curve can locally be approximated
 // with a line segment, given a tolerance threshold.
 fn inflection_approximation_range(
-    bezier: &CubicBezierSegment<f32>,
+    bezier: &CubicBezierSegment,
     t: f32,
     tolerance: f32,
     t_min: &mut f32,

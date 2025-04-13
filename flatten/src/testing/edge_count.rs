@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Fixed16, Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang, Yzerman, TOLERANCES};
+use crate::{Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang, Yzerman, TOLERANCES};
 use crate::testing::*;
 
 fn count_edges_cubic<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: f32) -> u32 {

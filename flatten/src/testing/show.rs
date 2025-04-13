@@ -1,26 +1,26 @@
 use std::io::{self, Write};
 
-use lyon_path::geom::{euclid::Vector2D, CubicBezierSegment, Point};
+use crate::{Vector, CubicBezierSegment, Point};
 use svg_fmt::{Circle, Color, Fill, Stroke, PathOp, Style};
 
 use crate::Flatten;
 
 
 
-pub fn show_cubic<F: Flatten>(curve: &CubicBezierSegment<f32>, tolerance: f32, offset: (f32, f32), output: &mut dyn Write) -> io::Result<u32> {
-    fn back_point(p: Point<f32>, radius: f32, output: &mut dyn Write) -> io::Result<()> {
+pub fn show_cubic<F: Flatten>(curve: &CubicBezierSegment, tolerance: f32, offset: (f32, f32), output: &mut dyn Write) -> io::Result<u32> {
+    fn back_point(p: Point, radius: f32, output: &mut dyn Write) -> io::Result<()> {
         let style: Style = Fill::Color(Color { r: 200, g: 200, b: 200 }).into();
         writeln!(output, "{}", Circle { x: p.x, y: p.y, radius: radius * 2.0, style, comment: None })
     }
 
-    fn point(p: Point<f32>, radius: f32, output: &mut dyn Write) -> io::Result<()> {
+    fn point(p: Point, radius: f32, output: &mut dyn Write) -> io::Result<()> {
         let style: Style = Fill::Color(Color { r: 0, g: 0, b: 0 }).into();
         writeln!(output, "{}", Circle { x: p.x, y: p.y, radius, style, comment: None })?;
         let style: Style = Fill::Color(Color { r: 255, g: 255, b: 255 }).into();
         writeln!(output, "{}", Circle { x: p.x, y: p.y, radius: radius * 0.8, style, comment: None })
     }
 
-    let v = Vector2D::new(offset.0, offset.1);
+    let v = Vector::new(offset.0, offset.1);
     let curve = &CubicBezierSegment {
         from: curve.from + v,
         ctrl1: curve.ctrl1 + v,
@@ -79,7 +79,7 @@ fn print_card(output: &mut dyn Write, rect: &(i32, i32, i32, i32), title: &str) 
     }
 }
 
-fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment<f32>, tolerance: f32, offset: (i32, i32)) {
+fn compare_cubic(output: &mut dyn Write, curve: &CubicBezierSegment, tolerance: f32, offset: (i32, i32)) {
     let mut x = offset.0;
     let y = offset.1;
 

@@ -1,5 +1,8 @@
 # Raph Levien's flattening algorithm
 
+[Implementation in this repository](https://github.com/nical/misc/blob/master/flatten/src/algorithms/levien.rs) ([simd version](https://github.com/nical/misc/blob/master/flatten/src/algorithms/levien_simd.rs))
+
+
 Raph explains the maths behind the the flattening of quadratic bézier curves in this blog post: https://raphlinus.github.io/graphics/curves/2019/12/23/flatten-quadbez.html
 
 Flattening cubic bézier curves is done by first approximating them with a series fo quadratic curves. However there is a twist: Rather than considering each quadratic bézier sub-curve individually, the algorithm integrates the number of edges that must be produced over multiple sub-curves using a "fractional subdivision" scheme. This avoids the need to insert split points between each sub-curve and can even skip over entire sub-curves.

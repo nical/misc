@@ -1,4 +1,4 @@
-use lyon_path::geom::{CubicBezierSegment, LineSegment, Vector};
+use crate::{CubicBezierSegment, LineSegment, Vector};
 
 
 // The algorithm is described in detail in the 1995 patent # 5367617 "System and
@@ -42,10 +42,10 @@ use lyon_path::geom::{CubicBezierSegment, LineSegment, Vector};
 // This code is an adaptation of a Rust port by Jeff Muizelaar of WPF's C++
 // implementation.
 struct HfdFlattener {
-    current: Vector<f32>,
-    v1: Vector<f32>,
-    v2: Vector<f32>,
-    v3: Vector<f32>,
+    current: Vector,
+    v1: Vector,
+    v2: Vector,
+    v3: Vector,
     steps: u32,
     step_size: f32,
     t: f32,
@@ -55,7 +55,7 @@ struct HfdFlattener {
 
 impl HfdFlattener {
     #[inline]
-    fn new(curve: &CubicBezierSegment<f32>, tolerance: f32) -> Self {
+    fn new(curve: &CubicBezierSegment, tolerance: f32) -> Self {
         let mut flattener = HfdFlattener {
             current: curve.from.to_vector(),
             v1: curve.to - curve.from,
@@ -120,15 +120,15 @@ impl HfdFlattener {
     }
 }
 
-fn approx_norm(v: &Vector<f32>) -> f32 {
+fn approx_norm(v: &Vector) -> f32 {
     v.x.abs().max(v.y.abs())
 }
 
 
 /// Flatten using the hybrid forward difference algortihm.
-pub fn flatten_cubic<F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let mut flattener = HfdFlattener::new(curve, tolerance);
 

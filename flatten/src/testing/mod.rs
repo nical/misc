@@ -1,3 +1,16 @@
+pub mod table;
+
+#[cfg(test)]
+pub mod correctness;
+#[cfg(test)]
+pub mod edge_count;
+#[cfg(test)]
+pub mod show;
+
+pub static TOLERANCES: [f32; 10] = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0];
+pub static REORDERED_TOLERANCES: [f32; 10] = [0.2, 0.25, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.5, 1.0];
+
+
 #[cfg(feature="stats")]
 use std::sync::atomic::AtomicI32;
 

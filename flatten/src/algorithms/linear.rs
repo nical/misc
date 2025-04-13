@@ -1,10 +1,10 @@
-use lyon_path::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
+use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
 use crate::flatness::{quadratic_is_flat, CubicFlatness};
 
-pub fn flatten_cubic<Flat, F>(curve: &CubicBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_cubic<Flat, F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
 where
     Flat: CubicFlatness,
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     if crate::cubic_is_a_point(&curve, tolerance) {
         return;
@@ -40,9 +40,9 @@ where
     }
 }
 
-pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment<f32>, tolerance: f32, callback: &mut F)
+pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
 where
-    F:  FnMut(&LineSegment<f32>)
+    F:  FnMut(&LineSegment)
 {
     let mut rem = *curve;
     let mut from = rem.from;
