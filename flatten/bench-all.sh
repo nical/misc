@@ -1,5 +1,3 @@
-cargo test
-
 ./bench.sh cubic nehab $1
 ./bench.sh cubic font $1
 ./bench.sh cubic inkscape $1
