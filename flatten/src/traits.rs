@@ -82,6 +82,16 @@ impl Flatten for Wang {
     }
 }
 
+pub struct WangApprox;
+impl Flatten for WangApprox {
+    fn cubic<Cb: FnMut(&LineSegment)>(curve: &CubicBezierSegment, tolerance: f32, cb: &mut Cb) {
+        crate::wang::flatten_cubic_approx(curve, tolerance, cb);
+    }
+    fn quadratic<Cb: FnMut(&LineSegment)>(curve: &QuadraticBezierSegment, tolerance: f32, cb: &mut Cb) {
+        crate::wang::flatten_quadratic_approx(curve, tolerance, cb);
+    }
+}
+
 pub struct WangSimd4;
 impl Flatten for WangSimd4 {
     fn cubic<Cb: FnMut(&LineSegment)>(curve: &CubicBezierSegment, tolerance: f32, cb: &mut Cb) {
@@ -244,6 +254,13 @@ pub struct Yzerman;
 impl Flatten for Yzerman {
     fn cubic<Cb: FnMut(&LineSegment)>(curve: &CubicBezierSegment, tolerance: f32, cb: &mut Cb) {
         crate::yzerman::flatten_cubic(curve, tolerance, cb);
+    }
+}
+
+pub struct YzermanApprox;
+impl Flatten for YzermanApprox {
+    fn cubic<Cb: FnMut(&LineSegment)>(curve: &CubicBezierSegment, tolerance: f32, cb: &mut Cb) {
+        crate::yzerman::flatten_cubic_approx(curve, tolerance, cb);
     }
 }
 

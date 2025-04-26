@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use lyon_path::geom::{QuadraticBezierSegment, CubicBezierSegment};
-use crate::{Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang, Yzerman, TOLERANCES};
+use crate::{Flatten, FwdDiff, Hain, HybridFwdDiff, Kurbo, Levien, LevienLinear, LevienQuads, LevienSimd, Linear, LinearAgg, LinearHfd, Recursive, RecursiveAgg, RecursiveHfd, Wang, WangApprox, Yzerman, YzermanApprox, TOLERANCES};
 use crate::testing::*;
 
 fn count_edges_cubic<F: Flatten>(curves: &[CubicBezierSegment<f32>], tolerance: f32) -> u32 {
@@ -83,7 +83,9 @@ fn edge_count_cubic() {
     let mut fd = Vec::new();
     let mut hfd = Vec::new();
     let mut wang = Vec::new();
+    let mut wang2 = Vec::new();
     let mut yzerman = Vec::new();
+    let mut yzerman2 = Vec::new();
     //let mut fixed_16 = Vec::new();
     for tolerance in TOLERANCES {
         hain.push(count_edges_cubic::<Hain>(&curves, tolerance));
@@ -110,7 +112,9 @@ fn edge_count_cubic() {
         fd.push(count_edges_cubic::<FwdDiff>(&curves, tolerance));
         hfd.push(count_edges_cubic::<HybridFwdDiff>(&curves, tolerance));
         wang.push(count_edges_cubic::<Wang>(&curves, tolerance));
+        wang2.push(count_edges_cubic::<WangApprox>(&curves, tolerance));
         yzerman.push(count_edges_cubic::<Yzerman>(&curves, tolerance));
+        yzerman2.push(count_edges_cubic::<YzermanApprox>(&curves, tolerance));
         //fixed_16.push(count_edges_cubic::<Fixed16>(&curves, tolerance));
     }
 
@@ -146,7 +150,9 @@ fn edge_count_cubic() {
     print_edges_md(output, " levien-linear", &levien_linear);
     print_edges_md(output, " hain         ", &hain);
     print_edges_md(output, " wang         ", &wang);
+    print_edges_md(output, " wang-2       ", &wang2);
     print_edges_md(output, " yzerman      ", &yzerman);
+    print_edges_md(output, " yzerman-2    ", &yzerman2);
     print_edges_md(output, " fwd-diff     ", &fd);
     print_edges_md(output, " hfd          ", &hfd);
     //print_edges_md(" fixed-16     ", &fixed_16);
@@ -159,7 +165,7 @@ fn edge_count_cubic() {
     let mut levien_simd = Vec::new();
     let mut levien_linear = Vec::new();
     let mut fd = Vec::new();
-    let mut cagd = Vec::new();
+    let mut wang = Vec::new();
     let mut lin = Vec::new();
     for tolerance in TOLERANCES {
         rec.push(count_edges_quad::<Recursive>(&curves, tolerance));
@@ -167,7 +173,7 @@ fn edge_count_cubic() {
         levien_simd.push(count_edges_quad::<LevienSimd>(&curves, tolerance));
         levien_linear.push(count_edges_quad::<LevienLinear>(&curves, tolerance));
         fd.push(count_edges_quad::<FwdDiff>(&curves, tolerance));
-        cagd.push(count_edges_quad::<Wang>(&curves, tolerance));
+        wang.push(count_edges_quad::<Wang>(&curves, tolerance));
         lin.push(count_edges_quad::<Linear>(&curves, tolerance));
     }
 }
@@ -197,7 +203,8 @@ fn edge_count_quadratic() {
     let mut levien_simd2 = Vec::new();
     let mut levien_linear = Vec::new();
     let mut fd = Vec::new();
-    let mut cagd = Vec::new();
+    let mut wang = Vec::new();
+    let mut wang2 = Vec::new();
     let mut lin = Vec::new();
     for tolerance in TOLERANCES {
         rec.push(count_edges_quad::<Recursive>(&curves, tolerance));
@@ -206,7 +213,8 @@ fn edge_count_quadratic() {
         levien_simd2.push(count_edges_quad::<crate::LevienSimd2>(&curves, tolerance));
         levien_linear.push(count_edges_quad::<LevienLinear>(&curves, tolerance));
         fd.push(count_edges_quad::<FwdDiff>(&curves, tolerance));
-        cagd.push(count_edges_quad::<Wang>(&curves, tolerance));
+        wang.push(count_edges_quad::<Wang>(&curves, tolerance));
+        wang2.push(count_edges_quad::<WangApprox>(&curves, tolerance));
         lin.push(count_edges_quad::<Linear>(&curves, tolerance));
     }
 
@@ -217,7 +225,8 @@ fn edge_count_quadratic() {
     //print_edges_md(output, " levien-simd2 ", &levien_simd);
     print_edges_md(output, " linear       ", &lin);
     print_edges_md(output, " levien-linear", &levien_linear);
-    print_edges_md(output, " wang         ", &cagd);
+    print_edges_md(output, " wang         ", &wang);
+    print_edges_md(output, " wang-2       ", &wang2);
     print_edges_md(output, " fwd-diff     ", &fd);
 
 }

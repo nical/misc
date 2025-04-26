@@ -105,6 +105,19 @@ pub fn fast_cubic_root(x: f32) -> f32 {
     f32::from_bits(sx) * c
 }
 
+// A fast, conservative approximation of v.lenth().
+// The maximum error factor is 1.082 (an extra 8% larger)
+#[inline(always)]
+pub fn length_upper_bound(v: Vector) -> f32 {
+    let a = v.x.abs();
+    let b = v.y.abs();
+    if a > b {
+        a + b * 0.41421357
+    } else {
+        b + a * 0.41421357
+    }
+}
+
 
 pub struct CubicBezierPolynomial {
     pub a0: Vector,

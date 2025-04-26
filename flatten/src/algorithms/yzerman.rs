@@ -1,10 +1,16 @@
-use crate::{LineSegment, CubicBezierSegment, point};
+use crate::{CubicBezierSegment, LineSegment, length_upper_bound, point};
 use crate::{fast_ceil, fast_cubic_root, fast_recip, split_range};
 
 fn num_quadratics(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
     let q = curve.from - curve.to + (curve.ctrl2 - curve.ctrl1) * 3.0;
     const K: f32 = 20.784609691; // (12.0 * 3.0f32.sqrt());
     fast_ceil(fast_cubic_root(tolerance * K * q.length())).max(1.0) // TODO: looks like ceil is not inlined.
+}
+
+fn num_quadratics_approx(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
+    let q = curve.from - curve.to + (curve.ctrl2 - curve.ctrl1) * 3.0;
+    const K: f32 = 20.784609691; // (12.0 * 3.0f32.sqrt());
+    fast_ceil(fast_cubic_root(tolerance * K * length_upper_bound(q))).max(1.0) // TODO: looks like ceil is not inlined.
 }
 
 pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
@@ -15,6 +21,43 @@ where
     let flatten_tolerance = tolerance - simplify_tolerance;
 
     let num_quads = num_quadratics(curve, simplify_tolerance);
+    let step = fast_recip(num_quads);
+    let mut t0 = 0.0;
+    while t0 < 1.0 {
+        let mut t1 = t0 + step;
+        if t1 > 0.999 {
+            t1 = 1.0;
+        }
+
+        let quad = split_range(&curve, t0..t1).to_quadratic();
+
+        // Check Whether the quadratic curve is flat enough that we can
+        // skip the exepensive evaluation of the number of line segments
+        // per quad.
+        // This shortcut is a win for small curves or when the tolerance
+        // is large enough that a fair amount of quads will be flat.
+        // Overall it is a 5~12% win in the benchmarks at tolerance 0.25.
+        // The SIMD version does not have this optimization because it would
+        // require 4 consecutive flat quads to take advantage of it without
+        // expensive bookkeeping.
+        if crate::flatness::quadratic_is_flat(&quad, flatten_tolerance) {
+            callback(&quad.baseline());
+        } else {
+            crate::wang::flatten_quadratic(&quad, flatten_tolerance, callback);
+        }
+
+        t0 = t1;
+    }
+}
+
+pub fn flatten_cubic_approx<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
+where
+    F:  FnMut(&LineSegment)
+{
+    let simplify_tolerance = tolerance * 0.2;
+    let flatten_tolerance = tolerance - simplify_tolerance;
+
+    let num_quads = num_quadratics_approx(curve, simplify_tolerance);
     let step = fast_recip(num_quads);
     let mut t0 = 0.0;
     while t0 < 1.0 {

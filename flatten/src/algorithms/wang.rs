@@ -1,6 +1,11 @@
-use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment, point};
+use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment, Vector, length_upper_bound, point};
 
 use crate::{fast_ceil, fast_recip};
+
+#[inline(always)]
+pub fn length(v: Vector) -> f32 {
+    v.length()
+}
 
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
@@ -27,6 +32,29 @@ pub fn num_segments_quadratic(curve: &QuadraticBezierSegment, tolerance: f32) ->
     fast_ceil(num_steps).max(1.0)
 }
 
+/// Faster than num_segments_cubic but generates more segments.
+pub fn num_segments_cubic_approx(curve: &CubicBezierSegment, tolerance: f32) -> f32 {
+    let from = curve.from.to_vector();
+    let ctrl1 = curve.ctrl1.to_vector();
+    let ctrl2 = curve.ctrl2.to_vector();
+    let to = curve.to.to_vector();
+    let l = (from - ctrl1 * 2.0 + to).max(ctrl1 - ctrl2 * 2.0 + to) * 6.0;
+    let num_steps = f32::sqrt(length_upper_bound(l) * fast_recip(8.0 * tolerance));
+
+    fast_ceil(num_steps).max(1.0)
+}
+
+/// Faster than num_segments_quadratic but generates more segments.
+pub fn num_segments_quadratic_approx(curve: &QuadraticBezierSegment, tolerance: f32) -> f32 {
+    let from = curve.from.to_vector();
+    let ctrl = curve.ctrl.to_vector();
+    let to = curve.to.to_vector();
+    let l = (from - ctrl * 2.0 + to) * 2.0;
+    let num_steps = f32::sqrt(length_upper_bound(l) * fast_recip(8.0 * tolerance));
+
+    fast_ceil(num_steps).max(1.0)
+}
+
 
 /// Flatten the curve by precomputing a number of segments and splitting the curve
 /// at regular `t` intervals.
@@ -36,6 +64,27 @@ pub fn flatten_cubic<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &m
 {
     let poly = crate::polynomial_form_cubic(&curve);
     let n = num_segments_cubic(curve, tolerance);
+    let step = fast_recip(n);
+    let mut prev = 0.0;
+    let mut from = curve.from;
+    for _ in 0..(n as u32 - 1) {
+        let t = prev + step;
+        let to = poly.sample_fma(t);
+        callback(&mut LineSegment { from, to });
+        from = to;
+        prev = t;
+    }
+
+    let to = curve.to;
+    callback(&mut LineSegment { from, to });
+}
+
+pub fn flatten_cubic_approx<F>(curve: &CubicBezierSegment, tolerance: f32, callback: &mut F)
+    where
+    F:  FnMut(&LineSegment)
+{
+    let poly = crate::polynomial_form_cubic(&curve);
+    let n = num_segments_cubic_approx(curve, tolerance);
     let step = fast_recip(n);
     let mut prev = 0.0;
     let mut from = curve.from;
@@ -74,6 +123,27 @@ pub fn flatten_quadratic<F>(curve: &QuadraticBezierSegment, tolerance: f32, call
     callback(&mut LineSegment { from, to });
 }
 
+pub fn flatten_quadratic_approx<F>(curve: &QuadraticBezierSegment, tolerance: f32, callback: &mut F)
+    where
+    F:  FnMut(&LineSegment)
+{
+    let poly = crate::polynomial_form_quadratic(curve);
+    let n = num_segments_quadratic_approx(curve, tolerance);
+    let step = fast_recip(n);
+    let mut prev = 0.0;
+    let mut from = curve.from;
+    for _ in 0..(n as u32 - 1) {
+        let t = prev + step;
+        let to = poly.sample(t);
+        callback(&mut LineSegment { from, to });
+        from = to;
+        prev = t;
+    }
+
+    let to = curve.to;
+    callback(&mut LineSegment { from, to });
+}
+
 
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
@@ -84,7 +154,7 @@ pub unsafe fn flatten_cubic_simd4<F>(curve: &CubicBezierSegment, tolerance: f32,
     use crate::simd4::{vec4, splat, add, mul};
 
     let poly = crate::polynomial_form_cubic(&curve);
-    let n = num_segments_cubic(curve, tolerance);
+    let n = num_segments_cubic_approx(curve, tolerance);
     let mut from = curve.from;
 
     let a0x = splat(poly.a0.x);
@@ -131,7 +201,7 @@ pub unsafe fn flatten_quadratic_simd4<F>(curve: &QuadraticBezierSegment, toleran
     use crate::simd4::{vec4, splat, add, mul};
 
     let poly = crate::polynomial_form_quadratic(&curve);
-    let n = num_segments_quadratic(curve, tolerance);
+    let n = num_segments_quadratic_approx(curve, tolerance);
     let mut from = curve.from;
 
     let a0x = splat(poly.a0.x);
@@ -178,7 +248,7 @@ fn wang_simd_scalar() {
     };
 
     let mut scalar = Vec::new();
-    flatten_cubic(&curve, 0.001, &mut |seg| {
+    flatten_cubic_approx(&curve, 0.001, &mut |seg| {
         scalar.push(seg.to)
     });
 
