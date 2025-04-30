@@ -113,9 +113,8 @@ impl<T: 'static> std::ops::IndexMut<ResourcesHandle<T>> for GpuResources {
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
     pub vertices: DynamicStore,
-    pub indices: DynamicStore,
     pub vertices2: GpuStoreResources,
-    pub indices2: GpuStreamsResources,
+    pub indices: GpuStreamsResources,
     pub instances: GpuStreamsResources,
 
     pub gpu_store: GpuStoreResources,
@@ -169,7 +168,7 @@ impl CommonGpuResources {
             label: Some("vertices"),
         });
 
-        let indices2 = GpuStreamsResources::new(&GpuStreamsDescritptor {
+        let indices = GpuStreamsResources::new(&GpuStreamsDescritptor {
             usages: wgpu::BufferUsages::INDEX,
             buffer_size: 1024 * 16,
             chunk_size: 1024 * 2,
@@ -251,9 +250,8 @@ impl CommonGpuResources {
         CommonGpuResources {
             quad_ibo,
             vertices,
-            indices,
             vertices2,
-            indices2,
+            indices,
             instances,
             gpu_store,
             default_sampler,
@@ -268,12 +266,10 @@ impl CommonGpuResources {
 
     fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.vertices.unmap(encoder);
-        self.indices.unmap(encoder);
     }
 
     fn end_frame(&mut self) {
         self.vertices.end_frame();
-        self.indices.end_frame();
     }
 }
 

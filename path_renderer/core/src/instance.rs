@@ -62,7 +62,7 @@ impl Instance {
             self.resources.common.vertices2.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.indices2.begin_frame(
+            self.resources.common.indices.begin_frame(
                 self.staging_buffers.clone()
             ),
             self.resources.common.instances.begin_frame(
@@ -174,7 +174,7 @@ impl Instance {
                 &self.device,
                 encoder,
             );
-            self.resources.common.indices2.upload(
+            self.resources.common.indices.upload(
                 &idx_ops,
                 &staging_buffers,
                 &self.device,

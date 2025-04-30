@@ -137,14 +137,14 @@ pub struct StencilAndCoverRenderer {
     commands: Vec<Fill>,
     renderer_id: RendererId,
     stencil_vertices: Option<StreamId>,
+    stencil_indices: Option<StreamId>,
+    cover_indices: Option<StreamId>,
     stencil_geometry: VertexBuffers<StencilVertex, u32>,
     cover_geometry: VertexBuffers<CoverVertex, u32>,
     draws: Vec<Draw>,
     batches: BatchList<Fill, BatchInfo>,
     vbo_range: Option<DynBufferRange>,
-    ibo_range: Option<DynBufferRange>,
     cover_vbo_range: Option<DynBufferRange>,
-    cover_ibo_range: Option<DynBufferRange>,
     cover_pipeline: BaseShaderId,
     pub stats: Stats,
     pub tolerance: f32,
@@ -160,14 +160,14 @@ impl StencilAndCoverRenderer {
             commands: Vec::new(),
             renderer_id,
             stencil_vertices: None,
+            stencil_indices: None,
+            cover_indices: None,
             stencil_geometry: VertexBuffers::new(),
             cover_geometry: VertexBuffers::new(),
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             vbo_range: None,
-            ibo_range: None,
             cover_vbo_range: None,
-            cover_ibo_range: None,
             cover_pipeline: shared.cover_base_shader,
             stats: Stats {
                 commands: 0,
@@ -189,14 +189,14 @@ impl StencilAndCoverRenderer {
         self.draws.clear();
         self.batches.clear();
         self.stencil_vertices = None;
+        self.stencil_indices = None;
+        self.cover_indices = None;
         self.stencil_geometry.vertices.clear();
         self.stencil_geometry.indices.clear();
         self.cover_geometry.vertices.clear();
         self.cover_geometry.indices.clear();
         self.vbo_range = None;
-        self.ibo_range = None;
         self.cover_vbo_range = None;
-        self.cover_ibo_range = None;
         self.stats = Default::default();
     }
 
@@ -273,15 +273,19 @@ impl StencilAndCoverRenderer {
         let vertices = &mut worker_data.vertices;
         let indices = &mut worker_data.indices;
 
-        let idx_stream = indices.next_stream_id();
+        let stencil_idx_stream = indices.next_stream_id();
+        let cover_idx_stream = indices.next_stream_id();
         let mut stencil = Geometry {
             vertices: (),
-            indices: indices.write(idx_stream, 0),
+            indices: indices.write(stencil_idx_stream, 0),
         };
         let mut cover = Geometry {
             vertices: (),
-            indices: indices.write(idx_stream, 1),
+            indices: indices.write(cover_idx_stream, 0),
         };
+
+        self.stencil_indices = Some(stencil_idx_stream);
+        self.cover_indices = Some(cover_idx_stream);
 
         let mut batches = self.batches.take();
         let id = self.renderer_id;
@@ -294,15 +298,15 @@ impl StencilAndCoverRenderer {
 
             let draws_start = self.draws.len();
 
-            let stencil_idx_start = self.stencil_geometry.indices.len() as u32;
-            let cover_idx_start = self.cover_geometry.indices.len() as u32;
+            let stencil_idx_start = stencil.indices.pushed_bytes() / 4;
+            let cover_idx_start = cover.indices.pushed_bytes() / 4;
 
             for fill in commands.iter() {
                 self.prepare_fill(transforms, fill, &mut stencil, &mut cover);
             }
 
-            let stencil_idx_end = self.stencil_geometry.indices.len() as u32;
-            let cover_idx_end = self.cover_geometry.indices.len() as u32;
+            let stencil_idx_end = stencil.indices.pushed_bytes() / 4;
+            let cover_idx_end = cover.indices.pushed_bytes() / 4;
 
             if stencil_idx_end > stencil_idx_start {
                 self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
@@ -330,7 +334,7 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
     }
 
-    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, colver: &mut Geometry) {
+    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry) {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
@@ -379,6 +383,7 @@ impl StencilAndCoverRenderer {
                     &local_aabb,
                     transform.matrix(),
                     fill,
+                    cover,
                     &mut self.cover_geometry,
                 );
             }
@@ -390,15 +395,9 @@ impl StencilAndCoverRenderer {
             device,
             bytemuck::cast_slice(&self.stencil_geometry.vertices),
         );
-        self.ibo_range = resources.common
-            .indices
-            .upload(device, bytemuck::cast_slice(&self.stencil_geometry.indices));
         self.cover_vbo_range = resources.common
             .vertices
             .upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
-        self.cover_ibo_range = resources.common
-            .indices
-            .upload(device, bytemuck::cast_slice(&self.cover_geometry.indices));
     }
 }
 
@@ -412,7 +411,6 @@ fn generate_stencil_geometry(
 ) {
     let transform = &transform.to_untyped();
     let vertices = &mut stencil_geometry.vertices;
-    let indices = &mut stencil_geometry.indices;
 
     fn vertex(vertices: &mut Vec<StencilVertex>, p: Point) -> u32 {
         let idx = vertices.len() as u32;
@@ -420,10 +418,8 @@ fn generate_stencil_geometry(
         idx
     }
 
-    fn triangle(indices: &mut Vec<u32>, a: u32, b: u32, c: u32) {
-        indices.push(a);
-        indices.push(b);
-        indices.push(c)
+    fn triangle(indices: &mut GpuStreamWriter, a: u32, b: u32, c: u32) {
+        indices.push_u32(&[a, b, c]);
     }
 
     // Use the center of the bounding box as the pivot point.
@@ -441,7 +437,7 @@ fn generate_stencil_geometry(
 
                 let a = vertex(vertices, last);
                 let b = vertex(vertices, first);
-                triangle(indices, pivot, a, b);
+                triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
                 let from = transform.transform_point(from);
@@ -452,7 +448,7 @@ fn generate_stencil_geometry(
 
                 let a = vertex(vertices, from);
                 let b = vertex(vertices, to);
-                triangle(indices, pivot, a, b);
+                triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Quadratic { from, ctrl, to } => {
                 let from = transform.transform_point(from);
@@ -467,7 +463,7 @@ fn generate_stencil_geometry(
                 let a = vertex(vertices, from);
                 let b = vertex(vertices, to);
 
-                triangle(indices, pivot, a, b);
+                triangle(&mut stencil.indices, pivot, a, b);
 
                 let seg_aabb = SurfaceRect {
                     min: point(from.x.min(ctrl.x).min(to.x), from.y.min(ctrl.y).min(to.y)),
@@ -481,7 +477,7 @@ fn generate_stencil_geometry(
                         &mut |seg| {
                             let next = vertex(vertices, seg.to);
                             if prev != a {
-                                triangle(indices, a, prev, next);
+                                triangle(&mut stencil.indices, a, prev, next);
                             }
                             prev = next;
                         },
@@ -523,12 +519,12 @@ fn generate_stencil_geometry(
                         let a = vertex(vertices, quad.from);
                         let b = vertex(vertices, quad.to);
 
-                        triangle(indices, pivot, a, b);
+                        triangle(&mut stencil.indices, pivot, a, b);
                         let mut prev = a;
                         quad.for_each_flattened(tolerance, &mut |seg| {
                             let next = vertex(vertices, seg.to);
                             if prev != a {
-                                triangle(indices, a, prev, next);
+                                triangle(&mut stencil.indices, a, prev, next);
                             }
                             prev = next;
                         });
@@ -543,6 +539,7 @@ fn generate_cover_geometry(
     aabb: &LocalRect,
     transform: &LocalToSurfaceTransform,
     fill: &Fill,
+    cover: &mut Geometry,
     geometry: &mut VertexBuffers<CoverVertex, u32>,
 ) {
     let a = transform.transform_point(aabb.min);
@@ -577,12 +574,14 @@ fn generate_cover_geometry(
         z_index,
         pattern,
     });
-    geometry.indices.push(offset);
-    geometry.indices.push(offset + 1);
-    geometry.indices.push(offset + 2);
-    geometry.indices.push(offset);
-    geometry.indices.push(offset + 2);
-    geometry.indices.push(offset + 3);
+    cover.indices.push_u32(&[
+        offset,
+        offset + 1,
+        offset + 2,
+        offset,
+        offset + 2,
+        offset + 3,
+    ]);
 }
 
 impl core::Renderer for StencilAndCoverRenderer {
@@ -605,6 +604,17 @@ impl core::Renderer for StencilAndCoverRenderer {
 
         render_pass.set_stencil_reference(128);
 
+        let (stencil_idx_buffer, stencil_idx_range) = self
+            .stencil_indices
+            .and_then(|id| ctx.resources.common.indices.resolve(id))
+            .unwrap();
+
+        let (cover_idx_buffer, cover_idx_range) = self
+            .cover_indices
+            .and_then(|id| ctx.resources.common.indices.resolve(id))
+            .unwrap();
+
+
         for batch_id in batches {
             let (_, _, batch) = self.batches.get(batch_id.index);
 
@@ -622,9 +632,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         // better to merge the sencil and cover buffers into a
                         // single pair to avoid rebinding.
                         render_pass.set_index_buffer(
-                            ctx.resources.common
-                                .indices
-                                .get_buffer_slice(self.ibo_range.as_ref().unwrap()),
+                            stencil_idx_buffer.slice(stencil_idx_range.start as u64 .. stencil_idx_range.end as u64),
                             wgpu::IndexFormat::Uint32,
                         );
                         render_pass.set_vertex_buffer(
@@ -645,9 +653,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         helper.resolve_and_bind(1, pattern_inputs, ctx.bindings, render_pass);
 
                         render_pass.set_index_buffer(
-                            ctx.resources.common
-                                .indices
-                                .get_buffer_slice(self.cover_ibo_range.as_ref().unwrap()),
+                            cover_idx_buffer.slice(cover_idx_range.start as u64 .. cover_idx_range.end as u64),
                             wgpu::IndexFormat::Uint32,
                         );
                         render_pass.set_vertex_buffer(

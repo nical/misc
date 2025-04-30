@@ -5,7 +5,7 @@ use core::{
         shader::{
             BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         },
-        DynBufferRange,
+        DynBufferRange, GpuStreamWriter, StreamId,
     }, path::Path, pattern::BuiltPattern, resources::GpuResources, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use lyon::{
@@ -13,7 +13,7 @@ use lyon::{
     lyon_tessellation::{StrokeOptions, StrokeTessellator, StrokeVertexConstructor},
     path::traits::PathIterator,
     tessellation::{
-        BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers,
+        BuffersBuilder, FillGeometryBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers, VertexId
     },
 };
 use std::ops::Range;
@@ -72,6 +72,38 @@ pub struct Vertex {
 unsafe impl bytemuck::Zeroable for Vertex {}
 unsafe impl bytemuck::Pod for Vertex {}
 
+struct GeomBuilder<'a, 'b> {
+    indices: &'a mut GpuStreamWriter<'b>,
+    vertices: &'a mut Vec<Vertex>,
+
+    pattern: u32,
+    z_index: u32,
+}
+
+impl<'a, 'b> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b> {
+    fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
+        self.indices.push_u32(&[a.0, b.0, c.0])
+    }
+}
+
+impl<'a, 'b> FillGeometryBuilder for GeomBuilder<'a, 'b> {
+    fn add_fill_vertex(
+        &mut self,
+        vertex: lyon::tessellation::FillVertex<'_>,
+    ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
+        let (x, y) = vertex.position().to_tuple();
+        let vtx_id = VertexId(self.vertices.len() as u32);
+        self.vertices.push(Vertex {
+            x,
+            y,
+            z_index: self.z_index,
+            pattern: self.pattern,
+        });
+
+        Ok(vtx_id)
+    }
+}
+
 struct VertexCtor {
     pattern: u32,
     z_index: u32,
@@ -114,8 +146,8 @@ pub struct MeshRenderer {
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
+    indices: Option<StreamId>,
     vbo_range: Option<DynBufferRange>,
-    ibo_range: Option<DynBufferRange>,
     base_shader: BaseShaderId,
 }
 
@@ -132,8 +164,8 @@ impl MeshRenderer {
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
+            indices: None,
             vbo_range: None,
-            ibo_range: None,
             base_shader,
         }
     }
@@ -147,8 +179,8 @@ impl MeshRenderer {
         self.batches.clear();
         self.geometry.vertices.clear();
         self.geometry.indices.clear();
+        self.indices = None;
         self.vbo_range = None;
-        self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
@@ -228,7 +260,13 @@ impl MeshRenderer {
 
         let pass = &ctx.pass;
         let transforms = &ctx.transforms;
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let indices = &mut worker_data.indices;
+
+        let idx_stream = indices.next_stream_id();
+        let mut indices = indices.write(idx_stream, 0);
+        self.indices = Some(idx_stream);
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
@@ -248,11 +286,11 @@ impl MeshRenderer {
                 .shader_and_bindings();
 
             // Opaque pass.
-            let mut geom_start = self.geometry.indices.len() as u32;
+            let mut geom_start = indices.pushed_bytes() / 4;
             if surface.depth {
                 for fill in commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
                     if key != fill.pattern.shader_and_bindings() {
-                        let end = self.geometry.indices.len() as u32;
+                        let end = indices.pushed_bytes() / 4;
                         if end > geom_start {
                             self.draws.push(Draw {
                                 indices: geom_start..end,
@@ -268,11 +306,11 @@ impl MeshRenderer {
                         geom_start = end;
                         key = fill.pattern.shader_and_bindings();
                     }
-                    self.prepare_fill(fill, transforms);
+                    self.prepare_fill(fill, transforms, &mut indices);
                 }
             }
 
-            let end = self.geometry.indices.len() as u32;
+            let end = indices.pushed_bytes() / 4;
             if end > geom_start {
                 self.draws.push(Draw {
                     indices: geom_start..end,
@@ -293,7 +331,7 @@ impl MeshRenderer {
                 .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
             {
                 if key != fill.pattern.shader_and_bindings() {
-                    let end = self.geometry.indices.len() as u32;
+                    let end = indices.pushed_bytes() / 4;
                     if end > geom_start {
                         self.draws.push(Draw {
                             indices: geom_start..end,
@@ -309,10 +347,10 @@ impl MeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, transforms);
+                self.prepare_fill(fill, transforms, &mut indices);
             }
 
-            let end = self.geometry.indices.len() as u32;
+            let end = indices.pushed_bytes() / 4;
             if end > geom_start {
                 self.draws.push(Draw {
                     indices: geom_start..end,
@@ -333,7 +371,7 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, indices: &mut GpuStreamWriter) {
         let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
@@ -350,13 +388,12 @@ impl MeshRenderer {
                     .tessellate(
                         shape.path.iter().transformed(&transform),
                         &options,
-                        &mut BuffersBuilder::new(
-                            &mut self.geometry,
-                            VertexCtor {
-                                z_index: fill.z_index,
-                                pattern: fill.pattern.data,
-                            },
-                        ),
+                        &mut GeomBuilder {
+                            vertices: &mut self.geometry.vertices,
+                            indices,
+                            z_index: fill.z_index,
+                            pattern: fill.pattern.data,
+                        }
                     )
                     .unwrap();
             }
@@ -392,7 +429,7 @@ impl MeshRenderer {
                     });
                 }
                 for index in &mesh.indices {
-                    self.geometry.indices.push(*index + vtx_offset);
+                    indices.push_u32(&[*index + vtx_offset]);
                 }
             }
             Shape::Rect(rect) => {
@@ -426,12 +463,14 @@ impl MeshRenderer {
                     z_index,
                     pattern,
                 });
-                self.geometry.indices.push(vtx_offset);
-                self.geometry.indices.push(vtx_offset + 1);
-                self.geometry.indices.push(vtx_offset + 2);
-                self.geometry.indices.push(vtx_offset);
-                self.geometry.indices.push(vtx_offset + 2);
-                self.geometry.indices.push(vtx_offset + 3);
+                indices.push_u32(&[
+                    vtx_offset,
+                    vtx_offset + 1,
+                    vtx_offset + 2,
+                    vtx_offset,
+                    vtx_offset + 2,
+                    vtx_offset + 3,
+                ]);
             }
             Shape::StrokePath(path, width) => {
                 let transform = transform.to_untyped();
@@ -465,9 +504,6 @@ impl MeshRenderer {
         self.vbo_range = resources.common
             .vertices
             .upload(device, bytemuck::cast_slice(&self.geometry.vertices));
-        self.ibo_range = resources.common
-            .indices
-            .upload(device, bytemuck::cast_slice(&self.geometry.indices));
     }
 }
 
@@ -487,10 +523,13 @@ impl core::Renderer for MeshRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        let (idx_buffer, idx_range) = self
+            .indices
+            .and_then(|id| ctx.resources.common.indices.resolve(id))
+            .unwrap();
+
         render_pass.set_index_buffer(
-            ctx.resources.common
-                .indices
-                .get_buffer_slice(self.ibo_range.as_ref().unwrap()),
+            idx_buffer.slice(idx_range.start as u64 .. idx_range.end as u64),
             wgpu::IndexFormat::Uint32,
         );
         render_pass.set_vertex_buffer(

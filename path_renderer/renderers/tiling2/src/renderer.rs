@@ -1,6 +1,10 @@
 use core::batching::{BatchFlags, BatchId, BatchIndex, BatchList, SurfaceIndex};
-use core::context::{BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex};
-use core::gpu::shader::{BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey};
+use core::context::{
+    BuiltRenderPass, DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex,
+};
+use core::gpu::shader::{
+    BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+};
 use core::gpu::StreamId;
 use core::pattern::BuiltPattern;
 use core::resources::GpuResources;
@@ -14,7 +18,6 @@ use crate::{FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
-
 
 pub(crate) struct BatchInfo {
     pattern: BuiltPattern,
@@ -92,11 +95,22 @@ impl TileRenderer {
         self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_surface(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, pattern: BuiltPattern) {
+    pub fn fill_surface(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transforms: &Transforms,
+        pattern: BuiltPattern,
+    ) {
         self.fill_shape(ctx, transforms, Shape::Surface, pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, mut pattern: BuiltPattern) {
+    fn fill_shape(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transforms: &Transforms,
+        shape: Shape,
+        mut pattern: BuiltPattern,
+    ) {
         let transform = transforms.current_id();
         let z_index = ctx.z_indices.push();
 
@@ -106,8 +120,11 @@ impl TileRenderer {
                 .matrix()
                 .outer_transformed_box(&aabb)
         } else {
-            use std::f32::{MIN, MAX};
-            SurfaceRect { min: point(MIN, MIN), max: point(MAX, MAX) }
+            use std::f32::{MAX, MIN};
+            SurfaceRect {
+                min: point(MIN, MIN),
+                max: point(MAX, MAX),
+            }
         };
 
         let batch_flags = if self.back_to_front || self.no_opaque_batches {
@@ -123,23 +140,21 @@ impl TileRenderer {
             pattern.is_opaque = false;
         }
 
-        self.batches.find_or_add_batch(
-            ctx,
-            &pattern.batch_key(),
-            &aabb,
-            batch_flags,
-            &mut || BatchInfo {
+        self.batches
+            .find_or_add_batch(ctx, &pattern.batch_key(), &aabb, batch_flags, &mut || {
+                BatchInfo {
+                    pattern,
+                    opaque_draw: None,
+                    masked_draw: None,
+                    blend_mode: pattern.blend_mode,
+                }
+            })
+            .push(Fill {
+                shape,
                 pattern,
-                opaque_draw: None,
-                masked_draw: None,
-                blend_mode: pattern.blend_mode,
-            },
-        ).push(Fill {
-            shape,
-            pattern,
-            transform,
-            z_index,
-        });
+                transform,
+                z_index,
+            });
     }
 
     pub fn set_options(&mut self, options: &RendererOptions) {
@@ -170,7 +185,9 @@ impl TileRenderer {
         let size = pass.surface_size();
         self.tiler.begin_target(SurfaceIntRect::from_size(size));
         if self.occlusion.cpu {
-            self.tiles.occlusion.init(size.width as u32, size.height as u32);
+            self.tiles
+                .occlusion
+                .init(size.width as u32, size.height as u32);
         } else {
             self.tiles.occlusion.disable();
         }
@@ -188,11 +205,7 @@ impl TileRenderer {
                 self.prepare_batch(*batch_id, transforms, shaders, &mut batches);
             }
         } else {
-            for batch_id in pass
-                .batches()
-                .iter()
-                .filter(|batch| batch.renderer == id)
-            {
+            for batch_id in pass.batches().iter().filter(|batch| batch.renderer == id) {
                 self.prepare_batch(*batch_id, transforms, shaders, &mut batches);
             }
         }
@@ -250,103 +263,107 @@ impl TileRenderer {
         }
 
         unsafe {
-        self.batches.par_iter_mut(
-            &mut workers.with_data(&mut worker_data),
-            pass, self.renderer_id,
-            &|ctx, batch, commands, surface, info| {
-            let added_opaque_tiles: AtomicBool = AtomicBool::new(false);
-            let added_mask_tiles: AtomicBool = AtomicBool::new(false);
-            ctx.slice_for_each(&commands, &|ctx, fills| {
-                let worker_index = ctx.index() as u8;
-                let (_, tiler_data) = ctx.data();
-                let opaque_tiles_start = tiler_data.tiles.opaque_tiles.len() as u32;
-                let mask_tiles_start = tiler_data.tiles.mask_tiles.len() as u32;
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                for fill in fills {
-                    Self::prepare_fill_impl(
-                        &mut tiler_data.tiler,
-                        &mut tiler_data.tiles,
-                        fill,
-                        transforms,
-                        self.tolerance,
-                    );
-                }
-                let opaque_tiles_end = tiler_data.tiles.opaque_tiles.len() as u32;
-                let mask_tiles_end = tiler_data.tiles.mask_tiles.len() as u32;
-
-                fn add_item(
-                    items: &mut Vec<Item>,
-                    range: Range<u32>,
-                    batch_index: BatchIndex,
-                    surface_index: SurfaceIndex,
-                    worker_index: u8,
-                ) {
-                    if let Some(last) = items.last_mut() {
-                        if last.batch_index == batch_index && last.instances.end == range.start {
-                            last.instances.end = range.end;
-                            return;
+            self.batches.par_iter_mut(
+                &mut workers.with_data(&mut worker_data),
+                pass,
+                self.renderer_id,
+                &|ctx, batch, commands, surface, info| {
+                    let added_opaque_tiles: AtomicBool = AtomicBool::new(false);
+                    let added_mask_tiles: AtomicBool = AtomicBool::new(false);
+                    ctx.slice_for_each(&commands, &|ctx, fills| {
+                        let worker_index = ctx.index() as u8;
+                        let (_, tiler_data) = ctx.data();
+                        let opaque_tiles_start = tiler_data.tiles.opaque_tiles.len() as u32;
+                        let mask_tiles_start = tiler_data.tiles.mask_tiles.len() as u32;
+                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        for fill in fills {
+                            Self::prepare_fill_impl(
+                                &mut tiler_data.tiler,
+                                &mut tiler_data.tiles,
+                                fill,
+                                transforms,
+                                self.tolerance,
+                            );
                         }
+                        let opaque_tiles_end = tiler_data.tiles.opaque_tiles.len() as u32;
+                        let mask_tiles_end = tiler_data.tiles.mask_tiles.len() as u32;
+
+                        fn add_item(
+                            items: &mut Vec<Item>,
+                            range: Range<u32>,
+                            batch_index: BatchIndex,
+                            surface_index: SurfaceIndex,
+                            worker_index: u8,
+                        ) {
+                            if let Some(last) = items.last_mut() {
+                                if last.batch_index == batch_index
+                                    && last.instances.end == range.start
+                                {
+                                    last.instances.end = range.end;
+                                    return;
+                                }
+                            }
+
+                            items.push(Item {
+                                instances: range.clone(),
+                                batch_index,
+                                surface_index,
+                                worker_index,
+                            });
+                        }
+
+                        if opaque_tiles_end > opaque_tiles_start {
+                            added_opaque_tiles.store(true, Ordering::Relaxed);
+                            add_item(
+                                &mut tiler_data.opaque_items,
+                                opaque_tiles_start..opaque_tiles_end,
+                                batch.index,
+                                batch.surface,
+                                worker_index,
+                            );
+                            // TODO
+                        }
+                        if mask_tiles_end > mask_tiles_start {
+                            added_mask_tiles.store(true, Ordering::Relaxed);
+                            add_item(
+                                &mut tiler_data.masked_items,
+                                mask_tiles_start..mask_tiles_end,
+                                batch.index,
+                                batch.surface,
+                                worker_index,
+                            );
+                            // TODO
+                        }
+                    });
+
+                    let draw_config = surface.draw_config(true, None);
+
+                    let (core_data, _tiler_data) = ctx.data();
+
+                    if added_opaque_tiles.load(Ordering::Relaxed) {
+                        let _pipeline = core_data.pipelines.prepare(RenderPipelineKey::new(
+                            self.base_shader,
+                            info.pattern.shader,
+                            BlendMode::None,
+                            draw_config,
+                        ));
+
+                        // TODO
                     }
 
-                    items.push(Item {
-                        instances: range.clone(),
-                        batch_index,
-                        surface_index,
-                        worker_index,
-                    });
-                }
+                    if added_mask_tiles.load(Ordering::Relaxed) {
+                        let _pipleine = core_data.pipelines.prepare(RenderPipelineKey::new(
+                            self.base_shader,
+                            info.pattern.shader,
+                            info.blend_mode.with_alpha(true),
+                            draw_config,
+                        ));
 
-                if opaque_tiles_end > opaque_tiles_start {
-                    added_opaque_tiles.store(true, Ordering::Relaxed);
-                    add_item(
-                        &mut tiler_data.opaque_items,
-                        opaque_tiles_start..opaque_tiles_end,
-                        batch.index,
-                        batch.surface,
-                        worker_index
-                    );
-                    // TODO
-                }
-                if mask_tiles_end > mask_tiles_start {
-                    added_mask_tiles.store(true, Ordering::Relaxed);
-                    add_item(
-                        &mut tiler_data.masked_items,
-                        mask_tiles_start..mask_tiles_end,
-                        batch.index,
-                        batch.surface,
-                        worker_index
-                    );
-                    // TODO
-                }
-            });
-
-            let draw_config = surface.draw_config(true, None);
-
-            let (core_data, _tiler_data) = ctx.data();
-
-            if added_opaque_tiles.load(Ordering::Relaxed) {
-                let _pipeline = core_data.pipelines.prepare(RenderPipelineKey::new(
-                    self.base_shader,
-                    info.pattern.shader,
-                    BlendMode::None,
-                    draw_config,
-                ));
-
-                // TODO
-            }
-
-            if added_mask_tiles.load(Ordering::Relaxed) {
-                let _pipleine = core_data.pipelines.prepare(RenderPipelineKey::new(
-                    self.base_shader,
-                    info.pattern.shader,
-                    info.blend_mode.with_alpha(true),
-                    draw_config,
-                ));
-
-                // TODO
-            }
-        });
-        }// unsafe
+                        // TODO
+                    }
+                },
+            );
+        } // unsafe
 
         println!("tiled using {:?} jobs", counter);
 
@@ -355,7 +372,13 @@ impl TileRenderer {
         for worker in &worker_data {
             num_opaque_items += worker.opaque_items.len();
             num_masked_items += worker.masked_items.len();
-            println!(" - {:?}/{:?} opaque, {:?}/{:?} masked", worker.tiles.opaque_tiles.len(), worker.opaque_items.len(), worker.tiles.mask_tiles.len(), worker.masked_items.len())
+            println!(
+                " - {:?}/{:?} opaque, {:?}/{:?} masked",
+                worker.tiles.opaque_tiles.len(),
+                worker.opaque_items.len(),
+                worker.tiles.mask_tiles.len(),
+                worker.masked_items.len()
+            )
         }
 
         let mut ordered_opaque_items = Vec::with_capacity(num_opaque_items);
@@ -409,7 +432,7 @@ impl TileRenderer {
 
         if mask_tiles_end > mask_tiles_start {
             if self.back_to_front {
-                self.tiles.mask_tiles[mask_tiles_start as usize .. mask_tiles_end as usize].reverse();
+                self.tiles.mask_tiles[mask_tiles_start as usize..mask_tiles_end as usize].reverse();
             }
             info.masked_draw = Some(Draw {
                 tiles: mask_tiles_start..mask_tiles_end,
@@ -424,10 +447,22 @@ impl TileRenderer {
     }
 
     fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {
-        Self::prepare_fill_impl(&mut self.tiler, &mut self.tiles, fill, transforms, self.tolerance);
+        Self::prepare_fill_impl(
+            &mut self.tiler,
+            &mut self.tiles,
+            fill,
+            transforms,
+            self.tolerance,
+        );
     }
 
-    fn prepare_fill_impl(tiler: &mut Tiler, tiles: &mut TilerOutput, fill: &Fill, transforms: &Transforms, tolerance: f32) {
+    fn prepare_fill_impl(
+        tiler: &mut Tiler,
+        tiles: &mut TilerOutput,
+        fill: &Fill,
+        transforms: &Transforms,
+        tolerance: f32,
+    ) {
         let transform = transforms.get(fill.transform).matrix();
 
         match &fill.shape {
@@ -438,12 +473,7 @@ impl TileRenderer {
                     .with_z_index(fill.z_index)
                     .with_tolerance(tolerance)
                     .with_inverted(shape.inverted);
-                tiler.fill_path(
-                    shape.path.iter(),
-                    &options,
-                    &fill.pattern,
-                    tiles,
-                );
+                tiler.fill_path(shape.path.iter(), &options, &fill.pattern, tiles);
             }
             Shape::Surface => {
                 let opacity = 1.0; // TODO
@@ -490,7 +520,7 @@ impl TileRenderer {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(edges_per_row as u32 * 4),
-                rows_per_image: Some(rows)
+                rows_per_image: Some(rows),
             },
             wgpu::Extent3d {
                 width: edges_per_row as u32,
@@ -498,7 +528,6 @@ impl TileRenderer {
                 depth_or_array_layers: 1,
             },
         );
-
 
         let paths_per_row = 256; // 512 texels with 2 texels per path.
         let rem = paths_per_row - self.tiles.paths.len() % paths_per_row;
@@ -523,7 +552,7 @@ impl TileRenderer {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(paths_per_row as u32 * size_of_pathinfo),
-                rows_per_image: Some(rows)
+                rows_per_image: Some(rows),
             },
             wgpu::Extent3d {
                 width: paths_per_row as u32 * (size_of_pathinfo / size_of_texel),
@@ -565,19 +594,15 @@ impl core::Renderer for TileRenderer {
 
         // TODO: previous version was grouping the mask and opaque instances
         // in a single instance range which made avoided the need to re-bind.
-        let mask_instances = self.mask_instances.map(|id|
-            common_resources.instances.resolve(id)
-        );
+        let mask_instances = self
+            .mask_instances
+            .and_then(|id| common_resources.instances.resolve(id));
 
-        let opaque_instances = self.opaque_instances.map(|id|
-            common_resources.instances.resolve(id)
-        );
+        let opaque_instances = self
+            .opaque_instances
+            .and_then(|id| common_resources.instances.resolve(id));
 
-        render_pass.set_bind_group(
-            1,
-            &self.resources.bind_group,
-            &[],
-        );
+        render_pass.set_bind_group(1, &self.resources.bind_group, &[]);
 
         let mut helper = DrawHelper::new();
 
@@ -589,7 +614,8 @@ impl core::Renderer for TileRenderer {
                 let (opaque_buffer, opaque_byte_range) = opaque_instances.as_ref().unwrap();
                 render_pass.set_vertex_buffer(
                     0,
-                    opaque_buffer.slice(opaque_byte_range.start as u64 .. opaque_byte_range.end as u64)
+                    opaque_buffer
+                        .slice(opaque_byte_range.start as u64..opaque_byte_range.end as u64),
                 );
 
                 let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
@@ -602,7 +628,7 @@ impl core::Renderer for TileRenderer {
                 let (mask_buffer, mask_byte_range) = mask_instances.as_ref().unwrap();
                 render_pass.set_vertex_buffer(
                     0,
-                    mask_buffer.slice(mask_byte_range.start as u64 .. mask_byte_range.end as u64)
+                    mask_buffer.slice(mask_byte_range.start as u64..mask_byte_range.end as u64),
                 );
 
                 let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();

@@ -1,4 +1,12 @@
-use std::{cell::RefCell, ops::Range, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, u32};
+use std::{
+    cell::RefCell,
+    ops::Range,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    u32,
+};
 use wgpu::BufferAddress;
 
 use crate::gpu::staging_buffers::{StagingBufferId, StagingOffset};
@@ -93,7 +101,11 @@ impl DynamicStore {
         self.upload_multiple(device, &[data])
     }
 
-    pub fn upload_multiple(&mut self, device: &wgpu::Device, data: &[&[u8]]) -> Option<DynBufferRange> {
+    pub fn upload_multiple(
+        &mut self,
+        device: &wgpu::Device,
+        data: &[&[u8]],
+    ) -> Option<DynBufferRange> {
         let len: u32 = data.iter().map(|data| data.len() as u32).sum();
         if len == 0 {
             return None;
@@ -116,10 +128,7 @@ impl DynamicStore {
 
         let start = staging.offset as BufferAddress;
         let end = start + len as BufferAddress;
-        let mut mapped = staging
-            .handle
-            .slice(start..end)
-            .get_mapped_range_mut();
+        let mut mapped = staging.handle.slice(start..end).get_mapped_range_mut();
 
         let mut offset = 0;
         for chunk in data {
@@ -281,7 +290,7 @@ pub enum GpuStoreDescriptor {
         min_size: u32,
         max_size: u32,
         label: Option<&'static str>,
-    }
+    },
 }
 
 impl GpuStoreDescriptor {
@@ -308,7 +317,6 @@ impl Default for GpuStoreDescriptor {
     }
 }
 
-
 // Lives in the instance.
 pub struct GpuStoreResources {
     storage: Storage,
@@ -328,34 +336,37 @@ enum Storage {
         rows: u32,
         width: u32,
         bytes_per_px: u32,
-        format: wgpu::TextureFormat
+        format: wgpu::TextureFormat,
     },
-    Buffers {
-        handles: Vec<GpuBuffer>,
+    Buffer {
+        handle: Option<wgpu::Buffer>,
+        allocated_size: u32,
         alignment: u32,
         min_size: u32,
         max_size: u32,
         usage: wgpu::BufferUsages,
-    }
+    },
 }
 
 impl GpuStoreResources {
     pub fn new(desc: &GpuStoreDescriptor) -> Self {
         match desc {
-            GpuStoreDescriptor::Texture { format, width, label } => {
-                Self::new_texture(*format, *width, *label)
-            }
-            GpuStoreDescriptor::Buffers { usages, alignment, min_size, max_size, label } => {
-                Self::new_buffers(*usages, *alignment, *min_size, *max_size, *label)
-            }
+            GpuStoreDescriptor::Texture {
+                format,
+                width,
+                label,
+            } => Self::new_texture(*format, *width, *label),
+            GpuStoreDescriptor::Buffers {
+                usages,
+                alignment,
+                min_size,
+                max_size,
+                label,
+            } => Self::new_buffers(*usages, *alignment, *min_size, *max_size, *label),
         }
     }
 
-    fn new_texture(
-        format: wgpu::TextureFormat,
-        width: u32,
-        label: Option<&'static str>,
-    ) -> Self {
+    fn new_texture(format: wgpu::TextureFormat, width: u32, label: Option<&'static str>) -> Self {
         let bytes_per_px: u32 = match format {
             wgpu::TextureFormat::Rgba32Float => 16,
             wgpu::TextureFormat::Rgba8Uint
@@ -369,7 +380,6 @@ impl GpuStoreResources {
         let item_alignment = bytes_per_px;
         let align_mask = item_alignment - 1;
         let offset_shift = bytes_per_px.trailing_zeros();
-
 
         GpuStoreResources {
             storage: Storage::Texture {
@@ -400,8 +410,9 @@ impl GpuStoreResources {
         let offset_shift = alignment.trailing_zeros();
 
         GpuStoreResources {
-            storage: Storage::Buffers {
-                handles: Vec::new(),
+            storage: Storage::Buffer {
+                handle: None,
+                allocated_size: 0,
                 alignment,
                 min_size,
                 max_size,
@@ -418,7 +429,15 @@ impl GpuStoreResources {
 
     pub fn allocate(&mut self, size: u32, device: &wgpu::Device) {
         match &mut self.storage {
-            Storage::Texture { handle, view, rows, width, format, bytes_per_px, .. } => {
+            Storage::Texture {
+                handle,
+                view,
+                rows,
+                width,
+                format,
+                bytes_per_px,
+                ..
+            } => {
                 let height = size / (*width * *bytes_per_px);
 
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -451,25 +470,28 @@ impl GpuStoreResources {
                 *handle = Some(tex);
                 *rows = height;
             }
-            Storage::Buffers { handles, min_size, usage, .. } => {
+            Storage::Buffer {
+                handle,
+                allocated_size,
+                min_size,
+                usage,
+                ..
+            } => {
                 let usage = *usage;
                 let size = size.min(*min_size);
-                let handle = device.create_buffer(&wgpu::BufferDescriptor {
-                   label: self.label,
-                   size: size as u64,
-                   usage,
-                   mapped_at_creation: false,
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: self.label,
+                    size: size as u64,
+                    usage,
+                    mapped_at_creation: false,
                 });
-                handles.push(GpuBuffer {
-                    handle,
-                    size,
-                });
+                *handle = Some(buffer);
+                *allocated_size = size;
             }
         }
     }
 
     pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStore {
-
         debug_assert!(Arc::strong_count(&self.next_gpu_offset) == 1);
         self.next_gpu_offset.store(0, Ordering::Release);
 
@@ -491,9 +513,19 @@ impl GpuStoreResources {
         encoder: &mut wgpu::CommandEncoder,
     ) {
         let total_size_bytes = self.next_gpu_offset.load(Ordering::Acquire);
+        if total_size_bytes == 0 {
+            return;
+        }
 
         match &mut self.storage {
-            Storage::Texture { handle, view, rows, width, bytes_per_px, format } => {
+            Storage::Texture {
+                handle,
+                view,
+                rows,
+                width,
+                bytes_per_px,
+                format,
+            } => {
                 let bytes_per_row = *width * *bytes_per_px;
                 let cap = *rows * bytes_per_row;
                 if cap < total_size_bytes {
@@ -563,9 +595,39 @@ impl GpuStoreResources {
                     }
                 }
             }
-            Storage::Buffers { handles, .. } => {
-                // TODO: unimplemented!
-                return;
+            Storage::Buffer {
+                handle,
+                allocated_size,
+                min_size,
+                usage,
+                ..
+            } => {
+                if *allocated_size < total_size_bytes {
+                    let size = total_size_bytes.min(*min_size);
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: self.label,
+                        size: size as u64,
+                        usage: *usage,
+                        mapped_at_creation: false,
+                    });
+                    *handle = Some(buffer);
+                    *allocated_size = size;
+                }
+
+                let dst = handle.as_ref().unwrap();
+                for ops in transfer_ops {
+                    for op in &ops.ops {
+                        let staging_buffer = staging_buffers.get_handle(op.staging_id);
+                        let dst_offset = (op.gpu_offset.0 << self.offset_shift) as u64; // TODO: check that this is correct.
+                        encoder.copy_buffer_to_buffer(
+                            staging_buffer,
+                            op.staging_offset.0 as u64,
+                            dst,
+                            dst_offset,
+                            op.size as u64,
+                        );
+                    }
+                }
             }
         }
     }
@@ -585,12 +647,20 @@ impl GpuStoreResources {
     pub fn as_bind_group_entry(&self, binding: u32) -> wgpu::BindGroupEntry {
         wgpu::BindGroupEntry {
             binding,
-            resource: wgpu::BindingResource::TextureView(
-                self.as_texture_view().unwrap()
-            ),
+            resource: wgpu::BindingResource::TextureView(self.as_texture_view().unwrap()),
         }
     }
 }
+
+// TODO: GpuStore isn't a very good name for what this does.
+
+// TODO: Add a reserve(size) API to GpuStoreWriter and GpuStreamWriter that
+// asks for a larger staging buffer (and ensure in the case of GpuStore that
+// the push within the reseved space will be contiguous).
+
+// There can be multiple writers for a single store (for example to write multiple
+// vertex streams into the same resource). Each writer will have its own staging
+// buffer chunk.
 
 // TODO: if each writer manages its own staging buffer chunks, then a lot of
 // space will be wasted as they are rather short lived. So there needs to be
@@ -598,10 +668,30 @@ impl GpuStoreResources {
 // It could be done in by the staging buffer pool, or using a worker-local
 // pool of available chunks.
 
-// TODO: Add a reserve(size) API to GpuStoreWriter and GpuStreamWriter that
-// asks for a larger staging buffer (and ensure in the case of GpuStore that
-// the push within the reseved space will be contiguous).
+// Right now GpuStore is clonable and there is one per worker. This allows the
+// TransferOp verctor to be accessible to writers without a mutex and maybe avoids
+// lifetimes in the worker data. would it be better to have a single non-clonable one
+// with a mutex aorund the transfer ops?
 
+// TODO: either:
+// - A GpuStore could map to a single resource and offsets are relative to the start of
+//   the resource. It's the simplest approach, but it means that unrelated users must
+//   either chose to be in different resources, or fit in the single common resource.
+// - A GpuStore could map to multiple resources but just like with GpuStreams, an ID
+//   could be provided to ensure that all pushes for the same ID go to the same resource.
+//   The offsets would then be relative to a per-ID base offset which could be either
+//   passed to the shader or in the case of vertex buffers, the buffers could be bound at
+//   an offset. It looks like doing it at draw/binding time would not work for textures and
+//   non-vertex buffers, but is the only way to make it work for vertex buffers.
+//   This looks like the powerful but complicated approach.
+// For now I'm going with the first (simpler) approach.
+
+/// Used to push data to the GPU at known offsets in the destination resource.
+/// For example pattern parameters or vertices.
+///
+/// GpuStore does not guarantee that all consecutive pushes are contiguous, but
+/// consecutive pushes on the same writer tend to be contiguous because each writer
+/// manages its own staging buffer chunk.
 pub struct GpuStore {
     ops: RefCell<Vec<TransferOp>>,
     // In bytes.
@@ -635,7 +725,7 @@ impl GpuStore {
 
     pub(crate) fn finish(&mut self) -> TransferOps {
         TransferOps {
-            ops: std::mem::take(&mut self.ops.borrow_mut())
+            ops: std::mem::take(&mut self.ops.borrow_mut()),
         }
     }
 }
@@ -720,20 +810,23 @@ impl<'l> GpuStoreWriter<'l> {
         self.staging_buffer_offset = StagingOffset(0);
         self.staging_local_offset = self.chunk_size;
 
-        let gpu_byte_offset = self.next_gpu_offset.fetch_add(data.len() as u32, Ordering::Relaxed);
+        let gpu_byte_offset = self
+            .next_gpu_offset
+            .fetch_add(data.len() as u32, Ordering::Relaxed);
 
         let mut src_offset = 0;
         let mut dst_offset = gpu_byte_offset;
         loop {
             let chunk = {
-                self.store.staging_buffers
+                self.store
+                    .staging_buffers
                     .lock()
                     .unwrap()
                     .get_mapped_chunk(self.chunk_size)
             };
 
             let len = (self.chunk_size as usize).min(data.len() - src_offset);
-            let src = &data[src_offset .. (src_offset + len)];
+            let src = &data[src_offset..(src_offset + len)];
             unsafe {
                 let dst = std::slice::from_raw_parts_mut(chunk.ptr, len);
                 dst.copy_from_slice(src);
@@ -746,7 +839,9 @@ impl<'l> GpuStoreWriter<'l> {
             let mut ops = self.store.ops.borrow_mut();
             let mut merged = false;
             if let Some(last) = ops.last_mut() {
-                if last.staging_id == chunk.id && (last.staging_offset.0 + last.size) == chunk.offset.0 {
+                if last.staging_id == chunk.id
+                    && (last.staging_offset.0 + last.size) == chunk.offset.0
+                {
                     merged = true;
                     last.size += len as u32;
                 }
@@ -772,7 +867,7 @@ impl<'l> GpuStoreWriter<'l> {
         GpuStoreHandle(gpu_byte_offset >> self.offset_shift)
     }
 
-    // Note: this does not reset the reset the offsets and pointers into
+    // Note: this does not reset the offsets and pointers into
     // the staging buffer.
     fn flush_staging_buffer(&mut self) {
         let size = (self.cursor_gpu_offset.0 - self.chunk_gpu_offset.0) << self.offset_shift;
@@ -790,7 +885,9 @@ impl<'l> GpuStoreWriter<'l> {
     fn replace_staging_buffer(&mut self) {
         self.flush_staging_buffer();
 
-        let chunk = self.store.staging_buffers
+        let chunk = self
+            .store
+            .staging_buffers
             .lock()
             .unwrap()
             .get_mapped_chunk(self.chunk_size);
@@ -800,7 +897,9 @@ impl<'l> GpuStoreWriter<'l> {
         self.staging_buffer_id = chunk.id;
         self.staging_buffer_offset = chunk.offset;
         self.chunk_start = chunk.ptr;
-        let gpu_byte_offset = self.next_gpu_offset.fetch_add(self.chunk_size, Ordering::Relaxed);
+        let gpu_byte_offset = self
+            .next_gpu_offset
+            .fetch_add(self.chunk_size, Ordering::Relaxed);
         self.chunk_gpu_offset = GpuOffset(gpu_byte_offset >> self.offset_shift);
         self.cursor_gpu_offset = self.chunk_gpu_offset;
         self.staging_local_offset = 0;
@@ -834,12 +933,9 @@ impl<'l> Clone for GpuStoreWriter<'l> {
     }
 }
 
-
 #[test]
 fn gpu_store_simple() {
-    let staging_buffers = Arc::new(Mutex::new(
-        StagingBufferPool::new_for_testing(1024 * 32)
-    ));
+    let staging_buffers = Arc::new(Mutex::new(StagingBufferPool::new_for_testing(1024 * 32)));
 
     let resource = GpuStoreResources::new(&GpuStoreDescriptor::Texture {
         format: wgpu::TextureFormat::Rgba8Unorm,
@@ -880,7 +976,7 @@ fn gpu_store_simple() {
         for op in &*store.ops.borrow() {
             let buf = &pool.cpu_buffers[op.staging_id.0 as usize];
             let start = op.staging_offset.0 as usize;
-            let chunk = &buf[start .. start + op.size as usize];
+            let chunk = &buf[start..start + op.size as usize];
             //println!(" id: {:?} chunk {:?}..{:?}", op.staging_id, start, start + op.size as usize);
             //let mut count = 0;
             for item in chunk.chunks(8) {
