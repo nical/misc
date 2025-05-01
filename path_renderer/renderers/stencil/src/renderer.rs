@@ -2,16 +2,14 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use lyon::{
+    tessellation::{FillGeometryBuilder, VertexId, FillOptions, FillTessellator},
     geom::{CubicBezierSegment, QuadraticBezierSegment},
-    lyon_tessellation::{
-        BuffersBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers,
-    },
     path::{PathEvent, PathSlice},
 };
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStreamWriter, StreamId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
+use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStoreWriter, GpuStreamWriter, StreamId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -24,7 +22,6 @@ use core::{
     BindingsId, StencilMode, SurfacePassConfig,
     batching::{BatchFlags, BatchList},
     context::{DrawHelper, RendererId, ZIndex},
-    gpu::DynBufferRange,
     pattern::BuiltPattern,
     transform::TransformId,
     units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect},
@@ -55,20 +52,34 @@ pub struct CoverVertex {
     pub pattern: u32,
 }
 
-struct VertexCtor {
+struct GeomBuilder<'a, 'b, 'c> {
+    indices: &'a mut GpuStreamWriter<'b>,
+    vertices: &'a mut GpuStoreWriter<'c>,
+
     pattern: u32,
     z_index: u32,
 }
 
-impl FillVertexConstructor<CoverVertex> for VertexCtor {
-    fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> CoverVertex {
+impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
+    fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
+        self.indices.push_u32(&[a.0, b.0, c.0])
+    }
+}
+
+impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
+    fn add_fill_vertex(
+        &mut self,
+        vertex: lyon::tessellation::FillVertex<'_>,
+    ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        CoverVertex {
+        let handle = self.vertices.push(&[CoverVertex {
             x,
             y,
             z_index: self.z_index,
             pattern: self.pattern,
-        }
+        }]);
+
+        Ok(VertexId(handle.to_u32()))
     }
 }
 
@@ -120,9 +131,9 @@ struct Fill {
     z_index: ZIndex,
 }
 
-struct Geometry<'l> {
-    vertices: (), // TODO
-    indices: GpuStreamWriter<'l>,
+struct Geometry<'a, 'b> {
+    vertices: GpuStoreWriter<'a>,
+    indices: GpuStreamWriter<'b>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -139,12 +150,8 @@ pub struct StencilAndCoverRenderer {
     stencil_vertices: Option<StreamId>,
     stencil_indices: Option<StreamId>,
     cover_indices: Option<StreamId>,
-    stencil_geometry: VertexBuffers<StencilVertex, u32>,
-    cover_geometry: VertexBuffers<CoverVertex, u32>,
     draws: Vec<Draw>,
     batches: BatchList<Fill, BatchInfo>,
-    vbo_range: Option<DynBufferRange>,
-    cover_vbo_range: Option<DynBufferRange>,
     cover_pipeline: BaseShaderId,
     pub stats: Stats,
     pub tolerance: f32,
@@ -162,12 +169,8 @@ impl StencilAndCoverRenderer {
             stencil_vertices: None,
             stencil_indices: None,
             cover_indices: None,
-            stencil_geometry: VertexBuffers::new(),
-            cover_geometry: VertexBuffers::new(),
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            vbo_range: None,
-            cover_vbo_range: None,
             cover_pipeline: shared.cover_base_shader,
             stats: Stats {
                 commands: 0,
@@ -191,12 +194,6 @@ impl StencilAndCoverRenderer {
         self.stencil_vertices = None;
         self.stencil_indices = None;
         self.cover_indices = None;
-        self.stencil_geometry.vertices.clear();
-        self.stencil_geometry.indices.clear();
-        self.cover_geometry.vertices.clear();
-        self.cover_geometry.indices.clear();
-        self.vbo_range = None;
-        self.cover_vbo_range = None;
         self.stats = Default::default();
     }
 
@@ -276,11 +273,11 @@ impl StencilAndCoverRenderer {
         let stencil_idx_stream = indices.next_stream_id();
         let cover_idx_stream = indices.next_stream_id();
         let mut stencil = Geometry {
-            vertices: (),
+            vertices: vertices.write_items::<StencilVertex>(),
             indices: indices.write(stencil_idx_stream, 0),
         };
         let mut cover = Geometry {
-            vertices: (),
+            vertices: vertices.write_items::<CoverVertex>(),
             indices: indices.write(cover_idx_stream, 0),
         };
 
@@ -331,7 +328,7 @@ impl StencilAndCoverRenderer {
         }
 
         self.batches = batches;
-        self.stats.vertices = self.stats.vertices.max(self.stencil_geometry.vertices.len() as u32);
+        self.stats.vertices = self.stats.vertices.max(stencil.vertices.pushed_items());
     }
 
     fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry) {
@@ -348,7 +345,6 @@ impl StencilAndCoverRenderer {
                     self.tolerance,
                     &transformed_aabb,
                     stencil,
-                    &mut self.stencil_geometry,
                 );
             }
             _ => {
@@ -367,13 +363,12 @@ impl StencilAndCoverRenderer {
                             t.transform_point(circle.center).cast_unit(),
                             circle.radius * t.scale.x,
                             &FillOptions::tolerance(self.tolerance),
-                            &mut BuffersBuilder::new(
-                                &mut self.cover_geometry,
-                                VertexCtor {
-                                    z_index: fill.z_index,
-                                    pattern: fill.pattern.data,
-                                },
-                            ),
+                            &mut GeomBuilder {
+                                vertices: &mut cover.vertices,
+                                indices: &mut cover.indices,
+                                z_index: fill.z_index,
+                                pattern: fill.pattern.data,
+                            }
                         )
                         .unwrap();
                 }
@@ -384,20 +379,9 @@ impl StencilAndCoverRenderer {
                     transform.matrix(),
                     fill,
                     cover,
-                    &mut self.cover_geometry,
                 );
             }
         }
-    }
-
-    pub fn upload(&mut self, resources: &mut GpuResources, device: &wgpu::Device) {
-        self.vbo_range = resources.common.vertices.upload(
-            device,
-            bytemuck::cast_slice(&self.stencil_geometry.vertices),
-        );
-        self.cover_vbo_range = resources.common
-            .vertices
-            .upload(device, bytemuck::cast_slice(&self.cover_geometry.vertices));
     }
 }
 
@@ -407,15 +391,12 @@ fn generate_stencil_geometry(
     tolerance: f32,
     aabb: &SurfaceRect,
     stencil: &mut Geometry,
-    stencil_geometry: &mut VertexBuffers<StencilVertex, u32>,
 ) {
     let transform = &transform.to_untyped();
-    let vertices = &mut stencil_geometry.vertices;
 
-    fn vertex(vertices: &mut Vec<StencilVertex>, p: Point) -> u32 {
-        let idx = vertices.len() as u32;
-        vertices.push(StencilVertex::from_point(p));
-        idx
+    fn vertex(vertices: &mut GpuStoreWriter, p: Point) -> u32 {
+        let handle = vertices.push(&[StencilVertex::from_point(p)]);
+        handle.to_u32()
     }
 
     fn triangle(indices: &mut GpuStreamWriter, a: u32, b: u32, c: u32) {
@@ -423,7 +404,7 @@ fn generate_stencil_geometry(
     }
 
     // Use the center of the bounding box as the pivot point.
-    let pivot = vertex(vertices, aabb.center().cast_unit());
+    let pivot = vertex(&mut stencil.vertices, aabb.center().cast_unit());
 
     for evt in path.iter() {
         match evt {
@@ -435,8 +416,8 @@ fn generate_stencil_geometry(
                     continue;
                 }
 
-                let a = vertex(vertices, last);
-                let b = vertex(vertices, first);
+                let a = vertex(&mut stencil.vertices, last);
+                let b = vertex(&mut stencil.vertices, first);
                 triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
@@ -446,8 +427,8 @@ fn generate_stencil_geometry(
                     continue;
                 }
 
-                let a = vertex(vertices, from);
-                let b = vertex(vertices, to);
+                let a = vertex(&mut stencil.vertices, from);
+                let b = vertex(&mut stencil.vertices, to);
                 triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Quadratic { from, ctrl, to } => {
@@ -460,8 +441,8 @@ fn generate_stencil_geometry(
                     continue;
                 }
 
-                let a = vertex(vertices, from);
-                let b = vertex(vertices, to);
+                let a = vertex(&mut stencil.vertices, from);
+                let b = vertex(&mut stencil.vertices, to);
 
                 triangle(&mut stencil.indices, pivot, a, b);
 
@@ -475,9 +456,10 @@ fn generate_stencil_geometry(
                     QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(
                         tolerance,
                         &mut |seg| {
-                            let next = vertex(vertices, seg.to);
+                            let next = vertex(&mut stencil.vertices, seg.to);
                             if prev != a {
                                 triangle(&mut stencil.indices, a, prev, next);
+
                             }
                             prev = next;
                         },
@@ -516,13 +498,13 @@ fn generate_stencil_geometry(
                         to,
                     }
                     .for_each_quadratic_bezier(tolerance, &mut |quad| {
-                        let a = vertex(vertices, quad.from);
-                        let b = vertex(vertices, quad.to);
+                        let a = vertex(&mut stencil.vertices, quad.from);
+                        let b = vertex(&mut stencil.vertices, quad.to);
 
                         triangle(&mut stencil.indices, pivot, a, b);
                         let mut prev = a;
                         quad.for_each_flattened(tolerance, &mut |seg| {
-                            let next = vertex(vertices, seg.to);
+                            let next = vertex(&mut stencil.vertices, seg.to);
                             if prev != a {
                                 triangle(&mut stencil.indices, a, prev, next);
                             }
@@ -540,7 +522,6 @@ fn generate_cover_geometry(
     transform: &LocalToSurfaceTransform,
     fill: &Fill,
     cover: &mut Geometry,
-    geometry: &mut VertexBuffers<CoverVertex, u32>,
 ) {
     let a = transform.transform_point(aabb.min);
     let b = transform.transform_point(point(aabb.max.x, aabb.min.y));
@@ -549,31 +530,12 @@ fn generate_cover_geometry(
 
     let z_index = fill.z_index;
     let pattern = fill.pattern.data;
-    let offset = geometry.vertices.len() as u32;
-    geometry.vertices.push(CoverVertex {
-        x: a.x,
-        y: a.y,
-        z_index,
-        pattern,
-    });
-    geometry.vertices.push(CoverVertex {
-        x: b.x,
-        y: b.y,
-        z_index,
-        pattern,
-    });
-    geometry.vertices.push(CoverVertex {
-        x: c.x,
-        y: c.y,
-        z_index,
-        pattern,
-    });
-    geometry.vertices.push(CoverVertex {
-        x: d.x,
-        y: d.y,
-        z_index,
-        pattern,
-    });
+    let offset = cover.vertices.push(&[
+        CoverVertex { x: a.x, y: a.y, z_index, pattern },
+        CoverVertex { x: b.x, y: b.y, z_index, pattern },
+        CoverVertex { x: c.x, y: c.y, z_index, pattern },
+        CoverVertex { x: d.x, y: d.y, z_index, pattern },
+    ]).to_u32();
     cover.indices.push_u32(&[
         offset,
         offset + 1,
@@ -590,7 +552,6 @@ impl core::Renderer for StencilAndCoverRenderer {
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device);
     }
 
     fn render<'pass, 'resources: 'pass>(
@@ -637,9 +598,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            ctx.resources.common
-                                .vertices
-                                .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
+                            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..)
                         );
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
@@ -658,9 +617,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            ctx.resources.common
-                                .vertices
-                                .get_buffer_slice(self.cover_vbo_range.as_ref().unwrap()),
+                            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..)
                         );
 
                         let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();

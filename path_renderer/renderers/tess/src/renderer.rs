@@ -399,7 +399,7 @@ impl MeshRenderer {
                     .unwrap();
             }
             Shape::Mesh(mesh) => {
-                let vtx_offset = vertices.pushed_items();
+                let vtx_offset = todo!();
                 for vertex in &mesh.vertices {
                     let pos = transform.transform_point(*vertex);
                     vertices.push(&[Vertex {
@@ -414,18 +414,17 @@ impl MeshRenderer {
                 }
             }
             Shape::Rect(rect) => {
-                let vtx_offset = vertices.pushed_items();
                 let a = transform.transform_point(rect.min);
                 let b = transform.transform_point(point(rect.max.x, rect.min.y));
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                vertices.push(&[
+                let vtx_offset = vertices.push(&[
                     Vertex { x: a.x, y: a.y, z_index, pattern },
                     Vertex { x: b.x, y: b.y, z_index, pattern },
                     Vertex { x: c.x, y: c.y, z_index, pattern },
                     Vertex { x: d.x, y: d.y, z_index, pattern },
-                ]);
+                ]).to_u32();
 
                 indices.push_u32(&[
                     vtx_offset,
