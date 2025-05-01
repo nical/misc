@@ -4,16 +4,15 @@ use core::{
     }, gpu::{
         shader::{
             BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-        },
-        DynBufferRange, GpuStreamWriter, StreamId,
+        }, GpuStoreWriter, GpuStreamWriter, StreamId
     }, path::Path, pattern::BuiltPattern, resources::GpuResources, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use lyon::{
     geom::euclid::vec2,
-    lyon_tessellation::{StrokeOptions, StrokeTessellator, StrokeVertexConstructor},
+    lyon_tessellation::{StrokeOptions, StrokeTessellator},
     path::traits::PathIterator,
     tessellation::{
-        BuffersBuilder, FillGeometryBuilder, FillOptions, FillTessellator, FillVertexConstructor, VertexBuffers, VertexId
+        FillGeometryBuilder, FillOptions, FillTessellator, StrokeGeometryBuilder, VertexId
     },
 };
 use std::ops::Range;
@@ -72,63 +71,51 @@ pub struct Vertex {
 unsafe impl bytemuck::Zeroable for Vertex {}
 unsafe impl bytemuck::Pod for Vertex {}
 
-struct GeomBuilder<'a, 'b> {
+struct GeomBuilder<'a, 'b, 'c> {
     indices: &'a mut GpuStreamWriter<'b>,
-    vertices: &'a mut Vec<Vertex>,
+    vertices: &'a mut GpuStoreWriter<'c>,
 
     pattern: u32,
     z_index: u32,
 }
 
-impl<'a, 'b> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b> {
+impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
         self.indices.push_u32(&[a.0, b.0, c.0])
     }
 }
 
-impl<'a, 'b> FillGeometryBuilder for GeomBuilder<'a, 'b> {
+impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
     fn add_fill_vertex(
         &mut self,
         vertex: lyon::tessellation::FillVertex<'_>,
     ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        let vtx_id = VertexId(self.vertices.len() as u32);
-        self.vertices.push(Vertex {
+        let handle = self.vertices.push(&[Vertex {
             x,
             y,
             z_index: self.z_index,
             pattern: self.pattern,
-        });
+        }]);
 
-        Ok(vtx_id)
+        Ok(VertexId(handle.to_u32()))
     }
 }
 
-struct VertexCtor {
-    pattern: u32,
-    z_index: u32,
-}
+impl<'a, 'b, 'c> StrokeGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
+    fn add_stroke_vertex(
+        &mut self,
+        vertex: lyon::tessellation::StrokeVertex,
+    ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
+        let (x, y) = vertex.position().to_tuple();
+        let handle = self.vertices.push(&[Vertex {
+            x,
+            y,
+            z_index: self.z_index,
+            pattern: self.pattern,
+        }]);
 
-impl FillVertexConstructor<Vertex> for VertexCtor {
-    fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::FillVertex) -> Vertex {
-        let (x, y) = vertex.position().to_tuple();
-        Vertex {
-            x,
-            y,
-            z_index: self.z_index,
-            pattern: self.pattern,
-        }
-    }
-}
-impl StrokeVertexConstructor<Vertex> for VertexCtor {
-    fn new_vertex(&mut self, vertex: lyon::lyon_tessellation::StrokeVertex) -> Vertex {
-        let (x, y) = vertex.position().to_tuple();
-        Vertex {
-            x,
-            y,
-            z_index: self.z_index,
-            pattern: self.pattern,
-        }
+        Ok(VertexId(handle.to_u32()))
     }
 }
 
@@ -141,13 +128,11 @@ struct Draw {
 pub struct MeshRenderer {
     renderer_id: RendererId,
     tessellator: FillTessellator,
-    geometry: VertexBuffers<Vertex, u32>,
     pub tolerance: f32,
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
     indices: Option<StreamId>,
-    vbo_range: Option<DynBufferRange>,
     base_shader: BaseShaderId,
 }
 
@@ -159,13 +144,11 @@ impl MeshRenderer {
         MeshRenderer {
             renderer_id,
             tessellator: FillTessellator::new(),
-            geometry: VertexBuffers::new(),
             tolerance: 0.25,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             indices: None,
-            vbo_range: None,
             base_shader,
         }
     }
@@ -177,10 +160,7 @@ impl MeshRenderer {
     pub fn begin_frame(&mut self) {
         self.draws.clear();
         self.batches.clear();
-        self.geometry.vertices.clear();
-        self.geometry.indices.clear();
         self.indices = None;
-        self.vbo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
@@ -264,6 +244,8 @@ impl MeshRenderer {
         let shaders = &mut worker_data.pipelines;
         let indices = &mut worker_data.indices;
 
+        let mut vertices = worker_data.vertices.write_items::<Vertex>();
+
         let idx_stream = indices.next_stream_id();
         let mut indices = indices.write(idx_stream, 0);
         self.indices = Some(idx_stream);
@@ -306,7 +288,7 @@ impl MeshRenderer {
                         geom_start = end;
                         key = fill.pattern.shader_and_bindings();
                     }
-                    self.prepare_fill(fill, transforms, &mut indices);
+                    self.prepare_fill(fill, transforms, &mut vertices, &mut indices);
                 }
             }
 
@@ -347,7 +329,7 @@ impl MeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, transforms, &mut indices);
+                self.prepare_fill(fill, transforms, &mut vertices, &mut indices);
             }
 
             let end = indices.pushed_bytes() / 4;
@@ -371,7 +353,7 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, indices: &mut GpuStreamWriter) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, vertices: &mut GpuStoreWriter, indices: &mut GpuStreamWriter) {
         let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;
@@ -389,7 +371,7 @@ impl MeshRenderer {
                         shape.path.iter().transformed(&transform),
                         &options,
                         &mut GeomBuilder {
-                            vertices: &mut self.geometry.vertices,
+                            vertices,
                             indices,
                             z_index: fill.z_index,
                             pattern: fill.pattern.data,
@@ -407,62 +389,44 @@ impl MeshRenderer {
                             .transform_vector(vec2(circle.radius, 0.0))
                             .length(),
                         &options,
-                        &mut BuffersBuilder::new(
-                            &mut self.geometry,
-                            VertexCtor {
-                                z_index: fill.z_index,
-                                pattern: fill.pattern.data,
-                            },
-                        ),
+                        &mut GeomBuilder {
+                            vertices,
+                            indices,
+                            z_index: fill.z_index,
+                            pattern: fill.pattern.data,
+                        }
                     )
                     .unwrap();
             }
             Shape::Mesh(mesh) => {
-                let vtx_offset = self.geometry.vertices.len() as u32;
+                let vtx_offset = vertices.pushed_items();
                 for vertex in &mesh.vertices {
                     let pos = transform.transform_point(*vertex);
-                    self.geometry.vertices.push(Vertex {
+                    vertices.push(&[Vertex {
                         x: pos.x,
                         y: pos.y,
                         z_index: fill.z_index,
                         pattern: fill.pattern.data,
-                    });
+                    }]);
                 }
                 for index in &mesh.indices {
                     indices.push_u32(&[*index + vtx_offset]);
                 }
             }
             Shape::Rect(rect) => {
-                let vtx_offset = self.geometry.vertices.len() as u32;
+                let vtx_offset = vertices.pushed_items();
                 let a = transform.transform_point(rect.min);
                 let b = transform.transform_point(point(rect.max.x, rect.min.y));
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                self.geometry.vertices.push(Vertex {
-                    x: a.x,
-                    y: a.y,
-                    z_index,
-                    pattern,
-                });
-                self.geometry.vertices.push(Vertex {
-                    x: b.x,
-                    y: b.y,
-                    z_index,
-                    pattern,
-                });
-                self.geometry.vertices.push(Vertex {
-                    x: c.x,
-                    y: c.y,
-                    z_index,
-                    pattern,
-                });
-                self.geometry.vertices.push(Vertex {
-                    x: d.x,
-                    y: d.y,
-                    z_index,
-                    pattern,
-                });
+                vertices.push(&[
+                    Vertex { x: a.x, y: a.y, z_index, pattern },
+                    Vertex { x: b.x, y: b.y, z_index, pattern },
+                    Vertex { x: c.x, y: c.y, z_index, pattern },
+                    Vertex { x: d.x, y: d.y, z_index, pattern },
+                ]);
+
                 indices.push_u32(&[
                     vtx_offset,
                     vtx_offset + 1,
@@ -482,13 +446,12 @@ impl MeshRenderer {
                     .tessellate(
                         path.iter().transformed(&transform),
                         &options,
-                        &mut BuffersBuilder::new(
-                            &mut self.geometry,
-                            VertexCtor {
-                                z_index: fill.z_index,
-                                pattern: fill.pattern.data,
-                            },
-                        ),
+                        &mut GeomBuilder {
+                            vertices,
+                            indices,
+                            z_index: fill.z_index,
+                            pattern: fill.pattern.data,
+                        },
                     )
                     .unwrap();
             }
@@ -497,13 +460,10 @@ impl MeshRenderer {
 
     pub fn upload(
         &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
+        _resources: &mut GpuResources,
+        _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        self.vbo_range = resources.common
-            .vertices
-            .upload(device, bytemuck::cast_slice(&self.geometry.vertices));
     }
 }
 
@@ -534,9 +494,7 @@ impl core::Renderer for MeshRenderer {
         );
         render_pass.set_vertex_buffer(
             0,
-            ctx.resources.common
-                .vertices
-                .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
+            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..),
         );
 
         let mut helper = DrawHelper::new();

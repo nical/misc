@@ -270,8 +270,8 @@ struct TransferOp {
     staging_offset: StagingOffset,
     // In bytes.
     size: u32,
-    // in items.
-    gpu_offset: GpuOffset,
+    // In bytes.
+    dst_offset: u32,
 }
 
 pub struct TransferOps {
@@ -286,7 +286,7 @@ pub enum GpuStoreDescriptor {
     },
     Buffers {
         usages: wgpu::BufferUsages,
-        alignment: u32,
+        default_alignment: u32,
         min_size: u32,
         max_size: u32,
         label: Option<&'static str>,
@@ -320,8 +320,7 @@ impl Default for GpuStoreDescriptor {
 // Lives in the instance.
 pub struct GpuStoreResources {
     storage: Storage,
-    align_mask: u32,
-    offset_shift: u32,
+    default_alignment: u32,
     chunk_size: u32,
     epoch: u32,
     label: Option<&'static str>,
@@ -341,7 +340,6 @@ enum Storage {
     Buffer {
         handle: Option<wgpu::Buffer>,
         allocated_size: u32,
-        alignment: u32,
         min_size: u32,
         max_size: u32,
         usage: wgpu::BufferUsages,
@@ -358,11 +356,11 @@ impl GpuStoreResources {
             } => Self::new_texture(*format, *width, *label),
             GpuStoreDescriptor::Buffers {
                 usages,
-                alignment,
+                default_alignment,
                 min_size,
                 max_size,
                 label,
-            } => Self::new_buffers(*usages, *alignment, *min_size, *max_size, *label),
+            } => Self::new_buffers(*usages, *default_alignment, *min_size, *max_size, *label),
         }
     }
 
@@ -377,10 +375,6 @@ impl GpuStoreResources {
             _ => unimplemented!(),
         };
 
-        let item_alignment = bytes_per_px;
-        let align_mask = item_alignment - 1;
-        let offset_shift = bytes_per_px.trailing_zeros();
-
         GpuStoreResources {
             storage: Storage::Texture {
                 handle: None,
@@ -390,9 +384,8 @@ impl GpuStoreResources {
                 bytes_per_px,
                 format,
             },
-            align_mask,
-            offset_shift,
             chunk_size: width * bytes_per_px,
+            default_alignment: bytes_per_px,
             epoch: 0,
             label,
             next_gpu_offset: Arc::new(AtomicU32::new(0)),
@@ -401,25 +394,20 @@ impl GpuStoreResources {
 
     fn new_buffers(
         usage: wgpu::BufferUsages,
-        alignment: u32,
+        default_alignment: u32,
         min_size: u32,
         max_size: u32,
         label: Option<&'static str>,
     ) -> Self {
-        let align_mask = alignment - 1;
-        let offset_shift = alignment.trailing_zeros();
-
         GpuStoreResources {
             storage: Storage::Buffer {
                 handle: None,
                 allocated_size: 0,
-                alignment,
                 min_size,
                 max_size,
                 usage: usage | wgpu::BufferUsages::COPY_DST,
             },
-            align_mask,
-            offset_shift,
+            default_alignment,
             chunk_size: 8192,
             epoch: 0,
             label,
@@ -497,8 +485,7 @@ impl GpuStoreResources {
 
         GpuStore {
             chunk_size: self.chunk_size,
-            align_mask: self.align_mask as usize,
-            offset_shift: self.offset_shift,
+            default_alignment: self.default_alignment,
             ops: RefCell::new(Vec::new()),
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers,
@@ -565,7 +552,7 @@ impl GpuStoreResources {
                 for ops in transfer_ops {
                     for op in &ops.ops {
                         let staging_buffer = staging_buffers.get_handle(op.staging_id);
-                        let first_row = (op.gpu_offset.0 << self.offset_shift) / bytes_per_row;
+                        let first_row = op.dst_offset / bytes_per_row;
                         let num_rows = op.size / bytes_per_row + (op.size % bytes_per_row).min(1);
                         encoder.copy_buffer_to_texture(
                             wgpu::TexelCopyBufferInfo {
@@ -603,7 +590,7 @@ impl GpuStoreResources {
                 ..
             } => {
                 if *allocated_size < total_size_bytes {
-                    let size = total_size_bytes.min(*min_size);
+                    let size = total_size_bytes.max(*min_size);
                     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: self.label,
                         size: size as u64,
@@ -618,12 +605,11 @@ impl GpuStoreResources {
                 for ops in transfer_ops {
                     for op in &ops.ops {
                         let staging_buffer = staging_buffers.get_handle(op.staging_id);
-                        let dst_offset = (op.gpu_offset.0 << self.offset_shift) as u64; // TODO: check that this is correct.
                         encoder.copy_buffer_to_buffer(
                             staging_buffer,
                             op.staging_offset.0 as u64,
                             dst,
-                            dst_offset,
+                            op.dst_offset as u64,
                             op.size as u64,
                         );
                     }
@@ -640,6 +626,13 @@ impl GpuStoreResources {
     pub fn as_texture_view(&self) -> Option<&wgpu::TextureView> {
         match &self.storage {
             Storage::Texture { view, .. } => view.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn as_buffer(&self) -> Option<&wgpu::Buffer> {
+        match &self.storage {
+            Storage::Buffer { handle, .. } => handle.as_ref(),
             _ => None,
         }
     }
@@ -696,8 +689,8 @@ pub struct GpuStore {
     ops: RefCell<Vec<TransferOp>>,
     // In bytes.
     chunk_size: u32,
-    align_mask: usize,
-    offset_shift: u32,
+    // In bytes.
+    default_alignment: u32,
     // In bytes.
     next_gpu_offset: Arc<AtomicU32>,
     staging_buffers: Arc<Mutex<StagingBufferPool>>,
@@ -705,6 +698,20 @@ pub struct GpuStore {
 
 impl GpuStore {
     pub fn write(&self) -> GpuStoreWriter {
+        self.write_with_alignment(self.default_alignment)
+    }
+
+    pub fn write_items<T>(&self) -> GpuStoreWriter {
+        let size = std::mem::size_of::<T>() as u32;
+        debug_assert!(size.is_power_of_two());
+        self.write_with_alignment(size)
+    }
+
+    pub fn write_with_alignment(&self, item_size: u32) -> GpuStoreWriter {
+        debug_assert!(item_size.is_power_of_two());
+        let offset_shift = item_size.trailing_zeros();
+        let align_mask = (item_size - 1) as usize;
+
         GpuStoreWriter {
             store: self,
             chunk_start: std::ptr::null_mut(),
@@ -716,8 +723,9 @@ impl GpuStore {
             chunk_size: self.chunk_size,
             staging_buffer_id: StagingBufferId(0),
             staging_buffer_offset: StagingOffset(0),
-            align_mask: self.align_mask as usize,
-            offset_shift: self.offset_shift,
+            align_mask,
+            offset_shift,
+            pushed_bytes: 0,
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers: self.staging_buffers.clone(),
         }
@@ -736,11 +744,8 @@ impl Clone for GpuStore {
     fn clone(&self) -> Self {
         GpuStore {
             ops: RefCell::new(Vec::new()),
-            // In bytes.
             chunk_size: self.chunk_size,
-            align_mask: self.align_mask.clone(),
-            offset_shift: self.offset_shift.clone(),
-            // In bytes.
+            default_alignment: self.default_alignment,
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers: self.staging_buffers.clone(),
         }
@@ -768,6 +773,9 @@ pub struct GpuStoreWriter<'l> {
     // to obtain the final offset.
     offset_shift: u32,
 
+    //
+    pushed_bytes: u32,
+
     // In bytes
     next_gpu_offset: Arc<AtomicU32>,
     staging_buffers: Arc<Mutex<StagingBufferPool>>,
@@ -775,6 +783,7 @@ pub struct GpuStoreWriter<'l> {
 
 impl<'l> GpuStoreWriter<'l> {
     pub fn push_bytes(&mut self, data: &[u8]) -> GpuStoreHandle {
+        self.pushed_bytes += data.len() as u32;
         if data.len() > self.chunk_size as usize {
             return self.push_bytes_large(data);
         }
@@ -852,7 +861,7 @@ impl<'l> GpuStoreWriter<'l> {
                     staging_id: chunk.id,
                     staging_offset: chunk.offset,
                     size: len as u32,
-                    gpu_offset: GpuOffset(dst_offset >> self.offset_shift),
+                    dst_offset: dst_offset,
                 });
             }
 
@@ -876,7 +885,7 @@ impl<'l> GpuStoreWriter<'l> {
                 staging_id: self.staging_buffer_id,
                 staging_offset: self.staging_buffer_offset,
                 size,
-                gpu_offset: self.chunk_gpu_offset,
+                dst_offset: self.chunk_gpu_offset.0 << self.offset_shift,
             });
         }
     }
@@ -904,6 +913,14 @@ impl<'l> GpuStoreWriter<'l> {
         self.cursor_gpu_offset = self.chunk_gpu_offset;
         self.staging_local_offset = 0;
     }
+
+    pub fn pushed_bytes(&self) -> u32 {
+        self.pushed_bytes
+    }
+
+    pub fn pushed_items(&self) -> u32 {
+        self.pushed_bytes >> self.offset_shift
+    }
 }
 
 impl<'l> Drop for GpuStoreWriter<'l> {
@@ -929,6 +946,7 @@ impl<'l> Clone for GpuStoreWriter<'l> {
             offset_shift: self.offset_shift,
             next_gpu_offset: self.next_gpu_offset.clone(),
             staging_buffers: self.staging_buffers.clone(),
+            pushed_bytes: 0,
         }
     }
 }
