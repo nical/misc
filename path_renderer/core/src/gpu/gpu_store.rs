@@ -809,8 +809,12 @@ impl<'l> GpuStoreWriter<'l> {
         GpuStoreHandle(address.0)
     }
 
-    pub fn push<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuStoreHandle {
+    pub fn push_slice<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuStoreHandle {
         self.push_bytes(bytemuck::cast_slice(data))
+    }
+
+    pub fn push<T: bytemuck::Pod>(&mut self, data: T) -> GpuStoreHandle {
+        self.push_bytes(bytemuck::cast_slice(&[data]))
     }
 
     fn push_bytes_large(&mut self, data: &[u8]) -> GpuStoreHandle {

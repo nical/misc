@@ -235,7 +235,7 @@ impl Transforms {
         };
         let t = &self.current.transform;
 
-        let handle = gpu_store.push(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
+        let handle = gpu_store.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
 
         self.current.gpu_handle = handle;
         self.transforms[self.current_id.index()].gpu_handle = handle;

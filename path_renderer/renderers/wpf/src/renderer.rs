@@ -4,7 +4,6 @@ use core::{
 use core::gpu::shader::{BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 
 use core::pattern::BuiltPattern;
-use core::resources::GpuResources;
 use core::shape::FilledPath;
 use core::transform::{TransformId, Transforms};
 use core::units::{LocalRect, SurfaceIntSize};
@@ -249,30 +248,9 @@ impl WpfMeshRenderer {
                     // guaranteed to go in the same chunk which means that the last slice of a
                     // chunk may be moved to another chunk and leave a hole if it does not fit
                     // exactly.
-                    vertices.push(&[
-                        Vertex {
-                            x: v2.x,
-                            y: v2.y,
-                            coverage: v2.coverage,
-                            pattern,
-                        },
-                    ]);
-                    vertices.push(&[
-                        Vertex {
-                            x: v1.x,
-                            y: v1.y,
-                            coverage: v1.coverage,
-                            pattern,
-                        },
-                    ]);
-                    vertices.push(&[
-                        Vertex {
-                            x: v0.x,
-                            y: v0.y,
-                            coverage: v0.coverage,
-                            pattern,
-                        },
-                    ]);
+                    vertices.push(Vertex { x: v2.x, y: v2.y, coverage: v2.coverage, pattern });
+                    vertices.push(Vertex { x: v1.x, y: v1.y, coverage: v1.coverage, pattern });
+                    vertices.push(Vertex { x: v0.x, y: v0.y, coverage: v0.coverage, pattern });
                 }
             }
         }

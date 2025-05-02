@@ -5,7 +5,7 @@ use core::{
     }, gpu::{
         shader::{RenderPipelineIndex, RenderPipelineKey},
         GpuStoreHandle, StreamId,
-    }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, transform::Transforms, units::LocalRect, wgpu, PrepareContext,
 };
 use std::ops::Range;
 
@@ -170,7 +170,7 @@ impl RectangleRenderer {
         for (items, surface, batch) in self.batches.iter_mut() {
             const SIZE: u32 = std::mem::size_of::<Instance>() as u32;
             let start = instances.pushed_bytes() / SIZE;
-            instances.push(items);
+            instances.push_slice(items);
             let end = instances.pushed_bytes() / SIZE;
             batch.instances = start..end;
 
@@ -198,11 +198,9 @@ impl core::Renderer for RectangleRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        if self.instances.is_none() {
-            return;
-        }
-
         let common_resources = &ctx.resources.common;
+        let Some(instance_buffer) = common_resources.instances.resolve_buffer_slice(self.instances)
+            else { return; };
 
         let mut helper = DrawHelper::new();
         render_pass.set_index_buffer(
@@ -210,9 +208,7 @@ impl core::Renderer for RectangleRenderer {
             wgpu::IndexFormat::Uint16,
         );
 
-        let (instance_buf, range) = common_resources.instances.resolve(self.instances.unwrap()).unwrap();
-        let instance_buf = instance_buf.slice(range.start as u64 .. range.end as u64);
-        render_pass.set_vertex_buffer(0, instance_buf);
+        render_pass.set_vertex_buffer(0, instance_buffer);
 
         for batch_id in batches {
             let (_, _, batch) = self.batches.get(batch_id.index);

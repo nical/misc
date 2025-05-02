@@ -587,20 +587,15 @@ impl core::Renderer for TileRenderer {
 
         let common_resources = &ctx.resources.common;
 
+        // TODO: previous version was grouping the mask and opaque instances
+        // in a single instance range which made avoided the need to re-bind.
+        let opaque_buffer = common_resources.instances.resolve_buffer_slice(self.opaque_instances);
+        let mask_buffer = common_resources.instances.resolve_buffer_slice(self.mask_instances);
+
         render_pass.set_index_buffer(
             common_resources.quad_ibo.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-
-        // TODO: previous version was grouping the mask and opaque instances
-        // in a single instance range which made avoided the need to re-bind.
-        let mask_instances = self
-            .mask_instances
-            .and_then(|id| common_resources.instances.resolve(id));
-
-        let opaque_instances = self
-            .opaque_instances
-            .and_then(|id| common_resources.instances.resolve(id));
 
         render_pass.set_bind_group(1, &self.resources.bind_group, &[]);
 
@@ -611,12 +606,7 @@ impl core::Renderer for TileRenderer {
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {
-                let (opaque_buffer, opaque_byte_range) = opaque_instances.as_ref().unwrap();
-                render_pass.set_vertex_buffer(
-                    0,
-                    opaque_buffer
-                        .slice(opaque_byte_range.start as u64..opaque_byte_range.end as u64),
-                );
+                render_pass.set_vertex_buffer(0, opaque_buffer.unwrap());
 
                 let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
                 let instances = opaque.tiles.clone();
@@ -624,12 +614,9 @@ impl core::Renderer for TileRenderer {
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
             }
+
             if let Some(masked) = &batch.masked_draw {
-                let (mask_buffer, mask_byte_range) = mask_instances.as_ref().unwrap();
-                render_pass.set_vertex_buffer(
-                    0,
-                    mask_buffer.slice(mask_byte_range.start as u64..mask_byte_range.end as u64),
-                );
+                render_pass.set_vertex_buffer(0, mask_buffer.unwrap());
 
                 let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();
                 let instances = masked.tiles.clone();

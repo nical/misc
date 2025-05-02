@@ -429,7 +429,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
 
     fn line(&mut self, line: &LineSegment<f32>) {
         let join_segments = self.compute_segments_per_join(line.from, line.to);
-        self.output.push(&[CurveInstance {
+        self.output.push_slice(&[CurveInstance {
             from: line.from,
             ctrl1: line.from,
             ctrl2: line.to,
@@ -474,7 +474,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
 
             let subcurve = curve.split_range(t0..t1);
 
-            self.output.push(&[CurveInstance {
+            self.output.push_slice(&[CurveInstance {
                 from: subcurve.from,
                 ctrl1: subcurve.ctrl1,
                 ctrl2: subcurve.ctrl2,

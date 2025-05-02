@@ -9,7 +9,7 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStoreWriter, GpuStreamWriter, StreamId}, resources::GpuResources, transform::Transforms, PrepareContext, UploadContext};
+use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStoreWriter, GpuStreamWriter, StreamId}, transform::Transforms, PrepareContext};
 use core::wgpu;
 use core::{
     bytemuck,
@@ -62,7 +62,7 @@ struct GeomBuilder<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        self.indices.push_u32(&[a.0, b.0, c.0])
+        self.indices.push_slice(&[a.0, b.0, c.0])
     }
 }
 
@@ -72,7 +72,7 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         vertex: lyon::tessellation::FillVertex<'_>,
     ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        let handle = self.vertices.push(&[CoverVertex {
+        let handle = self.vertices.push_slice(&[CoverVertex {
             x,
             y,
             z_index: self.z_index,
@@ -395,12 +395,12 @@ fn generate_stencil_geometry(
     let transform = &transform.to_untyped();
 
     fn vertex(vertices: &mut GpuStoreWriter, p: Point) -> u32 {
-        let handle = vertices.push(&[StencilVertex::from_point(p)]);
+        let handle = vertices.push(StencilVertex::from_point(p));
         handle.to_u32()
     }
 
     fn triangle(indices: &mut GpuStreamWriter, a: u32, b: u32, c: u32) {
-        indices.push_u32(&[a, b, c]);
+        indices.push_slice(&[a, b, c]);
     }
 
     // Use the center of the bounding box as the pivot point.
@@ -530,13 +530,13 @@ fn generate_cover_geometry(
 
     let z_index = fill.z_index;
     let pattern = fill.pattern.data;
-    let offset = cover.vertices.push(&[
+    let offset = cover.vertices.push_slice(&[
         CoverVertex { x: a.x, y: a.y, z_index, pattern },
         CoverVertex { x: b.x, y: b.y, z_index, pattern },
         CoverVertex { x: c.x, y: c.y, z_index, pattern },
         CoverVertex { x: d.x, y: d.y, z_index, pattern },
     ]).to_u32();
-    cover.indices.push_u32(&[
+    cover.indices.push_slice(&[
         offset,
         offset + 1,
         offset + 2,
@@ -558,20 +558,21 @@ impl core::Renderer for StencilAndCoverRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+
+        let Some(stencil_idx_buffer) = ctx.resources.common.indices.resolve_buffer_slice(self.stencil_indices)
+            else { return; };
+
+        let Some(cover_idx_buffer) = ctx.resources.common.indices.resolve_buffer_slice(self.cover_indices)
+            else { return; };
+
         let mut helper = DrawHelper::new();
 
         render_pass.set_stencil_reference(128);
 
-        let (stencil_idx_buffer, stencil_idx_range) = self
-            .stencil_indices
-            .and_then(|id| ctx.resources.common.indices.resolve(id))
-            .unwrap();
-
-        let (cover_idx_buffer, cover_idx_range) = self
-            .cover_indices
-            .and_then(|id| ctx.resources.common.indices.resolve(id))
-            .unwrap();
-
+        render_pass.set_vertex_buffer(
+            0,
+            ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
+        );
 
         for batch_id in batches {
             let (_, _, batch) = self.batches.get(batch_id.index);
@@ -585,18 +586,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         } else {
                             &self.shared.stencil_pipeline
                         };
-                        // TODO: switching the index and vertex buffers here has
-                        // a fair amount of validation overhead in wgpu. It may be
-                        // better to merge the sencil and cover buffers into a
-                        // single pair to avoid rebinding.
-                        render_pass.set_index_buffer(
-                            stencil_idx_buffer.slice(stencil_idx_range.start as u64 .. stencil_idx_range.end as u64),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        render_pass.set_vertex_buffer(
-                            0,
-                            ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
-                        );
+                        render_pass.set_index_buffer(stencil_idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                     }
@@ -606,20 +596,12 @@ impl core::Renderer for StencilAndCoverRenderer {
                         pipeline_idx,
                     } => {
                         // Cover
+                        let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();
+
                         helper.resolve_and_bind(1, pattern_inputs, ctx.bindings, render_pass);
 
-                        render_pass.set_index_buffer(
-                            cover_idx_buffer.slice(cover_idx_range.start as u64 .. cover_idx_range.end as u64),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        render_pass.set_vertex_buffer(
-                            0,
-                            ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
-                        );
-
-                        let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();
+                        render_pass.set_index_buffer(cover_idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
-
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                     }
                 }

@@ -102,25 +102,19 @@ pub struct GpuStreamWriter<'l> {
 }
 
 impl<'l> GpuStreamWriter<'l> {
-    // TODO: Make `push` take a single element and `push_slice` take a slice.
     #[inline]
-    pub fn push<T>(&mut self, data: &[T]) where T: bytemuck::Pod {
+    pub fn push_slice<T>(&mut self, data: &[T]) where T: bytemuck::Pod {
         self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
+    }
+
+    #[inline]
+    pub fn push<T>(&mut self, data: T) where T: bytemuck::Pod {
+        self.push_bytes_impl(self.key, bytemuck::cast_slice(&[data]));
     }
 
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
         self.push_bytes_impl(self.key, data);
-    }
-
-    #[inline]
-    pub fn push_u32(&mut self, data: &[u32]) {
-        self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
-    }
-
-    #[inline]
-    pub fn push_f32(&mut self, data: &[f32]) {
-        self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
     }
 
     fn push_bytes_impl(&mut self, sort_key: u64, data: &[u8]) {
@@ -436,10 +430,18 @@ impl GpuStreamsResources {
             // Can happen when resolving a stream in which nothing was pushed.
             return None;
         }
+        if info.size == 0 {
+            return None;
+        }
         Some((
             &self.buffers[idx].handle,
             info.offset..(info.offset + info.size),
         ))
+    }
+
+    pub fn resolve_buffer_slice(&self, stream: Option<StreamId>) -> Option<wgpu::BufferSlice> {
+        let (buffer, range) = self.resolve(stream?)?;
+        Some(buffer.slice(range.start as u64 .. range.end as u64))
     }
 }
 

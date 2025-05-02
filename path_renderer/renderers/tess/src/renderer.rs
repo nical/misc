@@ -5,7 +5,7 @@ use core::{
         shader::{
             BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         }, GpuStoreWriter, GpuStreamWriter, StreamId
-    }, path::Path, pattern::BuiltPattern, resources::GpuResources, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
+    }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext
 };
 use lyon::{
     geom::euclid::vec2,
@@ -81,7 +81,7 @@ struct GeomBuilder<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        self.indices.push_u32(&[a.0, b.0, c.0])
+        self.indices.push_slice(&[a.0, b.0, c.0])
     }
 }
 
@@ -91,12 +91,12 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         vertex: lyon::tessellation::FillVertex<'_>,
     ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        let handle = self.vertices.push(&[Vertex {
+        let handle = self.vertices.push(Vertex {
             x,
             y,
             z_index: self.z_index,
             pattern: self.pattern,
-        }]);
+        });
 
         Ok(VertexId(handle.to_u32()))
     }
@@ -108,12 +108,12 @@ impl<'a, 'b, 'c> StrokeGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         vertex: lyon::tessellation::StrokeVertex,
     ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        let handle = self.vertices.push(&[Vertex {
+        let handle = self.vertices.push(Vertex {
             x,
             y,
             z_index: self.z_index,
             pattern: self.pattern,
-        }]);
+        });
 
         Ok(VertexId(handle.to_u32()))
     }
@@ -419,14 +419,14 @@ impl MeshRenderer {
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                let vtx_offset = vertices.push(&[
+                let vtx_offset = vertices.push_slice(&[
                     Vertex { x: a.x, y: a.y, z_index, pattern },
                     Vertex { x: b.x, y: b.y, z_index, pattern },
                     Vertex { x: c.x, y: c.y, z_index, pattern },
                     Vertex { x: d.x, y: d.y, z_index, pattern },
                 ]).to_u32();
 
-                indices.push_u32(&[
+                indices.push_slice(&[
                     vtx_offset,
                     vtx_offset + 1,
                     vtx_offset + 2,
@@ -470,15 +470,13 @@ impl core::Renderer for MeshRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let (idx_buffer, idx_range) = self
+        let Some(idx_buffer) = ctx
+            .resources
+            .common
             .indices
-            .and_then(|id| ctx.resources.common.indices.resolve(id))
-            .unwrap();
+            .resolve_buffer_slice(self.indices) else { return; };
 
-        render_pass.set_index_buffer(
-            idx_buffer.slice(idx_range.start as u64 .. idx_range.end as u64),
-            wgpu::IndexFormat::Uint32,
-        );
+        render_pass.set_index_buffer(idx_buffer, wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(
             0,
             ctx.resources.common.vertices.as_buffer().unwrap().slice(..),
