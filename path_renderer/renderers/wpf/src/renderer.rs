@@ -1,8 +1,5 @@
 use core::{
-    bytemuck, usize_range, wgpu, BindingsId, PrepareContext, UploadContext,
-    batching::{BatchFlags, BatchId, BatchList},
-    context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig},
-    gpu::DynBufferRange,
+    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig}, gpu::{DynBufferRange, GpuStoreWriter}, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
 };
 use core::gpu::shader::{BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 
@@ -64,12 +61,9 @@ struct Draw {
 pub struct WpfMeshRenderer {
     renderer_id: RendererId,
     builder: PathBuilder,
-    vertices: Vec<Vertex>,
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
-    vbo_range: Option<DynBufferRange>,
-    ibo_range: Option<DynBufferRange>,
     base_shader: BaseShaderId,
 }
 
@@ -81,12 +75,9 @@ impl WpfMeshRenderer {
         WpfMeshRenderer {
             renderer_id,
             builder: PathBuilder::new(),
-            vertices: Vec::new(),
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            vbo_range: None,
-            ibo_range: None,
             base_shader,
         }
     }
@@ -96,11 +87,8 @@ impl WpfMeshRenderer {
     }
 
     pub fn begin_frame(&mut self) {
-        self.vertices.clear();
         self.draws.clear();
         self.batches.clear();
-        self.vbo_range = None;
-        self.ibo_range = None;
     }
 
     pub fn fill_path<P: Into<FilledPath>>(
@@ -145,7 +133,9 @@ impl WpfMeshRenderer {
 
         let pass = &ctx.pass;
         let transforms = &ctx.transforms;
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let mut vertices = worker_data.vertices.write_items::<Vertex>();
 
         let surface_size = pass.surface_size();
 
@@ -166,10 +156,10 @@ impl WpfMeshRenderer {
                 .pattern
                 .shader_and_bindings();
 
-            let mut geom_start = self.vertices.len() as u32;
+            let mut geom_start = vertices.pushed_items();
             for fill in commands.iter() {
                 if key != fill.pattern.shader_and_bindings() {
-                    let end = self.vertices.len() as u32;
+                    let end = vertices.pushed_items();
                     if end > geom_start {
                         self.draws.push(Draw {
                             vertices: geom_start..end,
@@ -185,10 +175,10 @@ impl WpfMeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, surface_size, transforms);
+                self.prepare_fill(fill, surface_size, transforms, &mut vertices);
             }
 
-            let end = self.vertices.len() as u32;
+            let end = vertices.pushed_items();
             if end > geom_start {
                 self.draws.push(Draw {
                     vertices: geom_start..end,
@@ -209,7 +199,7 @@ impl WpfMeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms) {
+    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms, vertices: &mut GpuStoreWriter) {
         let transform = transforms.get(fill.transform).matrix();
         let pattern = fill.pattern.data;
 
@@ -255,38 +245,37 @@ impl WpfMeshRenderer {
                     let v2 = &v[2];
                     let v1 = &v[1];
                     let v0 = &v[0];
-                    self.vertices.push(Vertex {
-                        x: v2.x,
-                        y: v2.y,
-                        coverage: v2.coverage,
-                        pattern,
-                    });
-                    self.vertices.push(Vertex {
-                        x: v1.x,
-                        y: v1.y,
-                        coverage: v1.coverage,
-                        pattern,
-                    });
-                    self.vertices.push(Vertex {
-                        x: v0.x,
-                        y: v0.y,
-                        coverage: v0.coverage,
-                        pattern,
-                    });
+                    // Note: We can't push the 3 vertices in a single slice because slices are
+                    // guaranteed to go in the same chunk which means that the last slice of a
+                    // chunk may be moved to another chunk and leave a hole if it does not fit
+                    // exactly.
+                    vertices.push(&[
+                        Vertex {
+                            x: v2.x,
+                            y: v2.y,
+                            coverage: v2.coverage,
+                            pattern,
+                        },
+                    ]);
+                    vertices.push(&[
+                        Vertex {
+                            x: v1.x,
+                            y: v1.y,
+                            coverage: v1.coverage,
+                            pattern,
+                        },
+                    ]);
+                    vertices.push(&[
+                        Vertex {
+                            x: v0.x,
+                            y: v0.y,
+                            coverage: v0.coverage,
+                            pattern,
+                        },
+                    ]);
                 }
             }
         }
-    }
-
-    pub fn upload(
-        &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
-        self.vbo_range = resources.common
-            .vertices
-            .upload(device, bytemuck::cast_slice(&self.vertices));
     }
 }
 
@@ -307,10 +296,6 @@ impl core::Renderer for WpfMeshRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
-    }
-
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
@@ -320,9 +305,7 @@ impl core::Renderer for WpfMeshRenderer {
     ) {
         render_pass.set_vertex_buffer(
             0,
-            ctx.resources.common
-                .vertices
-                .get_buffer_slice(self.vbo_range.as_ref().unwrap()),
+            ctx.resources.common.vertices.as_buffer().unwrap().slice(..),
         );
 
         let mut helper = DrawHelper::new();

@@ -542,7 +542,7 @@ pub struct WgpuContext<'l> {
 pub trait Renderer: AsAny {
     fn prepare(&mut self, ctx: &mut PrepareContext);
 
-    fn upload(&mut self, ctx: &mut UploadContext);
+    fn upload(&mut self, _ctx: &mut UploadContext) {}
 
     // TODO: this is not wired in anymore.
     fn render_pre_pass(

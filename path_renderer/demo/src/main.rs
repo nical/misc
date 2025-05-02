@@ -900,6 +900,7 @@ fn paint_scene(
     }
 
     if testing {
+        let tx2 = frame.transforms.get_current_gpu_handle(&mut gpu_store);
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = frame.transforms.get_current_gpu_handle(&mut gpu_store);
@@ -922,6 +923,30 @@ fn paint_scene(
                 },
             },
         );
+
+        //for i in 0..5000 {
+        //    let x = ((i * 14873) % (700 + i / 127)) as f32;
+        //    let y = ((i * 73621) % (600 + i / 371)) as f32;
+        //    let w = 10.0;
+        //    let h = 10.0;
+        //    let pat = patterns.colors.add(Color {
+        //        r: ((i * 2767) % 255) as u8,
+        //        g: ((i * 3475) % 255) as u8,
+        //        b: ((i * 9721) % 255) as u8,
+        //        a: 150
+        //    });
+        //    renderers.rectangles.fill_rect(
+        //        &mut surface.ctx(),
+        //        &frame.transforms,
+        //        &LocalRect {
+        //            min: point(x, y),
+        //            max: point(x + w, y + h),
+        //        },
+        //        Aa::ALL,
+        //        pat,
+        //        tx2,
+        //    );
+        //}
 
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),

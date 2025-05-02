@@ -400,18 +400,18 @@ impl MeshRenderer {
             }
             Shape::Mesh(mesh) => {
                 let vtx_offset = todo!();
-                for vertex in &mesh.vertices {
-                    let pos = transform.transform_point(*vertex);
-                    vertices.push(&[Vertex {
-                        x: pos.x,
-                        y: pos.y,
-                        z_index: fill.z_index,
-                        pattern: fill.pattern.data,
-                    }]);
-                }
-                for index in &mesh.indices {
-                    indices.push_u32(&[*index + vtx_offset]);
-                }
+                //for vertex in &mesh.vertices {
+                //    let pos = transform.transform_point(*vertex);
+                //    vertices.push(&[Vertex {
+                //        x: pos.x,
+                //        y: pos.y,
+                //        z_index: fill.z_index,
+                //        pattern: fill.pattern.data,
+                //    }]);
+                //}
+                //for index in &mesh.indices {
+                //    indices.push_u32(&[*index + vtx_offset]);
+                //}
             }
             Shape::Rect(rect) => {
                 let a = transform.transform_point(rect.min);
@@ -456,23 +456,11 @@ impl MeshRenderer {
             }
         }
     }
-
-    pub fn upload(
-        &mut self,
-        _resources: &mut GpuResources,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
-    }
 }
 
 impl core::Renderer for MeshRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
         self.prepare_impl(ctx);
-    }
-
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
     }
 
     fn render<'pass, 'resources: 'pass>(
@@ -493,7 +481,7 @@ impl core::Renderer for MeshRenderer {
         );
         render_pass.set_vertex_buffer(
             0,
-            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..),
+            ctx.resources.common.vertices.as_buffer().unwrap().slice(..),
         );
 
         let mut helper = DrawHelper::new();

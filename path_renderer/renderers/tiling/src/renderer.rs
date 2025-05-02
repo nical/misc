@@ -370,18 +370,18 @@ impl TileRenderer {
 
         let common_resources = &mut resources.common;
 
-        self.encoder.upload(&mut common_resources.vertices, &device);
-        self.masks
-            .circle_masks
-            .upload(&mut common_resources.vertices, &device);
-        self.masks
-            .rectangle_masks
-            .upload(&mut common_resources.vertices, &device);
+        //self.encoder.upload(&mut common_resources.vertices, &device);
+        //self.masks
+        //    .circle_masks
+        //    .upload(&mut common_resources.vertices, &device);
+        //self.masks
+        //    .rectangle_masks
+        //    .upload(&mut common_resources.vertices, &device);
 
         self.encoder.mask_uploader.unmap();
-        self.encoder
-            .mask_uploader
-            .upload_vertices(device, &mut common_resources.vertices);
+        //self.encoder
+        //    .mask_uploader
+        //    .upload_vertices(device, &mut common_resources.vertices);
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
@@ -440,7 +440,7 @@ impl TileRenderer {
                     }
                 }
 
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.set_pipeline(pipeline);
                 pass.draw_indexed(0..6, 0, batch.tiles.clone());
             }
@@ -489,7 +489,7 @@ impl TileRenderer {
                 .buffer_and_instance_ranges(mask_atlas_index)
             {
                 pass.set_pipeline(&resources.masks.fill_pipeline);
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
 
@@ -499,7 +499,7 @@ impl TileRenderer {
                 .buffer_and_instance_ranges(mask_atlas_index)
             {
                 pass.set_pipeline(&resources.masks.circle_pipeline);
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
 
@@ -509,7 +509,7 @@ impl TileRenderer {
                 .buffer_and_instance_ranges(mask_atlas_index)
             {
                 pass.set_pipeline(&resources.masks.rect_pipeline);
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(buffer_range));
                 pass.draw_indexed(0..6, 0, instances);
             }
         }
@@ -518,7 +518,7 @@ impl TileRenderer {
         resources.mask_upload_copies.update_target(
             encoder,
             &common_resources.quad_ibo,
-            &common_resources.vertices,
+            //&common_resources.vertices,
             &self.encoder.mask_uploader,
             mask_atlas_index,
             &resources.mask_texture_view,
@@ -557,10 +557,10 @@ impl TileRenderer {
 
                         helper.resolve_and_bind(1, batch.pattern_inputs, bindings, pass);
 
-                        pass.set_vertex_buffer(
-                            0,
-                            common_resources.vertices.get_buffer_slice(range),
-                        );
+                        //pass.set_vertex_buffer(
+                        //    0,
+                        //    common_resources.vertices.get_buffer_slice(range),
+                        //);
                         pass.set_pipeline(pipeline);
                         pass.draw_indexed(0..6, 0, batch.tiles.clone());
                     }
@@ -583,7 +583,7 @@ impl TileRenderer {
                     .opaque_prerendered_tiles
                     .as_ref()
                     .unwrap();
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
 
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, &resources.src_color_bind_group, &[]);
@@ -593,7 +593,7 @@ impl TileRenderer {
             }
 
             if let Some(range) = &self.encoder.ranges.alpha_tiles {
-                pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
+                //pass.set_vertex_buffer(0, common_resources.vertices.get_buffer_slice(range));
                 pass.set_bind_group(1, &resources.mask_texture_bind_group, &[]);
                 helper.reset_binding(1);
 

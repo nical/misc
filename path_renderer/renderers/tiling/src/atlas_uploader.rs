@@ -228,7 +228,7 @@ impl MaskUploadCopies {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         quad_ibo: &wgpu::Buffer,
-        vertices: &DynamicStore,
+        //vertices: &DynamicStore,
         uploader: &TileAtlasUploader,
         dst_index: u32,
         dst: &wgpu::TextureView,
@@ -241,7 +241,7 @@ impl MaskUploadCopies {
             }
         };
 
-        let verts = vertices.get_buffer_slice(vbo_range);
+        //let verts = vertices.get_buffer_slice(vbo_range);
 
         for batch in &uploader.batches {
             if batch.dst_index != dst_index {
@@ -279,7 +279,7 @@ impl MaskUploadCopies {
 
             pass.set_pipeline(&self.pipeline);
             pass.set_index_buffer(quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-            pass.set_vertex_buffer(0, verts);
+            //pass.set_vertex_buffer(0, verts);
             pass.set_bind_group(0, dst_info, &[]);
             pass.set_bind_group(1, &self.intermediate_buffer_bind_group, &[]);
             pass.draw_indexed(0..6, 0, batch.instances.clone());

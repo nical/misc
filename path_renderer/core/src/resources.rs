@@ -1,4 +1,4 @@
-use crate::gpu::{DynamicStore, GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders};
+use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders};
 use crate::render_graph::{RenderPassData, TempResourceKey};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
@@ -112,8 +112,7 @@ impl<T: 'static> std::ops::IndexMut<ResourcesHandle<T>> for GpuResources {
 
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
-    pub vertices: DynamicStore,
-    pub vertices2: GpuStoreResources,
+    pub vertices: GpuStoreResources,
     pub indices: GpuStreamsResources,
     pub instances: GpuStreamsResources,
 
@@ -157,10 +156,7 @@ impl CommonGpuResources {
             border_color: None,
         });
 
-        let vertices = DynamicStore::new_vertices(4096 * 32);
-        let indices = DynamicStore::new(8192, wgpu::BufferUsages::INDEX, "Common:Index");
-
-        let vertices2 = GpuStoreResources::new(&GpuStoreDescriptor::Buffers {
+        let vertices = GpuStoreResources::new(&GpuStoreDescriptor::Buffers {
             usages: wgpu::BufferUsages::VERTEX,
             min_size: 1024 * 128,
             max_size: 1024 * 128,
@@ -250,7 +246,6 @@ impl CommonGpuResources {
         CommonGpuResources {
             quad_ibo,
             vertices,
-            vertices2,
             indices,
             instances,
             gpu_store,
@@ -264,12 +259,10 @@ impl CommonGpuResources {
 
     fn begin_frame(&mut self) {}
 
-    fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        self.vertices.unmap(encoder);
+    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {
     }
 
     fn end_frame(&mut self) {
-        self.vertices.end_frame();
     }
 }
 

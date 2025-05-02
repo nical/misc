@@ -551,9 +551,6 @@ impl core::Renderer for StencilAndCoverRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-    }
-
     fn render<'pass, 'resources: 'pass>(
         &self,
         batches: &[BatchId],
@@ -598,7 +595,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..)
+                            ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
                         );
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
@@ -617,7 +614,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         );
                         render_pass.set_vertex_buffer(
                             0,
-                            ctx.resources.common.vertices2.as_buffer().unwrap().slice(..)
+                            ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
                         );
 
                         let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();

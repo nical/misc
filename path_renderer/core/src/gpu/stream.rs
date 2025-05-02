@@ -75,6 +75,11 @@ pub struct StreamId(u32);
 // that we want two parts of a stream to be in the same buffer and have
 // access to their respective ranges.
 
+// TODO: Would it be more convenient to make the writer generic over the
+// item type? It looks like each writer always writes a single type
+// of thing which makes sense since they are going to be read as indices
+// or instances.
+
 pub struct GpuStreamWriter<'l> {
     chunk_start: *mut u8,
     // Offset of the cursor relative to the beginning of the current chunk, in bytes.
@@ -97,6 +102,12 @@ pub struct GpuStreamWriter<'l> {
 }
 
 impl<'l> GpuStreamWriter<'l> {
+    // TODO: Make `push` take a single element and `push_slice` take a slice.
+    #[inline]
+    pub fn push<T>(&mut self, data: &[T]) where T: bytemuck::Pod {
+        self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
+    }
+
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
         self.push_bytes_impl(self.key, data);
@@ -237,6 +248,10 @@ impl<'l> GpuStreamWriter<'l> {
     }
 
     pub fn pushed_bytes(&self) -> u32 { self.pushed_bytes }
+
+    pub fn pushed_items<T>(&self) -> u32 {
+        self.pushed_bytes / std::mem::size_of::<T>() as u32
+    }
 }
 
 impl<'l> Drop for GpuStreamWriter<'l> {

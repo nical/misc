@@ -59,7 +59,7 @@ impl Instance {
             self.resources.common.gpu_store.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.vertices2.begin_frame(
+            self.resources.common.vertices.begin_frame(
                 self.staging_buffers.clone()
             ),
             self.resources.common.indices.begin_frame(
@@ -168,7 +168,7 @@ impl Instance {
                 &self.device,
                 encoder,
             );
-            self.resources.common.vertices2.upload(
+            self.resources.common.vertices.upload(
                 &vtx_ops,
                 &staging_buffers,
                 &self.device,

@@ -1,12 +1,13 @@
 use crate::{resources::Instance, InstanceFlags};
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
+    batching::{BatchFlags, BatchId, BatchList}, context::{
         DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
     }, gpu::{
         shader::{RenderPipelineIndex, RenderPipelineKey},
-        DynBufferRange, GpuStoreHandle,
+        GpuStoreHandle, StreamId,
     }, pattern::BuiltPattern, resources::GpuResources, transform::Transforms, units::LocalRect, wgpu, PrepareContext, UploadContext
 };
+use std::ops::Range;
 
 use super::resources::Pipelines;
 
@@ -28,7 +29,7 @@ core::bitflags::bitflags! {
 }
 
 pub struct Batch {
-    vbo_range: Option<DynBufferRange>,
+    instances: Range<u32>,
     edge_aa: bool,
     // TODO: pattern, surface and opaque are only kept so that we can
     // create the pipeline index later in the prepare pass.
@@ -40,6 +41,7 @@ pub struct Batch {
 pub struct RectangleRenderer {
     batches: BatchList<Instance, Batch>,
     pipelines: crate::resources::Pipelines,
+    instances: Option<StreamId>,
 }
 
 impl RectangleRenderer {
@@ -50,11 +52,13 @@ impl RectangleRenderer {
         RectangleRenderer {
             batches: BatchList::new(renderer_id),
             pipelines,
+            instances: None,
         }
     }
 
     pub fn begin_frame(&mut self) {
         self.batches.clear();
+        self.instances = None;
     }
 
     pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
@@ -102,10 +106,10 @@ impl RectangleRenderer {
                 &aabb,
                 BatchFlags::ORDER_INDEPENDENT,
                 &mut || Batch {
+                    instances: 0..0,
                     pattern,
                     opaque: true,
                     edge_aa: true,
-                    vbo_range: None,
                     pipeline_idx: None,
                 },
             ).push(Instance {
@@ -134,10 +138,10 @@ impl RectangleRenderer {
             &aabb,
             batch_flags,
             &mut || Batch {
+                instances: 0..0,
                 pattern,
                 opaque: use_opaque_pass,
                 edge_aa: false,
-                vbo_range: None,
                 pipeline_idx: None,
             },
         );
@@ -157,9 +161,19 @@ impl RectangleRenderer {
             return;
         }
 
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let stream = worker_data.instances.next_stream_id();
+        let mut instances = worker_data.instances.write(stream, 0);
+        self.instances = Some(stream);
 
-        for (_, surface, batch) in self.batches.iter_mut() {
+        for (items, surface, batch) in self.batches.iter_mut() {
+            const SIZE: u32 = std::mem::size_of::<Instance>() as u32;
+            let start = instances.pushed_bytes() / SIZE;
+            instances.push(items);
+            let end = instances.pushed_bytes() / SIZE;
+            batch.instances = start..end;
+
             let pipeline = self.pipelines.get(batch.opaque, batch.edge_aa);
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
@@ -170,28 +184,11 @@ impl RectangleRenderer {
             batch.pipeline_idx = Some(idx);
         }
     }
-
-    pub fn upload(
-        &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
-        for (items, _, batch) in self.batches.iter_mut() {
-            batch.vbo_range = resources.common
-                .vertices
-                .upload(device, bytemuck::cast_slice(&items[..]));
-        }
-    }
 }
 
 impl core::Renderer for RectangleRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
         self.prepare_impl(ctx);
-    }
-
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
     }
 
     fn render<'pass, 'resources: 'pass>(
@@ -201,6 +198,10 @@ impl core::Renderer for RectangleRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        if self.instances.is_none() {
+            return;
+        }
+
         let common_resources = &ctx.resources.common;
 
         let mut helper = DrawHelper::new();
@@ -209,8 +210,12 @@ impl core::Renderer for RectangleRenderer {
             wgpu::IndexFormat::Uint16,
         );
 
+        let (instance_buf, range) = common_resources.instances.resolve(self.instances.unwrap()).unwrap();
+        let instance_buf = instance_buf.slice(range.start as u64 .. range.end as u64);
+        render_pass.set_vertex_buffer(0, instance_buf);
+
         for batch_id in batches {
-            let (instances, _, batch) = self.batches.get(batch_id.index);
+            let (_, _, batch) = self.batches.get(batch_id.index);
 
             let pipeline = ctx
                 .render_pipelines
@@ -220,13 +225,7 @@ impl core::Renderer for RectangleRenderer {
             helper.resolve_and_bind(1, batch.pattern.bindings, ctx.bindings, render_pass);
 
             render_pass.set_pipeline(pipeline);
-            render_pass.set_vertex_buffer(
-                0,
-                common_resources
-                    .vertices
-                    .get_buffer_slice(batch.vbo_range.as_ref().unwrap()),
-            );
-            render_pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
+            render_pass.draw_indexed(0..6, 0, batch.instances.clone());
         }
     }
 }

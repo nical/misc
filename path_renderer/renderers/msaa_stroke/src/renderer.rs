@@ -4,7 +4,7 @@ use core::{
     }, gpu::{
         shader::{
             BaseShaderId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-        }, storage_buffer::{StorageBuffer, StorageKind}, DynBufferRange, Shaders
+        }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId
     }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use lyon::{
@@ -61,7 +61,7 @@ pub struct PathData {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct CurveInstance {
+struct CurveInstance {
     pub from: Point,
     pub ctrl1: Point,
     pub ctrl2: Point,
@@ -85,14 +85,12 @@ struct Draw {
 
 pub struct MsaaStrokeRenderer {
     renderer_id: RendererId,
-    curves: Vec<CurveInstance>,
     path_data: Vec<PathData>,
     pub tolerance: f32,
 
     batches: BatchList<Stroke, BatchInfo>,
     draws: Vec<Draw>,
-    instance_range: Option<DynBufferRange>,
-    ibo_range: Option<DynBufferRange>,
+    instances: Option<StreamId>,
     base_shader: BaseShaderId,
 
     paths: StorageBuffer,
@@ -109,14 +107,12 @@ impl MsaaStrokeRenderer {
     ) -> Self {
         MsaaStrokeRenderer {
             renderer_id,
-            curves: Vec::new(),
             path_data: Vec::new(),
             tolerance: 0.25,
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            instance_range: None,
-            ibo_range: None,
+            instances: None,
             base_shader,
 
             paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
@@ -132,10 +128,8 @@ impl MsaaStrokeRenderer {
     pub fn begin_frame(&mut self) {
         self.draws.clear();
         self.batches.clear();
-        self.curves.clear();
         self.path_data.clear();
-        self.instance_range = None;
-        self.ibo_range = None;
+        self.instances = None;
         self.paths.begin_frame();
     }
 
@@ -195,7 +189,11 @@ impl MsaaStrokeRenderer {
 
         let pass = &ctx.pass;
         let transforms = &ctx.transforms;
-        let shaders = &mut ctx.workers.data().pipelines;
+        let worker_data = &mut ctx.workers.data();
+        let shaders = &mut worker_data.pipelines;
+        let instance_stream = worker_data.instances.next_stream_id();
+        let mut instances = worker_data.instances.write(instance_stream, 0);
+        self.instances = Some(instance_stream);
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
@@ -215,12 +213,12 @@ impl MsaaStrokeRenderer {
                 .pattern
                 .shader_and_bindings();
 
-            let mut geom_start = self.curves.len() as u32;
+            let mut geom_start = instances.pushed_items::<CurveInstance>();
 
             let mut max_segments_per_instance = 1;
             for stroke in commands.iter() {
                 if key != stroke.pattern.shader_and_bindings() {
-                    let end = self.curves.len() as u32;
+                    let end = instances.pushed_items::<CurveInstance>();
                     if end > geom_start {
                         self.draws.push(Draw {
                             segment_count: max_segments_per_instance,
@@ -238,10 +236,10 @@ impl MsaaStrokeRenderer {
                     key = stroke.pattern.shader_and_bindings();
                     max_segments_per_instance = 1;
                 }
-                self.prepare_stroke(stroke, transforms, &mut max_segments_per_instance);
+                self.prepare_stroke(stroke, transforms, &mut max_segments_per_instance, &mut instances);
             }
 
-            let end = self.curves.len() as u32;
+            let end = instances.pushed_items::<CurveInstance>();
             if end > geom_start {
                 self.draws.push(Draw {
                     segment_count: max_segments_per_instance, // TODO
@@ -263,7 +261,7 @@ impl MsaaStrokeRenderer {
         self.batches = batches;
     }
 
-    fn prepare_stroke(&mut self, shape: &Stroke, transforms: &Transforms, max_segments_per_instance: &mut u32) {
+    fn prepare_stroke(&mut self, shape: &Stroke, transforms: &Transforms, max_segments_per_instance: &mut u32, instances: &mut GpuStreamWriter) {
         let transform = transforms.get(shape.transform).matrix();
         let z_index = shape.z_index;
         let pattern = shape.pattern.data;
@@ -275,7 +273,7 @@ impl MsaaStrokeRenderer {
             Shape::Path(shape, ..) => {
                 let scale = f32::max(transform.m11, transform.m22);
                 let tolerance = self.tolerance / scale;
-                write_curves(shape.path.as_slice(), path_idx, tolerance, &mut self.curves, max_segments_per_instance);
+                write_curves(shape.path.as_slice(), path_idx, tolerance, instances, max_segments_per_instance);
             }
         }
 
@@ -297,10 +295,6 @@ impl MsaaStrokeRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        self.instance_range = resources.common
-            .vertices
-            .upload(device, bytemuck::cast_slice(&self.curves));
-
         if !self.path_data.is_empty() {
             self.paths.bump_allocator().push(self.path_data.len());
             // TODO: this should be a
@@ -340,18 +334,18 @@ impl core::Renderer for MsaaStrokeRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        if self.instances.is_none() {
+            return;
+        }
         render_pass.set_bind_group(
             1,
             self.geom_bind_group.as_ref().unwrap(),
             &[],
         );
 
-        render_pass.set_vertex_buffer(
-            0,
-            ctx.resources.common
-                .vertices
-                .get_buffer_slice(self.instance_range.as_ref().unwrap()),
-        );
+        let (instance_buf, instance_range) = ctx.resources.common.instances.resolve(self.instances.unwrap()).unwrap();
+        let instance_buf = instance_buf.slice(instance_range.start as u64 .. instance_range.end as u64);
+        render_pass.set_vertex_buffer(0, instance_buf);
 
         let mut helper = DrawHelper::new();
         for batch_id in batches {
@@ -369,10 +363,10 @@ impl core::Renderer for MsaaStrokeRenderer {
     }
 }
 
-fn write_curves(path: PathSlice, path_index: u32, tolerance: f32, curves: &mut Vec<CurveInstance>, max_segments_per_instance: &mut u32) {
+fn write_curves(path: PathSlice, path_index: u32, tolerance: f32, instances: &mut GpuStreamWriter, max_segments_per_instance: &mut u32) {
     // TODO: cull curves that are outside of the view.
 
-    let mut builder = InstanceBuilder::new(curves, path_index, tolerance);
+    let mut builder = InstanceBuilder::new(instances, path_index, tolerance);
     for evt in path {
         match evt {
             PathEvent::Begin { at } => {
@@ -397,17 +391,17 @@ fn write_curves(path: PathSlice, path_index: u32, tolerance: f32, curves: &mut V
 }
 
 const MAX_SEGMENTS_PER_INSTANCE: u32 = 32;
-pub struct InstanceBuilder<'l> {
+pub struct InstanceBuilder<'a, 'b> {
     prev_ctrl: Point,
     path_index: u32,
-    output: &'l mut Vec<CurveInstance>,
+    output: &'a mut GpuStreamWriter<'b>,
     max_segments: u32,
     tolerance: f32,
     is_first: bool,
 }
 
-impl<'l> InstanceBuilder<'l> {
-    fn new(output: &'l mut Vec<CurveInstance>, path_index: u32, tolerance: f32) -> Self {
+impl<'a, 'b> InstanceBuilder<'a, 'b> {
+    fn new(output: &'a mut GpuStreamWriter<'b>, path_index: u32, tolerance: f32) -> Self {
         InstanceBuilder {
             prev_ctrl: Point::new(0.0, 0.0),
             path_index,
@@ -435,7 +429,7 @@ impl<'l> InstanceBuilder<'l> {
 
     fn line(&mut self, line: &LineSegment<f32>) {
         let join_segments = self.compute_segments_per_join(line.from, line.to);
-        self.output.push(CurveInstance {
+        self.output.push(&[CurveInstance {
             from: line.from,
             ctrl1: line.from,
             ctrl2: line.to,
@@ -443,7 +437,7 @@ impl<'l> InstanceBuilder<'l> {
             prev_ctrl: self.prev_ctrl,
             path_index: self.path_index,
             segment_counts: join_segments | (1 << 16),
-        });
+        }]);
         self.prev_ctrl = line.from;
     }
 
@@ -470,7 +464,7 @@ impl<'l> InstanceBuilder<'l> {
     }
 
     fn push_curve_no_cusp(&mut self, curve: &CubicBezierSegment<f32>, mut join_segments: u32) {
-        let mut remainging_curve_segments = num_segments_cagd(curve, self.tolerance); // TODO
+        let mut remainging_curve_segments = num_segments_wang(curve, self.tolerance); // TODO
         debug_assert!(join_segments < MAX_SEGMENTS_PER_INSTANCE);
         let mut t0 = 0.0;
         while remainging_curve_segments > 0 {
@@ -480,7 +474,7 @@ impl<'l> InstanceBuilder<'l> {
 
             let subcurve = curve.split_range(t0..t1);
 
-            self.output.push(CurveInstance {
+            self.output.push(&[CurveInstance {
                 from: subcurve.from,
                 ctrl1: subcurve.ctrl1,
                 ctrl2: subcurve.ctrl2,
@@ -488,7 +482,7 @@ impl<'l> InstanceBuilder<'l> {
                 prev_ctrl: self.prev_ctrl,
                 path_index: self.path_index,
                 segment_counts: join_segments | (current_curve_segments << 16),
-            });
+            }]);
 
             self.prev_ctrl = subcurve.ctrl2;
 
@@ -502,7 +496,7 @@ impl<'l> InstanceBuilder<'l> {
 
 /// Computes the number of line segments required to build a flattened approximation
 /// of the curve with segments placed at regular `t` intervals.
-pub fn num_segments_cagd(curve: &CubicBezierSegment<f32>, tolerance: f32) -> u32 {
+pub fn num_segments_wang(curve: &CubicBezierSegment<f32>, tolerance: f32) -> u32 {
     let from = curve.from.to_vector();
     let ctrl1 = curve.ctrl1.to_vector();
     let ctrl2 = curve.ctrl2.to_vector();
