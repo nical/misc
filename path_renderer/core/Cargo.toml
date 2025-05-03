@@ -1,13 +1,14 @@
 [package]
 name = "core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 resolver = "2"
 workspace = ".."
 
 [dependencies]
-lyon = "1.0.0"
-wgpu = "25"
+lyon = { version = "1.0.0" }
+wgpu = { version = "25" }
+etagere = { version = "0.2.13" }
 futures = "0.3.5"
 bytemuck = "1.2.0"
 svg_fmt = "0.4.1"
@@ -15,7 +16,6 @@ profiling = "1.0.4"
 wgslp = { path = "../../wgslp/lib" }
 bitflags = "2.3.3"
 smallvec = "1.11.2"
-etagere = "0.2.13"
 rayon = "1.10.0"
 
 [profile.release]

@@ -1,3 +1,5 @@
+#![allow(exported_private_dependencies)]
+
 use core::geom::traits::Transformation;
 use core::geom::Point;
 

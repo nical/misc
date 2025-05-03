@@ -72,7 +72,9 @@ impl<T> Buffer<T> {
 
     #[inline]
     pub unsafe fn push_unchecked(&mut self, val: T) {
-        std::ptr::write(self.ptr.offset(self.len as isize), val);
+        unsafe {
+            std::ptr::write(self.ptr.offset(self.len as isize), val);
+        }
         self.len += 1;
     }
 

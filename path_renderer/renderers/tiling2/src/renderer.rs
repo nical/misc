@@ -236,7 +236,9 @@ impl TileRenderer {
         struct Item {
             instances: Range<u32>,
             batch_index: BatchIndex,
+            #[allow(unused)]
             surface_index: SurfaceIndex,
+            #[allow(unused)]
             worker_index: u8,
         }
         struct WorkerData {
@@ -484,8 +486,8 @@ impl TileRenderer {
 
     pub fn upload(
         &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
+        _resources: &mut GpuResources,
+        _device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
         if self.tiles.is_empty() {

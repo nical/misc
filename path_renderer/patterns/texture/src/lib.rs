@@ -1,3 +1,5 @@
+#![allow(exported_private_dependencies)]
+
 use core::geom::Box2D;
 use core::gpu::shader::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,

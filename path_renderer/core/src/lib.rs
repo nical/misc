@@ -1,3 +1,5 @@
+pub extern crate wgpu;
+
 pub mod buffer;
 pub mod context;
 pub mod gpu;
@@ -26,8 +28,6 @@ pub use lyon::geom;
 use pattern::BuiltPattern;
 use resources::{AsAny, GpuResources};
 use transform::Transforms;
-pub use wgpu;
-pub use etagere;
 
 use std::fmt;
 

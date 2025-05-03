@@ -288,7 +288,6 @@ pub enum GpuStoreDescriptor {
         usages: wgpu::BufferUsages,
         default_alignment: u32,
         min_size: u32,
-        max_size: u32,
         label: Option<&'static str>,
     },
 }
@@ -341,7 +340,6 @@ enum Storage {
         handle: Option<wgpu::Buffer>,
         allocated_size: u32,
         min_size: u32,
-        max_size: u32,
         usage: wgpu::BufferUsages,
     },
 }
@@ -358,9 +356,8 @@ impl GpuStoreResources {
                 usages,
                 default_alignment,
                 min_size,
-                max_size,
                 label,
-            } => Self::new_buffers(*usages, *default_alignment, *min_size, *max_size, *label),
+            } => Self::new_buffers(*usages, *default_alignment, *min_size, *label),
         }
     }
 
@@ -396,7 +393,6 @@ impl GpuStoreResources {
         usage: wgpu::BufferUsages,
         default_alignment: u32,
         min_size: u32,
-        max_size: u32,
         label: Option<&'static str>,
     ) -> Self {
         GpuStoreResources {
@@ -404,7 +400,6 @@ impl GpuStoreResources {
                 handle: None,
                 allocated_size: 0,
                 min_size,
-                max_size,
                 usage: usage | wgpu::BufferUsages::COPY_DST,
             },
             default_alignment,

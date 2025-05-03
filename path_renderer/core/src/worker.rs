@@ -66,8 +66,11 @@ impl<T> SendPtr<T> {
     pub fn from_ptr(p: *mut T) -> Self {
         Self { ptr: NonNull::new(p).unwrap() }
     }
+
     pub fn ptr(&self) -> *mut T { self.ptr.as_ptr() }
-    pub unsafe fn as_mut(&mut self) -> &mut T { self.ptr.as_mut() }
+
+    #[allow(unused)]
+    pub unsafe fn as_mut(&mut self) -> &mut T { unsafe { self.ptr.as_mut() } }
 }
 
 unsafe impl<T: Send> Send for SendPtr<T> {}

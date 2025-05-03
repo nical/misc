@@ -159,7 +159,6 @@ impl CommonGpuResources {
         let vertices = GpuStoreResources::new(&GpuStoreDescriptor::Buffers {
             usages: wgpu::BufferUsages::VERTEX,
             min_size: 1024 * 128,
-            max_size: 1024 * 128,
             default_alignment: 16,
             label: Some("vertices"),
         });

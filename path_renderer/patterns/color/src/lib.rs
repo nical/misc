@@ -1,3 +1,5 @@
+#![allow(exported_private_dependencies)]
+
 use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
 use core::{pattern::BuiltPattern, Color};
 

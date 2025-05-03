@@ -1,3 +1,7 @@
+#![allow(exported_private_dependencies)]
+
+pub extern crate core;
+
 mod renderer;
 
 pub use renderer::*;

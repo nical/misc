@@ -1,3 +1,7 @@
+#![allow(exported_private_dependencies)]
+
+pub extern crate core;
+
 pub mod mask;
 pub mod tiler;
 //pub mod tiler2;

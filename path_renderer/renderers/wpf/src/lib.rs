@@ -1,3 +1,5 @@
+#![allow(exported_private_dependencies)]
+
 mod renderer;
 mod resources;
 

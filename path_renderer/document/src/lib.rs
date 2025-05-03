@@ -1,3 +1,5 @@
+#![allow(exported_private_dependencies)]
+
 use core::Point;
 use lyon::path::commands::PathCommands;
 use std::{ops::Deref, sync::Arc};

@@ -1,3 +1,6 @@
+#![allow(exported_private_dependencies)]
+#![allow(unused)]
+
 use core::{point, Point};
 
 use lyon::geom::{arrayvec::ArrayVec, CubicBezierSegment, LineSegment, QuadraticBezierSegment};

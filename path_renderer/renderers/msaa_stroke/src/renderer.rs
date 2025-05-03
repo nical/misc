@@ -5,7 +5,7 @@ use core::{
         shader::{
             BaseShaderId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId
-    }, pattern::BuiltPattern, resources::GpuResources, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use lyon::{
     geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment},
@@ -290,7 +290,6 @@ impl MsaaStrokeRenderer {
 
     pub fn upload(
         &mut self,
-        resources: &mut GpuResources,
         shaders: &Shaders,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -324,7 +323,7 @@ impl core::Renderer for MsaaStrokeRenderer {
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.shaders, ctx.wgpu.device, ctx.wgpu.queue);
+        self.upload(ctx.shaders, ctx.wgpu.device, ctx.wgpu.queue);
     }
 
     fn render<'pass, 'resources: 'pass>(

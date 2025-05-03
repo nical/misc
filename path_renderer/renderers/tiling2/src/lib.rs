@@ -1,3 +1,8 @@
+#![allow(exported_private_dependencies)]
+
+pub extern crate core;
+pub extern crate lyon;
+
 mod renderer;
 pub mod tiler;
 pub mod occlusion;

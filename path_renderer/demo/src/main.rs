@@ -180,7 +180,7 @@ impl App {
 
         let mut tolerance = 0.25;
 
-        let mut trace = wgpu::Trace::Off;
+        let trace = wgpu::Trace::Off;
         let mut force_gl = false;
         let mut force_vk = false;
         let mut asap = false;

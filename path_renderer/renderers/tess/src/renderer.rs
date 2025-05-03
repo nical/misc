@@ -398,8 +398,9 @@ impl MeshRenderer {
                     )
                     .unwrap();
             }
-            Shape::Mesh(mesh) => {
-                let vtx_offset = todo!();
+            Shape::Mesh(_mesh) => {
+                todo!();
+                //let vtx_offset =
                 //for vertex in &mesh.vertices {
                 //    let pos = transform.transform_point(*vertex);
                 //    vertices.push(&[Vertex {
