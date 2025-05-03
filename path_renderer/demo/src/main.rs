@@ -577,8 +577,8 @@ impl App {
         self.overlay.begin_frame();
 
         if self.view.debug_overlay {
-            self.overlay.draw_item(&"Hello world\nNew line");
-            self.overlay.end_group();
+            //self.overlay.draw_item(&"Hello world\nNew line");
+            //self.overlay.end_group();
 
             let mut selection = Vec::new();
             self.counters.select_counters([
@@ -610,9 +610,6 @@ impl App {
             self.overlay.end_group();
 
             self.overlay.push_column();
-
-            self.overlay.draw_item(&"More text");
-            self.overlay.end_group();
 
             selection.clear();
             self.counters.select_counters(
