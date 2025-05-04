@@ -1,9 +1,3 @@
-//! A so far unsuccessful attempt at speeding up the quadratic bézier flattening code using SSE
-//! instructions.
-//! I was hoping that batching approx_parabola_integral and approx_parabola_inv_integral in pairs
-//! would halve the cost of the expensive square roots but it doesn't make a significant difference
-//! in the profiles so far.
-
 use arrayvec::ArrayVec;
 use crate::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
 use crate::{point, Point, Vector};

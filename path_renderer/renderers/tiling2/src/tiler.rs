@@ -165,7 +165,7 @@ impl Tiler {
         let square_tolerance = self.tolerance * self.tolerance;
 
         self.point_buffer.clear();
-        let mut flattener = Flattener::new(self.tolerance);
+        let mut flattener = FlattenerLevien::new(self.tolerance);
         let mut force_flush = false;
         let mut skipped = None;
 

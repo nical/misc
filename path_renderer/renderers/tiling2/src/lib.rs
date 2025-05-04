@@ -7,6 +7,7 @@ mod renderer;
 pub mod tiler;
 pub mod occlusion;
 mod flatten;
+mod simd4;
 
 use core::batching::RendererId;
 use core::wgpu;
