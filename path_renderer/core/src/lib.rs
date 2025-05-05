@@ -19,7 +19,7 @@ pub mod instance;
 pub mod worker;
 
 use context::{BuiltRenderPass, RenderPassContext};
-use gpu::{shader::PrepareRenderPipelines, GpuStore, GpuStreams, Shaders};
+use gpu::{shader::PrepareRenderPipelines, GpuStore, GpuStreams, Shaders, StagingBufferPool};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
@@ -29,7 +29,7 @@ use pattern::BuiltPattern;
 use resources::{AsAny, GpuResources};
 use transform::Transforms;
 
-use std::fmt;
+use std::{fmt, sync::{Arc, Mutex}};
 
 pub mod units {
     use lyon::geom::euclid::{self, Box2D, Point2D, Size2D, Vector2D};
@@ -524,6 +524,7 @@ pub struct PrepareContext<'a> {
     pub transforms: &'a Transforms,
     //pub pipelines: &'a mut PrepareRenderPipelines,
     pub workers: PrepareWorkerContext<'a>,
+    pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 
 /// Parameters for the renderering stage.
@@ -533,10 +534,10 @@ pub struct UploadContext<'l> {
     pub wgpu: WgpuContext<'l>,
 }
 
-#[derive(Copy, Clone)]
 pub struct WgpuContext<'l> {
     pub device: &'l wgpu::Device,
     pub queue: &'l wgpu::Queue,
+    pub encoder: &'l mut wgpu::CommandEncoder,
 }
 
 pub trait Renderer: AsAny {

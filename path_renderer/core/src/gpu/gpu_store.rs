@@ -1,11 +1,8 @@
 use std::{
-    cell::RefCell,
-    ops::Range,
-    sync::{
+    cell::RefCell, num::NonZeroU64, ops::Range, sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
-    },
-    u32,
+    }, u32
 };
 use wgpu::BufferAddress;
 
@@ -293,28 +290,32 @@ pub enum GpuStoreDescriptor {
 }
 
 impl GpuStoreDescriptor {
-    pub fn rgba32_float_texture() -> Self {
+    pub fn rgba32_float_texture(label: &'static str) -> Self {
         GpuStoreDescriptor::Texture {
             format: wgpu::TextureFormat::Rgba32Float,
             width: GPU_STORE_WIDTH,
-            label: Some(&"GPU store"),
+            label: Some(label),
         }
     }
 
-    pub fn rgba8_unorm_texture() -> Self {
+    pub fn rgba32_uint_texture(label: &'static str) -> Self {
         GpuStoreDescriptor::Texture {
-            format: wgpu::TextureFormat::Rgba8Uint,
+            format: wgpu::TextureFormat::Rgba32Uint,
             width: GPU_STORE_WIDTH,
-            label: Some(&"GPU store"),
+            label: Some(label),
+        }
+    }
+
+    pub fn rgba8_unorm_texture(label: &'static str) -> Self {
+        GpuStoreDescriptor::Texture {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width: GPU_STORE_WIDTH,
+            label: Some(label),
         }
     }
 }
 
-impl Default for GpuStoreDescriptor {
-    fn default() -> Self {
-        GpuStoreDescriptor::rgba32_float_texture()
-    }
-}
+
 
 // Lives in the instance.
 pub struct GpuStoreResources {
@@ -363,11 +364,15 @@ impl GpuStoreResources {
 
     fn new_texture(format: wgpu::TextureFormat, width: u32, label: Option<&'static str>) -> Self {
         let bytes_per_px: u32 = match format {
-            wgpu::TextureFormat::Rgba32Float => 16,
+            wgpu::TextureFormat::Rgba32Uint
+            | wgpu::TextureFormat::Rgba32Sint
+            | wgpu::TextureFormat::Rgba32Float => 16,
             wgpu::TextureFormat::Rgba8Uint
             | wgpu::TextureFormat::Rgba8Unorm
             | wgpu::TextureFormat::Rgba8UnormSrgb
             | wgpu::TextureFormat::Rgba8Sint
+            | wgpu::TextureFormat::R32Uint
+            | wgpu::TextureFormat::R32Sint
             | wgpu::TextureFormat::R32Float => 4,
             _ => unimplemented!(),
         };
@@ -632,11 +637,19 @@ impl GpuStoreResources {
         }
     }
 
-    pub fn as_bind_group_entry(&self, binding: u32) -> wgpu::BindGroupEntry {
-        wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::TextureView(self.as_texture_view().unwrap()),
-        }
+    pub fn as_bind_group_entry(&self, binding: u32) -> Option<wgpu::BindGroupEntry> {
+        let resource = match &self.storage {
+            Storage::Texture { view, .. } => wgpu::BindingResource::TextureView(view.as_ref()?),
+            Storage::Buffer { handle, allocated_size, .. } => wgpu::BindingResource::Buffer(
+                wgpu::BufferBinding {
+                    buffer: handle.as_ref()?,
+                    offset: 0,
+                    size: NonZeroU64::new(*allocated_size as u64),
+                }
+            ),
+        };
+
+        Some(wgpu::BindGroupEntry { binding, resource })
     }
 }
 
@@ -726,7 +739,10 @@ impl GpuStore {
         }
     }
 
-    pub(crate) fn finish(&mut self) -> TransferOps {
+    // TODO: This easy to forget and it is cumbersome to pass around
+    // the transfer ops. It would be better to make at least the passing
+    // of tranfer ops more automatic/hidden.
+    pub fn finish(&mut self) -> TransferOps {
         TransferOps {
             ops: std::mem::take(&mut self.ops.borrow_mut()),
         }

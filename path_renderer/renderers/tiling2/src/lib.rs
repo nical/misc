@@ -12,7 +12,7 @@ mod simd4;
 use core::batching::RendererId;
 use core::wgpu;
 use core::units::{LocalSpace, SurfaceSpace};
-use core::gpu::PipelineDefaults;
+use core::gpu::{GpuStoreDescriptor, GpuStoreResources, PipelineDefaults};
 use core::gpu::shader::{Shaders, BaseShaderDescriptor, BaseShaderId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
 
 pub use renderer::*;
@@ -260,54 +260,20 @@ impl Tiling {
         renderer_id: RendererId,
         options: &RendererOptions,
     ) -> TileRenderer {
-        let default_edge_texture_size = 1024;
-        let default_path_texture_size = 512;
+        let path_desc = GpuStoreDescriptor::rgba32_uint_texture("tiling::paths");
+        let mut path_store = GpuStoreResources::new(&path_desc);
+        path_store.allocate(4096 * 8, device);
 
-        let edge_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tiling2::edges"),
-            dimension: wgpu::TextureDimension::D2,
-            size: wgpu::Extent3d {
-                width: default_edge_texture_size,
-                height: default_edge_texture_size,
-                depth_or_array_layers: 1,
-            },
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            sample_count: 1,
-            view_formats: &[],
-        });
-        let edge_texture_view = edge_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-
-        let path_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tiling2::paths"),
-            dimension: wgpu::TextureDimension::D2,
-            size: wgpu::Extent3d {
-                width: default_path_texture_size,
-                height: default_path_texture_size,
-                depth_or_array_layers: 1,
-            },
-            format: wgpu::TextureFormat::Rgba32Uint,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            sample_count: 1,
-            view_formats: &[],
-        });
-        let path_texture_view = path_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let edge_desc = GpuStoreDescriptor::rgba8_unorm_texture("tiling::edges");
+        let mut edge_store = GpuStoreResources::new(&edge_desc);
+        edge_store.allocate(4096 * 256, device);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tiling2::geom"),
             layout: &shaders.get_bind_group_layout(self.bind_group_layout).handle,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&path_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&edge_texture_view),
-                },
+                path_store.as_bind_group_entry(0).unwrap(),
+                edge_store.as_bind_group_entry(1).unwrap(),
             ],
         });
 
@@ -318,17 +284,19 @@ impl Tiling {
             no_opaque_batches: options.no_opaque_batches,
             back_to_front: options.occlusion.cpu || options.occlusion.gpu,
             tiler: crate::tiler::Tiler::new(),
-            tiles: crate::tiler::TilerOutput::new(),
             batches: core::batching::BatchList::new(renderer_id),
             base_shader: self.base_shader,
             mask_instances: None,
             opaque_instances: None,
 
             resources: TileGpuResources {
-                edge_texture,
-                path_texture,
                 bind_group,
-            }
+                paths: path_store,
+                edges: edge_store,
+            },
+
+            path_transfer_ops: Vec::new(),
+            edge_transfer_ops: Vec::new(),
         }
     }
 }
@@ -354,7 +322,7 @@ fn tile_position() {
 }
 
 pub struct TileGpuResources {
-    pub(crate) edge_texture: wgpu::Texture,
-    pub(crate) path_texture: wgpu::Texture,
+    pub(crate) edges: GpuStoreResources,
+    pub(crate) paths: GpuStoreResources,
     pub(crate) bind_group: wgpu::BindGroup,
 }

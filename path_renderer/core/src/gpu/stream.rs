@@ -126,7 +126,6 @@ impl<'l> GpuStreamWriter<'l> {
             return;
         }
         let mut new_local_offset = self.staging_local_offset + size;
-        // TODO: support breaking large pushes into multiple chunks!
         if new_local_offset > self.chunk_size || sort_key != self.current_sort_key {
             self.replace_staging_buffer();
             new_local_offset = self.staging_local_offset + size;

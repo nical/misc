@@ -49,9 +49,11 @@ fn decode_instance(encoded: vec4<u32>) -> TileInstance {
 }
 
 fn fetch_path(path_idx: u32) -> PathInfo {
+    // Must match the gpu_store texture width.
+    const PATH_TEXTURE_WIDTH: u32 = 2048;
     // The path data occupies two u32x4 pixels in the path texture.
     let idx = path_idx * 2u;
-    let path_uv = vec2u(idx % 512u, idx / 512u);
+    let path_uv = vec2u(idx % PATH_TEXTURE_WIDTH, idx / PATH_TEXTURE_WIDTH);
     var encoded0 = textureLoad(path_texture, path_uv, 0);
     var encoded1 = textureLoad(path_texture, path_uv + vec2u(1u, 0u), 0);
 
@@ -181,7 +183,8 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             break;
         }
 
-        let EDGE_TEXTURE_WIDTH: u32 = 1024u;
+        // Must match the gpu_store texture width.
+        const EDGE_TEXTURE_WIDTH: u32 = 2048;
         let edge_uv = vec2i(
             i32(edge_idx % EDGE_TEXTURE_WIDTH),
             i32(edge_idx / EDGE_TEXTURE_WIDTH),

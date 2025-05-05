@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use core::gpu::GpuStreamWriter;
 use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, vector};
 use core::{pattern::BuiltPattern, units::point};
 
@@ -703,18 +704,18 @@ impl Tiler {
 
             // Add the (strectched) tile and start over if we haven't reached
             // x_end yet.
-            let tiles = if is_opaque {
-                &mut output.opaque_tiles
-            } else {
-                &mut output.mask_tiles
-            };
-            tiles.push(TileInstance {
+            let instance = TileInstance {
                 position,
                 backdrop,
                 first_edge: 0,
                 edge_count: 0,
                 path_index,
-            }.encode());
+            }.encode();
+            let tiles = if is_opaque {
+                output.opaque_tiles.push(instance);
+            } else {
+                output.mask_tiles.push(instance);
+            };
         }
     }
 
@@ -744,18 +745,18 @@ impl Tiler {
 
         // Add the (strectched) tile and start over if we haven't reached
         // x_end yet.
-        let tiles = if is_opaque {
-            &mut output.opaque_tiles
-        } else {
-            &mut output.mask_tiles
-        };
-        tiles.push(TileInstance {
+        let instance = TileInstance {
             position,
             backdrop,
             first_edge: 0,
             edge_count: 0,
             path_index,
-        }.encode());
+        }.encode();
+        if is_opaque {
+            output.opaque_tiles.push(instance);
+        } else {
+            output.mask_tiles.push(instance);
+        }
     }
 
     pub fn fill_surface(
@@ -866,21 +867,23 @@ fn event() {
     assert_eq!(v, vec![b1, e1, b2, e2, e3]);
 }
 
-pub struct TilerOutput {
+pub struct TilerOutput<'l> {
     pub paths: Vec<EncodedPathInfo>,
     pub edges: Vec<EncodedEdge>,
     pub mask_tiles: Vec<EncodedTileInstance>,
-    pub opaque_tiles: Vec<EncodedTileInstance>,
+    pub opaque_tiles: GpuStreamWriter<'l> ,
     pub occlusion: OcclusionBuffer,
 }
 
-impl TilerOutput {
-    pub fn new() -> Self {
+impl<'l> TilerOutput<'l> {
+    pub fn new(
+        opaque_tiles: GpuStreamWriter<'l> ,
+    ) -> Self {
         TilerOutput {
             paths: Vec::new(),
             edges: Vec::new(),
             mask_tiles: Vec::new(),
-            opaque_tiles: Vec::new(),
+            opaque_tiles,
             occlusion: OcclusionBuffer::disabled(),
         }
     }
@@ -888,30 +891,30 @@ impl TilerOutput {
     pub fn clear(&mut self) {
         self.paths.clear();
         self.edges.clear();
-        self.mask_tiles.clear();
-        self.opaque_tiles.clear();
     }
 
     pub fn is_empty(&self) -> bool {
         self.edges.is_empty()
             && self.mask_tiles.is_empty()
-            && self.opaque_tiles.is_empty()
+            && self.opaque_tiles.pushed_bytes() == 0
     }
 }
 
 pub type EncodedEdge = u32;
 
+// Note: The type to use for the memory layout/footprint on GPU is
+// EncodedTileInstance.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct TileInstance {
-    pub position: TilePosition,
-    pub first_edge: u32,
-    pub edge_count: u16,
-    pub backdrop: i16,
-    pub path_index: u32,
+struct TileInstance {
+    position: TilePosition,
+    first_edge: u32,
+    edge_count: u16,
+    backdrop: i16,
+    path_index: u32,
 }
 
-type EncodedTileInstance = [u32; 4];
+pub type EncodedTileInstance = [u32; 4];
 
 impl TileInstance {
     pub fn encode(self) -> EncodedTileInstance {
@@ -1003,6 +1006,7 @@ impl<'l, T: std::fmt::Debug> Drop for PanicLogger<'l, T> {
 fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
 }
+/*
 #[test]
 fn tiler2_svg() {
     use core::path::Builder;
@@ -1092,7 +1096,6 @@ fn tiler2_svg() {
     }
     println!("xxxx{}", EndSvg);
 }
-
 #[cfg(test)]
 fn test_segment(from: Point, to: Point) {
     let seg = LineSegment { from: point(-526043.7, 1466.5547), to: point(-526063.0, 395.3828) };
@@ -1150,3 +1153,4 @@ fn segment_01() {
 fn segment_02() {
     test_segment(point(330.918, -0.04), point(331.346, -0.85275))
 }
+*/

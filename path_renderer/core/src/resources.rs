@@ -1,5 +1,6 @@
-use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders};
+use crate::gpu::{staging_buffers, GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders, StagingBufferPool, StagingBufferPoolRef};
 use crate::render_graph::{RenderPassData, TempResourceKey};
+use std::sync::{Arc, Mutex};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
 use wgpu::util::DeviceExt;
@@ -17,8 +18,9 @@ impl GpuResources {
     pub fn new(
         device: &wgpu::Device,
         shaders: &mut crate::gpu::Shaders,
+        staging_buffers: StagingBufferPoolRef,
     ) -> Self {
-        let common = CommonGpuResources::new(device, shaders);
+        let common = CommonGpuResources::new(device, shaders, staging_buffers);
         let graph = RenderGraphResources::new(device);
 
         GpuResources {
@@ -124,12 +126,15 @@ pub struct CommonGpuResources {
     pub msaa_blit_pipeline: wgpu::RenderPipeline,
     pub msaa_blit_with_depth_stencil_pipeline: wgpu::RenderPipeline,
     pub msaa_blit_src_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub staging_buffers: StagingBufferPoolRef,
 }
 
 impl CommonGpuResources {
     pub fn new(
         device: &wgpu::Device,
         shaders: &mut crate::gpu::Shaders,
+        staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
         let quad_ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -138,7 +143,7 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let mut gpu_store = GpuStoreResources::new(&GpuStoreDescriptor::rgba32_float_texture());
+        let mut gpu_store = GpuStoreResources::new(&GpuStoreDescriptor::rgba32_float_texture("gpu_store"));
         gpu_store.allocate(4096 * 1024, device);
 
         let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -253,6 +258,7 @@ impl CommonGpuResources {
             msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
             msaa_blit_layout,
             msaa_blit_src_bind_group_layout,
+            staging_buffers,
         }
     }
 
@@ -376,7 +382,7 @@ impl RenderGraphResources {
                                 size: wgpu::BufferSize::new(size),
                             }),
                         },
-                        resources.gpu_store.as_bind_group_entry(1),
+                        resources.gpu_store.as_bind_group_entry(1).unwrap(),
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: wgpu::BindingResource::Sampler(&self.default_sampler),

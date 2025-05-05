@@ -35,6 +35,8 @@ pub struct MappedStagingBufferChunk {
     pub offset: StagingOffset,
 }
 
+pub type StagingBufferPoolRef = Arc<Mutex<StagingBufferPool>>;
+
 pub struct StagingBufferPool {
     buffer_size: u32,
 

@@ -180,7 +180,7 @@ impl<'a, CtxData: WorkerData> Context<'a, CtxData> {
                 }
             }
 
-            self.slice_for_each(&buffer, &|ctx, slice| {
+            self.slice_for_each(&buffer, &|ctx, slice, _| {
                 for item in slice {
                     op(ctx, item)
                 }
@@ -190,7 +190,7 @@ impl<'a, CtxData: WorkerData> Context<'a, CtxData> {
         }
 
         if !buffer.is_empty() {
-            self.slice_for_each(&buffer, &|ctx, slice| {
+            self.slice_for_each(&buffer, &|ctx, slice, _| {
                 for item in slice {
                     op(ctx, item)
                 }
@@ -248,26 +248,27 @@ impl<'a, CtxData: WorkerData> Context<'a, CtxData> {
     )
     where
         I: Send,
-        F: Fn(&mut Context<CtxData>, &[I]) + Send + Sync
+        F: Fn(&mut Context<CtxData>, &[I], u32) + Send + Sync
     {
         self.slice_split_threshold = (slice.len() / rayon::current_num_threads()).max(2);
-        self.slice_for_each_impl(slice, op);
+        self.slice_for_each_impl(0, slice, op);
     }
 
     #[inline]
     fn slice_for_each_impl<I, F>(
         &mut self,
+        index: u32,
         slice: &[I],
         op: &F
     )
     where
         I: Send,
-        F: Fn(&mut Context<CtxData>, &[I]) + Send + Sync
+        F: Fn(&mut Context<CtxData>, &[I], u32) + Send + Sync
     {
         //println!("ctx #{} for each n={}", self.index(), slice.len());
         if slice.len() <= self.slice_split_threshold {
             //println!("ctx #{} job exec n={}", self.index(), slice.len());
-            op(self, slice);
+            op(self, slice, index);
             return;
         }
 
@@ -280,11 +281,12 @@ impl<'a, CtxData: WorkerData> Context<'a, CtxData> {
             self.join(
                 move |ctx| {
                     let slice = std::slice::from_raw_parts(left.ptr(), left_len);
-                    ctx.slice_for_each_impl(slice, op)
+                    ctx.slice_for_each_impl(index, slice, op)
                 },
                 move |ctx| {
+                    let right_idx = index + left_len as u32;
                     let slice = std::slice::from_raw_parts(right.ptr(), right_len);
-                    ctx.slice_for_each_impl(slice, op)
+                    ctx.slice_for_each_impl(right_idx, slice, op)
                 },
             );
         }

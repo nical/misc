@@ -26,18 +26,19 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize) -> Self {
+        let staging_buffers = unsafe {
+            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, device.clone())))
+        };
+
         let mut shaders = Shaders::new(&device);
         let render_pipelines = RenderPipelines::new();
         let resources = GpuResources::new(
             &device,
             &mut shaders,
+            staging_buffers.clone(),
         );
 
         let workers = Workers::new(num_workers);
-
-        let staging_buffers = unsafe {
-            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, device.clone())))
-        };
 
         Instance {
             shaders,
@@ -120,6 +121,7 @@ impl Instance {
                     pass,
                     transforms: &frame.transforms,
                     workers: self.workers.ctx_with(&mut worker_data[..]),
+                    staging_buffers: self.staging_buffers.clone(),
                 });
             }
         }
@@ -192,7 +194,7 @@ impl Instance {
             renderer.upload(&mut UploadContext {
                 resources: &mut self.resources,
                 shaders: &self.shaders,
-                wgpu: WgpuContext { device, queue },
+                wgpu: WgpuContext { device, queue, encoder },
             });
         }
 
