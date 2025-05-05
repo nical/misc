@@ -777,6 +777,7 @@ pub struct GpuStoreWriter<'l> {
 }
 
 impl<'l> GpuStoreWriter<'l> {
+    #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) -> GpuStoreHandle {
         self.pushed_bytes += data.len() as u32;
         if data.len() > self.chunk_size as usize {
@@ -804,14 +805,38 @@ impl<'l> GpuStoreWriter<'l> {
         GpuStoreHandle(address.0)
     }
 
+    #[inline]
     pub fn push_slice<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuStoreHandle {
         self.push_bytes(bytemuck::cast_slice(data))
     }
 
+    #[inline]
     pub fn push<T: bytemuck::Pod>(&mut self, data: T) -> GpuStoreHandle {
-        self.push_bytes(bytemuck::cast_slice(&[data]))
+        let size_of = std::mem::size_of::<T>();
+        let size = size_of as u32;
+        self.pushed_bytes += size;
+
+        let aligned_size = (size_of + self.align_mask) & !self.align_mask;
+        let mut new_local_offset = self.staging_local_offset + aligned_size as u32;
+
+        if new_local_offset > self.chunk_size {
+            self.replace_staging_buffer();
+            new_local_offset = self.staging_local_offset + aligned_size as u32;
+        }
+
+        unsafe {
+            let dst_ptr = self.chunk_start.add(self.staging_local_offset as usize) as *mut T;
+            std::ptr::write(dst_ptr, data);
+        }
+
+        let address = self.cursor_gpu_offset;
+        self.cursor_gpu_offset.0 += aligned_size as u32 >> self.offset_shift;
+        self.staging_local_offset = new_local_offset;
+
+        GpuStoreHandle(address.0)
     }
 
+    #[inline(never)]
     fn push_bytes_large(&mut self, data: &[u8]) -> GpuStoreHandle {
         self.flush_staging_buffer();
         self.chunk_start = std::ptr::null_mut();

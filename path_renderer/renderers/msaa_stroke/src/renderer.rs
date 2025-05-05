@@ -428,7 +428,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
 
     fn line(&mut self, line: &LineSegment<f32>) {
         let join_segments = self.compute_segments_per_join(line.from, line.to);
-        self.output.push_slice(&[CurveInstance {
+        self.output.push(CurveInstance {
             from: line.from,
             ctrl1: line.from,
             ctrl2: line.to,
@@ -436,7 +436,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
             prev_ctrl: self.prev_ctrl,
             path_index: self.path_index,
             segment_counts: join_segments | (1 << 16),
-        }]);
+        });
         self.prev_ctrl = line.from;
     }
 
@@ -473,7 +473,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
 
             let subcurve = curve.split_range(t0..t1);
 
-            self.output.push_slice(&[CurveInstance {
+            self.output.push(CurveInstance {
                 from: subcurve.from,
                 ctrl1: subcurve.ctrl1,
                 ctrl2: subcurve.ctrl2,
@@ -481,7 +481,7 @@ impl<'a, 'b> InstanceBuilder<'a, 'b> {
                 prev_ctrl: self.prev_ctrl,
                 path_index: self.path_index,
                 segment_counts: join_segments | (current_curve_segments << 16),
-            }]);
+            });
 
             self.prev_ctrl = subcurve.ctrl2;
 

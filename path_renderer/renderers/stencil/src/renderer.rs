@@ -62,7 +62,9 @@ struct GeomBuilder<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        self.indices.push_slice(&[a.0, b.0, c.0])
+        self.indices.push(a.0);
+        self.indices.push(b.0);
+        self.indices.push(c.0);
     }
 }
 
@@ -72,12 +74,12 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         vertex: lyon::tessellation::FillVertex<'_>,
     ) -> Result<VertexId, lyon::tessellation::GeometryBuilderError> {
         let (x, y) = vertex.position().to_tuple();
-        let handle = self.vertices.push_slice(&[CoverVertex {
+        let handle = self.vertices.push(CoverVertex {
             x,
             y,
             z_index: self.z_index,
             pattern: self.pattern,
-        }]);
+        });
 
         Ok(VertexId(handle.to_u32()))
     }
@@ -400,7 +402,9 @@ fn generate_stencil_geometry(
     }
 
     fn triangle(indices: &mut GpuStreamWriter, a: u32, b: u32, c: u32) {
-        indices.push_slice(&[a, b, c]);
+        indices.push(a);
+        indices.push(b);
+        indices.push(c);
     }
 
     // Use the center of the bounding box as the pivot point.
@@ -530,20 +534,17 @@ fn generate_cover_geometry(
 
     let z_index = fill.z_index;
     let pattern = fill.pattern.data;
-    let offset = cover.vertices.push_slice(&[
-        CoverVertex { x: a.x, y: a.y, z_index, pattern },
-        CoverVertex { x: b.x, y: b.y, z_index, pattern },
-        CoverVertex { x: c.x, y: c.y, z_index, pattern },
-        CoverVertex { x: d.x, y: d.y, z_index, pattern },
-    ]).to_u32();
-    cover.indices.push_slice(&[
-        offset,
-        offset + 1,
-        offset + 2,
-        offset,
-        offset + 2,
-        offset + 3,
-    ]);
+    let a = cover.vertices.push(CoverVertex { x: a.x, y: a.y, z_index, pattern });
+    let b = cover.vertices.push(CoverVertex { x: b.x, y: b.y, z_index, pattern });
+    let c = cover.vertices.push(CoverVertex { x: c.x, y: c.y, z_index, pattern });
+    let d = cover.vertices.push(CoverVertex { x: d.x, y: d.y, z_index, pattern });
+
+    cover.indices.push(a);
+    cover.indices.push(b);
+    cover.indices.push(c);
+    cover.indices.push(a);
+    cover.indices.push(c);
+    cover.indices.push(d);
 }
 
 impl core::Renderer for StencilAndCoverRenderer {

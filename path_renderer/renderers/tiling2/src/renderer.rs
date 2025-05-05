@@ -210,16 +210,17 @@ impl TileRenderer {
             }
         }
 
+        // TODO: Remove the extra copy by pushing directly into the writers.
         if !self.tiles.mask_tiles.is_empty() {
             let mask_stream = instances.next_stream_id();
             let mut writer = instances.write(mask_stream, 0);
-            writer.push_bytes(bytemuck::cast_slice(&self.tiles.mask_tiles));
+            writer.push_slice(&self.tiles.mask_tiles);
             self.mask_instances = Some(mask_stream);
         }
         if !self.tiles.opaque_tiles.is_empty() {
             let opaque_stream = instances.next_stream_id();
             let mut writer = instances.write(opaque_stream, 0);
-            writer.push_bytes(bytemuck::cast_slice(&self.tiles.opaque_tiles));
+            writer.push_slice(&self.tiles.opaque_tiles);
             self.opaque_instances = Some(opaque_stream);
         }
 

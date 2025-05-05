@@ -81,7 +81,9 @@ struct GeomBuilder<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        self.indices.push_slice(&[a.0, b.0, c.0])
+        self.indices.push(a.0);
+        self.indices.push(b.0);
+        self.indices.push(c.0);
     }
 }
 
@@ -420,21 +422,17 @@ impl MeshRenderer {
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                let vtx_offset = vertices.push_slice(&[
-                    Vertex { x: a.x, y: a.y, z_index, pattern },
-                    Vertex { x: b.x, y: b.y, z_index, pattern },
-                    Vertex { x: c.x, y: c.y, z_index, pattern },
-                    Vertex { x: d.x, y: d.y, z_index, pattern },
-                ]).to_u32();
+                let a = vertices.push(Vertex { x: a.x, y: a.y, z_index, pattern }).to_u32();
+                let b = vertices.push(Vertex { x: b.x, y: b.y, z_index, pattern }).to_u32();
+                let c = vertices.push(Vertex { x: c.x, y: c.y, z_index, pattern }).to_u32();
+                let d = vertices.push(Vertex { x: d.x, y: d.y, z_index, pattern }).to_u32();
 
-                indices.push_slice(&[
-                    vtx_offset,
-                    vtx_offset + 1,
-                    vtx_offset + 2,
-                    vtx_offset,
-                    vtx_offset + 2,
-                    vtx_offset + 3,
-                ]);
+                indices.push(a);
+                indices.push(b);
+                indices.push(c);
+                indices.push(a);
+                indices.push(c);
+                indices.push(d);
             }
             Shape::StrokePath(path, width) => {
                 let transform = transform.to_untyped();

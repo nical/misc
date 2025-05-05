@@ -107,9 +107,10 @@ impl<'l> GpuStreamWriter<'l> {
         self.push_bytes_impl(self.key, bytemuck::cast_slice(data));
     }
 
+    //
     #[inline]
     pub fn push<T>(&mut self, data: T) where T: bytemuck::Pod {
-        self.push_bytes_impl(self.key, bytemuck::cast_slice(&[data]));
+        self.push_val_impl(self.key, data);
     }
 
     #[inline]
@@ -141,6 +142,26 @@ impl<'l> GpuStreamWriter<'l> {
         self.staging_local_offset = new_local_offset;
     }
 
+    fn push_val_impl<T>(&mut self, sort_key: u64, data: T) {
+        let size_of = std::mem::size_of::<T>();
+        let size = size_of as u32;
+        self.pushed_bytes += size;
+        let mut new_local_offset = self.staging_local_offset + size;
+        if new_local_offset > self.chunk_size || sort_key != self.current_sort_key {
+            self.replace_staging_buffer();
+            new_local_offset = self.staging_local_offset + size;
+            self.current_sort_key = sort_key;
+        }
+
+        unsafe {
+            let dst_ptr = self.chunk_start.add(self.staging_local_offset as usize) as *mut T;
+            std::ptr::write(dst_ptr, data);
+        }
+
+        self.staging_local_offset = new_local_offset;
+    }
+
+    #[inline(never)]
     fn push_bytes_large(&mut self, sort_key: u64, data: &[u8]) {
         self.flush_staging_buffer();
         self.chunk_start = std::ptr::null_mut();
