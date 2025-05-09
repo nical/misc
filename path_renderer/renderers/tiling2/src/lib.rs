@@ -18,6 +18,7 @@ use core::gpu::shader::{Shaders, BaseShaderDescriptor, BaseShaderId, BindGroupLa
 pub use renderer::*;
 
 pub use lyon::lyon_tessellation::FillRule;
+use tiler::EncodedPathInfo;
 
 pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
 
@@ -260,7 +261,12 @@ impl Tiling {
         renderer_id: RendererId,
         options: &RendererOptions,
     ) -> TileRenderer {
-        let path_desc = GpuStoreDescriptor::rgba32_uint_texture("tiling::paths");
+        let path_desc = GpuStoreDescriptor::Texture {
+            format: wgpu::TextureFormat::Rgba32Uint,
+            width: 2048,
+            label: Some("tiling::paths"),
+            alignment: std::mem::size_of::<EncodedPathInfo>() as u32,
+        };
         let mut path_store = GpuStoreResources::new(&path_desc);
         path_store.allocate(4096 * 8, device);
 
@@ -300,6 +306,7 @@ impl Tiling {
 
             path_transfer_ops: Vec::new(),
             edge_transfer_ops: Vec::new(),
+            parallel: false,
         }
     }
 }

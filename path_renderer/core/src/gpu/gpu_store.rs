@@ -275,11 +275,16 @@ pub struct TransferOps {
     ops: Vec<TransferOp>,
 }
 
+impl TransferOps {
+    pub fn len(&self) -> usize { self.ops.len() }
+}
+
 pub enum GpuStoreDescriptor {
     Texture {
         format: wgpu::TextureFormat,
         width: u32,
         label: Option<&'static str>,
+        alignment: u32,
     },
     Buffers {
         usages: wgpu::BufferUsages,
@@ -295,6 +300,7 @@ impl GpuStoreDescriptor {
             format: wgpu::TextureFormat::Rgba32Float,
             width: GPU_STORE_WIDTH,
             label: Some(label),
+            alignment: 16,
         }
     }
 
@@ -303,6 +309,7 @@ impl GpuStoreDescriptor {
             format: wgpu::TextureFormat::Rgba32Uint,
             width: GPU_STORE_WIDTH,
             label: Some(label),
+            alignment: 16,
         }
     }
 
@@ -311,6 +318,7 @@ impl GpuStoreDescriptor {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: GPU_STORE_WIDTH,
             label: Some(label),
+            alignment: 4,
         }
     }
 }
@@ -352,7 +360,8 @@ impl GpuStoreResources {
                 format,
                 width,
                 label,
-            } => Self::new_texture(*format, *width, *label),
+                alignment,
+            } => Self::new_texture(*format, *width, *alignment, *label),
             GpuStoreDescriptor::Buffers {
                 usages,
                 default_alignment,
@@ -362,7 +371,7 @@ impl GpuStoreResources {
         }
     }
 
-    fn new_texture(format: wgpu::TextureFormat, width: u32, label: Option<&'static str>) -> Self {
+    fn new_texture(format: wgpu::TextureFormat, width: u32, alignment: u32, label: Option<&'static str>) -> Self {
         let bytes_per_px: u32 = match format {
             wgpu::TextureFormat::Rgba32Uint
             | wgpu::TextureFormat::Rgba32Sint
@@ -387,7 +396,7 @@ impl GpuStoreResources {
                 format,
             },
             chunk_size: width * bytes_per_px,
-            default_alignment: bytes_per_px,
+            default_alignment: alignment,
             epoch: 0,
             label,
             next_gpu_offset: Arc::new(AtomicU32::new(0)),

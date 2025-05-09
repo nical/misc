@@ -5,7 +5,7 @@ use core::context::{
 use core::gpu::shader::{
     BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
-use core::gpu::{StreamId, TransferOps};
+use core::gpu::{GpuStore, StreamId, TransferOps};
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
 use core::transform::{TransformId, Transforms};
@@ -71,6 +71,7 @@ pub struct TileRenderer {
     pub edge_transfer_ops: Vec<TransferOps>,
 
     pub(crate) resources: TileGpuResources,
+    pub parallel: bool,
 }
 
 impl TileRenderer {
@@ -181,8 +182,6 @@ impl TileRenderer {
 
         let mut edge_store = self.resources.edges.begin_frame(ctx.staging_buffers.clone());
         let mut path_store = self.resources.paths.begin_frame(ctx.staging_buffers.clone());
-        let mut edges = edge_store.write();
-        let mut paths = path_store.write();
 
         if self.occlusion.gpu {
             debug_assert!(pass.surface().depth);
@@ -192,8 +191,8 @@ impl TileRenderer {
         let mut tiles = TilerOutput {
             opaque_tiles: instances.write(opaque_stream, 0),
             mask_tiles: Vec::new(),
-            paths: Vec::new(),
-            edges: Vec::new(),
+            paths: path_store.write(),
+            edges: edge_store.write(),
             occlusion: OcclusionBuffer::disabled(),
         };
 
@@ -233,17 +232,10 @@ impl TileRenderer {
             self.opaque_instances = Some(opaque_stream);
         }
 
-        if !tiles.edges.is_empty() {
-            edges.push_slice(&tiles.edges);
-            std::mem::drop(edges);
-            self.edge_transfer_ops = vec![edge_store.finish()];
-        }
+        std::mem::drop(tiles);
 
-        if !tiles.paths.is_empty() {
-            paths.push_slice(&tiles.paths);
-            std::mem::drop(paths);
-            self.path_transfer_ops = vec![path_store.finish()];
-        }
+        self.edge_transfer_ops = vec![edge_store.finish()];
+        self.path_transfer_ops = vec![path_store.finish()];
 
         self.batches = batches;
     }
@@ -251,7 +243,12 @@ impl TileRenderer {
     pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
         struct WorkerData {
             tiler: Tiler,
+            edges: GpuStore,
+            paths: GpuStore,
         }
+
+        let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
+        let path_store = self.resources.paths.begin_frame(prep_ctx.staging_buffers.clone());
 
         let counter = std::sync::atomic::AtomicI32::new(0);
 
@@ -263,6 +260,8 @@ impl TileRenderer {
 
             worker_data.push(WorkerData {
                 tiler,
+                edges: edge_store.clone(),
+                paths: path_store.clone(),
             });
         }
 
@@ -284,10 +283,12 @@ impl TileRenderer {
                         let mut tiles = TilerOutput {
                             opaque_tiles,
                             mask_tiles: Vec::new(),
-                            paths: Vec::new(),
-                            edges: Vec::new(),
+                            paths: tiler_data.paths.write(),
+                            edges: tiler_data.edges.write(),
                             occlusion: OcclusionBuffer::disabled(),
                         };
+
+                        let sort_key = fills[0].z_index;
 
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         for fill in fills {
@@ -308,7 +309,7 @@ impl TileRenderer {
                         if mask_tiles_count > 0 {
                             added_mask_tiles.fetch_add(mask_tiles_count, Ordering::Relaxed);
                             // TODO: if processing front-to-back, reverse the instances.
-                            let mut mask_tiles = worker_data.instances.write(masked_stream, fill_idx);
+                            let mut mask_tiles = worker_data.instances.write(masked_stream, sort_key);
                             mask_tiles.push_slice(&tiles.mask_tiles);
                         }
                     });
@@ -348,7 +349,12 @@ impl TileRenderer {
             );
         } // unsafe
 
-        println!("tiled using {:?} jobs", counter);
+        self.edge_transfer_ops.clear();
+        self.path_transfer_ops.clear();
+        for worker in &mut worker_data {
+            self.edge_transfer_ops.push(worker.edges.finish());
+            self.path_transfer_ops.push(worker.paths.finish());
+        }
     }
 
     fn prepare_batch(
@@ -493,9 +499,11 @@ impl TileRenderer {
 
 impl core::Renderer for TileRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        // TODO: Don't run it twice!
-        self.prepare_impl(ctx);
-        //self.prepare_parallel(ctx);
+        if self.parallel {
+            self.prepare_parallel(ctx);
+        } else {
+            self.prepare_impl(ctx);
+        }
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) {
@@ -509,10 +517,6 @@ impl core::Renderer for TileRenderer {
         ctx: core::RenderContext<'resources>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        if self.mask_instances.is_none() && self.opaque_instances.is_none() {
-            return;
-        }
-
         let common_resources = &ctx.resources.common;
 
         // TODO: previous version was grouping the mask and opaque instances

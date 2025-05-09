@@ -189,6 +189,7 @@ impl App {
         let mut read_shader_name = false;
         let mut use_ssaa4 = false;
         let mut read_occlusion = false;
+        let mut parallel = false;
         let mut z_buffer = None;
         let mut cpu_occlusion = None;
         let mut fill_renderer = 0;
@@ -224,6 +225,7 @@ impl App {
             read_fill = arg == "--fill";
             read_shader_name = arg == "--print-shader";
             read_occlusion = arg == "--occlusion";
+            parallel |= arg == "--parallel";
         }
 
         let scale_factor = 2.0;
@@ -357,6 +359,7 @@ impl App {
         };
 
         renderers.tiling2.tolerance = tolerance;
+        renderers.tiling2.parallel = parallel;
         renderers.stencil.tolerance = tolerance;
         renderers.meshes.tolerance = tolerance;
         renderers.msaa_strokes.tolerance = tolerance;

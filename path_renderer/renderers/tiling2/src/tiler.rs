@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use core::gpu::GpuStreamWriter;
+use core::gpu::{GpuStoreHandle, GpuStoreWriter, GpuStreamWriter};
 use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, vector};
 use core::{pattern::BuiltPattern, units::point};
 
@@ -33,6 +33,7 @@ pub struct Tiler {
     viewport: SurfaceRect,
     scissor: SurfaceRect,
     scissor_tiles: Box2D<i32>,
+    edge_buffer: Vec<EncodedEdge>,
 }
 
 // TODO: The inverted mode currently only works with 1 event bucket but
@@ -63,6 +64,7 @@ impl Tiler {
                 min: point(0, 0),
                 max: point(0, 0),
             },
+            edge_buffer: Vec::with_capacity(32),
         }
     }
 
@@ -123,7 +125,7 @@ impl Tiler {
             encoded_fill_rule |= 2;
         }
 
-        output.paths.push(PathInfo {
+        let path_index = output.paths.push(PathInfo {
             z_index: options.z_index,
             pattern_data: pattern.data,
             fill_rule: encoded_fill_rule,
@@ -136,7 +138,13 @@ impl Tiler {
             ],
         }.encode());
 
-        self.generate_tiles(options.fill_rule, options.inverted, pattern, output);
+        self.generate_tiles(
+            options.fill_rule,
+            options.inverted,
+            path_index,
+            pattern,
+            output,
+        );
     }
 
     // Similar to tile_path_nested, except that it flattens curves into a buffer before
@@ -477,15 +485,13 @@ impl Tiler {
         (tx, ty)
     }
 
-    fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, pattern: &BuiltPattern, output: &mut TilerOutput) {
+    fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, path_index: GpuStoreHandle, pattern: &BuiltPattern, output: &mut TilerOutput) {
         if inverted {
-            self.generate_tiles_inverted(fill_rule, pattern, output);
+            self.generate_tiles_inverted(fill_rule, path_index, pattern, output);
             return;
         }
 
         profiling::scope!("Tiler::generate_tiles");
-
-        let path_index = output.paths.len() as u32 - 1;
 
         for events in &mut self.events {
             if events.is_empty() {
@@ -509,37 +515,34 @@ impl Tiler {
             //}
 
             let mut current = TilePoint::new(0, 0);
-            let mut tile_first_edge = output.edges.len();
             let mut backdrop: i16 = 0;
 
             for evt in events.iter() {
                 let tile = evt.tile();
-                //println!("    * {evt:?}");
 
                 if current != tile {
-                    //if tile.y != current_tile.y {
-                    //    println!("");
-                    //}
-                    //println!("* new tile {tile:?} (was {current_tile:?}, backdrop: {backdrop:?}");
-                    let tile_last_edge = output.edges.len();
-                    if tile_last_edge != tile_first_edge {
+                    let edge_count = self.edge_buffer.len();
+                    if edge_count != 0 {
                         // This limit isn't necessary but it is useful to catch bugs. In practice there should
                         // never be this many edges in a single tile.
                         const MAX_EDGES_PER_TILE: usize = 4096;
-                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current:?}, edges {tile_first_edge} {tile_last_edge}");
+                        debug_assert!(edge_count < MAX_EDGES_PER_TILE, "bad tile at {current:?}, {edge_count} edges");
+
+                        let first_edge = output.edges.push_slice(&self.edge_buffer).to_u32();
+                        let edge_count = usize::min(edge_count, MAX_EDGES_PER_TILE) as u16;
+
+                        self.edge_buffer.clear();
 
                         if !output.occlusion.occluded(current.x, current.y) {
-                            //println!("      * encode tile {} {}, with {} edges, backdrop {backdrop}", current_tile.0, current_tile.1, tile_last_edge - tile_first_edge);
                             output.mask_tiles.push(TileInstance {
                                 position: TilePosition::new(current.x as u32, current.y as u32),
                                 backdrop,
-                                first_edge: tile_first_edge as u32,
-                                edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
-                                path_index,
+                                first_edge,
+                                edge_count,
+                                path_index: path_index.to_u32(),
                             }.encode());
                         }
 
-                        tile_first_edge = tile_last_edge;
                         current.x += 1;
                     }
 
@@ -555,7 +558,7 @@ impl Tiler {
                     };
 
                     if current.x < x_end && inside {
-                        Self::fill_span(current.x, x_end, current.y, backdrop, pattern.is_opaque, path_index, output);
+                        Self::fill_span(current.x, x_end, current.y, backdrop, pattern.is_opaque, path_index.to_u32(), output);
                     }
 
                     if current.y != tile.y{
@@ -573,7 +576,7 @@ impl Tiler {
                 }
 
                 if evt.is_edge() {
-                    output.edges.push(unsafe { std::mem::transmute(evt.payload) });
+                    self.edge_buffer.push(unsafe { std::mem::transmute(evt.payload) });
                 } else {
                     let winding = if evt.payload == 0 { -1 } else { 1 };
                     backdrop += winding;
@@ -584,8 +587,7 @@ impl Tiler {
         }
     }
 
-    fn generate_tiles_inverted(&mut self, fill_rule: FillRule, pattern: &BuiltPattern, output: &mut TilerOutput) {
-        let path_index = output.paths.len() as u32 - 1;
+    fn generate_tiles_inverted(&mut self, fill_rule: FillRule, path_index: GpuStoreHandle, pattern: &BuiltPattern, output: &mut TilerOutput) {
         let max_x = self.scissor_tiles.max.x as u16;
 
         let mut events = std::mem::take(&mut self.events);
@@ -597,7 +599,6 @@ impl Tiler {
             events.push(Event::backdrop(0, std::u16::MAX, false));
 
             let mut current = TilePoint::new(0, 0);
-            let mut tile_first_edge = output.edges.len();
             let mut backdrop: i16 = 0;
 
             for evt in events.iter() {
@@ -605,24 +606,28 @@ impl Tiler {
                 //println!("    * {evt:?}");
 
                 if current != tile {
-                    let tile_last_edge = output.edges.len();
-                    if tile_last_edge != tile_first_edge {
+                    let edge_count = self.edge_buffer.len();
+                    if edge_count != 0 {
                         // This limit isn't necessary but it is useful to catch bugs. In practice there should
                         // never be this many edges in a single tile.
                         const MAX_EDGES_PER_TILE: usize = 4096;
-                        debug_assert!(tile_last_edge - tile_first_edge < MAX_EDGES_PER_TILE, "bad tile at {current:?}, edges {tile_first_edge} {tile_last_edge}");
+                        debug_assert!(edge_count < MAX_EDGES_PER_TILE, "bad tile at {current:?}, {edge_count} edges");
+
+                        let first_edge = output.edges.push_slice(&self.edge_buffer).to_u32();
+                        let edge_count = usize::min(edge_count, MAX_EDGES_PER_TILE) as u16;
+
+                        self.edge_buffer.clear();
 
                         if !output.occlusion.occluded(current.x, current.y) {
                             output.mask_tiles.push(TileInstance {
                                 position: TilePosition::new(current.x as u32, current.y as u32),
                                 backdrop,
-                                first_edge: tile_first_edge as u32,
-                                edge_count: usize::min(tile_last_edge - tile_first_edge, MAX_EDGES_PER_TILE) as u16,
-                                path_index,
+                                first_edge,
+                                edge_count,
+                                path_index: path_index.to_u32(),
                             }.encode());
                         }
 
-                        tile_first_edge = tile_last_edge;
                         current.x += 1;
                     }
                 }
@@ -641,7 +646,7 @@ impl Tiler {
 
                     // Fill solid tiles if any, up to the new tile or the end of the current row.
                     if inside {
-                        Self::fill_span(current.x, next_x, current.y, backdrop, pattern.is_opaque, path_index, output);
+                        Self::fill_span(current.x, next_x, current.y, backdrop, pattern.is_opaque, path_index.to_u32(), output);
                     }
 
                     if next_x == max_x {
@@ -660,7 +665,7 @@ impl Tiler {
                 }
 
                 if evt.is_edge() {
-                    output.edges.push(unsafe { std::mem::transmute(evt.payload) });
+                    self.edge_buffer.push(unsafe { std::mem::transmute(evt.payload) });
                 } else {
                     let winding = if evt.payload == 0 { -1 } else { 1 };
                     backdrop += winding;
@@ -766,7 +771,7 @@ impl Tiler {
         z_index: u32,
         output: &mut TilerOutput,
     ) {
-        output.paths.push(PathInfo {
+        let path_index = output.paths.push(PathInfo {
             z_index,
             pattern_data: pattern.data,
             fill_rule: 0,
@@ -791,7 +796,7 @@ impl Tiler {
             events.push(Event::backdrop(x, y, false));
         }
 
-        self.generate_tiles(FillRule::EvenOdd, false, pattern, output);
+        self.generate_tiles(FillRule::EvenOdd, false, path_index, pattern, output);
     }
 }
 
@@ -868,33 +873,33 @@ fn event() {
 }
 
 pub struct TilerOutput<'l> {
-    pub paths: Vec<EncodedPathInfo>,
-    pub edges: Vec<EncodedEdge>,
-    pub mask_tiles: Vec<EncodedTileInstance>,
+    pub paths: GpuStoreWriter<'l>,
+    pub edges: GpuStoreWriter<'l>,
     pub opaque_tiles: GpuStreamWriter<'l> ,
+    pub mask_tiles: Vec<EncodedTileInstance>,
     pub occlusion: OcclusionBuffer,
 }
 
 impl<'l> TilerOutput<'l> {
     pub fn new(
+        paths: GpuStoreWriter<'l>,
+        edges: GpuStoreWriter<'l>,
         opaque_tiles: GpuStreamWriter<'l> ,
     ) -> Self {
         TilerOutput {
-            paths: Vec::new(),
-            edges: Vec::new(),
-            mask_tiles: Vec::new(),
+            paths,
+            edges,
             opaque_tiles,
+            mask_tiles: Vec::new(),
             occlusion: OcclusionBuffer::disabled(),
         }
     }
 
     pub fn clear(&mut self) {
-        self.paths.clear();
-        self.edges.clear();
     }
 
     pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
+        self.edges.pushed_bytes() == 0
             && self.mask_tiles.is_empty()
             && self.opaque_tiles.pushed_bytes() == 0
     }

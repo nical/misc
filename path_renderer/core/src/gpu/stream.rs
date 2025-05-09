@@ -44,7 +44,7 @@ impl GpuStreams {
             chunk_idx: 0,
 
             streams: self,
-            key: (stream.0 as u64) << 48 | sort_key as u64,
+            key: (stream.0 as u64) << 48 | ((sort_key as u64) << 16),
             pushed_bytes: 0,
         }
     }
@@ -208,7 +208,7 @@ impl<'l> GpuStreamWriter<'l> {
                     staging_id: chunk.id,
                     staging_offset: chunk.offset,
                     size: len as u32,
-                    sort_key: sort_key | ((self.chunk_idx as u64) << 32),
+                    sort_key: sort_key | (self.chunk_idx as u64),
                 });
             }
 
@@ -234,7 +234,7 @@ impl<'l> GpuStreamWriter<'l> {
                     self.staging_buffer_offset.0 + self.staging_local_start_offset,
                 ),
                 size,
-                sort_key: self.current_sort_key | ((self.chunk_idx as u64) << 32),
+                sort_key: self.current_sort_key | (self.chunk_idx as u64),
             });
             self.chunk_idx += 1;
             self.staging_local_start_offset = self.staging_local_offset;
