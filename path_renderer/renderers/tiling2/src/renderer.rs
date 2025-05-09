@@ -475,8 +475,19 @@ impl TileRenderer {
             ctx.wgpu.encoder
         );
 
-        // TODO: check whether the paths and edges texture changed and if
-        // so, re-generate the bind group!
+        if self.resources.edges_epoch != self.resources.edges.epoch()
+            || self.resources.paths_epoch != self.resources.paths.epoch() {
+            self.resources.bind_group = ctx.wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tiling2::geom"),
+                layout: &ctx.shaders.get_bind_group_layout(self.resources.bind_group_layout).handle,
+                entries: &[
+                    self.resources.paths.as_bind_group_entry(0).unwrap(),
+                    self.resources.edges.as_bind_group_entry(1).unwrap(),
+                ],
+            });
+            self.resources.edges_epoch = self.resources.edges.epoch();
+            self.resources.paths_epoch = self.resources.paths.epoch();
+        }
     }
 }
 

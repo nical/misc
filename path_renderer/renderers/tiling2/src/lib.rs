@@ -291,6 +291,9 @@ impl Tiling {
 
             resources: TileGpuResources {
                 bind_group,
+                bind_group_layout: self.bind_group_layout,
+                paths_epoch: path_store.epoch(),
+                edges_epoch: edge_store.epoch(),
                 paths: path_store,
                 edges: edge_store,
             },
@@ -325,4 +328,7 @@ pub struct TileGpuResources {
     pub(crate) edges: GpuStoreResources,
     pub(crate) paths: GpuStoreResources,
     pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) bind_group_layout: BindGroupLayoutId,
+    pub(crate) edges_epoch: u32,
+    pub(crate) paths_epoch: u32,
 }
