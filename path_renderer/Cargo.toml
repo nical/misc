@@ -3,7 +3,7 @@ members = [
     "core",
     "renderers/tess",
     "renderers/stencil",
-    "renderers/tiling2",
+    "renderers/tiling",
     "renderers/rectangles",
     "renderers/wpf",
     "renderers/msaa_stroke",

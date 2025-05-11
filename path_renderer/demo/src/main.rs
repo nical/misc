@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use core::frame::{RenderNodeDescriptor, RenderPass};
 use core::instance::Instance;
 use core::render_graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
@@ -24,7 +26,7 @@ use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
-use tiling2::{Occlusion, Tiling};
+use tiling::{Occlusion, Tiling};
 use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
@@ -61,11 +63,9 @@ const INSTANCED: usize = 1;
 const STROKE_RENDERER_STRINGS: &[&str] = &["stroke-to-fill", "instanced"];
 
 const NUM_SCENES: u32 = 2;
-const ATLAS_SIZE: SurfaceIntSize = SurfaceIntSize::new(2048, 2048);
 
 struct Renderers {
-    //tiling: TileRenderer,
-    tiling2: tiling2::TileRenderer,
+    tiling: tiling::TileRenderer,
     meshes: MeshRenderer,
     stencil: StencilAndCoverRenderer,
     wpf: WpfMeshRenderer,
@@ -76,7 +76,7 @@ struct Renderers {
 impl Renderers {
     fn begin_frame(&mut self) {
         //self.tiling.begin_frame(ctx);
-        self.tiling2.begin_frame();
+        self.tiling.begin_frame();
         self.meshes.begin_frame();
         self.stencil.begin_frame();
         self.wpf.begin_frame();
@@ -87,7 +87,7 @@ impl Renderers {
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
         [
             //&mut self.tiling as &mut dyn FillPath,
-            &mut self.tiling2 as &mut dyn FillPath,
+            &mut self.tiling as &mut dyn FillPath,
             &mut self.meshes as &mut dyn FillPath,
             &mut self.stencil as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
@@ -342,11 +342,11 @@ impl App {
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
 
         let mut renderers = Renderers {
-            tiling2: tiling.new_renderer(
+            tiling: tiling.new_renderer(
                 &device,
                 &mut instance.shaders,
                 0,
-                &tiling2::RendererOptions {
+                &tiling::RendererOptions {
                     tolerance,
                     occlusion: tiling_occlusion,
                     no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
@@ -359,8 +359,8 @@ impl App {
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
         };
 
-        renderers.tiling2.tolerance = tolerance;
-        renderers.tiling2.parallel = parallel;
+        renderers.tiling.tolerance = tolerance;
+        renderers.tiling.parallel = parallel;
         renderers.stencil.tolerance = tolerance;
         renderers.meshes.tolerance = tolerance;
         renderers.msaa_strokes.tolerance = tolerance;
@@ -720,7 +720,7 @@ impl App {
         let render_stats = self.instance.render(
             frame,
             &mut [
-                &mut self.renderers.tiling2 as &mut dyn Renderer,
+                &mut self.renderers.tiling as &mut dyn Renderer,
                 &mut self.renderers.meshes,
                 &mut self.renderers.stencil,
                 &mut self.renderers.rectangles,
@@ -841,7 +841,7 @@ fn paint_scene(
             .transformed(&frame.transforms.get_current().matrix().to_untyped()),
         );
 
-        renderers.tiling2.fill_surface(&mut surface.ctx(), &frame.transforms, gradient);
+        renderers.tiling.fill_surface(&mut surface.ctx(), &frame.transforms, gradient);
     }
 
     frame.transforms.push(transform);
@@ -931,7 +931,7 @@ fn paint_scene(
     }
 
     if testing {
-        let tx2 = frame.transforms.get_current_gpu_handle(&mut gpu_store);
+        let _tx2 = frame.transforms.get_current_gpu_handle(&mut gpu_store);
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = frame.transforms.get_current_gpu_handle(&mut gpu_store);
@@ -975,7 +975,7 @@ fn paint_scene(
         //        },
         //        Aa::ALL,
         //        pat,
-        //        tx2,
+        //        _tx2,
         //    );
         //}
 
@@ -1171,7 +1171,7 @@ fn paint_scene(
 
         if false {
             let offset_path = builder2.build();
-            renderers.tiling2.fill_path(&mut surface.ctx(), &frame.transforms, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling.fill_path(&mut surface.ctx(), &frame.transforms, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
                 &mut surface.ctx(),

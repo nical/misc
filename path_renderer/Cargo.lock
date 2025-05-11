@@ -530,7 +530,7 @@ dependencies = [
  "rectangles",
  "stencil",
  "tess",
- "tiling2",
+ "tiling",
  "usvg",
  "wgpu",
  "winit",
@@ -2315,7 +2315,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tiling2"
+name = "tiling"
 version = "0.1.0"
 dependencies = [
  "core",

@@ -1,6 +1,5 @@
-use crate::gpu::{staging_buffers, GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders, StagingBufferPool, StagingBufferPoolRef};
+use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders, StagingBufferPoolRef};
 use crate::render_graph::{RenderPassData, TempResourceKey};
-use std::sync::{Arc, Mutex};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
 use wgpu::util::DeviceExt;

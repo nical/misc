@@ -13,7 +13,7 @@ path = "src/main.rs"
 core = { path = "../core" }
 
 tess = { path = "../renderers/tess" }
-tiling2 = { path = "../renderers/tiling2" }
+tiling = { path = "../renderers/tiling" }
 stencil = { path = "../renderers/stencil" }
 rectangles = { path = "../renderers/rectangles" }
 msaa_stroke = { path = "../renderers/msaa_stroke" }
