@@ -881,25 +881,43 @@ fn paint_scene(
 
         if let Some(stroke) = stroke {
             let scale = transform.m11;
+            // We adjust the stroke width so that is is at least one pixel
+            // once projected. To compensate for that, gradually fade out
+            // smaller strokes using opacity.
             let width = f32::max(stroke.line_width, 1.0 / scale);
+            let alpha_adjust = f32::min(stroke.line_width * scale, 1.0);
 
             let pattern = match stroke.pattern {
-                SvgPattern::Color(color) => patterns.colors.add(color),
+                SvgPattern::Color(color) => {
+                    let mut color = color;
+                    if alpha_adjust < 0.9961 {
+                        color.a = (color.a as f32 * alpha_adjust) as u8;
+                    }
+                    patterns.colors.add(color)
+                }
                 SvgPattern::Gradient {
                     color0,
                     color1,
                     from,
                     to,
-                } => patterns.gradients.add(
-                    &mut gpu_store,
-                    LinearGradient {
-                        color0,
-                        color1,
-                        from,
-                        to,
+                } => {
+                    let mut color0 = color0;
+                    let mut color1 = color1;
+                    if alpha_adjust < 0.9961 {
+                        color0.a = (color0.a as f32 * alpha_adjust) as u8;
+                        color1.a = (color1.a as f32 * alpha_adjust) as u8;
                     }
-                    .transformed(&frame.transforms.get_current().matrix().to_untyped()),
-                ),
+                    patterns.gradients.add(
+                        &mut gpu_store,
+                        LinearGradient {
+                            color0,
+                            color1,
+                            from,
+                            to,
+                        }
+                        .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                    )
+                }
             };
 
             match stroke_renderer {
