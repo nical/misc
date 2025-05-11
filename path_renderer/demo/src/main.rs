@@ -343,7 +343,7 @@ impl App {
         let rectangles = Rectangles::new(&device, &mut instance.shaders);
         let tessellation = Tessellation::new(&device, &mut instance.shaders);
         let tiling = Tiling::new(&device, &mut instance.shaders, &TilingOptions {
-            antialiasing
+            antialiasing,
         });
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);

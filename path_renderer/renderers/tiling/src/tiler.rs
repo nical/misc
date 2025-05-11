@@ -11,8 +11,7 @@ use crate::flatten::{Flattener, FlattenerLevien};
 use crate::{FillOptions, FillRule, Transform, TilePosition};
 use crate::occlusion::OcclusionBuffer;
 
-// When changing this, also change the corresponding constant in tile.wgsl
-const TILE_SIZE: i32 = 16;
+pub(crate) const TILE_SIZE: i32 = 16;
 const TILE_SIZE_F32: f32 = TILE_SIZE as f32;
 
 const UNITS_PER_TILE: i32 = 256;

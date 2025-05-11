@@ -18,7 +18,7 @@ use core::gpu::shader::{Shaders, BaseShaderDescriptor, BaseShaderId, BindGroupLa
 pub use renderer::*;
 
 pub use lyon::lyon_tessellation::FillRule;
-use tiler::EncodedPathInfo;
+use tiler::{EncodedPathInfo, TILE_SIZE};
 
 pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
 
@@ -40,7 +40,7 @@ pub struct TilingOptions {
 impl Default for TilingOptions {
     fn default() -> Self {
         TilingOptions {
-            antialiasing: AaMode::AreaCoverage
+            antialiasing: AaMode::AreaCoverage,
         }
     }
 }
@@ -260,6 +260,9 @@ impl Tiling {
             AaMode::AreaCoverage => {}
         }
 
+        let mut constants = Vec::new();
+        constants.push(("TILE_SIZE", TILE_SIZE as f64));
+
         let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
             name: "geometry::tile2".into(),
             source: include_str!("../shaders/tile.wgsl").into(),
@@ -275,6 +278,7 @@ impl Tiling {
             bindings: Some(bind_group_layout),
             primitive: PipelineDefaults::primitive_state(),
             shader_defines,
+            constants,
         });
 
         Tiling {

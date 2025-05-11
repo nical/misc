@@ -528,13 +528,19 @@ impl Shaders {
                 module,
                 entry_point: Some("vs_main"),
                 buffers: &vertex_buffers,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: base.constants.as_slice(),
+                    zero_initialize_workgroup_memory: false,
+                }
             },
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: Some("fs_main"),
                 targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: base.constants.as_slice(),
+                    zero_initialize_workgroup_memory: false,
+                }
             }),
             primitive: base.primitive,
             depth_stencil,
@@ -1045,6 +1051,7 @@ pub struct BaseShaderDescriptor {
     pub varyings: Vec<Varying>,
     pub bindings: Option<BindGroupLayoutId>,
     pub shader_defines: Vec<&'static str>,
+    pub constants: Vec<(&'static str, f64)>,
 }
 
 pub fn generate_shader_source(

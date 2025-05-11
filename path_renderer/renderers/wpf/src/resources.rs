@@ -32,6 +32,7 @@ impl Wpf {
             bindings: None,
             primitive: PipelineDefaults::primitive_state(),
             shader_defines: Vec::new(),
+            constants: Vec::new(),
         });
 
         Wpf {

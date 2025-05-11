@@ -82,6 +82,7 @@ impl Rectangles {
             bindings: None,
             primitive: PipelineDefaults::primitive_state(),
             shader_defines: Vec::new(),
+            constants: Vec::new(),
         };
 
         let alpha_pipeline = shaders.register_base_shader(BaseShaderDescriptor {

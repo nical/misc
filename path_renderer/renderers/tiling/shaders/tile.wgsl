@@ -2,7 +2,7 @@
 #import rect
 #import z_index
 
-const TILE_SIZE_F32: f32 = 16.0;
+override TILE_SIZE: f32;
 const TILE_COORD_MASK: u32 = 0x3FFu;
 
 struct TileInstance {
@@ -32,7 +32,7 @@ fn tiling_decode_rect(encoded: u32) -> vec4<f32> {
         offset.y,
         offset.x + 1.0 + extend_x,
         offset.y + 1.0,
-    ) * TILE_SIZE_F32;
+    ) * TILE_SIZE;
 }
 
 fn decode_instance(encoded: vec4<u32>) -> TileInstance {
@@ -88,7 +88,7 @@ fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
         position,
         path.pattern_data,
 
-        uv * TILE_SIZE_F32,
+        uv * TILE_SIZE,
         tile.edges,
         tile.backdrop,
         path.fill_rule,
@@ -193,7 +193,7 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             i32(edge_idx % EDGE_TEXTURE_WIDTH),
             i32(edge_idx / EDGE_TEXTURE_WIDTH),
         );
-        var edge = textureLoad(edge_texture, edge_uv, 0) * TILE_SIZE_F32;
+        var edge = textureLoad(edge_texture, edge_uv, 0) * TILE_SIZE;
 
         edge_idx = edge_idx + 1u;
 
@@ -223,10 +223,10 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             // occupancy with the color pattern on my RDNA3 iGPU, reducing by 10% the GPU
             // time of the draw call accoring to RGP.
             // This is still slower than the area coverage code path.
-            let a = vec2<f32>( 1.0/8.0, -3.0/8.0);
-            let b = vec2<f32>(-3.0/8.0, -1.0/8.0);
-            let c = vec2<f32>( 3.0/8.0,  1.0/8.0);
-            let d = vec2<f32>(-1.0/8.0,  3.0/8.0);
+            const a = vec2<f32>( 1.0/8.0, -3.0/8.0);
+            const b = vec2<f32>(-3.0/8.0, -1.0/8.0);
+            const c = vec2<f32>( 3.0/8.0,  1.0/8.0);
+            const d = vec2<f32>(-1.0/8.0,  3.0/8.0);
             upper += a;
             lower += a;
             wn.x += s * rasterize_edge_ssaa(upper, lower);
@@ -264,15 +264,16 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             // +---+---+---+---+---+---+---+---+
             // |   |   |   |   |   | h |   |   |
             // +---+---+---+---+---+---+---+---+
-            let a = vec2<f32>(7.0/16.0, -7.0/16.0);
-            let b = -10.0/16.0;
-            let c =  4.0/16.0;
-            let d = -8.0/16.0;
-            let e = 12.0/16.0;
-            let f = -6.0/16.0;
-            let g = -4.0/16.0;
-            let h =  8.0/16.0;
-            let dy = 2.0/16.0;
+            const a = vec2<f32>(7.0/16.0, -7.0/16.0);
+            const b = -10.0/16.0;
+            const c =  4.0/16.0;
+            const d = -8.0/16.0;
+            const e = 12.0/16.0;
+            const f = -6.0/16.0;
+            const g = -4.0/16.0;
+            const h =  8.0/16.0;
+            const dy = 2.0/16.0;
+
             upper += a;
             lower += a;
             wn0.x += s * rasterize_edge_ssaa(upper, lower);

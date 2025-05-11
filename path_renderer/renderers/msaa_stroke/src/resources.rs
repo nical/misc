@@ -52,6 +52,7 @@ impl MsaaStroke {
                 .. PipelineDefaults::primitive_state()
             },
             shader_defines: Vec::new(),
+            constants: Vec::new(),
         });
 
         MsaaStroke {
