@@ -22,6 +22,29 @@ use tiler::EncodedPathInfo;
 
 pub type Transform = lyon::geom::euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
 
+#[derive(Copy, Clone, Debug)]
+pub enum AaMode {
+    /// High quality and fast, has conflation artifacts.
+    AreaCoverage,
+    /// Low quality, prevents conflation artifacts.
+    Ssaa4,
+    /// Medium quality, prevents conflation artifacts.
+    Ssaa8,
+}
+
+#[derive(Clone, Debug)]
+pub struct TilingOptions {
+    pub antialiasing: AaMode,
+}
+
+impl Default for TilingOptions {
+    fn default() -> Self {
+        TilingOptions {
+            antialiasing: AaMode::AreaCoverage
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Occlusion {
     /// Discard occluded content early on the CPU.
@@ -197,7 +220,7 @@ pub struct Tiling {
 }
 
 impl Tiling {
-    pub fn new(device: &wgpu::Device, shaders: &mut Shaders, ssaa4: bool) -> Self {
+    pub fn new(device: &wgpu::Device, shaders: &mut Shaders, descriptor: &TilingOptions) -> Self {
 
         let bind_group_layout = shaders.register_bind_group_layout(BindGroupLayout::new(
             device,
@@ -227,8 +250,14 @@ impl Tiling {
         ));
 
         let mut shader_defines = Vec::new();
-        if ssaa4 {
-            shader_defines.push("TILING_SSAA4");
+        match descriptor.antialiasing {
+            AaMode::Ssaa4 => {
+                shader_defines.push("TILING_SSAA4");
+            }
+            AaMode::Ssaa8 => {
+                shader_defines.push("TILING_SSAA8");
+            }
+            AaMode::AreaCoverage => {}
         }
 
         let base_shader = shaders.register_base_shader(BaseShaderDescriptor {

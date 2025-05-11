@@ -49,7 +49,7 @@ impl SourceLoader for LoadFromDisk {
         let mut file = std::fs::File::open(&file_name)?;
         file.read_to_string(&mut src)?;
 
-        Ok(src.into())    
+        Ok(src.into())
     }
 }
 
@@ -159,7 +159,7 @@ impl Preprocessor {
         self.imported.insert(name.to_string());
 
         let src = loader.load_source(name)?;
-        
+
         Ok(Some(src))
     }
 
@@ -179,7 +179,7 @@ impl Preprocessor {
         loader: &dyn SourceLoader,
     ) -> Result<(), SourceError> {
         if src.current() != Some(Token::OpenBracket) {
-            src.parse_error("Expected {} block, got {:?}")?;
+            src.parse_error(format!("Expected {{ block, got {:?}", src.current()))?;
         }
         let stack_depth = src.bracket_stack - 1;
         src.advance();
@@ -218,16 +218,10 @@ impl Preprocessor {
                     self.in_mixin = false;
                 }
                 Token::StaticIf => {
-                    self.parse_static_if(src, output, loader)?;
+                    self.parse_static_if(src, false, output, loader)?;
                 }
                 Token::StaticElse => {
                     src.parse_error("#else must be preceded by #if block")?;
-                    // Note: Here we assume that we are after the end of a static if block
-                    // which was not discarded (and therefore the #else gets discarded).
-                    // But we don't check. So a static else block that doesn't come after
-                    // a static if block is always discarded while it would make more sense
-                    // to treat it as an error.
-                    self.parse_discarded_static_else(src)?;
                 }
                 Token::CloseBracket if src.bracket_stack == stack_depth => {
                     return Ok(());
@@ -305,47 +299,15 @@ impl Preprocessor {
         Ok(())
     }
 
-    fn parse_static_if(&mut self, src: &mut Tokenizer, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
+    fn parse_static_if(&mut self, src: &mut Tokenizer, discard: bool, output: &mut String, loader: &dyn SourceLoader) -> Result<(), SourceError> {
         let cond = self.parse_static_if_condition(src)?;
-        if cond {
+        if cond && !discard {
             self.parse_block(src, output, loader)?;
         } else {
             self.parse_discarded_block(src)?;
         }
 
-        self.parse_static_else(src, cond, output, loader)?;
-
-        Ok(())
-    }
-
-    fn parse_discarded_static_else(&mut self, src: &mut Tokenizer) -> Result<(), SourceError> {
-        while let Some(token) = src.current() {
-            src.advance();
-            match token {
-                Token::WhiteSpace(_)
-                | Token::NewLine
-                | Token::Comment(_)
-                => {}
-                Token::StaticElse => {
-
-                }
-                Token::OpenBracket => {
-                    break;
-                }
-                Token::Basic("if") => {
-                    src.parse_error("#else if is not supported yet")?;
-                }
-                other => {
-                    src.parse_error(format!("Expected '{{', got {:?}", other.as_str()))?;
-                }
-            }
-        }
-
-        if src.current().is_none() {
-            src.parse_error("Expected '{'")?;
-        }
-
-        self.parse_discarded_block(src)?;
+        self.parse_static_else(src, cond || discard, output, loader)?;
 
         Ok(())
     }
@@ -376,7 +338,6 @@ impl Preprocessor {
     }
 
     fn parse_static_if_condition(&mut self, src: &mut Tokenizer) -> Result<bool, SourceError> {
-
         while src.consume_whitespace()
         || src.consume_comment()
         || src.consume_new_line() {}
@@ -390,7 +351,6 @@ impl Preprocessor {
                     neg = !neg;
                     name = &name[1..];
                 }
-
                 cond = self.defines.contains_key(name) != neg;
             }
             Some(other) => {
@@ -467,7 +427,9 @@ impl Preprocessor {
         match src.current() {
             Some(Token::OpenBracket) => {}
             Some(Token::Basic("if")) => {
-                src.parse_error("Static #else if not supported yet")?;
+                src.advance();
+                self.parse_static_if(src, discard, output, loader)?;
+                return Ok(());
             }
             Some(other) => {
                 src.parse_error(format!("Unexpected {:?} after #else", other.as_str()))?;
@@ -482,7 +444,7 @@ impl Preprocessor {
         } else {
             self.parse_block(src, output, loader)?;
         }
-        
+
         Ok(())
     }
 }
@@ -547,7 +509,7 @@ impl<'l> Tokenizer<'l> {
             bracket_stack: 0
         };
         tokenizer.advance();
-        
+
         tokenizer
     }
 
@@ -556,7 +518,7 @@ impl<'l> Tokenizer<'l> {
         Err(SourceError::Parse(message))
     }
 
-    
+
     fn advance(&mut self) -> bool {
         self.current = self.read_token_impl();
         self.current.is_some()
@@ -761,6 +723,78 @@ fn bar() {
     assert_eq!(output.matches("foo is not defined").count(), 0);
     assert_eq!(output.matches("baz is not defined").count(), 0);
     assert_eq!(output.matches("regular code").count(), 1);
+}
+
+#[test]
+fn static_else_if() {
+    let mut preprocessor = Preprocessor::new();
+    let src = &"
+fn foo() {
+    #if FOO {
+        foo block
+    } #else if BAR {
+        bar block
+    } #else if BAZ {
+        baz block
+    } #else {
+        else block
+    }
+}
+";
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 0);
+    assert_eq!(output.matches("bar block").count(), 0);
+    assert_eq!(output.matches("baz block").count(), 0);
+    assert_eq!(output.matches("else block").count(), 1);
+    println!("-------");
+
+    preprocessor.define("FOO");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 1);
+    assert_eq!(output.matches("bar block").count(), 0);
+    assert_eq!(output.matches("baz block").count(), 0);
+    assert_eq!(output.matches("else block").count(), 0);
+    preprocessor.undefine("FOO");
+    println!("-------");
+
+    preprocessor.define("BAR");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 0);
+    assert_eq!(output.matches("bar block").count(), 1);
+    assert_eq!(output.matches("baz block").count(), 0);
+    assert_eq!(output.matches("else block").count(), 0);
+    preprocessor.undefine("BAR");
+    println!("-------");
+
+    preprocessor.define("BAZ");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 0);
+    assert_eq!(output.matches("bar block").count(), 0);
+    assert_eq!(output.matches("baz block").count(), 1);
+    assert_eq!(output.matches("else block").count(), 0);
+    preprocessor.undefine("BAZ");
+    println!("-------");
+
+    preprocessor.define("FOO");
+    preprocessor.define("BAZ");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 1);
+    assert_eq!(output.matches("bar block").count(), 0);
+    assert_eq!(output.matches("baz block").count(), 0);
+    assert_eq!(output.matches("else block").count(), 0);
+    preprocessor.undefine("FOO");
+    preprocessor.undefine("BAZ");
+    println!("-------");
+
+    preprocessor.define("BAR");
+    preprocessor.define("BAZ");
+    let output = preprocessor.preprocess("src", src, &()).unwrap();
+    assert_eq!(output.matches("foo block").count(), 0);
+    assert_eq!(output.matches("bar block").count(), 1);
+    assert_eq!(output.matches("baz block").count(), 0);
+    assert_eq!(output.matches("else block").count(), 0);
+    preprocessor.undefine("BAR");
+    preprocessor.undefine("BAZ");
 }
 
 #[test]

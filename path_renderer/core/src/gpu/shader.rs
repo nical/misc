@@ -623,7 +623,6 @@ impl ShaderSources {
         defines: &[&str],
     ) -> wgpu::ShaderModule {
         let src = self.preprocess(name, src, defines).unwrap();
-
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(name),
             source: wgpu::ShaderSource::Wgsl(src.into()),

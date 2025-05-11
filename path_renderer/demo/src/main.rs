@@ -26,7 +26,7 @@ use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
-use tiling::{Occlusion, Tiling};
+use tiling::{Occlusion, Tiling, AaMode, TilingOptions};
 use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
@@ -187,7 +187,7 @@ impl App {
         let mut read_tolerance = false;
         let mut read_fill = false;
         let mut read_shader_name = false;
-        let mut use_ssaa4 = false;
+        let mut antialiasing = tiling::AaMode::AreaCoverage;
         let mut read_occlusion = false;
         let mut parallel = false;
         let mut z_buffer = None;
@@ -217,7 +217,13 @@ impl App {
             //if arg == "--trace" {
             //    trace = wgpu::Trace::On(std::path::Path::new("./trace"));
             //}
-            use_ssaa4 |= arg == "--ssaa";
+            if (arg == "--ssaa") || (arg == "--ssaa4") {
+                antialiasing = AaMode::Ssaa4;
+            }
+
+            if arg == "--ssaa8" {
+                antialiasing = AaMode::Ssaa8;
+            }
             force_gl |= arg == "--gl";
             force_vk |= arg == "--vulkan";
             asap |= arg == "--asap";
@@ -336,7 +342,9 @@ impl App {
 
         let rectangles = Rectangles::new(&device, &mut instance.shaders);
         let tessellation = Tessellation::new(&device, &mut instance.shaders);
-        let tiling = Tiling::new(&device, &mut instance.shaders, use_ssaa4);
+        let tiling = Tiling::new(&device, &mut instance.shaders, &TilingOptions {
+            antialiasing
+        });
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);

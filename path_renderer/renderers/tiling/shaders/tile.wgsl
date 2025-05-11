@@ -170,6 +170,10 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
     #if TILING_SSAA4 {
         // Note: This could be packed into a single u32.
         var wn = vec4<f32>(backdrop);
+    } #else if TILING_SSAA8 {
+        // Note: This could be packed into a single u32.
+        var wn0 = vec4<f32>(backdrop);
+        var wn1 = vec4<f32>(backdrop);
     } #else {
         var winding_number: f32 = f32(backdrop);
     }
@@ -204,9 +208,9 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             var lower = mix(p0, p1, select) - uv;
             // Sample positions:
             // +---+---+---+---+
-            // |   |   | b |   |
+            // |   |   | a |   |
             // +---+---+---+---+
-            // | a |   |   |   |
+            // | b |   |   |   |
             // +---+---o---+---+
             // |   |   |   | c |
             // +---+---+---+---+
@@ -218,9 +222,9 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             // This saves 4 VGPR and was just enough to get to 32 VGPR which hit maximum
             // occupancy with the color pattern on my RDNA3 iGPU, reducing by 10% the GPU
             // time of the draw call accoring to RGP.
-            // It is still a bit slower (by ~12%) than the non-ssaa code path.
-            let a = vec2<f32>(-3.0/8.0, -1.0/8.0);
-            let b = vec2<f32>( 1.0/8.0, -3.0/8.0);
+            // This is still slower than the area coverage code path.
+            let a = vec2<f32>( 1.0/8.0, -3.0/8.0);
+            let b = vec2<f32>(-3.0/8.0, -1.0/8.0);
             let c = vec2<f32>( 3.0/8.0,  1.0/8.0);
             let d = vec2<f32>(-1.0/8.0,  3.0/8.0);
             upper += a;
@@ -235,6 +239,78 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
             upper += (d - c);
             lower += (d - c);
             wn.w += s * rasterize_edge_ssaa(upper, lower);
+        } #else if TILING_SSAA8 {
+            var p0 = edge.xy;
+            var p1 = edge.zw;
+            let s = sign(p1.y - p0.y);
+            let select = step(0.0, s);
+            var upper = mix(p0, p1, 1.0 - select) - uv;
+            var lower = mix(p0, p1, select) - uv;
+            // Sample positions:
+            // +---+---+---+---+---+---+---+---+
+            // |   |   |   |   |   |   |   | a |
+            // +---+---+---+---+---+---+---+---+
+            // |   |   | b |   |   |   |   |   |
+            // +---+---+---+---+---+---+---+---+
+            // |   |   |   |   | c |   |   |   |
+            // +---+---+---+---+---+---+---+---+
+            // | d |   |   |   |   |   |   |   |
+            // +---+---+---+---o---+---+---+---+
+            // |   |   |   |   |   |   | e |   |
+            // +---+---+---+---+---+---+---+---+
+            // |   |   |   | f |   |   |   |   |
+            // +---+---+---+---+---+---+---+---+
+            // |   | g |   |   |   |   |   | c |
+            // +---+---+---+---+---+---+---+---+
+            // |   |   |   |   |   | h |   |   |
+            // +---+---+---+---+---+---+---+---+
+            let a = vec2<f32>(7.0/16.0, -7.0/16.0);
+            let b = -10.0/16.0;
+            let c =  4.0/16.0;
+            let d = -8.0/16.0;
+            let e = 12.0/16.0;
+            let f = -6.0/16.0;
+            let g = -4.0/16.0;
+            let h =  8.0/16.0;
+            let dy = 2.0/16.0;
+            upper += a;
+            lower += a;
+            wn0.x += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += b;
+            upper.y += dy;
+            lower.x += b;
+            lower.y += dy;
+            wn0.y += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += c;
+            upper.y += dy;
+            lower.x += c;
+            lower.y += dy;
+            wn0.z += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += d;
+            upper.y += dy;
+            lower.x += d;
+            lower.y += dy;
+            wn0.w += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += e;
+            upper.y += dy;
+            lower.x += e;
+            lower.y += dy;
+            wn1.x += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += f;
+            upper.y += dy;
+            lower.x += f;
+            lower.y += dy;
+            wn1.y += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += g;
+            upper.y += dy;
+            lower.x += g;
+            lower.y += dy;
+            wn1.z += s * rasterize_edge_ssaa(upper, lower);
+            upper.x += h;
+            upper.y += dy;
+            lower.x += h;
+            lower.y += dy;
+            wn1.w += s * rasterize_edge_ssaa(upper, lower);
         } #else {
             // Position of this pixel's top-left corner (uv points to the pixel's center).
             // See comment in tiler.rs about the half-pixel offset.
@@ -257,6 +333,17 @@ fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity
         }
 
         mask *= 0.25;
+    } #else if TILING_SSAA8 {
+        var mask = 0.0;
+        if ((fill_rule & 1u) == 0u) {
+            mask = even_odd(wn0.x) + even_odd(wn0.y) + even_odd(wn0.z) + even_odd(wn0.w)
+                + even_odd(wn1.x) + even_odd(wn1.y) + even_odd(wn1.z) + even_odd(wn1.w);
+        } else {
+            mask = non_zero(wn0.x) + non_zero(wn0.y) + non_zero(wn0.z) + non_zero(wn0.w)
+                + non_zero(wn1.x) + non_zero(wn1.y) + non_zero(wn1.z) + non_zero(wn1.w);
+        }
+
+        mask *= 0.125;
     } #else {
         var mask = resolve_mask(winding_number, fill_rule);
     }
