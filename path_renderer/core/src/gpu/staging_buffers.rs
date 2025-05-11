@@ -229,4 +229,8 @@ impl StagingBufferPool {
             self.pending[idx] = Some(buffer);
         }
     }
+
+    pub fn active_staging_buffer_count(&self) -> u32 {
+        self.active.len() as u32
+    }
 }

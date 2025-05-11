@@ -552,11 +552,11 @@ impl core::Renderer for StencilAndCoverRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
 
@@ -590,6 +590,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         render_pass.set_index_buffer(stencil_idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
+                        ctx.stats.draw_calls += 1;
                     }
                     &Draw::Cover {
                         ref indices,
@@ -604,6 +605,7 @@ impl core::Renderer for StencilAndCoverRenderer {
                         render_pass.set_index_buffer(cover_idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
+                        ctx.stats.draw_calls += 1;
                     }
                 }
             }

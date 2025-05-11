@@ -4,7 +4,7 @@ use core::{
     }, gpu::{
         shader::{
             BaseShaderId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-        }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId
+        }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId, UploadStats
     }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use lyon::{
@@ -293,7 +293,9 @@ impl MsaaStrokeRenderer {
         shaders: &Shaders,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) {
+    ) -> UploadStats {
+        let mut stats = UploadStats::default();
+
         if !self.path_data.is_empty() {
             self.paths.bump_allocator().push(self.path_data.len());
             // TODO: this should be a
@@ -312,8 +314,13 @@ impl MsaaStrokeRenderer {
                 ]
             }));
 
-            self.paths.upload_bytes(0, bytemuck::cast_slice(&self.path_data), queue);
+            let bytes = bytemuck::cast_slice(&self.path_data);
+            self.paths.upload_bytes(0, bytes, queue);
+            stats.bytes += bytes.len() as u64;
+            stats.copy_ops += 1;
         }
+
+        stats
     }
 }
 
@@ -322,15 +329,15 @@ impl core::Renderer for MsaaStrokeRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.shaders, ctx.wgpu.device, ctx.wgpu.queue);
+    fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {
+        self.upload(ctx.shaders, ctx.wgpu.device, ctx.wgpu.queue)
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         if self.instances.is_none() {
@@ -357,6 +364,7 @@ impl core::Renderer for MsaaStrokeRenderer {
                 render_pass.set_pipeline(pipeline);
                 let vertex_count = draw.segment_count * 2 + 2;
                 render_pass.draw(0..vertex_count, draw.instances.clone());
+                ctx.stats.draw_calls += 1;
             }
         }
     }

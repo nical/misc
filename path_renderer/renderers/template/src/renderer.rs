@@ -113,14 +113,6 @@ impl TemplateRenderer {
 
         // ...
     }
-
-    pub fn upload(
-        &mut self,
-        resources: &mut GpuResources,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-    }
 }
 
 impl core::Renderer for TemplateRenderer {
@@ -165,16 +157,11 @@ impl core::Renderer for TemplateRenderer {
         self.batches = batches;
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
-    }
-
-
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let mut helper = DrawHelper::new();

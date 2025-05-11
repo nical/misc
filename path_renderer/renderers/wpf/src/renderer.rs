@@ -275,11 +275,11 @@ impl core::Renderer for WpfMeshRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         render_pass.set_vertex_buffer(

@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::gpu::StagingBufferPool;
+use crate::gpu::{StagingBufferPool, UploadStats};
 use crate::worker::Workers;
-use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, UploadContext, WgpuContext};
+use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
 use crate::frame::Frame;
 use crate::render_graph::{Allocation, BuiltGraph};
 use crate::resources::{GpuResource, GpuResources};
@@ -12,6 +12,10 @@ use crate::gpu::{
     Shaders
 };
 
+
+pub fn ms(duration: Duration) -> f32 {
+    (duration.as_micros() as f64 / 1000.0) as f32
+}
 
 pub struct Instance {
     pub shaders: Shaders,
@@ -27,7 +31,7 @@ pub struct Instance {
 impl Instance {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize) -> Self {
         let staging_buffers = unsafe {
-            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 32, device.clone())))
+            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 64, device.clone())))
         };
 
         let mut shaders = Shaders::new(&device);
@@ -80,12 +84,8 @@ impl Instance {
         external_attachments: &[Option<&wgpu::TextureView>],
         encoder: &mut wgpu::CommandEncoder,
     ) -> RenderStats {
-        let mut stats = RenderStats {
-            render_passes: 0,
-            prepare_time_ms: 0.0,
-            upload_time_ms: 0.0,
-            render_time_ms: 0.0,
-        };
+        let mut stats = RenderStats::default();
+        stats.renderers = vec![RendererStats::default(); renderers.len()];
 
         let graph = frame.graph.schedule().unwrap(); // TODO
 
@@ -116,13 +116,16 @@ impl Instance {
         for cmd in &graph {
             let pass = &frame.built_render_passes[cmd.task_id().0 as usize];
             let Some(pass) = pass else { continue; };
-            for renderer in renderers.iter_mut() {
+            for (idx, renderer) in renderers.iter_mut().enumerate() {
+                let renderer_prepare_start = Instant::now();
+                let stats = &mut stats.renderers[idx];
                 renderer.prepare(&mut PrepareContext {
                     pass,
                     transforms: &frame.transforms,
                     workers: self.workers.ctx_with(&mut worker_data[..]),
                     staging_buffers: self.staging_buffers.clone(),
                 });
+                stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
             }
         }
 
@@ -162,41 +165,48 @@ impl Instance {
             &graph.pass_data,
         );
 
+        let mut upload_stats = UploadStats::default();
         {
             let staging_buffers = self.staging_buffers.lock().unwrap();
-            self.resources.common.gpu_store.upload(
+            upload_stats += self.resources.common.gpu_store.upload(
                 &gpu_store_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,
             );
-            self.resources.common.vertices.upload(
+            upload_stats += self.resources.common.vertices.upload(
                 &vtx_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,
             );
-            self.resources.common.indices.upload(
+            upload_stats += self.resources.common.indices.upload(
                 &idx_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,
             );
-            self.resources.common.instances.upload(
+            upload_stats += self.resources.common.instances.upload(
                 &inst_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,
             );
+            stats.staging_buffers = staging_buffers.active_staging_buffer_count();
         }
 
-        for renderer in renderers.iter_mut() {
-            renderer.upload(&mut UploadContext {
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            let renderer_upload_start = Instant::now();
+            let stats = &mut stats.renderers[idx];
+            upload_stats += renderer.upload(&mut UploadContext {
                 resources: &mut self.resources,
                 shaders: &self.shaders,
                 wgpu: WgpuContext { device, queue, encoder },
             });
+            stats.upload_time = ms(Instant::now() - renderer_upload_start);
         }
+
+        let render_start = Instant::now();
 
         self.resources.begin_rendering(encoder);
 
@@ -206,8 +216,6 @@ impl Instance {
             external_attachments,
             resources: &self.resources.graph.resources(),
         };
-
-        let render_start = Instant::now();
 
         let mut attachments = Vec::new();
         for command in &graph {
@@ -298,20 +306,19 @@ impl Instance {
                     &bindings,
                     &self.render_pipelines,
                     &mut wgpu_pass,
+                    &mut stats,
                 );
             }
         }
 
         self.resources.end_frame();
 
-        fn ms(duration: Duration) -> f32 {
-            (duration.as_micros() as f64 / 1000.0) as f32
-        }
-
         stats.prepare_time_ms = ms(upload_start - prepare_start);
         stats.upload_time_ms = ms(render_start - upload_start);
         stats.render_time_ms = ms(Instant::now() - render_start);
-
+        stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
+        stats.uploads_kb = upload_stats.bytes as f32 / 1000.0;
+        stats.copy_ops = upload_stats.copy_ops;
         stats
     }
 
@@ -325,11 +332,18 @@ impl Instance {
     }
 }
 
+#[derive(Clone, Default, Debug)]
 pub struct RenderStats {
+    pub renderers: Vec<RendererStats>,
     pub render_passes: u32,
+    pub draw_calls: u32,
     pub prepare_time_ms: f32,
     pub upload_time_ms: f32,
     pub render_time_ms: f32,
+    pub uploads_kb: f32,
+    pub copy_ops: u32,
+    pub staging_buffers: u32,
+    pub stagin_buffer_chunks: u32,
 }
 
 pub struct Bindings<'l> {

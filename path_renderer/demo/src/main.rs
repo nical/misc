@@ -328,8 +328,9 @@ impl App {
         counters.enable_history(wgpu_counters.buffer_memory());
         counters.enable_history(wgpu_counters.memory_allocations());
 
+        // TODO: support CPU-side occlusion in the parallel path
         let tiling_occlusion = Occlusion {
-            cpu: cpu_occlusion.unwrap_or(true),
+            cpu: cpu_occlusion.unwrap_or(!parallel),
             gpu: z_buffer.unwrap_or(false),
         };
 
@@ -580,8 +581,8 @@ impl App {
         self.overlay.begin_frame();
 
         if self.view.debug_overlay {
-            //self.overlay.draw_item(&"Hello world\nNew line");
-            //self.overlay.end_group();
+
+            self.overlay.style.min_group_width = 490;
 
             let mut selection = Vec::new();
             self.counters.select_counters([
@@ -591,15 +592,15 @@ impl App {
             ].iter().cloned(), &mut selection);
 
             self.overlay.draw_item(&Table {
-                    columns: &[
-                        Column::color(),
-                        Column::name().with_unit().label("CPU timings"),
-                        Column::avg().label("Avg"),
-                        Column::max().label("Max"),
-                        Column::history_graph(),
-                    ],
-                    rows: &selection,
-                    labels: true,
+                columns: &[
+                    Column::color(),
+                    Column::name().with_unit().label("CPU timings"),
+                    Column::avg().label("Avg"),
+                    Column::max().label("Max"),
+                    Column::history_graph(),
+                ],
+                rows: &selection,
+                labels: true,
             });
 
             self.overlay.draw_item(&Graphs {
@@ -611,6 +612,31 @@ impl App {
             });
 
             self.overlay.end_group();
+            let fill_str = FILL_RENDERER_STRINGS[self.view.fill_renderer];
+            let stroke_str = STROKE_RENDERER_STRINGS[self.view.stroke_renderer];
+            self.overlay.draw_item(&format!("Renderers: {fill_str}/{stroke_str}").as_str());
+            self.overlay.end_group();
+
+            self.overlay.style.min_group_width = 300;
+
+            selection.clear();
+            self.counters.select_counters([
+                self.renderer_counters.render_passes(),
+                self.renderer_counters.draw_calls(),
+                self.renderer_counters.uploads(),
+                self.renderer_counters.staging_buffers(),
+                self.renderer_counters.copy_ops(),
+            ].iter().cloned(), &mut selection);
+
+            self.overlay.draw_item(&Table {
+                columns: &[
+                    Column::name().with_unit(),
+                    Column::avg().label("Avg"),
+                    Column::max().label("Max"),
+                ],
+                rows: &selection,
+                labels: true,
+            });
 
             self.overlay.push_column();
 
@@ -749,6 +775,11 @@ impl App {
         self.counters.set(self.renderer_counters.render(), rt);
         self.counters.set(self.renderer_counters.present(), pt);
         self.counters.set(self.renderer_counters.cpu_total(), rec_t + fbt + rt);
+        self.counters.set(self.renderer_counters.render_passes(), render_stats.render_passes as f32);
+        self.counters.set(self.renderer_counters.draw_calls(), render_stats.draw_calls as f32);
+        self.counters.set(self.renderer_counters.uploads(), render_stats.uploads_kb);
+        self.counters.set(self.renderer_counters.copy_ops(), render_stats.copy_ops as f32);
+        self.counters.set(self.renderer_counters.staging_buffers(), render_stats.staging_buffers as f32);
 
         let wgpu_counters = self.device.get_internal_counters();
         debug_overlay::update_wgpu_internal_counters(&mut self.counters, self.wgpu_counters, &wgpu_counters);
@@ -1403,7 +1434,12 @@ pub mod counters {
         render: float = "render"     with { unit: "ms", safe_range: Some(0.0..4.0), color: (50, 50, 200, 255) },
         present: float = "present"   with { unit: "ms", safe_range: Some(0.0..12.0), color: (200, 200, 30, 255) },
         cpu_total: float = "total"   with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 250, 250, 255) },
-        batches: int = "batches"
+        draw_calls: int = "draw calls",
+        render_passes: int = "render passes",
+        staging_buffers: int = "staging buffers",
+        staging_buffers_chunks: int = "staging buffer chunks",
+        copy_ops: int = "copy ops",
+        uploads: float = "uploads"   with { unit: "kb" }
     });
 
     pub use debug_overlay::wgpu_counters as wgpu;

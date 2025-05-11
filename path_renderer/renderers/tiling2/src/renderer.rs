@@ -5,7 +5,7 @@ use core::context::{
 use core::gpu::shader::{
     BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
-use core::gpu::{GpuStore, StreamId, TransferOps};
+use core::gpu::{GpuStore, StreamId, TransferOps, UploadStats};
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
 use core::transform::{TransformId, Transforms};
@@ -453,28 +453,22 @@ impl TileRenderer {
         }
     }
 
-    pub fn upload(&mut self, ctx: &mut UploadContext) {
+    pub fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {
+        let mut stats = UploadStats::default();
         if self.path_transfer_ops.is_empty() && self.edge_transfer_ops.is_empty() {
-            return;
+            return stats;
         }
-
-        //println!("tiling2 stats:\n\tedges: {}({}kb)\n\t{} opaque tiles\n\t{} alpha tiles\n\t",
-        //    self.tiles.edges.len(),
-        //    (self.tiles.edges.len() * 4) as f32 / 1000.0,
-        //    self.tiles.opaque_tiles.len(),
-        //    self.tiles.mask_tiles.len(),
-        //);
 
         let staging_buffers = ctx.resources.common.staging_buffers.lock().unwrap();
 
-        self.resources.paths.upload(
+        stats += self.resources.paths.upload(
             &self.path_transfer_ops,
             &*staging_buffers,
             ctx.wgpu.device,
             ctx.wgpu.encoder
         );
 
-        self.resources.edges.upload(
+        stats += self.resources.edges.upload(
             &self.edge_transfer_ops,
             &*staging_buffers,
             ctx.wgpu.device,
@@ -494,6 +488,8 @@ impl TileRenderer {
             self.resources.edges_epoch = self.resources.edges.epoch();
             self.resources.paths_epoch = self.resources.paths.epoch();
         }
+
+        stats
     }
 }
 
@@ -506,15 +502,15 @@ impl core::Renderer for TileRenderer {
         }
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx);
+    fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {
+        self.upload(ctx)
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources.common;
@@ -548,6 +544,7 @@ impl core::Renderer for TileRenderer {
 
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
+                ctx.stats.draw_calls += 1;
             }
 
             if let Some(masked) = &batch.masked_draw {
@@ -561,6 +558,7 @@ impl core::Renderer for TileRenderer {
 
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
+                ctx.stats.draw_calls += 1;
             }
         }
     }

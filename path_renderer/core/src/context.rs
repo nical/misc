@@ -1,10 +1,12 @@
 use crate::batching::{Batcher, BatchId};
 use crate::gpu::shader::RenderPipelines;
+use crate::instance::RenderStats;
 use crate::path::FillRule;
 use crate::resources::GpuResources;
 use crate::units::SurfaceIntSize;
 use crate::{BindingsId, BindingResolver, Renderer, RenderContext};
 use std::ops::Range;
+use std::time::Instant;
 
 pub type ZIndex = u32;
 
@@ -428,6 +430,7 @@ impl BuiltRenderPass {
         bindings: &'resources dyn BindingResolver,
         render_pipelines: &'resources RenderPipelines,
         render_pass: &mut wgpu::RenderPass<'pass>,
+        stats: &mut RenderStats,
     ) {
         if self.batches.is_empty() {
             return;
@@ -459,6 +462,8 @@ impl BuiltRenderPass {
                 continue;
             }
 
+            let start_time = Instant::now();
+            let renderer_stats = &mut stats.renderers[renderer as usize];
             renderers[renderer as usize].render(
                 &self.batches[start..end],
                 &self.config,
@@ -466,9 +471,12 @@ impl BuiltRenderPass {
                     render_pipelines,
                     bindings,
                     resources,
+                    stats: renderer_stats,
                 },
                 render_pass
             );
+            let time = crate::instance::ms(Instant::now() - start_time);
+            renderer_stats.render_time += time;
 
             if done {
                 break;

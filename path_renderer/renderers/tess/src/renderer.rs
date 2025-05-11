@@ -462,11 +462,11 @@ impl core::Renderer for MeshRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let Some(idx_buffer) = ctx
@@ -492,6 +492,7 @@ impl core::Renderer for MeshRenderer {
 
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(draw.indices.clone(), 0, 0..1);
+                ctx.stats.draw_calls += 1;
             }
         }
     }

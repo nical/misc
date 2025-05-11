@@ -19,7 +19,7 @@ pub mod instance;
 pub mod worker;
 
 use context::{BuiltRenderPass, RenderPassContext};
-use gpu::{shader::PrepareRenderPipelines, GpuStore, GpuStreams, Shaders, StagingBufferPool};
+use gpu::{shader::PrepareRenderPipelines, GpuStore, GpuStreams, Shaders, StagingBufferPool, UploadStats};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
@@ -501,10 +501,11 @@ impl BindingResolver for () {
 }
 
 /// Parameters for the renderering stage.
-pub struct RenderContext<'l> {
-    pub render_pipelines: &'l gpu::shader::RenderPipelines,
-    pub resources: &'l resources::GpuResources,
-    pub bindings: &'l dyn BindingResolver,
+pub struct RenderContext<'a, 'b> {
+    pub render_pipelines: &'a gpu::shader::RenderPipelines,
+    pub resources: &'a resources::GpuResources,
+    pub bindings: &'a dyn BindingResolver,
+    pub stats: &'b mut RendererStats,
 }
 
 pub struct PrepareWorkerData {
@@ -540,10 +541,29 @@ pub struct WgpuContext<'l> {
     pub encoder: &'l mut wgpu::CommandEncoder,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RendererStats {
+    pub draw_calls: u32,
+    // In bytes.
+    pub gpu_data: u32,
+    // In ms.
+    pub prepare_time: f32,
+    // In ms.
+    pub upload_time: f32,
+    // In ms.
+    pub render_time: f32,
+}
+
+impl RendererStats {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 pub trait Renderer: AsAny {
     fn prepare(&mut self, ctx: &mut PrepareContext);
 
-    fn upload(&mut self, _ctx: &mut UploadContext) {}
+    fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }
 
     // TODO: this is not wired in anymore.
     fn render_pre_pass(
@@ -554,11 +574,11 @@ pub trait Renderer: AsAny {
     ) {
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         _batches: &[batching::BatchId],
         _pass_info: &context::SurfacePassConfig,
-        _ctx: RenderContext<'resources>,
+        _ctx: RenderContext<'resources, 'tmp>,
         _render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
     }

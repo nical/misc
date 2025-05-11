@@ -1,6 +1,7 @@
 use super::{encoder::TileEncoder, mask::MaskEncoder, FillOptions, Stats, TilingGpuResources};
 use crate::{encoder::SRC_COLOR_ATLAS_BINDING, TiledOcclusionBuffer, Tiler, TilerConfig, TILE_SIZE};
 use core::batching::SurfaceIndex;
+use core::gpu::UploadStats;
 use core::transform::Transforms;
 use core::{bytemuck, PrepareContext, SurfaceKind, UploadContext};
 use core::context::{SurfaceDrawConfig, RenderPassContext, BuiltRenderPass};
@@ -353,7 +354,7 @@ impl TileRenderer {
         resources: &mut GpuResources,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) {
+    ) -> UploadStats {
         let tile_resources = &mut resources[self.resources];
 
         tile_resources
@@ -382,6 +383,9 @@ impl TileRenderer {
         //self.encoder
         //    .mask_uploader
         //    .upload_vertices(device, &mut common_resources.vertices);
+
+
+        UploadStats::default() // TODO
     }
 
     pub fn update_stats(&self, stats: &mut Stats) {
@@ -646,8 +650,8 @@ impl core::Renderer for TileRenderer {
         todo!();
     }
 
-    fn upload(&mut self, ctx: &mut UploadContext) {
-        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue);
+    fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {
+        self.upload(ctx.resources, ctx.wgpu.device, ctx.wgpu.queue)
     }
 
     fn render_pre_pass(&self, index: u32, ctx: core::RenderContext, encoder: &mut wgpu::CommandEncoder) {

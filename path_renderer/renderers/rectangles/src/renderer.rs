@@ -191,11 +191,11 @@ impl core::Renderer for RectangleRenderer {
         self.prepare_impl(ctx);
     }
 
-    fn render<'pass, 'resources: 'pass>(
+    fn render<'pass, 'resources: 'pass, 'stats>(
         &self,
         batches: &[BatchId],
         _surface_info: &SurfacePassConfig,
-        ctx: core::RenderContext<'resources>,
+        ctx: core::RenderContext<'resources, 'stats>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let common_resources = &ctx.resources.common;
@@ -222,6 +222,7 @@ impl core::Renderer for RectangleRenderer {
 
             render_pass.set_pipeline(pipeline);
             render_pass.draw_indexed(0..6, 0, batch.instances.clone());
+            ctx.stats.draw_calls += 1;
         }
     }
 }

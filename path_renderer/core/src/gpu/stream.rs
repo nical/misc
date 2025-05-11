@@ -8,7 +8,7 @@ use std::{
     u32, u64,
 };
 
-use super::{StagingBufferId, StagingBufferPool, StagingOffset};
+use super::{StagingBufferId, StagingBufferPool, StagingOffset, UploadStats};
 
 // Associated with a specific resource.
 
@@ -336,7 +336,8 @@ impl GpuStreamsResources {
         staging_buffers: &StagingBufferPool,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    ) -> UploadStats {
+        let mut stats = UploadStats::default();
         let num_streams = self.next_stream_id.load(Ordering::Acquire) as usize;
         self.stream_info.clear();
         self.stream_info.reserve(num_streams);
@@ -422,6 +423,8 @@ impl GpuStreamsResources {
                 // Loop over the ops in the stream's range and issue copies from the
                 // staging buffer(s).
                 for op in &ops[op_start..op_idx] {
+                    stats.copy_ops += 1;
+                    stats.bytes += op.size as u64;
                     let staging_buffer = staging_buffers.get_handle(op.staging_id);
                     encoder.copy_buffer_to_buffer(
                         staging_buffer,
@@ -440,6 +443,8 @@ impl GpuStreamsResources {
             current_stream = next_stream;
             op_idx += 1;
         }
+
+        stats
     }
 
     /// Returns the buffer and a range in byte containing the stream.

@@ -10,6 +10,29 @@ use crate::gpu::staging_buffers::{StagingBufferId, StagingOffset};
 
 use super::staging_buffers::StagingBufferPool;
 
+#[derive(Copy, Clone, Debug, Default)]
+pub struct UploadStats {
+    pub bytes: u64,
+    pub copy_ops: u32,
+}
+
+impl std::ops::Add for UploadStats {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        UploadStats {
+            bytes: self.bytes + rhs.bytes,
+            copy_ops: self.copy_ops + rhs.copy_ops,
+        }
+    }
+}
+
+impl std::ops::AddAssign for UploadStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.bytes += rhs.bytes;
+        self.copy_ops += rhs.copy_ops;
+    }
+}
+
 const GPU_STORE_WIDTH: u32 = 2048;
 
 // Packed into 20 bits, leaving 12 bits unused so that it can be packed
@@ -507,10 +530,11 @@ impl GpuStoreResources {
         staging_buffers: &StagingBufferPool,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    ) -> UploadStats {
+        let mut stats = UploadStats::default();
         let total_size_bytes = self.next_gpu_offset.load(Ordering::Acquire);
         if total_size_bytes == 0 {
-            return;
+            return stats;
         }
 
         match &mut self.storage {
@@ -560,6 +584,8 @@ impl GpuStoreResources {
                 let texture = handle.as_ref().unwrap();
                 for ops in transfer_ops {
                     for op in &ops.ops {
+                        stats.copy_ops += 1;
+                        stats.bytes += op.size as u64;
                         let staging_buffer = staging_buffers.get_handle(op.staging_id);
                         let first_row = op.dst_offset / bytes_per_row;
                         let num_rows = op.size / bytes_per_row + (op.size % bytes_per_row).min(1);
@@ -613,6 +639,8 @@ impl GpuStoreResources {
                 let dst = handle.as_ref().unwrap();
                 for ops in transfer_ops {
                     for op in &ops.ops {
+                        stats.copy_ops += 1;
+                        stats.bytes += op.size as u64;
                         let staging_buffer = staging_buffers.get_handle(op.staging_id);
                         encoder.copy_buffer_to_buffer(
                             staging_buffer,
@@ -625,6 +653,8 @@ impl GpuStoreResources {
                 }
             }
         }
+
+        stats
     }
 
     /// The epoch changes when the texture is reallocated.
