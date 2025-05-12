@@ -88,6 +88,7 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
 unsafe impl bytemuck::Pod for CoverVertex {}
 unsafe impl bytemuck::Zeroable for CoverVertex {}
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath),
     Rect(LocalRect),
@@ -239,25 +240,28 @@ impl StencilAndCoverRenderer {
             StencilMode::Ignore => 3,
         };
 
-        self.batches
-            .find_or_add_batch(
-                ctx,
-                &(pattern.batch_key() | (stencil_key << 32)),
-                &aabb,
-                BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
-                &mut || BatchInfo {
-                    draws: 0..0,
-                    pattern_shader: pattern.shader,
-                    pattern_bindings: pattern.bindings,
-                    stencil_mode,
-                    blend_mode: pattern.blend_mode,
-                },
-            ).push(Fill {
-                shape,
-                pattern,
-                transform: transforms.current_id(),
-                z_index: ctx.z_indices.push(),
-            });
+        let z_index = ctx.z_indices.push();
+        self.batches.add(
+            ctx,
+            &(pattern.batch_key() | (stencil_key << 32)),
+            &aabb,
+            BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
+            &mut || BatchInfo {
+                draws: 0..0,
+                pattern_shader: pattern.shader,
+                pattern_bindings: pattern.bindings,
+                stencil_mode,
+                blend_mode: pattern.blend_mode,
+            },
+            &mut |mut batch| {
+                batch.push(Fill {
+                    shape: shape.clone(),
+                    pattern,
+                    transform: transforms.current_id(),
+                    z_index,
+                });
+            }
+        );
     }
 
     pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {

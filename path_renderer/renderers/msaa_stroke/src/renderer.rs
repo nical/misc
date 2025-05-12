@@ -21,6 +21,7 @@ struct BatchInfo {
     blend_mode: BlendMode,
 }
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath, f32),
     //Rect(LocalRect, f32),
@@ -165,7 +166,7 @@ impl MsaaStrokeRenderer {
         if pattern.is_opaque && ctx.surface.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
-        self.batches.find_or_add_batch(
+        self.batches.add(
             ctx,
             &pattern.batch_key(),
             &aabb,
@@ -174,12 +175,15 @@ impl MsaaStrokeRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode,
             },
-        ).push(Stroke {
-            shape,
-            pattern,
-            transform,
-            z_index,
-        });
+            &mut |mut batch| {
+                batch.push(Stroke {
+                    shape: shape.clone(),
+                    pattern,
+                    transform,
+                    z_index,
+                });
+            }
+        );
     }
 
     pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {

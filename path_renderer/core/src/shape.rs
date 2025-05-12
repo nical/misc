@@ -5,6 +5,7 @@ use crate::{
     units::{point, vector, LocalPoint, LocalRect},
 };
 
+#[derive(Clone)]
 pub struct FilledPath {
     pub path: Arc<Path>,
     pub fill_rule: FillRule,

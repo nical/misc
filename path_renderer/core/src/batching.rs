@@ -323,6 +323,7 @@ impl OrderIndependentBatcher {
 pub struct Batcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
+    view_port: Rect,
 }
 
 impl Batcher {
@@ -381,9 +382,10 @@ impl Batcher {
         self.order_independent.set_render_pass(pass_idx);
     }
 
-    pub fn begin(&mut self) {
+    pub fn begin(&mut self, view_port: &Rect) {
         self.ordered.begin();
         self.order_independent.begin();
+        self.view_port = *view_port;
     }
 
     pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
@@ -394,9 +396,15 @@ impl Batcher {
     }
 
     pub fn new() -> Self {
+        use std::f32::{MAX, MIN};
+        use crate::units::point;
         Batcher {
             ordered: OrderedBatcher::new(),
             order_independent: OrderIndependentBatcher::new(),
+            view_port: Rect {
+                min: point(MIN, MIN),
+                max: point(MAX, MAX),
+            }
         }
     }
 
@@ -413,6 +421,7 @@ impl Batcher {
     }
 }
 
+#[repr(transparent)]
 pub struct BatchRef<'l, T, I> {
     inner: &'l mut (Vec<T>, SurfacePassConfig, I),
 }
@@ -449,14 +458,19 @@ impl<T, I> BatchList<T, I> {
         }
     }
 
-    pub fn find_or_add_batch(
+    pub fn add(
         &mut self,
         ctx: &mut RenderPassContext,
         batch_key: &BatchKey,
         aabb: &Rect,
         flags: BatchFlags,
         or_add: &mut impl FnMut() -> I,
-    ) -> BatchRef<T, I> {
+        then: &mut impl FnMut(BatchRef<T, I>),
+    ) {
+        if !aabb.intersects(&ctx.batcher.view_port) {
+            return;
+        }
+
         let new_batch_index = self.batches.len() as u32;
         let batch_index =
             ctx.batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
@@ -467,7 +481,7 @@ impl<T, I> BatchList<T, I> {
 
         let b = &mut self.batches[batch_index as usize];
 
-        BatchRef { inner: b }
+        then(BatchRef { inner: b })
     }
 
     pub fn get(&self, index: BatchIndex) -> (&[T], &SurfacePassConfig, &I) {

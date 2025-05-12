@@ -1038,6 +1038,7 @@ fn gpu_store_simple() {
         format: wgpu::TextureFormat::Rgba8Unorm,
         width: 128,
         label: Some("gpu store"),
+        alignment: 8,
     });
 
     let store = resource.begin_frame(staging_buffers.clone());

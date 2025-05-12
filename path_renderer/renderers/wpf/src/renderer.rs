@@ -33,6 +33,7 @@ struct BatchInfo {
     blend_mode: BlendMode,
 }
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath),
 }
@@ -110,7 +111,7 @@ impl WpfMeshRenderer {
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
-        self.batches.find_or_add_batch(
+        self.batches.add(
             ctx,
             &pattern.batch_key(),
             &aabb,
@@ -119,11 +120,14 @@ impl WpfMeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode.with_alpha(true),
             },
-        ).push(Fill {
-            shape,
-            pattern,
-            transform,
-        });
+            &mut |mut batch| {
+                batch.push(Fill {
+                    shape: shape.clone(),
+                    pattern,
+                    transform,
+                });
+            }
+        );
     }
 
     pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {

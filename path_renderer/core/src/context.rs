@@ -3,7 +3,7 @@ use crate::gpu::shader::RenderPipelines;
 use crate::instance::RenderStats;
 use crate::path::FillRule;
 use crate::resources::GpuResources;
-use crate::units::SurfaceIntSize;
+use crate::units::{SurfaceIntSize, SurfaceRect};
 use crate::{BindingsId, BindingResolver, Renderer, RenderContext};
 use std::ops::Range;
 use std::time::Instant;
@@ -384,7 +384,7 @@ impl RenderPassBuilder {
     pub fn begin(&mut self, size: SurfaceIntSize, surface: SurfacePassConfig) {
         self.z_indices.clear();
         self.surface = SurfaceInfo::new(size, surface);
-        self.batcher.begin();
+        self.batcher.begin(&SurfaceRect::from_size(size.to_f32()));
     }
 
     pub fn end(&mut self) -> BuiltRenderPass {

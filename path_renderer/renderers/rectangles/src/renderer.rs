@@ -100,7 +100,7 @@ impl RectangleRenderer {
             && aabb.width() > 50.0
             && aabb.height() > 50.0
         {
-            self.batches.find_or_add_batch(
+            self.batches.add(
                 ctx,
                 &pattern.batch_key(),
                 &aabb,
@@ -112,14 +112,17 @@ impl RectangleRenderer {
                     edge_aa: true,
                     pipeline_idx: None,
                 },
-            ).push(Instance {
-                local_rect: *local_rect,
-                z_index,
-                pattern: pattern.data,
-                flags_transform: transform_handle.to_u32()
-                    | (instance_flags | InstanceFlags::AaCenter).bits(),
-                mask: 0,
-            });
+                &mut |mut batch| {
+                    batch.push(Instance {
+                        local_rect: *local_rect,
+                        z_index,
+                        pattern: pattern.data,
+                        flags_transform: transform_handle.to_u32()
+                            | (instance_flags | InstanceFlags::AaCenter).bits(),
+                        mask: 0,
+                    });
+                }
+            );
         }
 
         // Main rect
@@ -132,7 +135,7 @@ impl RectangleRenderer {
             BatchFlags::empty()
         };
 
-        let mut batch = self.batches.find_or_add_batch(
+        self.batches.add(
             ctx,
             &pattern.batch_key(),
             &aabb,
@@ -144,16 +147,17 @@ impl RectangleRenderer {
                 edge_aa: false,
                 pipeline_idx: None,
             },
+            &mut |mut batch| {
+                batch.batch_data().edge_aa |= aa != Aa::NONE;
+                batch.push(Instance {
+                    local_rect: *local_rect,
+                    z_index,
+                    pattern: pattern.data,
+                    flags_transform: transform_handle.to_u32() | instance_flags.bits(),
+                    mask: 0,
+                });
+            }
         );
-
-        batch.batch_data().edge_aa |= aa != Aa::NONE;
-        batch.push(Instance {
-            local_rect: *local_rect,
-            z_index,
-            pattern: pattern.data,
-            flags_transform: transform_handle.to_u32() | instance_flags.bits(),
-            mask: 0,
-        });
     }
 
     pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {

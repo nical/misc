@@ -32,6 +32,7 @@ struct Draw {
     pipeline: RenderPipelineIndex,
 }
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath),
     Surface,
@@ -146,21 +147,22 @@ impl TileRenderer {
             pattern.is_opaque = false;
         }
 
-        self.batches
-            .find_or_add_batch(ctx, &pattern.batch_key(), &aabb, batch_flags, &mut || {
-                BatchInfo {
+        self.batches.add(ctx, &pattern.batch_key(), &aabb, batch_flags,
+            &mut || BatchInfo {
                     pattern,
                     opaque_draw: None,
                     masked_draw: None,
                     blend_mode: pattern.blend_mode,
-                }
-            })
-            .push(Fill {
-                shape,
-                pattern,
-                transform,
-                z_index,
-            });
+            },
+            &mut |mut batch| {
+                batch.push(Fill {
+                    shape: shape.clone(),
+                    pattern,
+                    transform,
+                    z_index,
+                });
+            }
+        )
     }
 
     pub fn set_options(&mut self, options: &RendererOptions) {

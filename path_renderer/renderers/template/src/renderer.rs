@@ -12,6 +12,7 @@ struct BatchInfo {
     draws: Range<u32>,
 }
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath),
 }
@@ -90,7 +91,7 @@ impl TemplateRenderer {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 
-        self.batches.find_or_add_batch(
+        self.batches.add(
             ctx,
             &pattern.batch_key(),
             &aabb,
@@ -98,12 +99,15 @@ impl TemplateRenderer {
             &mut || BatchInfo {
                 draws: 0..0,
             },
-        ).push(Fill {
-            shape,
-            pattern,
-            transform,
-            z_index,
-        });
+            &mut |mut batch| {
+                batch.push(Fill {
+                    shape: shape.clone(),
+                    pattern,
+                    transform,
+                    z_index,
+                });
+            }
+        );
     }
 
     fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms) {

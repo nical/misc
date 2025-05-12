@@ -68,7 +68,7 @@ pub use crate::context::{
     SurfaceDrawConfig, SurfacePassConfig, SurfaceKind, StencilMode, DepthMode,
 };
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,

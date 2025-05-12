@@ -2,6 +2,7 @@
 
 use core::frame::{RenderNodeDescriptor, RenderPass};
 use core::instance::Instance;
+use core::pattern::BuiltPattern;
 use core::render_graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
 use core::{FillPath, Renderer};
 use core::gpu::shader::BlendMode;
@@ -16,6 +17,8 @@ use core::units::{
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
 use core::{BindingsId, BindingsNamespace};
+use std::collections::VecDeque;
+use std::mem::MaybeUninit;
 use std::u32;
 use debug_overlay::{Column, Counters, Graphs, Orientation, Overlay, Table};
 use debug_overlay::wgpu::{Renderer as OverlayRenderer, RendererOptions as OverlayOptions};
@@ -26,7 +29,7 @@ use lyon::path::traits::PathBuilder;
 use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
-use tiling::{Occlusion, Tiling, AaMode, TilingOptions};
+use tiling::{AaMode, Occlusion, TileRenderer, Tiling, TilingOptions};
 use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
@@ -53,10 +56,10 @@ mod load_svg;
 use load_svg::*;
 
 const TILING: usize = 0;
-//const TESS: usize = 1;
-const STENCIL: usize = 2;
+const STENCIL: usize = 1;
+//const TESS: usize = 2;
 const WPF: usize = 3;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "tessellation", "stencil and cover", "wpf"];
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -65,9 +68,9 @@ const STROKE_RENDERER_STRINGS: &[&str] = &["stroke-to-fill", "instanced"];
 const NUM_SCENES: u32 = 2;
 
 struct Renderers {
-    tiling: tiling::TileRenderer,
-    meshes: MeshRenderer,
+    tiling: TileRenderer,
     stencil: StencilAndCoverRenderer,
+    meshes: MeshRenderer,
     wpf: WpfMeshRenderer,
     rectangles: RectangleRenderer,
     msaa_strokes: MsaaStrokeRenderer,
@@ -75,10 +78,9 @@ struct Renderers {
 
 impl Renderers {
     fn begin_frame(&mut self) {
-        //self.tiling.begin_frame(ctx);
         self.tiling.begin_frame();
-        self.meshes.begin_frame();
         self.stencil.begin_frame();
+        self.meshes.begin_frame();
         self.wpf.begin_frame();
         self.rectangles.begin_frame();
         self.msaa_strokes.begin_frame();
@@ -86,10 +88,9 @@ impl Renderers {
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
         [
-            //&mut self.tiling as &mut dyn FillPath,
             &mut self.tiling as &mut dyn FillPath,
-            &mut self.meshes as &mut dyn FillPath,
             &mut self.stencil as &mut dyn FillPath,
+            &mut self.meshes as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
         ][idx]
     }
@@ -360,8 +361,8 @@ impl App {
                     no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
                 }
             ),
-            meshes: tessellation.new_renderer(1),
-            stencil: stencil_and_cover.new_renderer(2),
+            stencil: stencil_and_cover.new_renderer(1),
+            meshes: tessellation.new_renderer(2),
             rectangles: rectangles.new_renderer(3),
             wpf: wpf.new_renderer(4),
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
@@ -729,8 +730,8 @@ impl App {
             frame,
             &mut [
                 &mut self.renderers.tiling as &mut dyn Renderer,
-                &mut self.renderers.meshes,
                 &mut self.renderers.stencil,
+                &mut self.renderers.meshes,
                 &mut self.renderers.rectangles,
                 &mut self.renderers.wpf,
                 &mut self.renderers.msaa_strokes,
@@ -854,10 +855,16 @@ fn paint_scene(
 
     frame.transforms.push(transform);
 
+    // Doing a minimal amount of work to de-duplicate patterns avoids
+    // uploading 50k patterns in paris-30k.svg.
+    let mut color_cache: Cache<Color, BuiltPattern, 4> = Cache::new();
+
     for (path, fill, stroke) in paths {
         if let Some(fill) = fill {
             let pattern = match fill {
-                &SvgPattern::Color(color) => patterns.colors.add(color),
+                &SvgPattern::Color(color) => {
+                    *color_cache.get(color, || patterns.colors.add(color))
+                }
                 &SvgPattern::Gradient {
                     color0,
                     color1,
@@ -893,7 +900,10 @@ fn paint_scene(
                     if alpha_adjust < 0.9961 {
                         color.a = (color.a as f32 * alpha_adjust) as u8;
                     }
-                    patterns.colors.add(color)
+                    if color.a == 0 {
+                        continue;
+                    }
+                    *color_cache.get(color, || patterns.colors.add(color))
                 }
                 SvgPattern::Gradient {
                     color0,
@@ -906,6 +916,9 @@ fn paint_scene(
                     if alpha_adjust < 0.9961 {
                         color0.a = (color0.a as f32 * alpha_adjust) as u8;
                         color1.a = (color1.a as f32 * alpha_adjust) as u8;
+                    }
+                    if color0.a == 0 && color1.a == 0 {
+                        continue;
                     }
                     patterns.gradients.add(
                         &mut gpu_store,
@@ -1519,4 +1532,76 @@ impl<'l> BindingResolver for Bindings<'l> {
             _ => None
         }
     }
+}
+
+pub struct Cache<K, T, const N: usize> {
+    keys: [MaybeUninit<K>; N],
+    items: [MaybeUninit<T>; N],
+    cursor: usize,
+    len: usize,
+}
+
+impl<K: PartialEq, T, const N: usize> Cache<K, T, N> {
+    pub fn new() -> Self {
+        Cache {
+            keys: [const { MaybeUninit::uninit() }; N],
+            items: [const { MaybeUninit::uninit() }; N],
+            cursor: 0,
+            len: 0,
+        }
+    }
+
+    pub fn get<'l>(&'l mut self, key: K, or_else: impl FnOnce() -> T) -> &'l T {
+        let mut idx = 0;
+        for k in &self.keys[0..self.len] {
+            if unsafe { k.assume_init_ref().eq(&key) } {
+                break;
+            }
+            idx += 1;
+        }
+
+        if idx == self.len {
+            if self.len < N {
+                self.len += 1;
+            }
+            idx = self.cursor;
+            self.keys[idx] = MaybeUninit::new(key);
+            self.items[idx] = MaybeUninit::new(or_else());
+            self.cursor = (self.cursor + 1) % N;
+        }
+
+        unsafe {
+            self.items[idx].assume_init_ref()
+        }
+    }
+}
+
+impl<K, T, const N: usize> Drop for Cache<K, T, N> {
+    fn drop(&mut self) {
+        unsafe {
+            for key in &mut self.keys[0..self.len] {
+                key.assume_init_drop();
+            }
+            for item in &mut self.items[0..self.len] {
+                item.assume_init_drop();
+            }
+        }
+    }
+}
+
+#[test]
+fn simple_cache() {
+    //let mut cache = Cache::with_capacity(4);
+    let mut cache: Cache<u32, u32, 4> = Cache::new();
+    assert_eq!(*cache.get(0u32, || 0u32), 0);
+    assert_eq!(*cache.get(1u32, || 1u32), 1);
+    assert_eq!(*cache.get(2u32, || 2u32), 2);
+    assert_eq!(*cache.get(3u32, || 3u32), 3);
+    assert_eq!(*cache.get(4u32, || 4u32), 4);
+    assert_eq!(*cache.get(5u32, || 5u32), 5);
+
+    assert_eq!(*cache.get(4u32, || panic!()), 4);
+    assert_eq!(*cache.get(5u32, || panic!()), 5);
+    assert_eq!(*cache.get(2u32, || panic!()), 2);
+    assert_eq!(*cache.get(3u32, || panic!()), 3);
 }

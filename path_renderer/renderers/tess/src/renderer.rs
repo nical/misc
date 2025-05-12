@@ -15,7 +15,7 @@ use lyon::{
         FillGeometryBuilder, FillOptions, FillTessellator, StrokeGeometryBuilder, VertexId
     },
 };
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -31,11 +31,12 @@ struct BatchInfo {
     blend_mode: BlendMode,
 }
 
+#[derive(Clone)]
 enum Shape {
     Path(FilledPath),
     Rect(LocalRect),
     Circle(Circle),
-    Mesh(TessellatedMesh),
+    Mesh(Arc<TessellatedMesh>),
     StrokePath(Path, f32),
 }
 
@@ -198,7 +199,7 @@ impl MeshRenderer {
         &mut self,
         ctx: &mut RenderPassContext,
         transforms: &Transforms,
-        mesh: TessellatedMesh,
+        mesh: Arc<TessellatedMesh>,
         pattern: BuiltPattern,
     ) {
         self.fill_shape(ctx, transforms, Shape::Mesh(mesh), pattern);
@@ -218,7 +219,7 @@ impl MeshRenderer {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 
-        self.batches.find_or_add_batch(
+        self.batches.add(
             ctx,
             &pattern.batch_key(),
             &aabb,
@@ -227,12 +228,15 @@ impl MeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode,
             },
-        ).push(Fill {
-            shape,
-            pattern,
-            transform,
-            z_index,
-        });
+            &mut |mut batch| {
+                batch.push(Fill {
+                    shape: shape.clone(),
+                    pattern,
+                    transform,
+                    z_index,
+                });
+            }
+        );
     }
 
     pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
