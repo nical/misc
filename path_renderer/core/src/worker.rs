@@ -360,6 +360,11 @@ impl<'a, D1: Send> Context<'a, (D1,)> {
         unsafe { self.ctx_data.ptr.offset(idx).as_mut() }
     }
 
+    pub fn const_data(&self) -> &D1 {
+        let idx = rayon::current_thread_index().unwrap() as isize;
+        unsafe { self.ctx_data.ptr.offset(idx).as_ref() }
+    }
+
     pub fn with_data<'b, D2: Send>(&mut self, data: &'b mut[D2]) -> Context<'b, (D1, D2)> {
         assert!(data.len() >= rayon::current_num_threads());
         Context {
@@ -380,6 +385,16 @@ impl<'a, D1: Send, D2: Send> Context<'a, (D1, D2)> {
             (
                 self.ctx_data.0.ptr.offset(idx).as_mut(),
                 self.ctx_data.1.ptr.offset(idx).as_mut(),
+            )
+        }
+    }
+
+    pub fn const_data(&self) -> (&D1, &D2) {
+        let idx = rayon::current_thread_index().unwrap() as isize;
+        unsafe {
+            (
+                self.ctx_data.0.ptr.offset(idx).as_ref(),
+                self.ctx_data.1.ptr.offset(idx).as_ref(),
             )
         }
     }

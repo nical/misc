@@ -109,9 +109,11 @@ impl Shape {
 
 pub enum Draw {
     Stencil {
+        stream_id: Option<StreamId>,
         indices: Range<u32>,
     },
     Cover {
+        stream_id: Option<StreamId>,
         indices: Range<u32>,
         pattern_inputs: BindingsId,
         pipeline_idx: RenderPipelineIndex,
@@ -121,6 +123,7 @@ pub enum Draw {
 
 pub struct BatchInfo {
     draws: Range<usize>,
+    worker_index: Option<u8>,
     pattern_shader: ShaderPatternId,
     pattern_bindings: BindingsId,
     stencil_mode: StencilMode,
@@ -141,10 +144,17 @@ struct Geometry<'a, 'b> {
 
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
-    pub commands: u32,
     pub stencil_batches: u32,
     pub cover_batches: u32,
     pub vertices: u32,
+}
+
+impl std::ops::AddAssign<Self> for Stats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.stencil_batches += rhs.stencil_batches;
+        self.cover_batches += rhs.cover_batches;
+        self.vertices += rhs.vertices;
+    }
 }
 
 pub struct StencilAndCoverRenderer {
@@ -154,10 +164,12 @@ pub struct StencilAndCoverRenderer {
     stencil_indices: Option<StreamId>,
     cover_indices: Option<StreamId>,
     draws: Vec<Draw>,
+    parallel_draws: Vec<Vec<Draw>>,
     batches: BatchList<Fill, BatchInfo>,
     cover_pipeline: BaseShaderId,
     pub stats: Stats,
     pub tolerance: f32,
+    pub parallel: bool,
     shared: Arc<StencilAndCoverResources>,
 }
 
@@ -173,15 +185,16 @@ impl StencilAndCoverRenderer {
             stencil_indices: None,
             cover_indices: None,
             draws: Vec::new(),
+            parallel_draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             cover_pipeline: shared.cover_base_shader,
             stats: Stats {
-                commands: 0,
                 stencil_batches: 0,
                 cover_batches: 0,
                 vertices: 0,
             },
             tolerance: 0.25,
+            parallel: false,
             shared,
         }
     }
@@ -248,6 +261,7 @@ impl StencilAndCoverRenderer {
             BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
             &mut || BatchInfo {
                 draws: 0..0,
+                worker_index: None,
                 pattern_shader: pattern.shader,
                 pattern_bindings: pattern.bindings,
                 stencil_mode,
@@ -264,12 +278,11 @@ impl StencilAndCoverRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
         if self.batches.is_empty() {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -290,14 +303,13 @@ impl StencilAndCoverRenderer {
         self.stencil_indices = Some(stencil_idx_stream);
         self.cover_indices = Some(cover_idx_stream);
 
-        let mut batches = self.batches.take();
         let id = self.renderer_id;
-        for batch_id in pass
+        for batch_id in ctx.pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
         {
-            let (commands, surface, batch_info) = batches.get_mut(batch_id.index);
+            let (commands, surface, batch_info) = self.batches.get_mut(batch_id.index);
 
             let draws_start = self.draws.len();
 
@@ -305,14 +317,17 @@ impl StencilAndCoverRenderer {
             let cover_idx_start = cover.indices.pushed_bytes() / 4;
 
             for fill in commands.iter() {
-                self.prepare_fill(transforms, fill, &mut stencil, &mut cover);
+                Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, self.tolerance);
             }
 
             let stencil_idx_end = stencil.indices.pushed_bytes() / 4;
             let cover_idx_end = cover.indices.pushed_bytes() / 4;
 
             if stencil_idx_end > stencil_idx_start {
-                self.draws.push(Draw::Stencil { indices: stencil_idx_start..stencil_idx_end });
+                self.draws.push(Draw::Stencil {
+                    stream_id: None,
+                    indices: stencil_idx_start..stencil_idx_end,
+                });
                 self.stats.stencil_batches += 1;
             }
 
@@ -322,6 +337,7 @@ impl StencilAndCoverRenderer {
                 let pipeline_idx =
                     shaders.prepare(RenderPipelineKey::new(self.cover_pipeline, batch_info.pattern_shader, batch_info.blend_mode, surface));
                 self.draws.push(Draw::Cover {
+                    stream_id: None,
                     indices: cover_idx_start..cover_idx_end,
                     pattern_inputs: batch_info.pattern_bindings,
                     pipeline_idx,
@@ -333,11 +349,118 @@ impl StencilAndCoverRenderer {
             batch_info.draws = draws_start..draws_end;
         }
 
-        self.batches = batches;
         self.stats.vertices = self.stats.vertices.max(stencil.vertices.pushed_items());
     }
 
-    fn prepare_fill(&mut self, transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry) {
+    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
+        if self.batches.is_empty() {
+            return;
+        }
+
+        struct StencilWorkerData {
+            draws: Vec<Draw>,
+            stats: Stats,
+        }
+
+        let mut worker_data = Vec::new();
+        let num_workers = prep_ctx.workers.num_workers();
+        for _ in 0..num_workers {
+            let mut draws = self.parallel_draws.pop().unwrap_or_else(|| {
+                Vec::with_capacity(64)
+            });
+            draws.clear();
+            worker_data.push(StencilWorkerData {
+                draws,
+                stats: Stats::default(),
+            });
+        }
+
+        unsafe {
+            self.batches.par_iter_mut(
+                &mut prep_ctx.workers.with_data(&mut worker_data),
+                prep_ctx.pass,
+                self.renderer_id,
+                &|workers, _batch, commands, surface, batch_info| {
+                    let transforms = &prep_ctx.transforms;
+                    let num_stencil_indices;
+                    let num_cover_indices;
+                    let num_stencil_vertices;
+                    let stencil_stream;
+                    let cover_stream;
+                    {
+                        let indices = &workers.const_data().0.indices;
+                        let vertices = &workers.const_data().0.vertices;
+
+                        stencil_stream = indices.next_stream_id();
+                        cover_stream = indices.next_stream_id();
+
+                        let mut stencil = Geometry {
+                            indices: indices.write(stencil_stream, 0),
+                            vertices: vertices.write_items::<StencilVertex>(),
+                        };
+                        let mut cover = Geometry {
+                            indices: indices.write(cover_stream, 0),
+                            vertices: vertices.write_items::<CoverVertex>(),
+                        };
+
+                        for fill in commands.iter() {
+                            Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, self.tolerance);
+                        }
+
+                        num_stencil_indices = stencil.indices.pushed_items::<u32>();
+                        num_cover_indices = cover.indices.pushed_items::<u32>();
+                        num_stencil_vertices = stencil.vertices.pushed_items();
+                    }
+
+                    let worker_idx = workers.index() as u8;
+                    let (worker_data, stencil_data) = &mut workers.data();
+                    let draws = &mut stencil_data.draws;
+                    let stats = &mut stencil_data.stats;
+
+                    stats.vertices += num_stencil_vertices;
+
+                    let draws_start = draws.len();
+
+                    if num_stencil_indices > 0 {
+                        draws.push(Draw::Stencil {
+                            stream_id: Some(stencil_stream),
+                            indices: 0..num_stencil_indices,
+                        });
+                        stats.stencil_batches += 1;
+                    }
+
+                    if num_cover_indices > 0 {
+                        let surface = surface.draw_config(true, None).with_stencil(batch_info.stencil_mode);
+                        let pipeline_idx = worker_data.pipelines.prepare(RenderPipelineKey::new(
+                            self.cover_pipeline,
+                            batch_info.pattern_shader,
+                            batch_info.blend_mode,
+                            surface
+                        ));
+
+                        draws.push(Draw::Cover {
+                            stream_id: Some(cover_stream),
+                            indices: 0..num_cover_indices,
+                            pattern_inputs: batch_info.pattern_bindings,
+                            pipeline_idx,
+                        });
+                        stats.cover_batches += 1;
+                    }
+
+                    let draws_end = draws.len();
+                    batch_info.draws = draws_start..draws_end;
+                    batch_info.worker_index = Some(worker_idx);
+                }
+            );
+        }
+        self.parallel_draws.clear();
+        for wd in worker_data {
+            self.parallel_draws.push(wd.draws);
+            self.stats += wd.stats;
+        }
+    }
+
+    fn prepare_fill(transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry, tolerance: f32) {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
@@ -348,7 +471,7 @@ impl StencilAndCoverRenderer {
                 generate_stencil_geometry(
                     shape.path.as_slice(),
                     transform.matrix(),
-                    self.tolerance,
+                    tolerance,
                     &transformed_aabb,
                     stencil,
                 );
@@ -368,7 +491,7 @@ impl StencilAndCoverRenderer {
                         .tessellate_circle(
                             t.transform_point(circle.center).cast_unit(),
                             circle.radius * t.scale.x,
-                            &FillOptions::tolerance(self.tolerance),
+                            &FillOptions::tolerance(tolerance),
                             &mut GeomBuilder {
                                 vertices: &mut cover.vertices,
                                 indices: &mut cover.indices,
@@ -553,7 +676,12 @@ fn generate_cover_geometry(
 
 impl core::Renderer for StencilAndCoverRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+        // TODO: measure and adjust the batch count threshold.
+        if self.parallel && self.batches.batch_count() > 16 {
+            self.prepare_parallel(ctx);
+        } else {
+            self.prepare_single_thread(ctx);
+        }
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
@@ -564,11 +692,8 @@ impl core::Renderer for StencilAndCoverRenderer {
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
 
-        let Some(stencil_idx_buffer) = ctx.resources.common.indices.resolve_buffer_slice(self.stencil_indices)
-            else { return; };
-
-        let Some(cover_idx_buffer) = ctx.resources.common.indices.resolve_buffer_slice(self.cover_indices)
-            else { return; };
+        let stencil_idx_buffer = ctx.resources.common.indices.resolve_buffer_slice(self.stencil_indices);
+        let cover_idx_buffer = ctx.resources.common.indices.resolve_buffer_slice(self.cover_indices);
 
         let mut helper = DrawHelper::new();
 
@@ -582,31 +707,42 @@ impl core::Renderer for StencilAndCoverRenderer {
         for batch_id in batches {
             let (_, _, batch) = self.batches.get(batch_id.index);
 
-            for draw in &self.draws[batch.draws.clone()] {
+            let draws = if let Some(worker_idx) = batch.worker_index {
+                self.parallel_draws[worker_idx as usize].as_slice()
+            } else {
+                self.draws.as_slice()
+            };
+
+            for draw in &draws[batch.draws.clone()] {
                 match draw {
-                    Draw::Stencil { indices } => {
-                        // Stencil
+                    &Draw::Stencil { stream_id, ref indices } => {
+                        let idx_buffer = stencil_idx_buffer.or_else(||{
+                            ctx.resources.common.indices.resolve_buffer_slice(stream_id)
+                        }).unwrap();
                         let pipeline = if surface_info.msaa {
                             &self.shared.msaa_stencil_pipeline
                         } else {
                             &self.shared.stencil_pipeline
                         };
-                        render_pass.set_index_buffer(stencil_idx_buffer, wgpu::IndexFormat::Uint32);
+                        render_pass.set_index_buffer(idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                         ctx.stats.draw_calls += 1;
                     }
                     &Draw::Cover {
+                        stream_id,
                         ref indices,
                         pattern_inputs,
                         pipeline_idx,
                     } => {
-                        // Cover
+                        let idx_buffer = cover_idx_buffer.or_else(||{
+                            ctx.resources.common.indices.resolve_buffer_slice(stream_id)
+                        }).unwrap();
                         let pipeline = ctx.render_pipelines.get(pipeline_idx).unwrap();
 
                         helper.resolve_and_bind(1, pattern_inputs, ctx.bindings, render_pass);
 
-                        render_pass.set_index_buffer(cover_idx_buffer, wgpu::IndexFormat::Uint32);
+                        render_pass.set_index_buffer(idx_buffer, wgpu::IndexFormat::Uint32);
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                         ctx.stats.draw_calls += 1;

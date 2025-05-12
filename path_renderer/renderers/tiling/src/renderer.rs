@@ -252,11 +252,10 @@ impl TileRenderer {
         let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
         let path_store = self.resources.paths.begin_frame(prep_ctx.staging_buffers.clone());
 
-        let counter = std::sync::atomic::AtomicI32::new(0);
-
         let size = prep_ctx.pass.surface_size();
-        let mut worker_data = Vec::new();
-        for _ in 0..prep_ctx.workers.num_workers() {
+        let num_workers = prep_ctx.workers.num_workers();
+        let mut worker_data = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
             let mut tiler = Tiler::new();
             tiler.begin_target(SurfaceIntRect::from_size(size));
 
@@ -292,7 +291,6 @@ impl TileRenderer {
 
                         let sort_key = fills[0].z_index;
 
-                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         for fill in fills {
                             Self::prepare_fill_impl(
                                 &mut tiler_data.tiler,

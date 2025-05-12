@@ -371,6 +371,7 @@ impl App {
         renderers.tiling.tolerance = tolerance;
         renderers.tiling.parallel = parallel;
         renderers.stencil.tolerance = tolerance;
+        renderers.stencil.parallel = parallel;
         renderers.meshes.tolerance = tolerance;
         renderers.msaa_strokes.tolerance = tolerance;
 
