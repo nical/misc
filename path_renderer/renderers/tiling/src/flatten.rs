@@ -635,7 +635,6 @@ unsafe fn flattening_params_simd4(
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx"))]
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "fma"))]
 pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f32, cb: &mut dyn FnMut(&LineSegment<f32>)) {
-
     let quads_tolerance = tolerance * 0.1;
     let flatten_tolerance = tolerance * 0.9;
     let sqrt_flatten_tolerance = flatten_tolerance.sqrt();
@@ -698,7 +697,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
                 let div_inv_integral_diff = splat(params.div_inv_integral_diff);
                 let v_scaled_count_sum = splat(scaled_count_sum);
 
-                let v_i = add(splat(i as f32), vec4(0.0, 1.0, 2.0, 3.0));
+                let mut v_i = add(splat(i as f32), vec4(0.0, 1.0, 2.0, 3.0));
 
                 while i < n {
                     let targets = mul(v_i, v_step);
@@ -722,6 +721,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment<f32>, tolerance: f3
                             break;
                         }
                     }
+                    v_i = add(v_i, splat(4.0));
                 }
             }
             scaled_count_sum += params.scaled_count;

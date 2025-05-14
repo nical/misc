@@ -389,7 +389,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment, tolerance: f32, cb
                 let div_inv_integral_diff = splat(params.div_inv_integral_diff);
                 let v_scaled_count_sum = splat(scaled_count_sum);
 
-                let v_i = add(splat(i as f32), vec4(0.0, 1.0, 2.0, 3.0));
+                let mut v_i = add(splat(i as f32), vec4(0.0, 1.0, 2.0, 3.0));
 
                 while i < n {
                     let targets = mul(v_i, v_step);
@@ -413,6 +413,7 @@ pub unsafe fn flatten_cubic_simd4(curve: &CubicBezierSegment, tolerance: f32, cb
                             break;
                         }
                     }
+                    v_i = add(v_i, splat(4.0));
                 }
             }
             scaled_count_sum += params.scaled_count;
