@@ -50,7 +50,7 @@ pub fn load_svg(
     let view_box = rtree.view_box;
     for node in rtree.root.descendants() {
         use usvg::NodeExt;
-        let t = node.transform();
+        let t = node.abs_transform();
         let transform = Transform2D::new(
             t.sx as f32, t.kx as f32, t.ky as f32, t.sy as f32, t.tx as f32, t.ty as f32,
         );
