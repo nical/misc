@@ -343,7 +343,6 @@ impl FlattenerLevien {
     }
 
     pub fn set_quadratic(&mut self, curve: &QuadraticBezierSegment<f32>) {
-        // TODO
         self.curve.from = curve.from;
         self.curve.ctrl1 = curve.ctrl;
         self.curve.to = curve.to;
@@ -366,17 +365,18 @@ impl FlattenerLevien {
     }
 
     pub fn flatten_line(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.ty == CurveType::Line {
-            //println!("flatten line");
-            self.ty = CurveType::None;
-            output.push(self.curve.to);
-        }
+        debug_assert_eq!(self.ty, CurveType::Line);
+        self.ty = CurveType::None;
+        output.push(self.curve.to);
         return false;
     }
 
     pub fn flatten_cubic(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.ty != CurveType::Cubic {
-            return false;
+        debug_assert_eq!(self.ty, CurveType::Cubic);
+        let dx = (self.curve.to.x - self.curve.from.x).abs();
+        let dy = (self.curve.to.y - self.curve.from.y).abs();
+        if dx + dy < 64.0 * self.tolerance {
+            return self.flatten_cubic_linear(output);
         }
 
         unsafe {
@@ -389,15 +389,21 @@ impl FlattenerLevien {
     }
 
     pub fn flatten_quadratic(&mut self, output: &mut Vec<Point>) -> bool {
-        if self.ty != CurveType::Quadratic {
-            return false;
-        }
+        debug_assert_eq!(self.ty, CurveType::Quadratic);
 
         let quad = QuadraticBezierSegment {
             from: self.curve.from,
             ctrl: self.curve.ctrl1,
             to: self.curve.to,
         };
+
+        let dx = (quad.to.x - quad.from.x).abs();
+        let dy = (quad.to.y - quad.from.y).abs();
+        if dx + dy < 64.0 * self.tolerance {
+            flatten_quadratic_linear(&quad, self.tolerance, output);
+            return false;
+        }
+
         unsafe {
             flatten_quadratic_simd4(&quad, self.tolerance, &mut|s| {
                 output.push(s.to);
@@ -406,6 +412,82 @@ impl FlattenerLevien {
 
         return false;
     }
+
+    pub fn flatten_cubic_linear(&mut self, output: &mut Vec<Point>) -> bool {
+        let mut rem = self.curve;
+        let mut split = 0.5;
+        let sq_tolerance = self.tolerance * self.tolerance;
+
+        let mut cap = output.capacity() - output.len();
+        loop {
+            if cap == 0 {
+                return true;
+            }
+
+            if is_linear(&rem, sq_tolerance) {
+                output.push(rem.to);
+                self.ty = CurveType::None;
+                return false;
+            }
+
+            loop {
+                let sub = rem.before_split(split);
+                if is_linear(&sub, sq_tolerance) {
+                    let t1 = self.t0 + (1.0 - self.t0) * split;
+                    output.push(sub.to);
+                    cap -= 1;
+                    self.t0 = t1;
+                    rem = rem.after_split(split);
+                    let next_split = split * 2.0;
+                    if next_split < 1.0 {
+                        split = next_split;
+                    }
+                    break;
+                }
+                split *= 0.5;
+            }
+        }
+    }
+}
+
+pub fn flatten_quadratic_linear(curve: &QuadraticBezierSegment<f32>, tolerance: f32, output: &mut Vec<Point>) {
+    let mut rem = *curve;
+    let mut from = rem.from;
+
+    let mut split = 0.5;
+    loop {
+        if split >= 0.25 && quadratic_is_flat(&rem, tolerance) {
+            output.push(rem.to);
+            return;
+        }
+
+        loop {
+            let sub = rem.before_split(split);
+            if quadratic_is_flat(&sub, tolerance) {
+                output.push(sub.to);
+                from = sub.to;
+                rem = rem.after_split(split);
+                let next_split = split * 2.0;
+                if next_split < 1.0 {
+                    split = next_split;
+                }
+                break;
+            }
+            split *= 0.5;
+        }
+    }
+}
+
+#[inline]
+pub fn quadratic_is_flat(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> bool {
+    let baseline = curve.to - curve.from;
+    let v = curve.ctrl - curve.from;
+    let c = baseline.cross(v);
+
+    let baseline_len2 = baseline.square_length();
+    let threshold = baseline_len2 * tolerance * tolerance;
+
+    c * c * 0.25 <= threshold
 }
 
 #[inline(never)]
