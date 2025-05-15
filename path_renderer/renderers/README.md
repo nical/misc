@@ -117,3 +117,82 @@ impl Renderer for MyRenderer {
     // ...
 }
 ```
+
+## Multi-threading
+
+The core crate provides affordances for running the prepare pass in parallel:
+
+### Worker Data
+
+See [`worker.rs`](../core/src/worker.rs).
+
+```rust
+let num_workers = ctx.workers.num_workers();
+let mut worker_data = Vec::with_capacity(num_workers);
+for _ in 0..num_workers {
+    worker_data.push(MyWorkerData {
+        // put some per-worker state here
+    });
+}
+
+let workers = ctx.workers.with_data(&mut worker_data);
+workers.slice_for_each(&items[..], &mut |workers, sub_slice, _| {
+    // This runs in parallel.
+    // core_data contains common per-worker state that is useful to most
+    // renderers such as buffers to store vertices, indices, etc.
+    // my_data contains one of the `MyWorkerData` we pushed above, each
+    // worker thread gets exclusive access to one.
+    let (core_data, my_data) = worker.data();
+    for item in sub_slice {
+        // do some work.
+    }
+});
+
+// ...
+
+// back to the single-thread path, we can extract the contents of
+// worker_data if needed.
+
+for data in worker_data {
+    // ...
+}
+```
+
+### GPU Data
+
+The data to send to the gpu each frame is typically generated in the prepare phase. Doing it in parallel can be challenging because parallelism prevents us from guaranteeing the order in which items are processed, while the ordering and location of the data in the GPU buffers and textures matters.
+
+`GpuStreams` and `GpuStore` provides efficient ways to make this work in parallel (as well as on a single thread) without extra copies. Internally they leverage the fact that data is written into (out of order) into staging buffers, but only the order and offset in the desitnation (host-side) buffers matters, so gpu copies from staging buffers to destination buffers are produced such that final data is arranged in the desired way regardless of the order in which it was produced.
+
+```rust
+
+idx_stream = workers.data().0.indices.next_stream_id();
+
+workers.slice_for_each(&items[..], &mut |workers, sub_slice, _| {
+    let (common, my_data) = workers.data();
+    let indices = &common.indices;
+    let vertices = &common.vertices;
+
+    // idx_writer is a `GpuStreamWriter`. We don't know as we are pushing
+    // into it where the contents will land, but we have the guarantee that
+    // all data pushed into writers associated with the same id (idx_stream)
+    // will be contiguous in the destination buffer and ordered according to
+    // the provided sort key (hence the use of the z-index as the sort sort
+    // key here).
+    let sort_key = items[0].z_index;
+    let mut idx_writer = indices.write(idx_stream, sort_key)
+
+    // vtx_writer is a `GpuStoreWriter`. Consecutive pushes aren't guaranteed
+    // to be contiguous in the destination, however we know their destination
+    // offset as soon as the push happens.
+    let mut vtx_writer = vertices.write_items::<MyVertex>(),
+
+    // Send a triangle to the GPU.
+    let a = vtx_writer.push(MyVertex { /* ... */ });
+    let b = vtx_writer.push(MyVertex { /* ... */ });
+    let c = vtx_writer.push(MyVertex { /* ... */ });
+    idx_writer.push(a.to_u32());
+    idx_writer.push(b.to_u32());
+    idx_writer.push(c.to_u32());
+}
+```
