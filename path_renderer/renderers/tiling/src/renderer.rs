@@ -3,7 +3,7 @@ use core::context::{
     DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex,
 };
 use core::gpu::shader::{
-    BaseShaderId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
+    GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
 use core::gpu::{GpuStore, StreamId, TransferOps, UploadStats};
 use core::pattern::BuiltPattern;
@@ -64,7 +64,7 @@ pub struct TileRenderer {
     pub(crate) tiler: Tiler,
 
     pub(crate) batches: BatchList<Fill, BatchInfo>,
-    pub(crate) base_shader: BaseShaderId,
+    pub(crate) geometry: GeometryId,
     pub(crate) mask_instances: Option<StreamId>,
     pub(crate) opaque_instances: Option<StreamId>,
 
@@ -316,7 +316,7 @@ impl TileRenderer {
                             stream_id: Some(opaque_stream),
                             tiles: 0..opaque_tile_count,
                             pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
-                                self.base_shader,
+                                self.geometry,
                                 info.pattern.shader,
                                 BlendMode::None,
                                 draw_config,
@@ -330,7 +330,7 @@ impl TileRenderer {
                             stream_id: Some(masked_stream),
                             tiles: 0..mask_tile_count,
                             pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
-                                self.base_shader,
+                                self.geometry,
                                 info.pattern.shader,
                                 info.blend_mode.with_alpha(true),
                                 draw_config,
@@ -393,7 +393,7 @@ impl TileRenderer {
                 stream_id: None,
                 tiles: opaque_tiles_start..opaque_tiles_end,
                 pipeline: shaders.prepare(RenderPipelineKey::new(
-                    self.base_shader,
+                    self.geometry,
                     info.pattern.shader,
                     BlendMode::None,
                     draw_config,
@@ -412,7 +412,7 @@ impl TileRenderer {
                 stream_id: None,
                 tiles: mask_tiles_start..mask_tiles_end,
                 pipeline: shaders.prepare(RenderPipelineKey::new(
-                    self.base_shader,
+                    self.geometry,
                     info.pattern.shader,
                     info.blend_mode.with_alpha(true),
                     draw_config,

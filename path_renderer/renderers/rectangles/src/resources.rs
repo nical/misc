@@ -2,11 +2,11 @@ use core::batching::RendererId;
 use core::bitflags::bitflags;
 use core::bytemuck;
 use core::gpu::PipelineDefaults;
-use core::gpu::shader::BaseShaderId;
+use core::gpu::shader::GeometryId;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BaseShaderDescriptor,
+        GeometryDescriptor,
         Shaders, Varying, VertexAtribute,
     },
     units::LocalRect,
@@ -43,31 +43,31 @@ unsafe impl bytemuck::Zeroable for Instance {}
 unsafe impl bytemuck::Pod for Instance {}
 
 #[derive(Clone)]
-pub(crate) struct Pipelines {
-    pub opaque_pipeline: BaseShaderId,
-    pub alpha_pipeline: BaseShaderId,
-    pub opaque_pipeline_no_aa: BaseShaderId,
-    pub alpha_pipeline_no_aa: BaseShaderId,
+pub(crate) struct Geometryes {
+    pub opaque: GeometryId,
+    pub alpha: GeometryId,
+    pub opaque_no_aa: GeometryId,
+    pub alpha_no_aa: GeometryId,
 }
 
-impl Pipelines {
-    pub fn get(&self, opaque: bool, edge_aa: bool) -> BaseShaderId {
+impl Geometryes {
+    pub fn get(&self, opaque: bool, edge_aa: bool) -> GeometryId {
         match (opaque, edge_aa) {
-            (true, true) => self.opaque_pipeline,
-            (false, true) => self.alpha_pipeline,
-            (true, false) => self.opaque_pipeline_no_aa,
-            (false, false) => self.alpha_pipeline_no_aa,
+            (true, true) => self.opaque,
+            (false, true) => self.alpha,
+            (true, false) => self.opaque_no_aa,
+            (false, false) => self.alpha_no_aa,
         }
     }
 }
 
 pub struct Rectangles {
-    pub(crate) pipelines: Pipelines,
+    pub(crate) geometryes: Geometryes,
 }
 
 impl Rectangles {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let base_descriptor = BaseShaderDescriptor {
+        let geometry_descriptor = GeometryDescriptor {
             name: "geometry::rectangle".into(),
             source: RECTANGLE_SRC.into(),
             vertex_attributes: Vec::new(),
@@ -85,37 +85,37 @@ impl Rectangles {
             constants: Vec::new(),
         };
 
-        let alpha_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
+        let alpha = shaders.register_geometry(GeometryDescriptor {
             shader_defines: vec!["ALPHA_PASS", "EDGE_AA"],
-            ..base_descriptor.clone()
+            ..geometry_descriptor.clone()
         });
 
-        let opaque_pipeline = shaders.register_base_shader(BaseShaderDescriptor {
+        let opaque = shaders.register_geometry(GeometryDescriptor {
             shader_defines: vec!["EDGE_AA"],
-            ..base_descriptor.clone()
+            ..geometry_descriptor.clone()
         });
 
-        let alpha_pipeline_no_aa = shaders.register_base_shader(BaseShaderDescriptor {
+        let alpha_no_aa = shaders.register_geometry(GeometryDescriptor {
             shader_defines: vec!["ALPHA_PASS"],
-            ..base_descriptor.clone()
+            ..geometry_descriptor.clone()
         });
 
-        let opaque_pipeline_no_aa = shaders.register_base_shader(BaseShaderDescriptor {
-            ..base_descriptor.clone()
+        let opaque_no_aa = shaders.register_geometry(GeometryDescriptor {
+            ..geometry_descriptor.clone()
         });
 
         Rectangles {
-            pipelines: Pipelines {
-                opaque_pipeline,
-                alpha_pipeline,
-                opaque_pipeline_no_aa,
-                alpha_pipeline_no_aa,
+            geometryes: Geometryes {
+                opaque,
+                alpha,
+                opaque_no_aa,
+                alpha_no_aa,
             },
         }
     }
 
     pub fn new_renderer(&self, id: RendererId) -> RectangleRenderer {
-        RectangleRenderer::new(id, self.pipelines.clone())
+        RectangleRenderer::new(id, self.geometryes.clone())
     }
 }
 
@@ -162,7 +162,7 @@ fn fetch_transform(address: u32) -> mat3x2<f32> {
     );
 }
 
-fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> BaseVertex {
+fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> GeometryVertex {
 
     let transform_id = transform_flags & 0xFFFFFu;
     let flags = transform_flags & 0xFFF00000u;
@@ -222,7 +222,7 @@ fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, m
         1.0,
     );
 
-    return BaseVertex(
+    return GeometryVertex(
         position,
         local_position,
         pattern,
@@ -230,7 +230,7 @@ fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, m
     );
 }
 
-fn base_fragment(aa_distances: vec4<f32>) -> f32 {
+fn geometry_fragment(aa_distances: vec4<f32>) -> f32 {
     var aa = 1.0;
     #if EDGE_AA {
         #if ALPHA_PASS {

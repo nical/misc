@@ -2,7 +2,7 @@ use core::{bytemuck, usize_range, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig};
 use core::gpu::GpuStoreWriter;
-use core::gpu::shader::{BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
+use core::gpu::shader::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
@@ -65,13 +65,13 @@ pub struct WpfMeshRenderer {
 
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
-    base_shader: BaseShaderId,
+    geometry: GeometryId,
 }
 
 impl WpfMeshRenderer {
     pub(crate) fn new(
         renderer_id: RendererId,
-        base_shader: BaseShaderId,
+        geometry: GeometryId,
     ) -> Self {
         WpfMeshRenderer {
             renderer_id,
@@ -79,7 +79,7 @@ impl WpfMeshRenderer {
 
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            base_shader,
+            geometry,
         }
     }
 
@@ -169,7 +169,7 @@ impl WpfMeshRenderer {
                             vertices: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.base_shader,
+                                self.geometry,
                                 key.0,
                                 info.blend_mode,
                                 surface.draw_config(false, None),
@@ -188,7 +188,7 @@ impl WpfMeshRenderer {
                     vertices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
+                        self.geometry,
                         key.0,
                         info.blend_mode,
                         surface.draw_config(false, None),

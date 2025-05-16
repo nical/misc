@@ -2,14 +2,14 @@ use core::batching::RendererId;
 use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::gpu::shader::{
-    BaseShaderDescriptor, BindGroupLayout, Binding, BindGroupLayoutId,
-    BaseShaderId, Shaders, VertexAtribute,
+    GeometryDescriptor, BindGroupLayout, Binding, BindGroupLayoutId,
+    GeometryId, Shaders, VertexAtribute,
 };
 
 use crate::{MsaaStrokeRenderer, PathData};
 
 pub struct MsaaStroke {
-    base_shader: BaseShaderId,
+    geometry: GeometryId,
     geom_bind_group_layout: BindGroupLayoutId,
 }
 
@@ -32,8 +32,8 @@ impl MsaaStroke {
             ]
         ));
 
-        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
-            name: "geometry::skeletal_stroke_curves".into(),
+        let geometry = shaders.register_geometry(GeometryDescriptor {
+            name: "geometry::skeletal_stroke".into(),
             source: SHADER_SRC.into(),
             vertex_attributes: Vec::new(),
             instance_attributes: vec![
@@ -56,7 +56,7 @@ impl MsaaStroke {
         });
 
         MsaaStroke {
-            base_shader,
+            geometry,
             geom_bind_group_layout: bgl,
         }
     }
@@ -65,7 +65,7 @@ impl MsaaStroke {
         MsaaStrokeRenderer::new(
             device,
             id,
-            self.base_shader,
+            self.geometry,
             self.geom_bind_group_layout,
         )
     }
@@ -87,7 +87,7 @@ struct PathData {
     pad2: u32,
 };
 
-fn base_vertex(
+fn geometry_vertex(
     vertex_index: u32,
     seg_from: vec2<f32>,
     seg_ctrl1: vec2<f32>,
@@ -96,7 +96,7 @@ fn base_vertex(
     prev_ctrl: vec2<f32>,
     path_index: u32,
     segment_counts: u32
-) -> BaseVertex {
+) -> GeometryVertex {
     var join_segments = segment_counts & 0xffffu;
     var curve_segments = segment_counts >> 16u;
     var side = f32(i32(vertex_index % 2u) * 2i - 1i);
@@ -155,7 +155,7 @@ fn base_vertex(
         1.0,
     );
 
-    return BaseVertex(
+    return GeometryVertex(
         position,
         canvas_position,
         path.pattern,
@@ -163,6 +163,6 @@ fn base_vertex(
     );
 }
 
-fn base_fragment() -> f32 { return 1.0; }
+fn geometry_fragment() -> f32 { return 1.0; }
 
 ";

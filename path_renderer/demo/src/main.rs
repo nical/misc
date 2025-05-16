@@ -378,7 +378,7 @@ impl App {
         //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
         if let Some(name) = print_shader {
-            let pipeline = instance.shaders.find_base_shader(&name).unwrap();
+            let pipeline = instance.shaders.find_geometry(&name).unwrap();
             let pattern = instance.shaders.find_pattern("pattern::solid_color");
             instance.shaders.print_pipeline_variant(pipeline, pattern);
             return None;

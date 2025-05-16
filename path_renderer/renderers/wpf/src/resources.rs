@@ -3,8 +3,8 @@ use core::gpu::shader::Varying;
 use core::wgpu;
 use core::{
     gpu::shader::{
-        BaseShaderDescriptor,
-        BaseShaderId, Shaders, VertexAtribute,
+        GeometryDescriptor,
+        GeometryId, Shaders, VertexAtribute,
     },
     context::RendererId,
 };
@@ -12,12 +12,12 @@ use core::{
 use crate::WpfMeshRenderer;
 
 pub struct Wpf {
-    pub base_shader: BaseShaderId,
+    pub geometry: GeometryId,
 }
 
 impl Wpf {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let wpf_mesh_base = shaders.register_base_shader(BaseShaderDescriptor {
+        let wpf_mesh_base = shaders.register_geometry(GeometryDescriptor {
             name: "geometry::wpf_mesh".into(),
             source: WPF_MESH_SRC.into(),
             vertex_attributes: vec![
@@ -36,19 +36,19 @@ impl Wpf {
         });
 
         Wpf {
-            base_shader: wpf_mesh_base,
+            geometry: wpf_mesh_base,
         }
     }
 
     pub fn new_renderer(&self, id: RendererId) -> WpfMeshRenderer {
-        WpfMeshRenderer::new(id, self.base_shader)
+        WpfMeshRenderer::new(id, self.geometry)
     }
 }
 
 const WPF_MESH_SRC: &'static str = "
 #import render_target
 
-fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pattern_data: u32) -> BaseVertex {
+fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pattern_data: u32) -> GeometryVertex {
     var target_position = canvas_to_target(canvas_position);
 
     var position = vec4<f32>(
@@ -58,7 +58,7 @@ fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pat
         1.0,
     );
 
-    return BaseVertex(
+    return GeometryVertex(
         position,
         canvas_position,
         pattern_data,
@@ -66,5 +66,5 @@ fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, coverage: f32, pat
     );
 }
 
-fn base_fragment(coverage: f32) -> f32 { return coverage; }
+fn geometry_fragment(coverage: f32) -> f32 { return coverage; }
 ";

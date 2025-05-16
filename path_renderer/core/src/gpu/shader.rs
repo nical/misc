@@ -37,11 +37,11 @@ impl ShaderPatternId {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BaseShaderId(u16);
-impl BaseShaderId {
+pub struct GeometryId(u16);
+impl GeometryId {
     pub fn from_index(idx: usize) -> Self {
         debug_assert!(idx < (u16::MAX - 1) as usize);
-        BaseShaderId(idx as u16)
+        GeometryId(idx as u16)
     }
     pub fn index(self) -> usize {
         self.0 as usize
@@ -152,22 +152,22 @@ fn init_common_layouts(layouts: &mut Vec<BindGroupLayout>, device: &wgpu::Device
 /// pipeliens directly. However, `Shaders` provides a very convenient way to
 /// decouple renderers from patterns.
 ///
-/// A generated render pipeline is composed of:
-/// - A base shader (for example: tiling shader, rectangle, shader, etc.).
-/// - A pattern (for example: Solid color, gradient).
+/// A generated render pipeline is described by:
+/// - A geometry (for example: tiling, mesh, rectangle, etc.).
+/// - A pattern (for example: solid color, gradient, etc.).
 /// - A blend mode.
-/// - A surface configuration which defines the output surface format and
+/// - A surface configuration which defines the output surface format,
 ///   msaa, depth and stencil parameters.
 ///
 /// See also `RenderPipelineKey`.
 ///
-/// This allows renderers to register base shaders that automatically work with
+/// This allows renderers to register geometries that automatically work with
 /// various patterns, surface configurations and blend modes without extra work.
 pub struct Shaders {
     sources: ShaderSources,
 
     patterns: Vec<PatternDescriptor>,
-    base_shaders: Vec<BaseShaderDescriptor>,
+    geometries: Vec<GeometryDescriptor>,
     module_cache: HashMap<ModuleKey, wgpu::ShaderModule>,
     bind_group_layouts: Vec<BindGroupLayout>,
     pipeline_layouts: HashMap<u64, wgpu::PipelineLayout>,
@@ -184,7 +184,7 @@ impl Shaders {
             sources: ShaderSources::new(),
 
             patterns: Vec::new(),
-            base_shaders: Vec::new(),
+            geometries: Vec::new(),
             module_cache: HashMap::new(),
             bind_group_layouts,
             pipeline_layouts: HashMap::new(),
@@ -293,40 +293,40 @@ impl Shaders {
         id
     }
 
-    /// Register a base shader
+    /// Register a geometry
     ///
-    /// The base shader source must contain the following two functions:
+    /// The source must contain the following two functions:
     /// ```wgsl
-    /// fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> BaseVertex
-    /// fn base_fragment(/*varyings...*/) -> f32 {
+    /// fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> GeometryVertex
+    /// fn geometry_fragment(/*varyings...*/) -> f32 {
     /// ```
     ///
-    /// The `BaseVertex` struct is generated based on the list of `Varying`s provided in
-    /// the `BaseShaderDescriptor` and three mandatory members.
-    /// The first three members of `BaseVertex` are always:
+    /// The `GeometryVertex` struct is generated based on the list of `Varying`s provided in
+    /// the `GeometryDescriptor` and three mandatory members.
+    /// The first three members of `GeometryVertex` are always:
     /// - `position: vec2f`: the device-space position of the vertex.
     /// - `local_position: vec2f`:  the position in local space of the vertex, affecting
     ///   how the pattern is rendered.
     /// - `pattern: u32`: The pattern id provided as input.
     /// Then, the varying parameters in the same order as in the varying list.
     ///
-    /// The parameters of the `base_fragment` are the varyings provided in the
-    /// `BaseShaderDescriptor`.
-    pub fn register_base_shader(&mut self, base: BaseShaderDescriptor) -> BaseShaderId {
+    /// The parameters of the `geometry_fragment` are the varyings provided in the
+    /// `GeometryDescriptor`.
+    pub fn register_geometry(&mut self, geometry: GeometryDescriptor) -> GeometryId {
         self.sources
             .source_library
-            .insert(base.name.clone().into(), base.source.clone());
-        let id = BaseShaderId::from_index(self.base_shaders.len());
-        self.base_shaders.push(base);
+            .insert(geometry.name.clone().into(), geometry.source.clone());
+        let id = GeometryId::from_index(self.geometries.len());
+        self.geometries.push(geometry);
 
         id
     }
 
-    /// Look up a base shader id by name.
-    pub fn find_base_shader(&self, name: &str) -> Option<BaseShaderId> {
-        for (idx, pat) in self.base_shaders.iter().enumerate() {
+    /// Look up a geometry id by name.
+    pub fn find_geometry(&self, name: &str) -> Option<GeometryId> {
+        for (idx, pat) in self.geometries.iter().enumerate() {
             if &*pat.name == name {
-                return Some(BaseShaderId::from_index(idx));
+                return Some(GeometryId::from_index(idx));
             }
         }
 
@@ -348,7 +348,7 @@ impl Shaders {
         self.patterns.len()
     }
 
-    /// Create a `wgpu::ShaderModule` directly without using the base shader/pattern
+    /// Create a `wgpu::ShaderModule` directly without using the geometry/pattern
     /// infrastructure.
     ///
     /// The difference with creating a module directly from the `wgpu::Device` is that
@@ -367,14 +367,14 @@ impl Shaders {
 
     fn generate_pipeline_variant_src(
         &mut self,
-        pipeline_id: BaseShaderId,
+        pipeline_id: GeometryId,
         pattern_id: ShaderPatternId,
     ) -> String {
-        let base = &self.base_shaders[pipeline_id.index()];
+        let geometry = &self.geometries[pipeline_id.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let base_bindings = &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()];
-        let geom_bindings = base
+        let geometry_bindings = geometry
             .bindings
             .map(|id| &self.bind_group_layouts[id.index()]);
         let pattern_bindings = pattern
@@ -383,15 +383,15 @@ impl Shaders {
             .map(|id| &self.bind_group_layouts[id.index()]);
 
         let src = generate_shader_source(
-            base,
+            geometry,
             pattern,
             base_bindings,
-            geom_bindings,
+            geometry_bindings,
             pattern_bindings,
         );
 
         self.sources.preprocessor.reset_defines();
-        for define in &base.shader_defines {
+        for define in &geometry.shader_defines {
             self.sources.preprocessor.define(define);
         }
 
@@ -404,37 +404,37 @@ impl Shaders {
         src
     }
 
-    /// Print to stdout the generated source for a specific combination of base shader
+    /// Print to stdout the generated source for a specific combination of geometry
     /// and pattern.
     pub fn print_pipeline_variant(
         &mut self,
-        base_shader: BaseShaderId,
+        geometry: GeometryId,
         pattern: ShaderPatternId,
     ) {
-        let src = self.generate_pipeline_variant_src(base_shader, pattern);
+        let src = self.generate_pipeline_variant_src(geometry, pattern);
         println!("{src}");
     }
 
     fn generate_pipeline_variant(
         &mut self,
         device: &wgpu::Device,
-        pipeline_id: BaseShaderId,
+        geometry_id: GeometryId,
         pattern_id: ShaderPatternId,
         blend_mode: BlendMode,
         surface: &SurfaceDrawConfig,
     ) -> wgpu::RenderPipeline {
-        let base = &self.base_shaders[pipeline_id.index()];
+        let geometry = &self.geometries[geometry_id.index()];
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let module_key = ModuleKey {
-            base: pipeline_id,
+            geometry: geometry_id,
             pattern: pattern_id,
-            defines: base.shader_defines.clone(),
+            defines: geometry.shader_defines.clone(),
         };
 
         let module = self.module_cache.entry(module_key).or_insert_with(|| {
             let base_bindings = &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()];
-            let geom_bindings = base
+            let geometry_bindings = geometry
                 .bindings
                 .map(|id| &self.bind_group_layouts[id.index()]);
             let pattern_bindings = pattern
@@ -443,10 +443,10 @@ impl Shaders {
                 .map(|id| &self.bind_group_layouts[id.index()]);
 
             let src = generate_shader_source(
-                base,
+                geometry,
                 pattern,
                 base_bindings,
-                geom_bindings,
+                geometry_bindings,
                 pattern_bindings,
             );
 
@@ -454,7 +454,7 @@ impl Shaders {
             //println!("{src}");
             //println!("----");
             self.sources.preprocessor.reset_defines();
-            for define in &base.shader_defines {
+            for define in &geometry.shader_defines {
                 self.sources.preprocessor.define(define);
             }
 
@@ -465,7 +465,7 @@ impl Shaders {
                 .unwrap();
 
             //println!("==================\n{src}\n=================");
-            let label = format!("{}|{}", base.name, pattern.map(|p| &p.name[..]).unwrap_or(""));
+            let label = format!("{}|{}", geometry.name, pattern.map(|p| &p.name[..]).unwrap_or(""));
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&label),
                 source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -475,7 +475,7 @@ impl Shaders {
         // Increment the ids by 1 so that id zero isn't equal to any id.
         let mut key = 0u64;
         let mut shift = 0;
-        if let Some(id) = base.bindings {
+        if let Some(id) = geometry.bindings {
             key |= (id.0 as u64 + 1) << shift;
             shift += 16;
         }
@@ -488,10 +488,10 @@ impl Shaders {
 
         let layout = self.pipeline_layouts.entry(key).or_insert_with(|| {
             let mut layouts = Vec::new();
-            let base_id = self.common_bind_group_layouts.target_and_gpu_store;
-            layouts.push(&self.bind_group_layouts[base_id.index()].handle);
+            let geometry_id = self.common_bind_group_layouts.target_and_gpu_store;
+            layouts.push(&self.bind_group_layouts[geometry_id.index()].handle);
 
-            if let Some(id) = base.bindings {
+            if let Some(id) = geometry.bindings {
                 layouts.push(&self.bind_group_layouts[id.index()].handle);
             }
 
@@ -594,7 +594,7 @@ impl Shaders {
 
         let label = format!(
             "{}|{}{}{}{}",
-            base.name,
+            geometry.name,
             pattern.map(|p| &p.name[..]).unwrap_or(""),
             match surface.depth {
                 DepthMode::Enabled => "|depth(enabled)",
@@ -613,19 +613,19 @@ impl Shaders {
         let mut vertices = VertexBuilder::new(wgpu::VertexStepMode::Vertex);
         let mut instances = VertexBuilder::new(wgpu::VertexStepMode::Instance);
 
-        let base = &self.base_shaders[pipeline_id.index()];
-        for vtx in &base.vertex_attributes {
+        let geometry = &self.geometries[geometry_id.index()];
+        for vtx in &geometry.vertex_attributes {
             vertices.push(vtx.to_wgpu());
         }
-        for inst in &base.instance_attributes {
+        for inst in &geometry.instance_attributes {
             instances.push(inst.to_wgpu());
         }
 
         let mut vertex_buffers = Vec::new();
-        if !base.vertex_attributes.is_empty() {
+        if !geometry.vertex_attributes.is_empty() {
             vertex_buffers.push(vertices.buffer_layout());
         }
-        if !base.instance_attributes.is_empty() {
+        if !geometry.instance_attributes.is_empty() {
             vertex_buffers.push(instances.buffer_layout());
         }
 
@@ -637,7 +637,7 @@ impl Shaders {
                 entry_point: Some("vs_main"),
                 buffers: &vertex_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: base.constants.as_slice(),
+                    constants: geometry.constants.as_slice(),
                     zero_initialize_workgroup_memory: false,
                 }
             },
@@ -646,11 +646,11 @@ impl Shaders {
                 entry_point: Some("fs_main"),
                 targets,
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: base.constants.as_slice(),
+                    constants: geometry.constants.as_slice(),
                     zero_initialize_workgroup_memory: false,
                 }
             }),
-            primitive: base.primitive,
+            primitive: geometry.primitive,
             depth_stencil,
             multiview: None,
             multisample,
@@ -1137,7 +1137,7 @@ impl BindGroupLayout {
     }
 }
 
-/// Describes a pattern for a generated render pipeline.
+/// Describes a pattern for generated render pipelines.
 pub struct PatternDescriptor {
     pub name: Cow<'static, str>,
     pub source: Source,
@@ -1145,9 +1145,9 @@ pub struct PatternDescriptor {
     pub bindings: Option<BindGroupLayoutId>,
 }
 
-/// Desribes a base shader.
+/// Desribes a geometry for generated render pipelines.
 #[derive(Clone)]
-pub struct BaseShaderDescriptor {
+pub struct GeometryDescriptor {
     pub name: Cow<'static, str>,
     pub primitive: wgpu::PrimitiveState,
     pub source: Source,
@@ -1160,7 +1160,7 @@ pub struct BaseShaderDescriptor {
 }
 
 fn generate_shader_source(
-    base: &BaseShaderDescriptor,
+    geometry: &GeometryDescriptor,
     pattern: Option<&PatternDescriptor>,
     base_bindings: &BindGroupLayout,
     geom_bindings: Option<&BindGroupLayout>,
@@ -1181,17 +1181,17 @@ fn generate_shader_source(
         bindings.generate_shader_source(group_index, &mut source);
     }
 
-    writeln!(source, "struct BaseVertex {{").unwrap();
+    writeln!(source, "struct GeometryVertex {{").unwrap();
     writeln!(source, "    position: vec4<f32>,").unwrap();
     writeln!(source, "    pattern_position: vec2<f32>,").unwrap();
     writeln!(source, "    pattern_data: u32,").unwrap();
-    for varying in &base.varyings {
+    for varying in &geometry.varyings {
         //println!("=====    {}: {},", varying.name, varying.kind.as_str());
         writeln!(source, "    {}: {},", varying.name, varying.kind.as_str()).unwrap();
     }
     writeln!(source, "}}").unwrap();
 
-    writeln!(source, "#import {}", base.name).unwrap();
+    writeln!(source, "#import {}", geometry.name).unwrap();
     writeln!(source, "").unwrap();
 
     if let Some(pattern) = pattern {
@@ -1210,7 +1210,7 @@ fn generate_shader_source(
     writeln!(source, "struct VertexOutput {{").unwrap();
     writeln!(source, "    @builtin(position) position: vec4<f32>,").unwrap();
     let mut idx = 0;
-    for varying in &base.varyings {
+    for varying in &geometry.varyings {
         let interpolate = if varying.interpolated {
             "perspective"
         } else {
@@ -1248,7 +1248,7 @@ fn generate_shader_source(
     writeln!(source, "@vertex fn vs_main(").unwrap();
     writeln!(source, "    @builtin(vertex_index) vertex_index: u32,").unwrap();
     let mut attr_location = 0;
-    for attrib in &base.vertex_attributes {
+    for attrib in &geometry.vertex_attributes {
         writeln!(
             source,
             "    @location({attr_location}) vtx_{}: {},",
@@ -1258,7 +1258,7 @@ fn generate_shader_source(
         .unwrap();
         attr_location += 1;
     }
-    for attrib in &base.instance_attributes {
+    for attrib in &geometry.instance_attributes {
         writeln!(
             source,
             "    @location({attr_location}) inst_{}: {},",
@@ -1270,12 +1270,12 @@ fn generate_shader_source(
     }
     writeln!(source, ") -> VertexOutput {{").unwrap();
 
-    writeln!(source, "    var vertex = base_vertex(").unwrap();
+    writeln!(source, "    var vertex = geometry_vertex(").unwrap();
     writeln!(source, "        vertex_index,").unwrap();
-    for attrib in &base.vertex_attributes {
+    for attrib in &geometry.vertex_attributes {
         writeln!(source, "        vtx_{},", attrib.name).unwrap();
     }
-    for attrib in &base.instance_attributes {
+    for attrib in &geometry.instance_attributes {
         writeln!(source, "        inst_{},", attrib.name).unwrap();
     }
     writeln!(source, "    );").unwrap();
@@ -1290,7 +1290,7 @@ fn generate_shader_source(
 
     writeln!(source, "    return VertexOutput(").unwrap();
     writeln!(source, "        vertex.position,").unwrap();
-    for varying in &base.varyings {
+    for varying in &geometry.varyings {
         writeln!(source, "        vertex.{},", varying.name).unwrap();
     }
     if let Some(pattern) = pattern {
@@ -1306,7 +1306,7 @@ fn generate_shader_source(
 
     writeln!(source, "@fragment fn fs_main(").unwrap();
     let mut idx = 0;
-    for varying in &base.varyings {
+    for varying in &geometry.varyings {
         let interpolate = if varying.interpolated {
             "perspective"
         } else {
@@ -1341,8 +1341,8 @@ fn generate_shader_source(
     writeln!(source, ") -> @location(0) vec4<f32> {{").unwrap();
     writeln!(source, "    var color = vec4<f32>(1.0);").unwrap();
 
-    writeln!(source, "    color.a *= base_fragment(").unwrap();
-    for varying in &base.varyings {
+    writeln!(source, "    color.a *= geometry_fragment(").unwrap();
+    for varying in &geometry.varyings {
         writeln!(source, "        geom_{},", varying.name).unwrap();
     }
     writeln!(source, "    );").unwrap();
@@ -1369,7 +1369,7 @@ fn generate_shader_source(
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ModuleKey {
-    base: BaseShaderId,
+    geometry: GeometryId,
     pattern: ShaderPatternId,
     defines: Vec<&'static str>,
 }
@@ -1546,7 +1546,7 @@ pub(crate) struct RenderPipelineBuilder<'l>(pub &'l wgpu::Device, pub &'l mut Sh
 
 impl RenderPipelineKey {
     pub fn new(
-        base: BaseShaderId,
+        base: GeometryId,
         pattern: ShaderPatternId,
         blend_mode: BlendMode,
         surf: SurfaceDrawConfig,
@@ -1559,8 +1559,8 @@ impl RenderPipelineKey {
         )
     }
 
-    pub fn unpack(&self) -> (BaseShaderId, ShaderPatternId, BlendMode, SurfaceDrawConfig) {
-        let base = BaseShaderId((self.0 >> 16) as u16);
+    pub fn unpack(&self) -> (GeometryId, ShaderPatternId, BlendMode, SurfaceDrawConfig) {
+        let base = GeometryId((self.0 >> 16) as u16);
         let pattern = ShaderPatternId((self.0 >> 32) as u16);
         let surf = SurfaceDrawConfig::from_hash(self.0 as u16);
         let blend: BlendMode = unsafe { std::mem::transmute((self.0 >> 48) as u8) };

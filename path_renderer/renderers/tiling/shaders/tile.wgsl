@@ -69,7 +69,7 @@ fn fetch_path(path_idx: u32) -> PathInfo {
     return path;
 }
 
-fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
+fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> GeometryVertex {
     var uv = rect_get_uv(vertex_index);
     var tile = decode_instance(instance_data);
 
@@ -83,7 +83,7 @@ fn base_vertex(vertex_index: u32, instance_data: vec4<u32>) -> BaseVertex {
 
     var target_position = canvas_to_target(position);
 
-    return BaseVertex(
+    return GeometryVertex(
         vec4f(target_position.x, target_position.y, path.z, 1.0),
         position,
         path.pattern_data,
@@ -166,7 +166,7 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
     return mask;
 }
 
-fn base_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
+fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opacity: f32) -> f32 {
     #if TILING_SSAA4 {
         // Note: This could be packed into a single u32.
         var wn = vec4<f32>(backdrop);

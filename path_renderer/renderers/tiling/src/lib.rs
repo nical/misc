@@ -13,7 +13,7 @@ use core::batching::RendererId;
 use core::wgpu;
 use core::units::{LocalSpace, SurfaceSpace};
 use core::gpu::{GpuStoreDescriptor, GpuStoreResources, PipelineDefaults};
-use core::gpu::shader::{Shaders, BaseShaderDescriptor, BaseShaderId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
+use core::gpu::shader::{Shaders, GeometryDescriptor, GeometryId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
 
 pub use renderer::*;
 
@@ -215,7 +215,7 @@ impl TilePosition {
 }
 
 pub struct Tiling {
-    base_shader: BaseShaderId,
+    geometry: GeometryId,
     bind_group_layout: BindGroupLayoutId,
 }
 
@@ -263,8 +263,8 @@ impl Tiling {
         let mut constants = Vec::new();
         constants.push(("TILE_SIZE", TILE_SIZE as f64));
 
-        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
-            name: "geometry::tile2".into(),
+        let geometry = shaders.register_geometry(GeometryDescriptor {
+            name: "geometry::tile".into(),
             source: include_str!("../shaders/tile.wgsl").into(),
             vertex_attributes: Vec::new(),
             instance_attributes: vec![VertexAtribute::uint32x4("instance")],
@@ -282,7 +282,7 @@ impl Tiling {
         });
 
         Tiling {
-            base_shader,
+            geometry,
             bind_group_layout,
         }
     }
@@ -324,7 +324,7 @@ impl Tiling {
             back_to_front: options.occlusion.cpu || options.occlusion.gpu,
             tiler: crate::tiler::Tiler::new(),
             batches: core::batching::BatchList::new(renderer_id),
-            base_shader: self.base_shader,
+            geometry: self.geometry,
             mask_instances: None,
             opaque_instances: None,
 

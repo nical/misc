@@ -14,7 +14,7 @@ use core::wgpu;
 use core::{
     bytemuck,
     gpu::shader::{
-        BaseShaderId, RenderPipelineIndex, RenderPipelineKey,
+        GeometryId, RenderPipelineIndex, RenderPipelineKey,
     },
     shape::{Circle, FilledPath},
 };
@@ -166,7 +166,7 @@ pub struct StencilAndCoverRenderer {
     draws: Vec<Draw>,
     parallel_draws: Vec<Vec<Draw>>,
     batches: BatchList<Fill, BatchInfo>,
-    cover_pipeline: BaseShaderId,
+    cover_pipeline: GeometryId,
     pub stats: Stats,
     pub tolerance: f32,
     pub parallel: bool,
@@ -187,7 +187,7 @@ impl StencilAndCoverRenderer {
             draws: Vec::new(),
             parallel_draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            cover_pipeline: shared.cover_base_shader,
+            cover_pipeline: shared.cover_geometry,
             stats: Stats {
                 stencil_batches: 0,
                 cover_batches: 0,

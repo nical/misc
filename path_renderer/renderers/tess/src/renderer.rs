@@ -3,7 +3,7 @@ use core::{
         DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         shader::{
-            BaseShaderId, BlendMode, RenderPipelineIndex, RenderPipelineKey
+            GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         }, GpuStoreWriter, GpuStreamWriter, StreamId
     }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext
 };
@@ -136,13 +136,13 @@ pub struct MeshRenderer {
     batches: BatchList<Fill, BatchInfo>,
     draws: Vec<Draw>,
     indices: Option<StreamId>,
-    base_shader: BaseShaderId,
+    geometry: GeometryId,
 }
 
 impl MeshRenderer {
     pub(crate) fn new(
         renderer_id: RendererId,
-        base_shader: BaseShaderId,
+        geometry: GeometryId,
     ) -> Self {
         MeshRenderer {
             renderer_id,
@@ -152,7 +152,7 @@ impl MeshRenderer {
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             indices: None,
-            base_shader,
+            geometry,
         }
     }
 
@@ -284,7 +284,7 @@ impl MeshRenderer {
                                 indices: geom_start..end,
                                 pattern_inputs: key.1,
                                 pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                    self.base_shader,
+                                    self.geometry,
                                     key.0,
                                     info.blend_mode,
                                     surface.draw_config(true, None),
@@ -304,7 +304,7 @@ impl MeshRenderer {
                     indices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
+                        self.geometry,
                         key.0,
                         info.blend_mode,
                         surface.draw_config(true, None),
@@ -325,7 +325,7 @@ impl MeshRenderer {
                             indices: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.base_shader,
+                                self.geometry,
                                 key.0,
                                 info.blend_mode,
                                 surface.draw_config(true, None),
@@ -344,7 +344,7 @@ impl MeshRenderer {
                     indices: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
+                        self.geometry,
                         key.0,
                         info.blend_mode,
                         surface.draw_config(true, None),

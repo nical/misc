@@ -2,19 +2,19 @@ use core::batching::RendererId;
 use core::gpu::PipelineDefaults;
 use core::wgpu;
 use core::gpu::shader::{
-    BaseShaderDescriptor,
-    BaseShaderId, Shaders, VertexAtribute,
+    GeometryDescriptor,
+    GeometryId, Shaders, VertexAtribute,
 };
 
 use crate::MeshRenderer;
 
 pub struct Tessellation {
-    pub base_shader: BaseShaderId,
+    pub geometry: GeometryId,
 }
 
 impl Tessellation {
     pub fn new(_device: &wgpu::Device, shaders: &mut Shaders) -> Self {
-        let base_shader = shaders.register_base_shader(BaseShaderDescriptor {
+        let geometry = shaders.register_geometry(GeometryDescriptor {
             name: "geometry::simple_mesh".into(),
             source: SIMPLE_MESH_SRC.into(),
             vertex_attributes: vec![
@@ -31,12 +31,12 @@ impl Tessellation {
         });
 
         Tessellation {
-            base_shader,
+            geometry,
         }
     }
 
     pub fn new_renderer(&self, renderer_id: RendererId) -> MeshRenderer {
-        MeshRenderer::new(renderer_id, self.base_shader)
+        MeshRenderer::new(renderer_id, self.geometry)
     }
 }
 
@@ -44,7 +44,7 @@ const SIMPLE_MESH_SRC: &'static str = "
 #import render_target
 #import z_index
 
-fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern_data: u32) -> BaseVertex {
+fn geometry_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, pattern_data: u32) -> GeometryVertex {
     var target_position = canvas_to_target(canvas_position);
 
     var position = vec4<f32>(
@@ -54,13 +54,13 @@ fn base_vertex(vertex_index: u32, canvas_position: vec2<f32>, z_index: u32, patt
         1.0,
     );
 
-    return BaseVertex(
+    return GeometryVertex(
         position,
         canvas_position,
         pattern_data,
     );
 }
 
-fn base_fragment() -> f32 { return 1.0; }
+fn geometry_fragment() -> f32 { return 1.0; }
 
 ";

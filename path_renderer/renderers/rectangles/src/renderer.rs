@@ -9,7 +9,7 @@ use core::{
 };
 use std::ops::Range;
 
-use super::resources::Pipelines;
+use super::resources::Geometryes;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -40,14 +40,14 @@ pub struct Batch {
 
 pub struct RectangleRenderer {
     batches: BatchList<Instance, Batch>,
-    pipelines: crate::resources::Pipelines,
+    pipelines: crate::resources::Geometryes,
     instances: Option<StreamId>,
 }
 
 impl RectangleRenderer {
     pub(crate) fn new(
         renderer_id: RendererId,
-        pipelines: Pipelines,
+        pipelines: Geometryes,
     ) -> Self {
         RectangleRenderer {
             batches: BatchList::new(renderer_id),

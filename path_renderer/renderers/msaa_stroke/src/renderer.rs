@@ -3,7 +3,7 @@ use core::{
         DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         shader::{
-            BaseShaderId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
+            GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
         }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId, UploadStats
     }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
@@ -92,7 +92,7 @@ pub struct MsaaStrokeRenderer {
     batches: BatchList<Stroke, BatchInfo>,
     draws: Vec<Draw>,
     instances: Option<StreamId>,
-    base_shader: BaseShaderId,
+    geometry: GeometryId,
 
     paths: StorageBuffer,
     geom_bind_group: Option<wgpu::BindGroup>,
@@ -103,7 +103,7 @@ impl MsaaStrokeRenderer {
     pub(crate) fn new(
         device: &wgpu::Device,
         renderer_id: RendererId,
-        base_shader: BaseShaderId,
+        geometry: GeometryId,
         geom_bind_group_layout: BindGroupLayoutId,
     ) -> Self {
         MsaaStrokeRenderer {
@@ -114,7 +114,7 @@ impl MsaaStrokeRenderer {
             draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             instances: None,
-            base_shader,
+            geometry,
 
             paths: StorageBuffer::new::<PathData>(device, "stroke path data", 4096 * 16, StorageKind::Buffer),
             geom_bind_group: None,
@@ -229,7 +229,7 @@ impl MsaaStrokeRenderer {
                             instances: geom_start..end,
                             pattern_inputs: key.1,
                             pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.base_shader,
+                                self.geometry,
                                 key.0,
                                 info.blend_mode,
                                 surface.draw_config(true, None),
@@ -250,7 +250,7 @@ impl MsaaStrokeRenderer {
                     instances: geom_start..end,
                     pattern_inputs: key.1,
                     pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.base_shader,
+                        self.geometry,
                         key.0,
                         info.blend_mode,
                         surface.draw_config(true, None),
