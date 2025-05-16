@@ -1,9 +1,7 @@
 pub extern crate wgpu;
 
-pub mod buffer;
 pub mod context;
 pub mod gpu;
-//pub mod flatten_simd;
 pub mod batching;
 pub mod cache;
 pub mod path;
@@ -15,7 +13,6 @@ pub mod transform;
 pub mod render_graph;
 pub mod frame;
 pub mod instance;
-//pub mod canvas;
 pub mod worker;
 
 use context::{BuiltRenderPass, RenderPassContext};
