@@ -5,7 +5,8 @@ use std::fmt::Write;
 use wgslp::preprocessor::{Preprocessor, Source, SourceError};
 
 use super::VertexBuilder;
-use crate::{gpu::PipelineDefaults, context::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind}};
+use crate::gpu::PipelineDefaults;
+use crate::context::{SurfaceDrawConfig, StencilMode, DepthMode, SurfaceKind};
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -145,6 +146,23 @@ fn init_common_layouts(layouts: &mut Vec<BindGroupLayout>, device: &wgpu::Device
     }
 }
 
+/// Generates and manages render pipelines
+///
+/// Renderers are not required to use this and can use wgpu to build render
+/// pipeliens directly. However, `Shaders` provides a very convenient way to
+/// decouple renderers from patterns.
+///
+/// A generated render pipeline is composed of:
+/// - A base shader (for example: tiling shader, rectangle, shader, etc.).
+/// - A pattern (for example: Solid color, gradient).
+/// - A blend mode.
+/// - A surface configuration which defines the output surface format and
+///   msaa, depth and stencil parameters.
+///
+/// See also `RenderPipelineKey`.
+///
+/// This allows renderers to register base shaders that automatically work with
+/// various patterns, surface configurations and blend modes without extra work.
 pub struct Shaders {
     sources: ShaderSources,
 
@@ -182,9 +200,6 @@ impl Shaders {
         id
     }
 
-    pub fn get_base_bind_group_layout(&self) -> &BindGroupLayout {
-        &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()]
-    }
 
     pub fn get_bind_group_layout(&self, id: BindGroupLayoutId) -> &BindGroupLayout {
         &self.bind_group_layouts[id.index()]
@@ -200,10 +215,74 @@ impl Shaders {
         None
     }
 
+    /// Registers the source for a piece of shader code that can be imported by
+    /// another piece of shader code using the `#import` directive.
     pub fn register_library(&mut self, name: &str, source: Source) {
         self.sources.source_library.insert(name.into(), source);
     }
 
+    /// Register a pattern.
+    ///
+    /// The pattern source must contain the following two functions:
+    /// ```wgsl
+    /// fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern
+    /// fn pattern_fragment(pattern: Pattern) -> vec4<f32>
+    /// ```
+    ///
+    /// Typically, `pattern_vertex`, executed in the vertex shader, reads custom
+    /// pattern parameters from buffers and/or textures and encodes them in the
+    /// returned `Pattern` which is provided to the `pattern_fragment` in the
+    /// fragment shader which returns the final color of the pattern for the
+    /// provided pixel.
+    ///
+    /// Here is an example of a simple gradient pattern:
+    ///
+    /// ```wgsl
+    ///    // The global gpu store is provided in the base bindings, so
+    ///    // patterns do not need to include in their own bindings.
+    ///    #import gpu_store
+    ///
+    ///    struct Gradient {
+    ///        p0: vec2<f32>,
+    ///        p1: vec2<f32>,
+    ///        color0: vec4<f32>,
+    ///        color1: vec4<f32>,
+    ///    };
+    ///
+    ///    fn fetch_gradient(address: u32) -> Gradient {
+    ///        var raw = gpu_store_fetch_3(address);
+    ///        var gradient: Gradient;
+    ///        gradient.p0 = raw.data0.xy;
+    ///        gradient.p1 = raw.data0.zw;
+    ///        gradient.color0 = raw.data1;
+    ///        gradient.color1 = raw.data2;
+    ///
+    ///        return gradient;
+    ///    }
+    ///
+    ///    // Entry point of the pattern in the vertex shader.
+    ///    fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
+    ///        var gradient = fetch_gradient(pattern_handle);
+    ///        var dir = gradient.p1 - gradient.p0;
+    ///        dir = dir / dot(dir, dir);
+    ///        var offset = dot(gradient.p0, dir);
+    ///
+    ///        // The `Pattern` struct is generated based on this list of `Varrying`s
+    ///        // provided in the PatternDescriptor.
+    ///        return Pattern(
+    ///            pattern_pos,
+    ///            gradient.color0,
+    ///            gradient.color1,
+    ///            vec3<f32>(dir, offset),
+    ///        );
+    ///    }
+    ///
+    ///    // Entry point of the pattern in the fragment shader.
+    ///    fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
+    ///        var d = clamp(dot(pattern.position, pattern.dir_offset.xy) - pattern.dir_offset.z, 0.0, 1.0);
+    ///        return mix(pattern.color0, pattern.color1, d);
+    ///    }
+    /// ```
     pub fn register_pattern(&mut self, pattern: PatternDescriptor) -> ShaderPatternId {
         self.sources
             .source_library
@@ -214,6 +293,25 @@ impl Shaders {
         id
     }
 
+    /// Register a base shader
+    ///
+    /// The base shader source must contain the following two functions:
+    /// ```wgsl
+    /// fn base_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> BaseVertex
+    /// fn base_fragment(/*varyings...*/) -> f32 {
+    /// ```
+    ///
+    /// The `BaseVertex` struct is generated based on the list of `Varying`s provided in
+    /// the `BaseShaderDescriptor` and three mandatory members.
+    /// The first three members of `BaseVertex` are always:
+    /// - `position: vec2f`: the device-space position of the vertex.
+    /// - `local_position: vec2f`:  the position in local space of the vertex, affecting
+    ///   how the pattern is rendered.
+    /// - `pattern: u32`: The pattern id provided as input.
+    /// Then, the varying parameters in the same order as in the varying list.
+    ///
+    /// The parameters of the `base_fragment` are the varyings provided in the
+    /// `BaseShaderDescriptor`.
     pub fn register_base_shader(&mut self, base: BaseShaderDescriptor) -> BaseShaderId {
         self.sources
             .source_library
@@ -224,6 +322,7 @@ impl Shaders {
         id
     }
 
+    /// Look up a base shader id by name.
     pub fn find_base_shader(&self, name: &str) -> Option<BaseShaderId> {
         for (idx, pat) in self.base_shaders.iter().enumerate() {
             if &*pat.name == name {
@@ -234,6 +333,7 @@ impl Shaders {
         None
     }
 
+    /// Look up a pattern id by name.
     pub fn find_pattern(&self, name: &str) -> ShaderPatternId {
         for (idx, pat) in self.patterns.iter().enumerate() {
             if &*pat.name == name {
@@ -248,6 +348,12 @@ impl Shaders {
         self.patterns.len()
     }
 
+    /// Create a `wgpu::ShaderModule` directly without using the base shader/pattern
+    /// infrastructure.
+    ///
+    /// The difference with creating a module directly from the `wgpu::Device` is that
+    /// the shader source is pre-processed, allowing it to use `#import` and static
+    /// `#if` directives.
     pub fn create_shader_module(
         &mut self,
         device: &wgpu::Device,
@@ -298,12 +404,14 @@ impl Shaders {
         src
     }
 
+    /// Print to stdout the generated source for a specific combination of base shader
+    /// and pattern.
     pub fn print_pipeline_variant(
         &mut self,
-        pipeline_id: BaseShaderId,
-        pattern_id: ShaderPatternId,
+        base_shader: BaseShaderId,
+        pattern: ShaderPatternId,
     ) {
-        let src = self.generate_pipeline_variant_src(pipeline_id, pattern_id);
+        let src = self.generate_pipeline_variant_src(base_shader, pattern);
         println!("{src}");
     }
 
@@ -553,16 +661,6 @@ impl Shaders {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ShaderIndex(u32);
-
-impl ShaderIndex {
-    #[inline]
-    pub fn index(&self) -> usize {
-        self.0 as usize
-    }
-}
-
 struct ShaderSources {
     pub source_library: HashMap<String, Source>,
     pub preprocessor: Preprocessor,
@@ -675,6 +773,8 @@ impl WgslType {
     }
 }
 
+/// Describes data produced by the vertex shader and consumed by the
+/// fragment shader.
 #[derive(Clone)]
 pub struct Varying {
     pub name: Cow<'static, str>,
@@ -794,6 +894,7 @@ impl Varying {
     }
 }
 
+/// Describes per-vertex data consumed by the vertex shader.
 #[derive(Clone)]
 pub struct VertexAtribute {
     pub name: Cow<'static, str>,
@@ -886,7 +987,7 @@ impl VertexAtribute {
         }
     }
 
-    pub fn to_wgpu(&self) -> wgpu::VertexFormat {
+    fn to_wgpu(&self) -> wgpu::VertexFormat {
         match self.kind {
             WgslType::Float32 => wgpu::VertexFormat::Float32,
             WgslType::Sint32 => wgpu::VertexFormat::Sint32,
@@ -905,6 +1006,7 @@ impl VertexAtribute {
     }
 }
 
+/// The description of a bind group layout usable by generated render pipelines.
 pub struct BindGroupLayout {
     pub name: String,
     pub handle: wgpu::BindGroupLayout,
@@ -936,6 +1038,7 @@ impl BindGroupLayout {
     }
 }
 
+/// The description of a shader binding usable by generated render pipelines.
 pub struct Binding {
     pub name: String,
     pub struct_type: String,
@@ -1034,6 +1137,7 @@ impl BindGroupLayout {
     }
 }
 
+/// Describes a pattern for a generated render pipeline.
 pub struct PatternDescriptor {
     pub name: Cow<'static, str>,
     pub source: Source,
@@ -1041,6 +1145,7 @@ pub struct PatternDescriptor {
     pub bindings: Option<BindGroupLayoutId>,
 }
 
+/// Desribes a base shader.
 #[derive(Clone)]
 pub struct BaseShaderDescriptor {
     pub name: Cow<'static, str>,
@@ -1054,25 +1159,18 @@ pub struct BaseShaderDescriptor {
     pub constants: Vec<(&'static str, f64)>,
 }
 
-pub fn generate_shader_source(
+fn generate_shader_source(
     base: &BaseShaderDescriptor,
     pattern: Option<&PatternDescriptor>,
-    _base_bindings: &BindGroupLayout,
+    base_bindings: &BindGroupLayout,
     geom_bindings: Option<&BindGroupLayout>,
     pattern_bindings: Option<&BindGroupLayout>,
 ) -> String {
     let mut source = String::new();
 
     let mut group_index = 0;
+    base_bindings.generate_shader_source(group_index, &mut source);
 
-    // TODO right now the base bindings are in the imported sources. Generate them
-    // once the shaders have moved to this system.
-    //base_bindings.generate_shader_source(group_index, &mut source);
-    writeln!(
-        source,
-        "@group(0) @binding(2) var default_sampler: sampler;"
-    )
-    .unwrap();
     group_index += 1;
 
     if let Some(bindings) = geom_bindings {
@@ -1270,10 +1368,10 @@ pub fn generate_shader_source(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ModuleKey {
-    pub base: BaseShaderId,
-    pub pattern: ShaderPatternId,
-    pub defines: Vec<&'static str>,
+struct ModuleKey {
+    base: BaseShaderId,
+    pattern: ShaderPatternId,
+    defines: Vec<&'static str>,
 }
 
 // If this grows to use up more than 4 bits, BatchKey must be adjusted.
@@ -1427,12 +1525,24 @@ fn blend_state(blend_mode: BlendMode) -> Option<wgpu::BlendState> {
     }
 }
 
+/// Identifies a generated render pipeline.
+///
+/// In order to to access the render pipeline, a `RenderPipelineIndex` must be created
+/// from this key using `PrepareRenderPipelines::prepare`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RenderPipelineKey(u64);
+
+/// Allows fast lookup of a generated render pipeline in a `RenderPipelines` registry.
 pub type RenderPipelineIndex = crate::cache::Index<RenderPipelineKey>;
+
+/// A registry of generated render pipelines.
 pub type RenderPipelines = crate::cache::Registry<RenderPipelineKey, wgpu::RenderPipeline>;
+
+/// Turns `RenderPipelineKey`s into `RenderPipelineIndex`es and keeps track of what
+/// generated render pipelines must be compiled this frame (if any).
 pub type PrepareRenderPipelines = crate::cache::Prepare<RenderPipelineKey>;
-pub struct RenderPipelineBuilder<'l>(pub &'l wgpu::Device, pub &'l mut Shaders);
+
+pub(crate) struct RenderPipelineBuilder<'l>(pub &'l wgpu::Device, pub &'l mut Shaders);
 
 impl RenderPipelineKey {
     pub fn new(

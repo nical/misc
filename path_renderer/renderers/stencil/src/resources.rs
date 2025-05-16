@@ -23,6 +23,8 @@ pub(crate) struct StencilAndCoverResources {
 }
 
 const STENCIL_SHADER_SRC: &'static str = "
+@group(0) @binding(0) var<uniform> render_target: RenderTarget;
+
 #import render_target
 
 @vertex fn vs_main(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {

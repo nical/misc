@@ -76,14 +76,6 @@ pub struct TileRenderer {
 }
 
 impl TileRenderer {
-    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
-        if self.occlusion.gpu && !surface.depth {
-            return false;
-        }
-
-        true
-    }
-
     pub fn begin_frame(&mut self) {
         self.batches.clear();
         self.mask_instances = None;
@@ -171,7 +163,7 @@ impl TileRenderer {
         self.no_opaque_batches = options.no_opaque_batches;
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
         if self.batches.is_empty() {
             return;
         }
@@ -292,7 +284,7 @@ impl TileRenderer {
                         let sort_key = fills[0].z_index;
 
                         for fill in fills {
-                            Self::prepare_fill_impl(
+                            Self::prepare_fill(
                                 &mut tiler_data.tiler,
                                 &mut tiles,
                                 fill,
@@ -372,11 +364,23 @@ impl TileRenderer {
 
         if self.back_to_front {
             for fill in commands.iter().rev() {
-                self.prepare_fill(tiles, fill, transforms);
+                Self::prepare_fill(
+                    &mut self.tiler,
+                    tiles,
+                    fill,
+                    transforms,
+                    self.tolerance,
+                );
             }
         } else {
             for fill in commands.iter() {
-                self.prepare_fill(tiles, fill, transforms);
+                Self::prepare_fill(
+                    &mut self.tiler,
+                    tiles,
+                    fill,
+                    transforms,
+                    self.tolerance,
+                );
             }
         }
 
@@ -417,17 +421,7 @@ impl TileRenderer {
         }
     }
 
-    fn prepare_fill(&mut self, tiles: &mut TilerOutput, fill: &Fill, transforms: &Transforms) {
-        Self::prepare_fill_impl(
-            &mut self.tiler,
-            tiles,
-            fill,
-            transforms,
-            self.tolerance,
-        );
-    }
-
-    fn prepare_fill_impl(
+    fn prepare_fill(
         tiler: &mut Tiler,
         tiles: &mut TilerOutput,
         fill: &Fill,
@@ -498,7 +492,7 @@ impl core::Renderer for TileRenderer {
         if self.parallel {
             self.prepare_parallel(ctx);
         } else {
-            self.prepare_impl(ctx);
+            self.prepare_single_thread(ctx);
         }
     }
 

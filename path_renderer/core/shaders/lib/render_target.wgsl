@@ -4,8 +4,6 @@ struct RenderTarget {
     inv_resolution: vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> render_target: RenderTarget;
-
 fn canvas_to_target(pos: vec2<f32>) -> vec4<f32> {
     var p = pos * render_target.inv_resolution * 2.0 - vec2<f32>(1.0);
     p.y = -p.y;
@@ -23,4 +21,3 @@ fn normalized_to_target(pos: vec2<f32>) -> vec4<f32> {
 fn render_target_normalized_position(screen_pos: vec2<f32>, resolution: vec2<f32>) -> vec4<f32> {
     return normalized_to_target(screen_pos / resolution);
 }
-

@@ -16,9 +16,7 @@ tile_renderer.fill_path(&mut ctx, pattern);
 rect_renderer.fill(&mut ctx, pattern);
 ```
 
-The code is organized this way to make adding rendering algorthms easy. This means that there isn't a particular user facing API that renderers need to adhere to. Internally, renderers need to integrate with the batching system.
-This is done by
-implementing the `Renderer` trait which exposes a few important entry points:
+The code is organized this way to make adding rendering algorthms easy. This means that there isn't a particular user facing API that renderers need to adhere to. Internally, renderers need to integrate with the batching and rendering system. This is done by implementing the `Renderer` trait which exposes a few important entry points:
 
 ## Batching
 

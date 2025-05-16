@@ -1,6 +1,8 @@
 #import rect
 #import render_target
 
+@group(0) @binding(0) var<uniform> render_target: RenderTarget;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,

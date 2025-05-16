@@ -1,8 +1,6 @@
 const GPU_STORE_WIDTH: u32 = 2048u;
 const GPU_STORE_HANDLE_NONE: u32 = 0xFFFFFu;
 
-@group(0) @binding(1) var gpu_store_texture: texture_2d<f32>;
-
 fn gpu_store_decode_uv(address: u32) -> vec2<i32> {
     return vec2<i32>(
         i32(address % GPU_STORE_WIDTH),
@@ -45,5 +43,3 @@ fn gpu_store_fetch_4(address: u32) -> GpuData4 {
         textureLoad(gpu_store_texture, gpu_store_decode_uv(address + 3u), 0),
     );
 }
-
-
