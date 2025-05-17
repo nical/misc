@@ -1,4 +1,5 @@
 use crate::batching::{Batcher, BatchId};
+use crate::graph::NodeId;
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::instance::RenderStats;
 use crate::path::FillRule;
@@ -7,6 +8,27 @@ use crate::units::{SurfaceIntSize, SurfaceRect};
 use crate::{BindingResolver, Renderer, RenderContext};
 use std::ops::Range;
 use std::time::Instant;
+
+pub struct RenderPass {
+    pass: RenderPassBuilder,
+    node: NodeId,
+}
+
+impl RenderPass {
+    pub(crate) fn new(pass: RenderPassBuilder, node: NodeId) -> Self {
+        RenderPass { pass, node }
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn ctx(&mut self) -> RenderPassContext {
+        self.pass.ctx()
+    }
+
+    pub(crate) fn end(mut self) -> BuiltRenderPass { self.pass.end() }
+}
 
 pub type ZIndex = u32;
 
@@ -45,7 +67,6 @@ impl Default for ZIndices {
 }
 
 pub type RendererId = u16;
-pub type RenderPassId = u32;
 
 /// The surface parameters for render passes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -147,62 +168,28 @@ impl RenderPassConfig {
     }
 }
 
-// TODO: Merge SurfaceInfo and RenderPassConfig?
-#[derive(Debug, Default)]
-pub struct SurfaceInfo {
-    size: SurfaceIntSize,
-    config: RenderPassConfig,
-}
-
-impl SurfaceInfo {
-    #[inline]
-    fn new(size: SurfaceIntSize, surface_cfg: RenderPassConfig) -> Self {
-        SurfaceInfo {
-            size,
-            config: surface_cfg,
-        }
-    }
-
-    #[inline]
-    pub fn size(&self) -> SurfaceIntSize {
-        self.size
-    }
-
-    #[inline]
-    pub fn msaa(&self) -> bool {
-        self.config.msaa
-    }
-
-    #[inline]
-    pub fn depth(&self) -> bool {
-        self.config.depth
-    }
-
-    pub fn config(&self) -> RenderPassConfig {
-        self.config
-    }
-}
-
 // Paramater for the renderers's prepare methods.
 // For now it matches the RenderPassBuilder it is created from
 // but it may become a subset of it.
 pub struct RenderPassContext<'l> {
     pub z_indices: &'l mut ZIndices,
     pub batcher: &'l mut Batcher,
-    pub surface: RenderPassConfig,
+    pub config: RenderPassConfig,
 }
 
-pub struct RenderPassBuilder {
-    pub z_indices: ZIndices,
-    pub surface: SurfaceInfo,
-    pub batcher: Batcher,
+pub(crate) struct RenderPassBuilder {
+    z_indices: ZIndices,
+    config: RenderPassConfig,
+    size: SurfaceIntSize,
+    batcher: Batcher,
 }
 
 impl RenderPassBuilder {
     pub fn new() -> Self {
         RenderPassBuilder {
             z_indices: ZIndices::default(),
-            surface: SurfaceInfo::default(),
+            config: RenderPassConfig::default(),
+            size: SurfaceIntSize::new(0, 0),
             batcher: Batcher::new(),
         }
     }
@@ -211,13 +198,14 @@ impl RenderPassBuilder {
         RenderPassContext {
             z_indices: &mut self.z_indices,
             batcher: &mut self.batcher,
-            surface: self.surface.config(),
+            config: self.config,
         }
     }
 
-    pub fn begin(&mut self, size: SurfaceIntSize, surface: RenderPassConfig) {
+    pub fn begin(&mut self, size: SurfaceIntSize, config: RenderPassConfig) {
         self.z_indices.clear();
-        self.surface = SurfaceInfo::new(size, surface);
+        self.config = config;
+        self.size = size;
         self.batcher.begin(&SurfaceRect::from_size(size.to_f32()));
     }
 
@@ -227,8 +215,8 @@ impl RenderPassBuilder {
 
         BuiltRenderPass {
             batches,
-            config: self.surface.config,
-            size: self.surface.size(),
+            config: self.config,
+            size: self.size,
         }
     }
 }

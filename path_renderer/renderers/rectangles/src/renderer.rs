@@ -87,9 +87,9 @@ impl RectangleRenderer {
             .outer_transformed_box(&local_rect.cast_unit());
 
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
-        let surface = ctx.surface;
+        let pass_cfg = ctx.config;
 
-        if surface.msaa {
+        if pass_cfg.msaa {
             aa = Aa::NONE;
         }
 
@@ -101,7 +101,7 @@ impl RectangleRenderer {
         // blended rect from evaluating and blending fragments in that area.
         if pattern.is_opaque
             && aa != Aa::NONE
-            && surface.depth
+            && pass_cfg.depth
             && aabb.width() > 50.0
             && aabb.height() > 50.0
         {
@@ -132,7 +132,7 @@ impl RectangleRenderer {
 
         // Main rect
         let use_opaque_pass =
-            pattern.is_opaque && (aa == Aa::NONE || surface.msaa) && surface.depth;
+            pattern.is_opaque && (aa == Aa::NONE || pass_cfg.msaa) && pass_cfg.depth;
 
         let batch_flags = if use_opaque_pass {
             BatchFlags::ORDER_INDEPENDENT

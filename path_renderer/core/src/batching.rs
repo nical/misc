@@ -478,7 +478,7 @@ impl<T, I> BatchList<T, I> {
             ctx.batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
 
         if batch_index == new_batch_index {
-            self.batches.push((Vec::with_capacity(32), ctx.surface, or_add()));
+            self.batches.push((Vec::with_capacity(32), ctx.config, or_add()));
         }
 
         let b = &mut self.batches[batch_index as usize];

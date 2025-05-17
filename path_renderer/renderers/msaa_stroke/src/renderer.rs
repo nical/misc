@@ -165,7 +165,7 @@ impl MsaaStrokeRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.depth {
+        if pattern.is_opaque && ctx.config.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
         self.batches.add(

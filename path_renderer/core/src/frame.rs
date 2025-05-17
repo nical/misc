@@ -1,9 +1,8 @@
-use crate::render_pass::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
+use crate::render_pass::{BuiltRenderPass, RenderPass, RenderPassBuilder};
 use crate::gpu::{GpuStore, GpuStreams};
 use crate::graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
 use crate::units::SurfaceIntSize;
 use crate::{transform::Transforms, SurfaceKind, RenderPassConfig};
-
 
 
 pub struct Frame {
@@ -16,21 +15,6 @@ pub struct Frame {
     pub(crate) built_render_passes: Vec<Option<BuiltRenderPass>>,
     // pub allocator: FrameAllocator, // TODO
     index: u32,
-}
-
-pub struct RenderPass {
-    node: NodeId,
-    pass: RenderPassBuilder,
-}
-
-impl RenderPass {
-    pub fn node_id(&self) -> NodeId {
-        self.node
-    }
-
-    pub fn ctx(&mut self) -> RenderPassContext {
-        self.pass.ctx()
-    }
 }
 
 impl Frame {
@@ -86,18 +70,16 @@ impl Frame {
             }
         );
 
-        RenderPass {
-            pass,
-            node: self.graph.add_node(&descriptor),
-        }
+        let node_id = self.graph.add_node(&descriptor);
+        RenderPass::new(pass, node_id)
     }
 
-    pub fn end_render_pass(&mut self, mut surface: RenderPass) {
-        let index = self.graph.get_task_id(surface.node).0 as usize;
+    pub fn end_render_pass(&mut self, pass: RenderPass) {
+        let index = self.graph.get_task_id(pass.node_id()).0 as usize;
         while self.built_render_passes.len() <= index {
             self.built_render_passes.push(None);
         }
-        self.built_render_passes[index] = Some(surface.pass.end());
+        self.built_render_passes[index] = Some(pass.end());
     }
 
     pub fn add_dependency(&mut self, node: NodeId, dep: Dependency) {
@@ -113,6 +95,7 @@ impl Frame {
     }
 }
 
+// TODO: Should this be in graph/mod.rs?
 pub struct RenderNodeDescriptor<'l> {
     pub label: Option<&'static str>,
     pub reads: &'l[Dependency],

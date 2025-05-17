@@ -1,6 +1,7 @@
 #![allow(unused)]
 
-use core::frame::{RenderNodeDescriptor, RenderPass};
+use core::frame::{RenderNodeDescriptor};
+use core::render_pass::RenderPass;
 use core::instance::Instance;
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, Resource, BuiltGraph, ColorAttachment};

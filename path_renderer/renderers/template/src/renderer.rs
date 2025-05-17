@@ -7,7 +7,7 @@ use core::transform::{TransformId, Transforms};
 use core::shape::FilledPath;
 use core::units::LocalRect;
 use core::render_pass::{
-    BuiltRenderPass, RenderPassBuilder, RenderPassContext, RendererId, RenderPassConfig, ZIndex
+    BuiltRenderPass, RenderPassContext, RendererId, RenderPassConfig, ZIndex
 };
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
@@ -69,7 +69,7 @@ impl TemplateRenderer {
         true
     }
 
-    pub fn begin_frame(&mut self, _ctx: &RenderPassBuilder) {
+    pub fn begin_frame(&mut self) {
         self.draws.clear();
         self.batches.clear();
     }
@@ -94,7 +94,7 @@ impl TemplateRenderer {
             .outer_transformed_box(&shape.aabb());
 
         let mut batch_flags = BatchFlags::empty();
-        if pattern.is_opaque && ctx.surface.depth {
+        if pattern.is_opaque && ctx.config.depth {
             batch_flags |= BatchFlags::ORDER_INDEPENDENT;
         }
 

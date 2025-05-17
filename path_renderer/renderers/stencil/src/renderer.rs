@@ -229,7 +229,7 @@ impl StencilAndCoverRenderer {
     }
 
     fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        debug_assert!(self.supports_surface(ctx.surface));
+        debug_assert!(self.supports_surface(ctx.config));
 
         let aabb = transforms
             .get_current()
