@@ -27,7 +27,7 @@ pub use bitflags;
 pub use bytemuck;
 pub use lyon::geom;
 use pattern::BuiltPattern;
-use resources::{AsAny, GpuResources};
+use resources::GpuResources;
 use transform::Transforms;
 
 use std::{fmt, sync::{Arc, Mutex}};
@@ -480,6 +480,7 @@ impl BufferKind {
     }
 }
 
+// TODO: Move this into a utils module or something along those lines.
 use std::ops::Range;
 #[inline]
 pub fn u32_range(r: Range<usize>) -> Range<u32> {
@@ -524,7 +525,6 @@ pub type PrepareWorkerContext<'a> = worker::Context<'a, (PrepareWorkerData,)>;
 pub struct PrepareContext<'a> {
     pub pass: &'a BuiltRenderPass,
     pub transforms: &'a Transforms,
-    //pub pipelines: &'a mut PrepareRenderPipelines,
     pub workers: PrepareWorkerContext<'a>,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
@@ -561,19 +561,10 @@ impl RendererStats {
     }
 }
 
-pub trait Renderer: AsAny {
+pub trait Renderer {
     fn prepare(&mut self, ctx: &mut PrepareContext);
 
     fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }
-
-    // TODO: this is not wired in anymore.
-    fn render_pre_pass(
-        &self,
-        _index: u32,
-        _ctx: RenderContext,
-        _encoder: &mut wgpu::CommandEncoder,
-    ) {
-    }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,

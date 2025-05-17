@@ -1,15 +1,12 @@
-use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, RenderPassDescriptor, StagingBufferPoolRef};
+use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
 use crate::render_graph::{RenderPassData, TempResourceKey};
 use crate::shading::{PipelineDefaults, Shaders};
 use std::u32;
-use std::{any::Any, marker::PhantomData};
+use std::marker::PhantomData;
 use wgpu::util::DeviceExt;
 use wgpu::BufferUsages;
 
 pub struct GpuResources {
-    systems: Vec<Box<dyn RendererResources>>,
-    next_handle: u8,
-
     pub common: CommonGpuResources,
     pub graph: RenderGraphResources,
 }
@@ -24,52 +21,14 @@ impl GpuResources {
         let graph = RenderGraphResources::new(device);
 
         GpuResources {
-            systems: Vec::with_capacity(32),
-            next_handle: 0,
             common,
             graph,
         }
     }
 
-    pub fn register<T: RendererResources + 'static>(&mut self, system: T) -> ResourcesHandle<T> {
-        let handle = ResourcesHandle::new(self.next_handle);
-        self.next_handle += 1;
-
-        self.systems.push(Box::new(system));
-
-        handle
-    }
-
-    pub fn get<T: 'static>(&self, handle: ResourcesHandle<T>) -> &T {
-        let result: Option<&T> = (*self.systems[handle.index()]).as_any().downcast_ref();
-        #[cfg(debug_assertions)]
-        if result.is_none() {
-            panic!(
-                "Invalid type, got {:?}",
-                self.systems[handle.index()].name()
-            );
-        }
-        result.unwrap()
-    }
-
-    pub fn get_mut<T: 'static>(&mut self, handle: ResourcesHandle<T>) -> &mut T {
-        #[cfg(debug_assertions)]
-        let name = self.systems[handle.index()].name();
-        let result: Option<&mut T> = (*self.systems[handle.index()]).as_any_mut().downcast_mut();
-        #[cfg(debug_assertions)]
-        if result.is_none() {
-            panic!("Invalid type, got {:?}", name);
-        }
-
-        result.unwrap()
-    }
-
     pub fn begin_frame(&mut self) {
         self.common.begin_frame();
         self.graph.begin_frame();
-        for sys in &mut self.systems {
-            sys.begin_frame();
-        }
     }
 
     pub fn upload(&mut self,
@@ -84,31 +43,11 @@ impl GpuResources {
 
     pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.common.begin_rendering(encoder);
-        //self.common.begin_rendering(..); // TODO
-        for sys in &mut self.systems {
-            sys.begin_rendering(encoder);
-        }
     }
 
     pub fn end_frame(&mut self) {
         self.common.end_frame();
         self.graph.end_frame();
-        for sys in &mut self.systems {
-            sys.end_frame();
-        }
-    }
-}
-
-impl<T: 'static> std::ops::Index<ResourcesHandle<T>> for GpuResources {
-    type Output = T;
-    fn index(&self, handle: ResourcesHandle<T>) -> &T {
-        self.get(handle)
-    }
-}
-
-impl<T: 'static> std::ops::IndexMut<ResourcesHandle<T>> for GpuResources {
-    fn index_mut(&mut self, handle: ResourcesHandle<T>) -> &mut T {
-        self.get_mut(handle)
     }
 }
 
@@ -355,13 +294,13 @@ impl RenderGraphResources {
 
         // Unfortunately there is a default minimum alignment of 256 bytes for UBOs, so
         // storing the pass data in a single uniform buffer and creating bindings at
-        // different offsets is quite a but wastful and tedious. On the other hand creating
+        // different offsets is quite a bit wastful and tedious. On the other hand creating
         // an UBO per pass data is probably even more wasteful but that's what this does for
         // now.
         // Ideally, the pass data would be provided via push constants.
         if self.pass_bind_groups.len() < pass_data.len() {
             let target_and_gpu_store_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_store);
-            let size = std::mem::size_of::<RenderPassDescriptor>() as u64;
+            let size = std::mem::size_of::<RenderPassGpuData>() as u64;
 
             while self.pass_bind_groups.len() < pass_data.len() {
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -400,7 +339,7 @@ impl RenderGraphResources {
             queue.write_buffer(
                 buffer,
                 0,
-                bytemuck::cast_slice(&[RenderPassDescriptor::new(w, h)]),
+                bytemuck::cast_slice(&[RenderPassGpuData::new(w, h)]),
             );
         }
     }
@@ -499,34 +438,32 @@ impl RenderGraphResources {
     }
 }
 
-// TODO: The RendererResources mechanism was originally used by all renderers to
-// store their own resources, but they were all refactored to store their stuff
-// directly. It could still be a good system for registering resources that are
-// shared between multiple renderers but at the moment it is basically unused.
-pub trait RendererResources: AsAny {
-    fn name(&self) -> &'static str;
-    fn begin_frame(&mut self) {}
-    fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {}
-    fn end_frame(&mut self) {}
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct RenderPassGpuData {
+    pub width: f32,
+    pub height: f32,
+    pub inv_width: f32,
+    pub inv_height: f32,
 }
 
-impl RendererResources for () {
-    fn name(&self) -> &'static str { "dummy resources" }
-}
-
-pub trait AsAny {
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
-impl<T: 'static> AsAny for T {
-    fn as_any(&self) -> &dyn Any {
-        self as _
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self as _
+impl RenderPassGpuData {
+    pub fn new(w: u32, h: u32) -> Self {
+        let width = w as f32;
+        let height = h as f32;
+        let inv_width = 1.0 / width;
+        let inv_height = 1.0 / height;
+        RenderPassGpuData {
+            width,
+            height,
+            inv_width,
+            inv_height,
+        }
     }
 }
+
+unsafe impl bytemuck::Pod for RenderPassGpuData {}
+unsafe impl bytemuck::Zeroable for RenderPassGpuData {}
 
 pub struct ResourcesHandle<T> {
     index: u8,
