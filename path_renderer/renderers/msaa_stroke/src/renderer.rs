@@ -1,14 +1,16 @@
 use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+        RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
-    }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use core::shading::{
     Shaders,
     GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
 };
+use core::utils::{DrawHelper, usize_range};
+
 use lyon::{
     geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment},
     path::{PathSlice, PathEvent},

@@ -1,13 +1,15 @@
 use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+        RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
         GpuStoreWriter, GpuStreamWriter, StreamId
-    }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext
+    }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, wgpu, BindingsId, PrepareContext
 };
 use core::shading::{
     GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey
 };
+use core::utils::{DrawHelper, usize_range};
+
 use lyon::{
     geom::euclid::vec2,
     lyon_tessellation::{StrokeOptions, StrokeTessellator},

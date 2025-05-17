@@ -8,8 +8,9 @@ use core::{
 };
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig};
+use core::context::{RenderPassContext, RendererId, SurfacePassConfig};
 use core::gpu::{GpuStoreHandle, StreamId};
+use core::utils::DrawHelper;
 
 use std::ops::Range;
 

@@ -7,11 +7,12 @@ use core::transform::{TransformId, Transforms};
 use core::shape::FilledPath;
 use core::units::LocalRect;
 use core::context::{
-    BuiltRenderPass, DrawHelper, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+    BuiltRenderPass, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
 };
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
-use core::{usize_range, wgpu, BindingsId, PrepareContext, UploadContext};
+use core::{wgpu, BindingsId, PrepareContext, UploadContext};
+use core::utils::{DrawHelper, usize_range};
 use std::ops::Range;
 
 struct BatchInfo {

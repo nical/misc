@@ -15,6 +15,7 @@ pub mod frame;
 pub mod instance;
 pub mod worker;
 pub mod shading;
+pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
@@ -238,18 +239,6 @@ pub enum BindingsNamespace {
     Renderer,
     /// The bindings are unused.
     None,
-}
-
-// TODO: Move this into a utils module or something along those lines.
-use std::ops::Range;
-#[inline]
-pub fn u32_range(r: Range<usize>) -> Range<u32> {
-    r.start as u32..r.end as u32
-}
-
-#[inline]
-pub fn usize_range(r: Range<u32>) -> Range<usize> {
-    r.start as usize..r.end as usize
 }
 
 pub trait BindingResolver {

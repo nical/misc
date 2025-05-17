@@ -1,8 +1,9 @@
-use core::{bytemuck, usize_range, wgpu, BindingsId, PrepareContext};
+use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig};
+use core::context::{RenderPassContext, RendererId, SurfacePassConfig};
 use core::gpu::GpuStoreWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
+use core::utils::{DrawHelper, usize_range};
 
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;

@@ -19,9 +19,10 @@ use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect}
 use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchId, BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
-use core::context::{RenderPassContext, DrawHelper, RendererId, ZIndex};
+use core::context::{RenderPassContext, RendererId, ZIndex};
 use core::pattern::BuiltPattern;
 use core::transform::{Transforms, TransformId};
+use core::utils::DrawHelper;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]

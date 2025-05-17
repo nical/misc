@@ -1,7 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{
-    DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex,
-};
+use core::context::{RenderPassContext, RendererId, SurfacePassConfig, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -11,6 +9,7 @@ use core::shape::FilledPath;
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalRect, SurfaceIntRect, SurfaceRect};
 use core::{wgpu, PrepareContext, UploadContext};
+use core::utils::DrawHelper;
 
 use crate::occlusion::OcclusionBuffer;
 use crate::tiler::{EncodedTileInstance, Tiler, TilerOutput};
