@@ -1,5 +1,5 @@
 use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
-use crate::render_graph::{RenderPassData, TempResourceKey};
+use crate::graph::{RenderPassData, TempResourceKey};
 use crate::shading::{PipelineDefaults, Shaders};
 use std::u32;
 use std::marker::PhantomData;

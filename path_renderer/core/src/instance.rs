@@ -5,7 +5,7 @@ use crate::gpu::{StagingBufferPool, UploadStats};
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
 use crate::frame::Frame;
-use crate::render_graph::{Allocation, BuiltGraph};
+use crate::graph::{Allocation, BuiltGraph};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 

@@ -3,7 +3,7 @@
 use core::frame::{RenderNodeDescriptor, RenderPass};
 use core::instance::Instance;
 use core::pattern::BuiltPattern;
-use core::render_graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
+use core::graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
 use core::{FillPath, Renderer};
 use core::shading::BlendMode;
 use core::path::Path;

@@ -1,6 +1,6 @@
 use crate::context::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
 use crate::gpu::{GpuStore, GpuStreams};
-use crate::render_graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
+use crate::graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
 use crate::units::SurfaceIntSize;
 use crate::{transform::Transforms, SurfaceKind, SurfacePassConfig};
 
