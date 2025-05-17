@@ -1,12 +1,16 @@
 use crate::{resources::Instance, InstanceFlags};
+use core::wgpu;
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, context::{
-        DrawHelper, RenderPassContext, RendererId, SurfacePassConfig
-    }, gpu::{
-        shader::{RenderPipelineIndex, RenderPipelineKey},
-        GpuStoreHandle, StreamId,
-    }, pattern::BuiltPattern, transform::Transforms, units::LocalRect, wgpu, PrepareContext,
+    pattern::BuiltPattern,
+    transform::Transforms,
+    units::LocalRect,
+    PrepareContext
 };
+use core::shading::{RenderPipelineIndex, RenderPipelineKey};
+use core::batching::{BatchFlags, BatchId, BatchList};
+use core::context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig};
+use core::gpu::{GpuStoreHandle, StreamId};
+
 use std::ops::Range;
 
 use super::resources::Geometryes;

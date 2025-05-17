@@ -2,7 +2,7 @@ use core::batching::{BatchFlags, BatchId, BatchList};
 use core::context::{
     DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex,
 };
-use core::gpu::shader::{
+use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
 use core::gpu::{GpuStore, StreamId, TransferOps, UploadStats};

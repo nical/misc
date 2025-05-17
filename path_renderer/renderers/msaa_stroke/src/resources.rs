@@ -1,9 +1,8 @@
 use core::batching::RendererId;
-use core::gpu::PipelineDefaults;
 use core::wgpu;
-use core::gpu::shader::{
+use core::shading::{
     GeometryDescriptor, BindGroupLayout, Binding, BindGroupLayoutId,
-    GeometryId, Shaders, VertexAtribute,
+    GeometryId, Shaders, VertexAtribute, PipelineDefaults,
 };
 
 use crate::{MsaaStrokeRenderer, PathData};

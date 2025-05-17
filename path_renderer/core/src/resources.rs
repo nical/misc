@@ -1,5 +1,6 @@
-use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, PipelineDefaults, RenderPassDescriptor, Shaders, StagingBufferPoolRef};
+use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, RenderPassDescriptor, StagingBufferPoolRef};
 use crate::render_graph::{RenderPassData, TempResourceKey};
+use crate::shading::{PipelineDefaults, Shaders};
 use std::u32;
 use std::{any::Any, marker::PhantomData};
 use wgpu::util::DeviceExt;
@@ -16,7 +17,7 @@ pub struct GpuResources {
 impl GpuResources {
     pub fn new(
         device: &wgpu::Device,
-        shaders: &mut crate::gpu::Shaders,
+        shaders: &mut Shaders,
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let common = CommonGpuResources::new(device, shaders, staging_buffers);
@@ -132,7 +133,7 @@ pub struct CommonGpuResources {
 impl CommonGpuResources {
     pub fn new(
         device: &wgpu::Device,
-        shaders: &mut crate::gpu::Shaders,
+        shaders: &mut Shaders,
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let quad_indices = [0u16, 1, 2, 0, 2, 3];

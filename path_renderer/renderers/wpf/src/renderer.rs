@@ -2,7 +2,7 @@ use core::{bytemuck, usize_range, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::context::{DrawHelper, RenderPassContext, RendererId, SurfacePassConfig};
 use core::gpu::GpuStoreWriter;
-use core::gpu::shader::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
+use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;

@@ -12,8 +12,8 @@ mod simd4;
 use core::batching::RendererId;
 use core::wgpu;
 use core::units::{LocalSpace, SurfaceSpace};
-use core::gpu::{GpuStoreDescriptor, GpuStoreResources, PipelineDefaults};
-use core::gpu::shader::{Shaders, GeometryDescriptor, GeometryId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
+use core::gpu::{GpuStoreDescriptor, GpuStoreResources};
+use core::shading::{Shaders, PipelineDefaults, GeometryDescriptor, GeometryId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
 
 pub use renderer::*;
 

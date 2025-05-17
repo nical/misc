@@ -4,8 +4,8 @@ use core::geom::euclid::vec2;
 use core::geom::traits::Transformation;
 use core::Point;
 
-use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Varying, BlendMode};
-use core::gpu::{GpuStoreWriter, Shaders};
+use core::shading::{Shaders, PatternDescriptor, ShaderPatternId, Varying, BlendMode};
+use core::gpu::{GpuStoreWriter};
 use core::Color;
 
 use core::pattern::BuiltPattern;

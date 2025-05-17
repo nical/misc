@@ -14,9 +14,13 @@ pub mod render_graph;
 pub mod frame;
 pub mod instance;
 pub mod worker;
+pub mod shading;
+
+use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
+pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use context::{BuiltRenderPass, RenderPassContext};
-use gpu::{shader::PrepareRenderPipelines, GpuStore, GpuStreams, Shaders, StagingBufferPool, UploadStats};
+use gpu::{GpuStore, GpuStreams, StagingBufferPool, UploadStats};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 pub use bitflags;
@@ -62,7 +66,7 @@ pub mod units {
 }
 
 pub use crate::context::{
-    SurfaceDrawConfig, SurfacePassConfig, SurfaceKind, StencilMode, DepthMode,
+    SurfacePassConfig
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -499,7 +503,7 @@ impl BindingResolver for () {
 
 /// Parameters for the renderering stage.
 pub struct RenderContext<'a, 'b> {
-    pub render_pipelines: &'a gpu::shader::RenderPipelines,
+    pub render_pipelines: &'a RenderPipelines,
     pub resources: &'a resources::GpuResources,
     pub bindings: &'a dyn BindingResolver,
     pub stats: &'b mut RendererStats,

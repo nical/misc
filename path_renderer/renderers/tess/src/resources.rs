@@ -1,8 +1,7 @@
 use core::batching::RendererId;
-use core::gpu::PipelineDefaults;
 use core::wgpu;
-use core::gpu::shader::{
-    GeometryDescriptor,
+use core::shading::{
+    GeometryDescriptor, PipelineDefaults,
     GeometryId, Shaders, VertexAtribute,
 };
 

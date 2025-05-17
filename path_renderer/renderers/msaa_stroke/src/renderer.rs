@@ -2,10 +2,12 @@ use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
         DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
-        shader::{
-            GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-        }, storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, Shaders, StreamId, UploadStats
+        storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
     }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, Point, PrepareContext, UploadContext
+};
+use core::shading::{
+    Shaders,
+    GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
 };
 use lyon::{
     geom::{QuadraticBezierSegment, CubicBezierSegment, LineSegment},

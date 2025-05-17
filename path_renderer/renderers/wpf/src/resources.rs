@@ -1,13 +1,9 @@
-use core::gpu::PipelineDefaults;
-use core::gpu::shader::Varying;
 use core::wgpu;
-use core::{
-    gpu::shader::{
-        GeometryDescriptor,
-        GeometryId, Shaders, VertexAtribute,
-    },
-    context::RendererId,
+use core::shading::{
+    GeometryDescriptor, PipelineDefaults,
+    GeometryId, Shaders, VertexAtribute, Varying,
 };
+use core::context::RendererId;
 
 use crate::WpfMeshRenderer;
 

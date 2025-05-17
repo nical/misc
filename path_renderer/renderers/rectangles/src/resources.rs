@@ -1,16 +1,11 @@
 use core::batching::RendererId;
 use core::bitflags::bitflags;
 use core::bytemuck;
-use core::gpu::PipelineDefaults;
-use core::gpu::shader::GeometryId;
+use core::shading::PipelineDefaults;
+use core::shading::GeometryId;
 use core::wgpu;
-use core::{
-    gpu::shader::{
-        GeometryDescriptor,
-        Shaders, Varying, VertexAtribute,
-    },
-    units::LocalRect,
-};
+use core::units::LocalRect;
+use core::shading::{GeometryDescriptor, Shaders, Varying, VertexAtribute};
 
 use crate::RectangleRenderer;
 

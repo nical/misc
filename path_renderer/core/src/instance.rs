@@ -7,10 +7,7 @@ use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, Prep
 use crate::frame::Frame;
 use crate::render_graph::{Allocation, BuiltGraph};
 use crate::resources::{GpuResource, GpuResources};
-use crate::gpu::{
-    shader::{RenderPipelineBuilder, RenderPipelines},
-    Shaders
-};
+use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 
 
 pub fn ms(duration: Duration) -> f32 {

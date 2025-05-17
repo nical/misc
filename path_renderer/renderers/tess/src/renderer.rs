@@ -2,10 +2,11 @@ use core::{
     batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
         DrawHelper, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
     }, gpu::{
-        shader::{
-            GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-        }, GpuStoreWriter, GpuStreamWriter, StreamId
+        GpuStoreWriter, GpuStreamWriter, StreamId
     }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, usize_range, wgpu, BindingsId, PrepareContext
+};
+use core::shading::{
+    GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey
 };
 use lyon::{
     geom::euclid::vec2,

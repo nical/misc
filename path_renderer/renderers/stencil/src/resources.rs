@@ -1,10 +1,6 @@
-use core::gpu::PipelineDefaults;
 use core::wgpu;
+use core::shading::{PipelineDefaults, Shaders, VertexBuilder, GeometryId};
 use core::{
-    gpu::{
-        shader::GeometryId,
-        Shaders, VertexBuilder,
-    },
     resources::CommonGpuResources,
     context::RendererId,
 };

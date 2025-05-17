@@ -3,7 +3,7 @@
 use core::geom::traits::Transformation;
 use core::geom::Point;
 
-use core::gpu::shader::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
+use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
 use core::gpu::GpuStoreWriter;
 use core::pattern::BuiltPattern;
 use core::Color;

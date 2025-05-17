@@ -9,23 +9,19 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::BatchId, context::RenderPassContext, gpu::{shader::{BlendMode, ShaderPatternId}, GpuStoreWriter, GpuStreamWriter, StreamId}, transform::Transforms, PrepareContext};
 use core::wgpu;
+use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
 use core::{
+    PrepareContext, BindingsId, StencilMode, SurfacePassConfig,
     bytemuck,
-    gpu::shader::{
-        GeometryId, RenderPipelineIndex, RenderPipelineKey,
-    },
-    shape::{Circle, FilledPath},
 };
-use core::{
-    BindingsId, StencilMode, SurfacePassConfig,
-    batching::{BatchFlags, BatchList},
-    context::{DrawHelper, RendererId, ZIndex},
-    pattern::BuiltPattern,
-    transform::TransformId,
-    units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect},
-};
+use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect};
+use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
+use core::batching::{BatchId, BatchFlags, BatchList};
+use core::shape::{Circle, FilledPath};
+use core::context::{RenderPassContext, DrawHelper, RendererId, ZIndex};
+use core::pattern::BuiltPattern;
+use core::transform::{Transforms, TransformId};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]

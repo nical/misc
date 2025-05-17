@@ -1,11 +1,17 @@
 #![allow(unused)]
 //! An empty render that serves as a template for quickly adding new renderers
 
-use core::{
-    batching::{BatchFlags, BatchId, BatchList}, context::{
-        BuiltRenderPass, DrawHelper, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    }, gpu::shader::{PrepareRenderPipelines, RenderPipelineIndex}, pattern::BuiltPattern, resources::{CommonGpuResources, GpuResources}, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, usize_range, wgpu, BindingsId, PrepareContext, UploadContext
+use core::pattern::BuiltPattern;
+use core::resources::{CommonGpuResources, GpuResources};
+use core::transform::{TransformId, Transforms};
+use core::shape::FilledPath;
+use core::units::LocalRect;
+use core::context::{
+    BuiltRenderPass, DrawHelper, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
 };
+use core::batching::{BatchFlags, BatchId, BatchList};
+use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
+use core::{usize_range, wgpu, BindingsId, PrepareContext, UploadContext};
 use std::ops::Range;
 
 struct BatchInfo {

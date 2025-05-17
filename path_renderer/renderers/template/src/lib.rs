@@ -7,7 +7,7 @@ mod renderer;
 pub use renderer::*;
 use core::batching::RendererId;
 use core::wgpu;
-use core::gpu::shader::Shaders;
+use core::shading::Shaders;
 
 pub struct Template {
 }
