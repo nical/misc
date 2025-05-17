@@ -12,14 +12,14 @@ use crate::resources::StencilAndCoverResources;
 use core::wgpu;
 use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
 use core::{
-    PrepareContext, BindingsId, StencilMode, SurfacePassConfig,
+    PrepareContext, BindingsId, StencilMode, RenderPassConfig,
     bytemuck,
 };
 use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect};
 use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchId, BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
-use core::context::{RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{RenderPassContext, RendererId, ZIndex};
 use core::pattern::BuiltPattern;
 use core::transform::{Transforms, TransformId};
 use core::utils::DrawHelper;
@@ -196,7 +196,7 @@ impl StencilAndCoverRenderer {
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, surface: RenderPassConfig) -> bool {
         surface.stencil
     }
 
@@ -684,7 +684,7 @@ impl core::Renderer for StencilAndCoverRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        surface_info: &SurfacePassConfig,
+        surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

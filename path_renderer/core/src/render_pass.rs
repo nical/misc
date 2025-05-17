@@ -49,16 +49,16 @@ pub type RenderPassId = u32;
 
 /// The surface parameters for render passes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfacePassConfig {
+pub struct RenderPassConfig {
     pub depth: bool,
     pub msaa: bool,
     pub stencil: bool,
     pub attachments: [SurfaceKind; 3],
 }
 
-impl Default for SurfacePassConfig {
+impl Default for RenderPassConfig {
     fn default() -> Self {
-        SurfacePassConfig {
+        RenderPassConfig {
             depth: false,
             msaa: false,
             stencil: false,
@@ -71,7 +71,7 @@ impl Default for SurfacePassConfig {
     }
 }
 
-impl SurfacePassConfig {
+impl RenderPassConfig {
     pub fn msaa(&self) -> bool {
         self.msaa
     }
@@ -106,7 +106,7 @@ impl SurfacePassConfig {
     }
 
     pub fn color() -> Self {
-        SurfacePassConfig {
+        RenderPassConfig {
             msaa: false,
             depth: false,
             stencil: false,
@@ -119,7 +119,7 @@ impl SurfacePassConfig {
     }
 
     pub fn alpha() -> Self {
-        SurfacePassConfig {
+        RenderPassConfig {
             msaa: false,
             depth: false,
             stencil: false,
@@ -147,15 +147,16 @@ impl SurfacePassConfig {
     }
 }
 
+// TODO: Merge SurfaceInfo and RenderPassConfig?
 #[derive(Debug, Default)]
 pub struct SurfaceInfo {
     size: SurfaceIntSize,
-    config: SurfacePassConfig,
+    config: RenderPassConfig,
 }
 
 impl SurfaceInfo {
     #[inline]
-    fn new(size: SurfaceIntSize, surface_cfg: SurfacePassConfig) -> Self {
+    fn new(size: SurfaceIntSize, surface_cfg: RenderPassConfig) -> Self {
         SurfaceInfo {
             size,
             config: surface_cfg,
@@ -177,7 +178,7 @@ impl SurfaceInfo {
         self.config.depth
     }
 
-    pub fn config(&self) -> SurfacePassConfig {
+    pub fn config(&self) -> RenderPassConfig {
         self.config
     }
 }
@@ -188,7 +189,7 @@ impl SurfaceInfo {
 pub struct RenderPassContext<'l> {
     pub z_indices: &'l mut ZIndices,
     pub batcher: &'l mut Batcher,
-    pub surface: SurfacePassConfig,
+    pub surface: RenderPassConfig,
 }
 
 pub struct RenderPassBuilder {
@@ -214,7 +215,7 @@ impl RenderPassBuilder {
         }
     }
 
-    pub fn begin(&mut self, size: SurfaceIntSize, surface: SurfacePassConfig) {
+    pub fn begin(&mut self, size: SurfaceIntSize, surface: RenderPassConfig) {
         self.z_indices.clear();
         self.surface = SurfaceInfo::new(size, surface);
         self.batcher.begin(&SurfaceRect::from_size(size.to_f32()));
@@ -234,7 +235,7 @@ impl RenderPassBuilder {
 
 pub struct BuiltRenderPass {
     batches: Vec<BatchId>,
-    config: SurfacePassConfig,
+    config: RenderPassConfig,
     size: SurfaceIntSize,
 }
 
@@ -243,7 +244,7 @@ impl BuiltRenderPass {
         &self.batches
     }
 
-    pub fn surface(&self) -> SurfacePassConfig {
+    pub fn config(&self) -> RenderPassConfig {
         self.config
     }
 
@@ -255,14 +256,14 @@ impl BuiltRenderPass {
         self.batches.is_empty()
     }
 
-    pub fn encode<'pass, 'resources: 'pass>(
+    pub fn render<'pass, 'resources: 'pass>(
         &self,
         pass_index: u16,
         renderers: &[&'resources dyn Renderer],
         resources: &'resources GpuResources,
         bindings: &'resources dyn BindingResolver,
         render_pipelines: &'resources RenderPipelines,
-        render_pass: &mut wgpu::RenderPass<'pass>,
+        wgpu_pass: &mut wgpu::RenderPass<'pass>,
         stats: &mut RenderStats,
     ) {
         if self.batches.is_empty() {
@@ -271,18 +272,18 @@ impl BuiltRenderPass {
 
         //if let Some(bind_group) = blit_src {
         //    let common = &resources[common_resources];
-        //    render_pass.set_bind_group(0, bind_group, &[]);
-        //    render_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-        //    render_pass.set_pipeline(if surface_cfg.depth || surface_cfg.stencil {
+        //    wgpu_pass.set_bind_group(0, bind_group, &[]);
+        //    wgpu_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+        //    wgpu_pass.set_pipeline(if surface_cfg.depth || surface_cfg.stencil {
         //        &common.msaa_blit_with_depth_stencil_pipeline
         //    } else {
         //        &common.msaa_blit_pipeline
         //    });
-        //    render_pass.draw_indexed(0..6, 0, 0..1);
+        //    wgpu_pass.draw_indexed(0..6, 0, 0..1);
         //}
 
         let base_bind_group = resources.graph.get_base_bindgroup(pass_index);
-        render_pass.set_bind_group(0, base_bind_group, &[]);
+        wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
         // Traverse batches, grouping consecutive items with the same renderer.
         let mut start = 0;
@@ -306,7 +307,7 @@ impl BuiltRenderPass {
                     resources,
                     stats: renderer_stats,
                 },
-                render_pass
+                wgpu_pass
             );
             let time = crate::instance::ms(Instant::now() - start_time);
             renderer_stats.render_time += time;

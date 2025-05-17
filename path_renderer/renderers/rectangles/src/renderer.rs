@@ -8,7 +8,7 @@ use core::{
 };
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{RenderPassContext, RendererId, SurfacePassConfig};
+use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
 use core::gpu::{GpuStoreHandle, StreamId};
 use core::utils::DrawHelper;
 
@@ -66,7 +66,7 @@ impl RectangleRenderer {
         self.instances = None;
     }
 
-    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, _surface: RenderPassConfig) -> bool {
         true
     }
 
@@ -203,7 +203,7 @@ impl core::Renderer for RectangleRenderer {
     fn render<'pass, 'resources: 'pass, 'stats>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'stats>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

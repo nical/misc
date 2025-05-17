@@ -1,14 +1,12 @@
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    }, gpu::{
+    bytemuck, gpu::{
         storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
-    }, pattern::BuiltPattern, shape::FilledPath, transform::{TransformId, Transforms}, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
-use core::shading::{
-    Shaders,
-    GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-};
+use core::transform::{TransformId, Transforms};
+use core::batching::{BatchFlags, BatchId, BatchList};
+use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
+use core::shading::{Shaders, GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
 
 use lyon::{
@@ -126,7 +124,7 @@ impl MsaaStrokeRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, _surface: RenderPassConfig) -> bool {
         true
     }
 
@@ -344,7 +342,7 @@ impl core::Renderer for MsaaStrokeRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

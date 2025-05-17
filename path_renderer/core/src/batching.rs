@@ -1,7 +1,9 @@
 use bitflags::bitflags;
 use std::collections::VecDeque;
 
-use crate::{context::RenderPassContext, worker::SendPtr, SurfacePassConfig};
+use crate::render_pass::RenderPassContext;
+use crate::worker::SendPtr;
+use crate::RenderPassConfig;
 
 pub type Rect = crate::units::SurfaceRect;
 
@@ -423,7 +425,7 @@ impl Batcher {
 
 #[repr(transparent)]
 pub struct BatchRef<'l, T, I> {
-    inner: &'l mut (Vec<T>, SurfacePassConfig, I),
+    inner: &'l mut (Vec<T>, RenderPassConfig, I),
 }
 
 impl <'l, T, I> BatchRef<'l, T, I> {
@@ -433,7 +435,7 @@ impl <'l, T, I> BatchRef<'l, T, I> {
     }
 
     #[inline]
-    pub fn surface(&mut self) -> SurfacePassConfig {
+    pub fn render_pass_config(&mut self) -> RenderPassConfig {
         self.inner.1
     }
 
@@ -446,7 +448,7 @@ impl <'l, T, I> BatchRef<'l, T, I> {
 /// A helper class for storing batches in a renderer.
 pub struct BatchList<T, I> {
     // TODO: try something more efficient than Vec<Vec<T>>
-    batches: Vec<(Vec<T>, SurfacePassConfig, I)>,
+    batches: Vec<(Vec<T>, RenderPassConfig, I)>,
     renderer: RendererId,
 }
 
@@ -484,21 +486,21 @@ impl<T, I> BatchList<T, I> {
         then(BatchRef { inner: b })
     }
 
-    pub fn get(&self, index: BatchIndex) -> (&[T], &SurfacePassConfig, &I) {
+    pub fn get(&self, index: BatchIndex) -> (&[T], &RenderPassConfig, &I) {
         let b = &self.batches[index as usize];
         (&b.0, &b.1, &b.2)
     }
 
-    pub fn get_mut(&mut self, index: BatchIndex) -> (&mut Vec<T>, &SurfacePassConfig, &mut I) {
+    pub fn get_mut(&mut self, index: BatchIndex) -> (&mut Vec<T>, &RenderPassConfig, &mut I) {
         let b = &mut self.batches[index as usize];
         (&mut b.0, &b.1, &mut b.2)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Vec<T>, &SurfacePassConfig, &I)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Vec<T>, &RenderPassConfig, &I)> {
         self.batches.iter().map(|b| (&b.0, &b.1, &b.2))
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &SurfacePassConfig, &mut I)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Vec<T>, &RenderPassConfig, &mut I)> {
         self.batches.iter_mut().map(|b| (&mut b.0, &b.1, &mut b.2))
     }
 
@@ -509,7 +511,7 @@ impl<T, I> BatchList<T, I> {
     pub unsafe fn par_iter_mut<D, Op>(
         &mut self,
         ctx: &mut crate::worker::Context<D>,
-        pass: &crate::context::BuiltRenderPass,
+        pass: &crate::render_pass::BuiltRenderPass,
         renderer_id: RendererId,
         op: &Op,
     )
@@ -517,7 +519,7 @@ impl<T, I> BatchList<T, I> {
         D: crate::worker::WorkerData,
         I: Send + Sync,
         T: Send,
-        Op: Fn(&mut crate::worker::Context<D>, BatchId, &[T], &SurfacePassConfig, &mut I) + Send + Sync,
+        Op: Fn(&mut crate::worker::Context<D>, BatchId, &[T], &RenderPassConfig, &mut I) + Send + Sync,
     {
         let batches_ptr = self.batches.as_mut_ptr();
         let batches = pass

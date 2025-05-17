@@ -1,6 +1,6 @@
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{RenderPassContext, RendererId, SurfacePassConfig};
+use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
 use core::gpu::GpuStoreWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -84,7 +84,7 @@ impl WpfMeshRenderer {
         }
     }
 
-    pub fn supports_surface(&self, surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, surface: RenderPassConfig) -> bool {
         !surface.msaa
     }
 
@@ -283,7 +283,7 @@ impl core::Renderer for WpfMeshRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

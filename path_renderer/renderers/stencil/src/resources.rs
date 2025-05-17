@@ -1,9 +1,7 @@
 use core::wgpu;
 use core::shading::{PipelineDefaults, Shaders, VertexBuilder, GeometryId};
-use core::{
-    resources::CommonGpuResources,
-    context::RendererId,
-};
+use core::resources::CommonGpuResources;
+use core::render_pass::RendererId;
 use std::sync::Arc;
 
 use crate::StencilAndCoverRenderer;

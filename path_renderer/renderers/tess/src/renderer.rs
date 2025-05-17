@@ -1,13 +1,12 @@
 use core::{
-    batching::{BatchFlags, BatchId, BatchList}, bytemuck, context::{
-        RenderPassContext, RendererId, SurfacePassConfig, ZIndex
-    }, gpu::{
-        GpuStoreWriter, GpuStreamWriter, StreamId
-    }, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, transform::{TransformId, Transforms}, units::{point, LocalPoint, LocalRect}, wgpu, BindingsId, PrepareContext
+    bytemuck, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
 };
-use core::shading::{
-    GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey
-};
+use core::transform::{TransformId, Transforms};
+use core::units::{point, LocalPoint, LocalRect};
+use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
+use core::batching::{BatchFlags, BatchId, BatchList};
+use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
+use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
 
 use lyon::{
@@ -159,7 +158,7 @@ impl MeshRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, _surface: RenderPassConfig) -> bool {
         true
     }
 
@@ -472,7 +471,7 @@ impl core::Renderer for MeshRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

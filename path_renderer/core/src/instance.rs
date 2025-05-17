@@ -296,7 +296,7 @@ impl Instance {
                     std::mem::transmute(&renderers)
                 };
 
-                built_pass.encode(
+                built_pass.render(
                     command.pass_data_index(),
                     *const_renderers,
                     &self.resources,

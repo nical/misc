@@ -6,8 +6,8 @@ use core::resources::{CommonGpuResources, GpuResources};
 use core::transform::{TransformId, Transforms};
 use core::shape::FilledPath;
 use core::units::LocalRect;
-use core::context::{
-    BuiltRenderPass, RenderPassBuilder, RenderPassContext, RendererId, SurfacePassConfig, ZIndex
+use core::render_pass::{
+    BuiltRenderPass, RenderPassBuilder, RenderPassContext, RendererId, RenderPassConfig, ZIndex
 };
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
@@ -65,7 +65,7 @@ impl TemplateRenderer {
         }
     }
 
-    pub fn supports_surface(&self, _surface: SurfacePassConfig) -> bool {
+    pub fn supports_surface(&self, _surface: RenderPassConfig) -> bool {
         true
     }
 
@@ -171,7 +171,7 @@ impl core::Renderer for TemplateRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

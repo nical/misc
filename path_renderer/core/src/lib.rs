@@ -1,6 +1,6 @@
 pub extern crate wgpu;
 
-pub mod context;
+pub mod render_pass;
 pub mod gpu;
 pub mod batching;
 pub mod cache;
@@ -20,7 +20,9 @@ pub mod utils;
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
-use context::{BuiltRenderPass, RenderPassContext};
+use render_pass::{BuiltRenderPass, RenderPassContext};
+pub use render_pass::{RenderPassConfig};
+
 use gpu::{GpuStore, GpuStreams, StagingBufferPool, UploadStats};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
@@ -64,10 +66,6 @@ pub mod units {
     pub use euclid::point2 as point;
     pub use euclid::vec2 as vector;
 }
-
-pub use crate::context::{
-    SurfacePassConfig
-};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color {
@@ -318,7 +316,7 @@ pub trait Renderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         _batches: &[batching::BatchId],
-        _pass_info: &context::SurfacePassConfig,
+        _pass_info: &render_pass::RenderPassConfig,
         _ctx: RenderContext<'resources, 'tmp>,
         _render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

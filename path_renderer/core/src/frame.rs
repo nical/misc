@@ -1,8 +1,8 @@
-use crate::context::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
+use crate::render_pass::{BuiltRenderPass, RenderPassBuilder, RenderPassContext};
 use crate::gpu::{GpuStore, GpuStreams};
 use crate::graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
 use crate::units::SurfaceIntSize;
-use crate::{transform::Transforms, SurfaceKind, SurfacePassConfig};
+use crate::{transform::Transforms, SurfaceKind, RenderPassConfig};
 
 
 
@@ -78,7 +78,7 @@ impl Frame {
 
         pass.begin(
             descriptor.size.unwrap(),
-            SurfacePassConfig {
+            RenderPassConfig {
                 depth,
                 stencil,
                 msaa: descriptor.msaa,

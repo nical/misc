@@ -1,5 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::context::{RenderPassContext, RendererId, SurfacePassConfig, ZIndex};
+use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -177,7 +177,7 @@ impl TileRenderer {
         let mut path_store = self.resources.paths.begin_frame(ctx.staging_buffers.clone());
 
         if self.occlusion.gpu {
-            debug_assert!(pass.surface().depth);
+            debug_assert!(pass.config().depth);
         }
 
         let opaque_stream = instances.next_stream_id();
@@ -502,7 +502,7 @@ impl core::Renderer for TileRenderer {
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
         batches: &[BatchId],
-        _surface_info: &SurfacePassConfig,
+        _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {

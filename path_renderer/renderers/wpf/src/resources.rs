@@ -3,7 +3,7 @@ use core::shading::{
     GeometryDescriptor, PipelineDefaults,
     GeometryId, Shaders, VertexAtribute, Varying,
 };
-use core::context::RendererId;
+use core::render_pass::RendererId;
 
 use crate::WpfMeshRenderer;
 
