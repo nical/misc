@@ -400,6 +400,7 @@ dependencies = [
  "bytemuck",
  "etagere",
  "futures",
+ "guillotiere",
  "lyon",
  "profiling",
  "rayon",
@@ -936,6 +937,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.9.0",
+]
+
+[[package]]
+name = "guillotiere"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b62d5865c036cb1393e23c50693df631d3f5d7bcca4c04fe4cc0fd592e74a782"
+dependencies = [
+ "euclid",
+ "svg_fmt",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ workspace = ".."
 lyon = { version = "1.0.0" }
 wgpu = { version = "25" }
 etagere = { version = "0.2.13" }
+guillotiere = { version = "0.6.2" }
 futures = "0.3.5"
 bytemuck = "1.2.0"
 svg_fmt = "0.4.1"

@@ -168,7 +168,7 @@ impl RenderPassConfig {
     }
 }
 
-// Paramater for the renderers's prepare methods.
+// Parameter for the renderers's bathing methods.
 // For now it matches the RenderPassBuilder it is created from
 // but it may become a subset of it.
 pub struct RenderPassContext<'l> {

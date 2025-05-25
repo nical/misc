@@ -1,5 +1,6 @@
 mod build;
 mod command;
+mod stack;
 
 use std::{fmt, u16};
 use bitflags::bitflags;
@@ -223,6 +224,12 @@ impl TextureKind {
     pub const fn is_compatible_width(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
+
+    pub fn as_key(&self, w: u16, h: u16) -> ResourceKey {
+        let w = texture_size_class(w);
+        let h = texture_size_class(h);
+        ResourceKey(self.0 | (w << 12) | (h << 9))
+    }
 }
 
 impl fmt::Debug for TextureKind {
@@ -259,6 +266,28 @@ impl fmt::Debug for TextureKind {
         write!(f, ")")
     }
 }
+
+fn texture_size_class(size: u16) -> u16 {
+    // Must fit in 3 bits (up to 7 buckets).
+    match size {
+        0..1025 => 1,
+        1025..2049 => 2,
+        2049..4097 => 3,
+        4097..8193 => 4,
+        8193..16385 => 5,
+        _ => panic!("Invalid texture size")
+    }
+}
+fn texture_size_from_class(class: u16) -> u16 {
+    match class {
+        1 => 1024,
+        2 => 2048,
+        3 => 4096,
+        4 => 8192,
+        _ => 16384,
+    }
+}
+
 
 impl BufferKind {
     const BUFFER: u16 = 1 << 15;
@@ -332,6 +361,44 @@ impl fmt::Debug for ResourceKind {
         }
 
         write!(f, "<InvalidBufferKind>")
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ResourceKey(u16);
+
+impl ResourceKey {
+    pub fn is_texture(self) -> bool {
+        self.0 & BufferKind::BUFFER == 0
+    }
+
+    pub fn is_buffer(self) -> bool {
+        self.0 & BufferKind::BUFFER != 0
+    }
+
+    pub fn as_texture(&self) -> Option<(TextureKind, u16, u16)> {
+        if !self.is_texture() {
+            return None;
+        }
+
+        let kind = self.0 & 0b111111111;
+        let w = self.0 >> 12 & 0b111;
+        let h = self.0 >> 9 & 0b111;
+        Some((
+            TextureKind(kind),
+            texture_size_from_class(w),
+            texture_size_from_class(h),
+        ))
+    }
+}
+
+impl fmt::Debug for ResourceKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some((kind, w, h)) = self.as_texture() {
+            return write!(f, "#{kind:?}({w},{h})");
+        }
+        let buf = BufferKind(self.0); // TODO: buffer size classes
+        write!(f, "#{buf:?}(..)")
     }
 }
 
