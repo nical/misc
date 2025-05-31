@@ -1,33 +1,24 @@
-use crate::batching::{Batcher, BatchId};
-use crate::graph::NodeId;
+use crate::batching::{BatchId, Batcher, RenderTaskInfo};
+use crate::gpu::GpuStoreHandle;
+use crate::graph::{Command, CommandContext, TaskId};
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::instance::RenderStats;
 use crate::path::FillRule;
 use crate::resources::GpuResources;
-use crate::units::{SurfaceIntSize, SurfaceRect};
-use crate::{BindingResolver, Renderer, RenderContext};
+use crate::units::SurfaceIntSize;
+use crate::{BindingResolver, BindingsId, RenderContext, Renderer};
 use std::ops::Range;
 use std::time::Instant;
 
-pub struct RenderPass {
-    pass: RenderPassBuilder,
-    node: NodeId,
-}
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderTaskHandle(pub(crate) GpuStoreHandle);
 
-impl RenderPass {
-    pub(crate) fn new(pass: RenderPassBuilder, node: NodeId) -> Self {
-        RenderPass { pass, node }
+impl RenderTaskHandle {
+    pub const INVALID: Self = RenderTaskHandle(GpuStoreHandle::INVALID);
+
+    pub fn to_u32(&self) -> u32 {
+        self.0.to_u32()
     }
-
-    pub fn node_id(&self) -> NodeId {
-        self.node
-    }
-
-    pub fn ctx(&mut self) -> RenderPassContext {
-        self.pass.ctx()
-    }
-
-    pub(crate) fn end(mut self) -> BuiltRenderPass { self.pass.end() }
 }
 
 pub type ZIndex = u32;
@@ -175,13 +166,15 @@ pub struct RenderPassContext<'l> {
     pub z_indices: &'l mut ZIndices,
     pub batcher: &'l mut Batcher,
     pub config: RenderPassConfig,
+    pub render_task: RenderTaskHandle,
 }
 
 pub(crate) struct RenderPassBuilder {
     z_indices: ZIndices,
     config: RenderPassConfig,
-    size: SurfaceIntSize,
-    batcher: Batcher,
+    pub(crate) size: SurfaceIntSize,
+    render_task: RenderTaskHandle,
+    pub(crate) batcher: Batcher,
 }
 
 impl RenderPassBuilder {
@@ -191,6 +184,7 @@ impl RenderPassBuilder {
             config: RenderPassConfig::default(),
             size: SurfaceIntSize::new(0, 0),
             batcher: Batcher::new(),
+            render_task: RenderTaskHandle(GpuStoreHandle::INVALID),
         }
     }
 
@@ -199,14 +193,16 @@ impl RenderPassBuilder {
             z_indices: &mut self.z_indices,
             batcher: &mut self.batcher,
             config: self.config,
+            render_task: self.render_task,
         }
     }
 
-    pub fn begin(&mut self, size: SurfaceIntSize, config: RenderPassConfig) {
+    pub fn begin(&mut self, render_task: &RenderTaskInfo, config: RenderPassConfig) {
         self.z_indices.clear();
         self.config = config;
-        self.size = size;
-        self.batcher.begin(&SurfaceRect::from_size(size.to_f32()));
+        self.size = render_task.bounds.size();
+        self.render_task = render_task.handle;
+        self.batcher.begin(&render_task);
     }
 
     pub fn end(&mut self) -> BuiltRenderPass {
@@ -321,5 +317,175 @@ fn surface_draw_config() {
                 }
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AttathchmentFlags {
+    pub load: bool,
+    pub store: bool,
+}
+
+pub struct RenderCommand<'l> {
+    label: Option<&'static str>,
+    commands: &'l RenderCommands,
+    built_pass: u32,
+    // TODO: This is how we get the base bind group from the render graph resources.
+    pass_data_index: u16,
+    // [(non-msaa, msaa, flags); 3]
+    color_attachments: [(Option<BindingsId>, Option<BindingsId>, AttathchmentFlags); 3],
+    depth_stencil_attachment: Option<BindingsId>,
+}
+
+impl<'l> std::fmt::Debug for RenderCommand<'l> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(label) = self.label {
+            write!(f, "RenderCommand({})", label)
+        } else {
+            write!(f, "RenderCommand")
+        }
+    }
+}
+
+impl<'l> Command for RenderCommand<'l> {
+    fn execute(&self, ctx: &mut CommandContext) {
+        let mut wgpu_attachments = Vec::new();
+
+        let built_pass = &self.commands.built_render_passes[self.built_pass as usize].as_ref().unwrap();
+        let msaa = built_pass.config().msaa();
+        for (non_msaa_attachment, msaa_attachment, flags) in &self.color_attachments {
+            let view;
+            let resolve_target;
+            if msaa {
+                view = msaa_attachment.map(|id| ctx.bindings.resolve_attachment(id).unwrap());
+                resolve_target = non_msaa_attachment.map(|id| ctx.bindings.resolve_attachment(id).unwrap());
+            } else {
+                view = non_msaa_attachment.map(|id| ctx.bindings.resolve_attachment(id).unwrap());
+                resolve_target = None;
+            }
+
+            if let Some(view) = view {
+                wgpu_attachments.push(Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: if flags.load {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        },
+                        store: if flags.store {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
+                    },
+                }))
+            } else {
+                wgpu_attachments.push(None);
+            }
+        }
+        while let Some(attachment) = wgpu_attachments.last() {
+            if attachment.is_none() {
+                wgpu_attachments.pop();
+            } else {
+                break;
+            }
+        }
+
+        let depth_stencil_attachment = self.depth_stencil_attachment.map(|id| {
+            let view = ctx.bindings.resolve_attachment(id).unwrap();
+            wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: if built_pass.config.depth {
+                    Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    })
+                } else {
+                    None
+                },
+                stencil_ops: if built_pass.config.stencil {
+                    Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(128),
+                        store: wgpu::StoreOp::Discard,
+                    })
+                } else {
+                    None
+                },
+            }
+        });
+
+        let pass_descriptor = &wgpu::RenderPassDescriptor {
+            label: self.label,
+            color_attachments: &wgpu_attachments,
+            depth_stencil_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        };
+
+        let mut wgpu_pass = ctx.encoder.begin_render_pass(&pass_descriptor);
+
+        built_pass.render(
+            self.pass_data_index,
+            ctx.renderers,
+            ctx.resources,
+            ctx.bindings,
+            ctx.render_pipelines,
+            &mut wgpu_pass,
+            ctx.stats,
+        );
+    }
+}
+
+pub struct RenderCommands {
+    built_render_passes: Vec<Option<BuiltRenderPass>>,
+    next_id: u64,
+}
+
+impl RenderCommands {
+    pub fn new() -> Self {
+        RenderCommands { built_render_passes: Vec::with_capacity(128), next_id: 0, }
+    }
+
+    pub fn next_render_pass_id(&mut self) -> TaskId {
+        let id = TaskId(self.next_id);
+        self.next_id += 1;
+
+        id
+    }
+
+    pub fn add_built_render_pass(&mut self, id: TaskId, pass: BuiltRenderPass) {
+        let index = id.0 as usize;
+        if self.built_render_passes.len() <= index {
+            let n = index + 1 - self.built_render_passes.len();
+            self.built_render_passes.reserve(n);
+        }
+        while self.built_render_passes.len() <= index {
+            self.built_render_passes.push(None);
+        }
+        self.built_render_passes[index] = Some(pass);
+    }
+
+    pub fn passes(&self) -> &[Option<BuiltRenderPass>] {
+        &self.built_render_passes
+    }
+
+    pub fn create_command<'l>(
+        &'l self,
+        label: Option<&'static str>,
+        built_pass: u32,
+        pass_data_index: u16,
+        color_attachments: &[(Option<BindingsId>, Option<BindingsId>, AttathchmentFlags); 3],
+        depth_stencil_attachment: Option<BindingsId>,
+    ) -> Box<dyn Command + 'l> {
+        Box::new(RenderCommand {
+            label,
+            commands: self,
+            built_pass,
+            pass_data_index,
+            color_attachments: *color_attachments,
+            depth_stencil_attachment,
+        })
     }
 }

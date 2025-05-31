@@ -78,10 +78,10 @@ impl Tiler {
         viewport.max.x = viewport.max.x.max(0);
         viewport.max.y = viewport.max.y.max(0);
         self.viewport = viewport.cast();
-        self.set_scissor_srect(viewport);
+        self.set_scissor_rect(viewport);
     }
 
-    pub fn set_scissor_srect(&mut self, i32_scissor: SurfaceIntRect) {
+    pub fn set_scissor_rect(&mut self, i32_scissor: SurfaceIntRect) {
         let mut scissor: SurfaceRect = i32_scissor.cast();
         scissor = scissor.intersection_unchecked(&self.viewport);
         self.scissor = scissor;

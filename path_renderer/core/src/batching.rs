@@ -1,7 +1,8 @@
 use bitflags::bitflags;
 use std::collections::VecDeque;
 
-use crate::render_pass::RenderPassContext;
+use crate::render_pass::{RenderPassContext, RenderTaskHandle};
+use crate::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceVector};
 use crate::worker::SendPtr;
 use crate::RenderPassConfig;
 
@@ -17,6 +18,17 @@ pub struct BatchId {
     pub renderer: RendererId,
     pub index: BatchIndex,
     pub surface: SurfaceIndex,
+}
+
+// TODO: Not a great name. In WR this would be RenderTaskInfo or something along
+// these lines.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RenderTaskInfo {
+    /// Acts as a clip in surface space.
+    pub bounds: SurfaceIntRect,
+    /// An offset to apply after clipping.
+    pub offset: SurfaceVector,
+    pub handle: RenderTaskHandle,
 }
 
 bitflags! {
@@ -326,6 +338,7 @@ pub struct Batcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
     view_port: Rect,
+    view: RenderTaskInfo,
 }
 
 impl Batcher {
@@ -384,10 +397,17 @@ impl Batcher {
         self.order_independent.set_render_pass(pass_idx);
     }
 
-    pub fn begin(&mut self, view_port: &Rect) {
+    pub fn begin(&mut self, render_task: &RenderTaskInfo) {
         self.ordered.begin();
         self.order_independent.begin();
-        self.view_port = *view_port;
+        self.view = *render_task;
+        //let r = render_task.bounds.inflate(-20, -20);
+        //self.view_port = r.to_f32();
+        //self.view.bounds = r;
+    }
+
+    pub(crate) fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
+        self.view_port = render_task.bounds.to_f32();
     }
 
     pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
@@ -406,6 +426,14 @@ impl Batcher {
             view_port: Rect {
                 min: point(MIN, MIN),
                 max: point(MAX, MAX),
+            },
+            view: RenderTaskInfo {
+                bounds: SurfaceIntRect {
+                    min: SurfaceIntPoint::new(i32::MIN, i32::MIN),
+                    max: SurfaceIntPoint::new(i32::MAX, i32::MAX),
+                },
+                offset: SurfaceVector::new(0.0, 0.0),
+                handle: RenderTaskHandle::INVALID,
             }
         }
     }
@@ -467,15 +495,25 @@ impl<T, I> BatchList<T, I> {
         aabb: &Rect,
         flags: BatchFlags,
         or_add: &mut impl FnMut() -> I,
-        then: &mut impl FnMut(BatchRef<T, I>),
+        then: &mut impl FnMut(BatchRef<T, I>, &RenderTaskInfo),
     ) {
-        if !aabb.intersects(&ctx.batcher.view_port) {
+        // TODO: handle potential need for scissor rects here using a batch flag.
+        // if the flag is set and the item aabb is not contained in the viewport
+        // of the batcher, and the viewport isn't the entire surface, then look
+        // for a batch that is restricted to the viewport.
+        // TODO: using the intersection with the viewport isn't quite correct in
+        // the case of stencil and cover because while the cover geometry can be
+        // clipped exactly, the stencil geometry may extend out of it.
+        let aabb = aabb.intersection_unchecked(&ctx.batcher.view_port)
+            .translate(ctx.batcher.view.offset);
+
+        if aabb.is_empty() {
             return;
         }
 
         let new_batch_index = self.batches.len() as u32;
         let batch_index =
-            ctx.batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, aabb, flags);
+            ctx.batcher.find_or_add_batch(self.renderer, new_batch_index, batch_key, &aabb, flags);
 
         if batch_index == new_batch_index {
             self.batches.push((Vec::with_capacity(32), ctx.config, or_add()));
@@ -483,7 +521,7 @@ impl<T, I> BatchList<T, I> {
 
         let b = &mut self.batches[batch_index as usize];
 
-        then(BatchRef { inner: b })
+        then(BatchRef { inner: b }, &ctx.batcher.view);
     }
 
     pub fn get(&self, index: BatchIndex) -> (&[T], &RenderPassConfig, &I) {

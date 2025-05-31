@@ -1,9 +1,20 @@
-use crate::render_pass::{BuiltRenderPass, RenderPass, RenderPassBuilder};
-use crate::gpu::{GpuStore, GpuStreams};
-use crate::graph::{Resource, ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, TaskId};
-use crate::units::SurfaceIntSize;
+use std::sync::{Arc, Mutex};
+
+use guillotiere::AtlasAllocator;
+use smallvec::SmallVec;
+
+use crate::batching::RenderTaskInfo;
+use crate::render_pass::{RenderCommands, RenderPassBuilder, RenderPassContext, RenderTaskHandle};
+use crate::gpu::{GpuStore, GpuStoreWriter, GpuStreams};
+use crate::graph::{ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, Resource, Slot, TaskId};
+use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceSize, SurfaceVector};
 use crate::{transform::Transforms, SurfaceKind, RenderPassConfig};
 
+type RenderGraphRef = Arc<Mutex<FrameGraphInner>>;
+
+pub struct FrameGraph {
+    pub(crate) inner: RenderGraphRef,
+}
 
 pub struct Frame {
     pub gpu_store: GpuStore,
@@ -11,10 +22,28 @@ pub struct Frame {
     pub indices: GpuStreams,
     pub instances: GpuStreams,
     pub transforms: Transforms,
-    pub(crate) graph: RenderGraph,
-    pub(crate) built_render_passes: Vec<Option<BuiltRenderPass>>,
+    pub graph: FrameGraph,
     // pub allocator: FrameAllocator, // TODO
     index: u32,
+}
+
+pub(crate) struct FrameGraphInner {
+    pub graph: RenderGraph,
+    pub render_passes: RenderCommands,
+}
+
+unsafe impl bytemuck::Pod for RenderTaskData {}
+unsafe impl bytemuck::Zeroable for RenderTaskData {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct RenderTaskData {
+    /// Acts as a clip.
+    pub rect: SurfaceRect,
+    /// Optional offset.
+    pub content_offset: SurfaceVector,
+
+    pub target_size: SurfaceSize,
 }
 
 impl Frame {
@@ -31,14 +60,26 @@ impl Frame {
             indices,
             instances,
             transforms: Transforms::new(),
-            graph: RenderGraph::new(),
-            built_render_passes: Vec::new(),
+            graph: FrameGraph {
+                inner: Arc::new(Mutex::new(FrameGraphInner {
+                    graph: RenderGraph::new(),
+                    render_passes: RenderCommands::new(),
+                })),
+            },
             index,
         }
     }
 
-    pub fn begin_render_pass(&mut self, descriptor: RenderNodeDescriptor) -> RenderPass {
-        let task_id = TaskId(self.built_render_passes.len() as u64);
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+}
+
+impl FrameGraph {
+    pub fn add_render_node(&mut self, gpu_store: &mut GpuStoreWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
+        let mut guard = self.inner.lock().unwrap();
+
+        let task_id = guard.render_passes.next_render_pass_id();
         let descriptor = descriptor.to_node_descriptor(task_id);
 
         let (depth, stencil) = descriptor
@@ -60,38 +101,43 @@ impl Frame {
             }
         }
 
+        let size = descriptor.size.unwrap().to_f32();
+        let render_task = RenderTaskHandle(gpu_store.push(RenderTaskData {
+            rect: SurfaceRect::from_size(size),
+            content_offset: SurfaceVector::zero(),
+            target_size: size,
+        }));
+
+        let task_info = RenderTaskInfo {
+            bounds: SurfaceIntRect::from_size(descriptor.size.unwrap()),
+            offset: SurfaceVector::zero(),
+            handle: render_task,
+        };
+
         pass.begin(
-            descriptor.size.unwrap(),
+            &task_info,
             RenderPassConfig {
                 depth,
                 stencil,
                 msaa: descriptor.msaa,
                 attachments: kind,
-            }
+            },
         );
 
-        let node_id = self.graph.add_node(&descriptor);
-        RenderPass::new(pass, node_id)
+        let node = Node {
+            id: guard.graph.add_node(&descriptor),
+            task: task_id,
+            graph: self.inner.clone(),
+            dependencies: SmallVec::new(),
+        };
+
+        RenderNode::new(pass, node)
     }
 
-    pub fn end_render_pass(&mut self, pass: RenderPass) {
-        let index = self.graph.get_task_id(pass.node_id()).0 as usize;
-        while self.built_render_passes.len() <= index {
-            self.built_render_passes.push(None);
-        }
-        self.built_render_passes[index] = Some(pass.end());
-    }
-
-    pub fn add_dependency(&mut self, node: NodeId, dep: Dependency) {
-        self.graph.add_dependency(node, dep);
-    }
-
-    pub fn add_root(&mut self, root: Dependency) {
-        self.graph.add_root(root);
-    }
-
-    pub fn index(&self) -> u32 {
-        self.index
+    // TODO: mark root as a flag in the node instead to avoid accessing/locking
+    // the graph.
+    pub fn add_root<'l>(&mut self, root: impl Into<NodeDependency<'l>>) {
+        self.inner.lock().unwrap().graph.add_root(root.into().as_graph_dependency());
     }
 }
 
@@ -171,4 +217,153 @@ pub struct ComputeNodeDescriptor<'l> {
     pub label: Option<&'static str>,
     pub reads: &'l[Dependency],
     pub resources: &'l[Resource],
+}
+
+pub struct Node {
+    id: NodeId,
+    task: TaskId,
+    graph: RenderGraphRef,
+    dependencies: SmallVec<[Dependency; 4]>,
+}
+
+impl Node {
+    pub fn task_id(&self) -> TaskId {
+        self.task
+    }
+}
+
+pub struct NodeDependency<'l> {
+    pub(crate) node: &'l Node,
+    pub(crate) slot: Slot,
+}
+
+impl<'l> NodeDependency<'l> {
+    pub(crate) fn as_graph_dependency(&self) -> crate::graph::Dependency {
+        crate::graph::Dependency {
+            node: self.node.id,
+            slot: self.slot,
+        }
+    }
+}
+
+impl Node {
+    pub fn add_dependency<'l>(&mut self, dep: impl Into<NodeDependency<'l>>) {
+        let dep = dep.into().as_graph_dependency();
+        self.dependencies.push(dep);
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        self.graph.lock().unwrap().graph.finish_node(self.id);
+    }
+}
+
+
+pub struct RenderNode {
+    pass: RenderPassBuilder,
+    node: Node,
+}
+
+impl RenderNode {
+    pub(crate) fn new(pass: RenderPassBuilder, node: Node) -> Self {
+        RenderNode { pass, node }
+    }
+
+    pub fn ctx(&mut self) -> RenderPassContext {
+        self.pass.ctx()
+    }
+
+    pub fn finish(self) {
+        // Just a convenience to trigger Drop.
+    }
+
+    pub fn color(&self, idx: u8) -> NodeDependency {
+        NodeDependency {
+            node: self.as_ref(),
+            slot: Slot::Color(idx),
+        }
+    }
+
+    pub fn msaa(&self, idx: u8) -> NodeDependency {
+        NodeDependency {
+            node: self.as_ref(),
+            slot: Slot::Msaa(idx),
+        }
+    }
+
+    pub fn depth_stencil(&self) -> NodeDependency {
+        NodeDependency {
+            node: self.as_ref(),
+            slot: Slot::DepthStencil,
+        }
+    }
+}
+
+impl Drop for RenderNode {
+    fn drop(&mut self) {
+        // TODO: instead of doing a non-trivial amount of work while the lock is held,
+        // it may be better to enqueue everything and do the work before RenderGraph::schedule.
+        let built = self.pass.end();
+        let mut guard = self.node.graph.lock().unwrap();
+
+        guard.graph.set_dependencies(self.node.id, std::mem::take(&mut self.node.dependencies));
+        guard.render_passes.add_built_render_pass(self.node.task, built);
+    }
+}
+
+impl AsRef<Node> for RenderNode {
+    fn as_ref(&self) -> &Node {
+        &self.node
+    }
+}
+
+impl<'l> Into<NodeDependency<'l>> for &'l RenderNode {
+    fn into(self) -> NodeDependency<'l> {
+        self.color(0)
+    }
+}
+
+pub struct AtlasRenderNode {
+    inner: RenderNode,
+    atlas: AtlasAllocator,
+}
+
+impl AtlasRenderNode {
+    pub fn allocate(&mut self, gpu_store: &mut GpuStoreWriter, rect: &SurfaceIntRect) -> Option<RenderPassContext> {
+        let alloc = self.atlas.allocate(rect.size().cast_unit())?;
+        let offset = alloc.rectangle.min.cast_unit() - rect.min;
+
+        let data = RenderTaskData {
+            rect: alloc.rectangle.to_f32().cast_unit(),
+            content_offset: offset.to_f32(),
+            target_size: self.inner.pass.size.to_f32(),
+        };
+
+        let handle = RenderTaskHandle(gpu_store.push(data));
+
+        self.inner.pass.batcher.set_render_task(&RenderTaskInfo {
+            bounds: *rect,
+            offset: offset.to_f32(),
+            handle,
+        });
+
+        Some(self.inner.pass.ctx())
+    }
+
+    pub fn finish(self) {
+        // Just a convenience to trigger Drop.
+    }
+
+    pub fn color(&self, idx: u8) -> NodeDependency {
+        self.inner.color(idx)
+    }
+
+    pub fn msaa(&self, idx: u8) -> NodeDependency {
+        self.inner.msaa(idx)
+    }
+
+    pub fn depth_stencil(&self) -> NodeDependency {
+        self.inner.depth_stencil()
+    }
 }

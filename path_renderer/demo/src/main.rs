@@ -1,7 +1,7 @@
 #![allow(unused)]
 
-use core::frame::{RenderNodeDescriptor};
-use core::render_pass::RenderPass;
+use core::frame::{RenderNodeDescriptor, RenderNode};
+use core::gpu::gpu_store;
 use core::instance::Instance;
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
@@ -684,8 +684,10 @@ impl App {
             descriptor = descriptor.depth_stencil(Resource::Auto, depth, stencil);
         }
 
-        let mut main_surface = frame.begin_render_pass(descriptor);
-        frame.add_root(main_surface.node_id().color(0));
+        let mut gpu_store = frame.gpu_store.write();
+        let mut main_surface = frame.graph.add_render_node(&mut gpu_store, descriptor);
+        std::mem::drop(gpu_store);
+        frame.graph.add_root(&main_surface);
 
         let tx = self.view.pan[0].round();
         let ty = self.view.pan[1].round();
@@ -711,7 +713,7 @@ impl App {
             &transform,
         );
 
-        frame.end_render_pass(main_surface);
+        main_surface.finish();
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
@@ -822,7 +824,7 @@ fn paint_scene(
     fill_renderer: usize,
     stroke_renderer: usize,
     testing: bool,
-    surface: &mut RenderPass,
+    surface: &mut RenderNode,
     frame: &mut Frame,
     _instance: &mut Instance,
     renderers: &mut Renderers,
@@ -1488,7 +1490,7 @@ pub mod counters {
 
 
 pub struct Bindings<'l> {
-    pub graph: &'l BuiltGraph,
+    pub graph: &'l BuiltGraph<'l>,
     pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
     pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
     pub resources: &'l[GpuResource],

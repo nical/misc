@@ -121,7 +121,7 @@ impl WpfMeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode.with_alpha(true),
             },
-            &mut |mut batch| {
+            &mut |mut batch, _task| {
                 batch.push(Fill {
                     shape: shape.clone(),
                     pattern,

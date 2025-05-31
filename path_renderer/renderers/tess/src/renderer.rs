@@ -230,7 +230,7 @@ impl MeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch| {
+            &mut |mut batch, _task| {
                 batch.push(Fill {
                     shape: shape.clone(),
                     pattern,

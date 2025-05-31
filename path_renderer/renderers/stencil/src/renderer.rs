@@ -9,7 +9,7 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::wgpu;
+use core::{batching::RenderTaskInfo, units::SurfacePoint, wgpu};
 use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
@@ -129,6 +129,7 @@ pub struct BatchInfo {
 
 struct Fill {
     shape: Shape,
+    view: RenderTaskInfo,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
@@ -264,9 +265,10 @@ impl StencilAndCoverRenderer {
                 stencil_mode,
                 blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch| {
+            &mut |mut batch, view| {
                 batch.push(Fill {
                     shape: shape.clone(),
+                    view: *view,
                     pattern,
                     transform: transforms.current_id(),
                     z_index,
@@ -461,7 +463,14 @@ impl StencilAndCoverRenderer {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
-        let transformed_aabb = transform.matrix().outer_transformed_box(&local_aabb);
+        let transformed_aabb = transform.matrix()
+            .outer_transformed_box(&local_aabb)
+            .intersection_unchecked(&fill.view.bounds.to_f32());
+
+        if transformed_aabb.is_empty() {
+            // Note: In theory this should have been skipped during batching.
+            return;
+        }
 
         match &fill.shape {
             Shape::Path(shape) => {
@@ -500,10 +509,12 @@ impl StencilAndCoverRenderer {
                 }
             }
             _ => {
+                let clip = fill.view.bounds.to_f32();
                 generate_cover_geometry(
                     &local_aabb,
                     transform.matrix(),
                     fill,
+                    &clip,
                     cover,
                 );
             }
@@ -534,14 +545,21 @@ fn generate_stencil_geometry(
     // Use the center of the bounding box as the pivot point.
     let pivot = vertex(&mut stencil.vertices, aabb.center().cast_unit());
 
+    let mut skipped = None;
     for evt in path.iter() {
         match evt {
-            PathEvent::Begin { .. } => {}
+            PathEvent::Begin { .. } => {
+                debug_assert!(skipped.is_none());
+            }
             PathEvent::End { last, first, .. } => {
                 let last = transform.transform_point(last);
                 let first = transform.transform_point(first);
-                if skip_edge(&aabb, last, first) {
-                    continue;
+
+                if let Some(prev) = skipped {
+                    let a = vertex(&mut stencil.vertices, prev);
+                    let b = vertex(&mut stencil.vertices, last);
+                    triangle(&mut stencil.indices, pivot, a, b);
+                    skipped = None;
                 }
 
                 let a = vertex(&mut stencil.vertices, last);
@@ -552,7 +570,17 @@ fn generate_stencil_geometry(
                 let from = transform.transform_point(from);
                 let to = transform.transform_point(to);
                 if skip_edge(&aabb, from, to) {
+                    if skipped.is_none() {
+                        skipped = Some(from);
+                    }
                     continue;
+                }
+
+                if let Some(prev) = skipped {
+                    let a = vertex(&mut stencil.vertices, prev);
+                    let b = vertex(&mut stencil.vertices, from);
+                    triangle(&mut stencil.indices, pivot, a, b);
+                    skipped = None;
                 }
 
                 let a = vertex(&mut stencil.vertices, from);
@@ -563,23 +591,24 @@ fn generate_stencil_geometry(
                 let from = transform.transform_point(from);
                 let ctrl = transform.transform_point(ctrl);
                 let to = transform.transform_point(to);
-                let max_x = from.x.max(ctrl.x).max(to.x);
-                let max_y = from.y.max(ctrl.y).max(to.y);
-                if max_x < aabb.min.x || max_y < aabb.min.y {
-                    continue;
-                }
-
-                let a = vertex(&mut stencil.vertices, from);
-                let b = vertex(&mut stencil.vertices, to);
-
-                triangle(&mut stencil.indices, pivot, a, b);
 
                 let seg_aabb = SurfaceRect {
                     min: point(from.x.min(ctrl.x).min(to.x), from.y.min(ctrl.y).min(to.y)),
-                    max: point(max_x, max_y),
+                    max: point(from.x.max(ctrl.x).max(to.x), from.y.max(ctrl.y).max(to.y)),
                 };
 
                 if seg_aabb.intersects(&aabb) {
+                    if let Some(prev) = skipped {
+                        let a = vertex(&mut stencil.vertices, prev);
+                        let b = vertex(&mut stencil.vertices, from);
+                        triangle(&mut stencil.indices, pivot, a, b);
+                        skipped = None;
+                    }
+
+                    let a = vertex(&mut stencil.vertices, from);
+                    let b = vertex(&mut stencil.vertices, to);
+                    triangle(&mut stencil.indices, pivot, a, b);
+
                     let mut prev = a;
                     QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(
                         tolerance,
@@ -592,6 +621,19 @@ fn generate_stencil_geometry(
                             prev = next;
                         },
                     );
+                } else if (seg_aabb.min.y < aabb.min.y) & (seg_aabb.max.y > aabb.min.y)
+                        | (seg_aabb.min.y < aabb.max.y) & (seg_aabb.max.y > aabb.max.y) {
+                    if let Some(prev) = skipped {
+                        let a = vertex(&mut stencil.vertices, prev);
+                        let b = vertex(&mut stencil.vertices, from);
+                        triangle(&mut stencil.indices, pivot, a, b);
+                        skipped = None;
+                    }
+                    let a = vertex(&mut stencil.vertices, from);
+                    let b = vertex(&mut stencil.vertices, to);
+                    triangle(&mut stencil.indices, pivot, a, b);
+                } else if skipped.is_none() {
+                    skipped = Some(from);
                 }
             }
             PathEvent::Cubic {
@@ -604,21 +646,26 @@ fn generate_stencil_geometry(
                 let ctrl1 = transform.transform_point(ctrl1);
                 let ctrl2 = transform.transform_point(ctrl2);
                 let to = transform.transform_point(to);
-                let max_x = from.x.max(ctrl1.x).max(ctrl2.x).max(to.x);
-                let max_y = from.y.max(ctrl1.y).max(ctrl2.y).max(to.y);
-                if max_x < aabb.min.x || max_y < aabb.min.y {
-                    continue;
-                }
 
                 let seg_aabb = SurfaceRect {
                     min: point(
                         from.x.min(ctrl1.x).min(ctrl2.x).min(to.x),
                         from.y.min(ctrl1.y).min(ctrl2.y).min(to.y),
                     ),
-                    max: point(max_x, max_y),
+                    max: point(
+                        from.x.max(ctrl1.x).max(ctrl2.x).max(to.x),
+                        from.y.max(ctrl1.y).max(ctrl2.y).max(to.y),
+                    ),
                 };
 
                 if seg_aabb.intersects(&aabb) {
+                    if let Some(prev) = skipped {
+                        let a = vertex(&mut stencil.vertices, prev);
+                        let b = vertex(&mut stencil.vertices, from);
+                        triangle(&mut stencil.indices, pivot, a, b);
+                        skipped = None;
+                    }
+
                     CubicBezierSegment {
                         from,
                         ctrl1,
@@ -639,6 +686,19 @@ fn generate_stencil_geometry(
                             prev = next;
                         });
                     });
+                } else if (seg_aabb.min.y < aabb.min.y) & (seg_aabb.max.y > aabb.min.y)
+                        | (seg_aabb.min.y < aabb.max.y) & (seg_aabb.max.y > aabb.max.y) {
+                    if let Some(prev) = skipped {
+                        let a = vertex(&mut stencil.vertices, prev);
+                        let b = vertex(&mut stencil.vertices, from);
+                        triangle(&mut stencil.indices, pivot, a, b);
+                        skipped = None;
+                    }
+                    let a = vertex(&mut stencil.vertices, from);
+                    let b = vertex(&mut stencil.vertices, to);
+                    triangle(&mut stencil.indices, pivot, a, b);
+                } else if skipped.is_none() {
+                    skipped = Some(from);
                 }
             }
         }
@@ -649,12 +709,15 @@ fn generate_cover_geometry(
     aabb: &LocalRect,
     transform: &LocalToSurfaceTransform,
     fill: &Fill,
+    clip: &SurfaceRect,
     cover: &mut Geometry,
 ) {
-    let a = transform.transform_point(aabb.min);
-    let b = transform.transform_point(point(aabb.max.x, aabb.min.y));
-    let c = transform.transform_point(aabb.max);
-    let d = transform.transform_point(point(aabb.min.x, aabb.max.y));
+    // TODO: The clip could be applied in the verex shader.
+    let r = transform.outer_transformed_box(&aabb).intersection_unchecked(clip);
+    let a = r.min;
+    let b = SurfacePoint::new(r.max.x, r.min.y);
+    let c = r.max;
+    let d = SurfacePoint::new(r.min.x, r.max.y);
 
     let z_index = fill.z_index;
     let pattern = fill.pattern.data;
@@ -751,7 +814,9 @@ impl core::Renderer for StencilAndCoverRenderer {
 }
 
 fn skip_edge(rect: &SurfaceRect, from: Point, to: Point) -> bool {
-    from.x < rect.min.x && to.x < rect.min.x || from.y < rect.min.y && to.y < rect.min.y
+    ((from.y < rect.min.y) & (to.y < rect.min.y))
+        | ((from.y > rect.max.y) & (to.y > rect.max.y))
+    //(from.x < rect.min.x && to.x < rect.min.x) || (from.y < rect.min.y && to.y < rect.min.y)
 }
 
 impl core::FillPath for StencilAndCoverRenderer {

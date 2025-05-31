@@ -117,7 +117,7 @@ impl RectangleRenderer {
                     edge_aa: true,
                     pipeline_idx: None,
                 },
-                &mut |mut batch| {
+                &mut |mut batch, _task| {
                     batch.push(Instance {
                         local_rect: *local_rect,
                         z_index,
@@ -152,7 +152,7 @@ impl RectangleRenderer {
                 edge_aa: false,
                 pipeline_idx: None,
             },
-            &mut |mut batch| {
+            &mut |mut batch, _task| {
                 batch.batch_data().edge_aa |= aa != Aa::NONE;
                 batch.push(Instance {
                     local_rect: *local_rect,

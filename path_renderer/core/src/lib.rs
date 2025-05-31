@@ -52,6 +52,7 @@ pub mod units {
     pub type SurfacePoint = Point2D<f32, SurfaceSpace>;
     pub type SurfaceVector = Vector2D<f32, SurfaceSpace>;
     pub type SurfaceSize = Size2D<f32, SurfaceSpace>;
+    pub type SurfaceIntPoint = Point2D<i32, SurfaceSpace>;
     pub type SurfaceIntSize = Size2D<i32, SurfaceSpace>;
     pub type SurfaceIntRect = Box2D<i32, SurfaceSpace>;
 
@@ -211,14 +212,6 @@ impl BindingsId {
     #[inline]
     pub(crate) const fn graph(idx: u16) -> Self {
         BindingsId::new(BindingsNamespace::RenderGraph, idx)
-    }
-
-    #[inline]
-    pub(crate) const fn render_stack(idx: u32) -> Self {
-        BindingsId {
-            namespace: BindingsNamespace::RenderStack,
-            index: idx,
-        }
     }
 
     #[inline]

@@ -5,7 +5,7 @@ use crate::gpu::{StagingBufferPool, UploadStats};
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
 use crate::frame::Frame;
-use crate::graph::{Allocation, BuiltGraph};
+use crate::graph::{Allocation, BuiltGraph, CommandContext};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 
@@ -84,7 +84,10 @@ impl Instance {
         let mut stats = RenderStats::default();
         stats.renderers = vec![RendererStats::default(); renderers.len()];
 
-        let graph = frame.graph.schedule().unwrap(); // TODO
+        let mut guard = frame.graph.inner.lock().unwrap();
+        let graph = &mut *guard;
+        let render_cmds = &mut graph.render_passes;
+        let graph = graph.graph.schedule(render_cmds).unwrap(); // TODO
 
         // TODO: does this need to be a separate step from upload?
         self.resources.begin_frame();
@@ -110,8 +113,7 @@ impl Instance {
             instances: frame.instances,
         });
 
-        for cmd in &graph {
-            let pass = &frame.built_render_passes[cmd.task_id().0 as usize];
+        for pass in render_cmds.passes() {
             let Some(pass) = pass else { continue; };
             for (idx, renderer) in renderers.iter_mut().enumerate() {
                 let renderer_prepare_start = Instant::now();
@@ -214,99 +216,19 @@ impl Instance {
             resources: &self.resources.graph.resources(),
         };
 
-        let mut attachments = Vec::new();
-        for command in &graph {
-            if let Some(command) = command.as_render_command() {
-                let Some(built_pass) = &frame.built_render_passes[command.task_id().0 as usize] else {
-                    continue;
-                };
-                if built_pass.is_empty() {
-                    continue;
-                }
+        // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
+        let const_renderers: &[&dyn Renderer] = unsafe {
+            std::mem::transmute(renderers)
+        };
 
-                stats.render_passes += 1;
-
-                attachments.clear();
-                for item in command.color_attachments() {
-                    let Some(color_attachment) = item.attachment else {
-                        attachments.push(None);
-                        continue;
-                    };
-
-                    let view = bindings.resolve_attachment(color_attachment.binding()).unwrap();
-
-                    let resolve_target = item.resolve_target.and_then(|attachment| {
-                        bindings.resolve_attachment(attachment.binding())
-                    });
-
-                    attachments.push(Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target,
-                        ops: wgpu::Operations {
-                            load: if color_attachment.load() {
-                                wgpu::LoadOp::Load
-                            } else {
-                                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                            },
-                            store: if color_attachment.store() {
-                                wgpu::StoreOp::Store
-                            } else {
-                                wgpu::StoreOp::Discard
-                            }
-                        }
-                    }));
-                }
-
-                let depth_stencil_attachment = command.depth_stencil_attachment().map(|attachment| {
-                    let view = bindings.resolve_attachment(attachment.binding()).unwrap();
-
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: if attachment.depth() {
-                            Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0.0),
-                                store: wgpu::StoreOp::Discard,
-                            })
-                        } else {
-                            None
-                        },
-                        stencil_ops: if attachment.stencil() {
-                            Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(128),
-                                store: wgpu::StoreOp::Discard,
-                            })
-                        } else {
-                            None
-                        },
-                    }
-                });
-
-                let pass_descriptor = &wgpu::RenderPassDescriptor {
-                    label: command.label(),
-                    color_attachments: &attachments,
-                    depth_stencil_attachment,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                };
-
-                let mut wgpu_pass = encoder.begin_render_pass(&pass_descriptor);
-
-                // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
-                let const_renderers: &&[&dyn Renderer] = unsafe {
-                    std::mem::transmute(&renderers)
-                };
-
-                built_pass.render(
-                    command.pass_data_index(),
-                    *const_renderers,
-                    &self.resources,
-                    &bindings,
-                    &self.render_pipelines,
-                    &mut wgpu_pass,
-                    &mut stats,
-                );
-            }
-        }
+        graph.commands.execute(&mut CommandContext {
+            encoder,
+            renderers: const_renderers,
+            resources: &self.resources,
+            bindings: &bindings,
+            render_pipelines: &self.render_pipelines,
+            stats: &mut stats,
+        });
 
         self.resources.end_frame();
 
@@ -319,7 +241,7 @@ impl Instance {
         stats
     }
 
-    /// should be called after submitting the frame.
+    /// Should be called after submitting the frame.
     pub fn end_frame(&mut self) {
         {
             let mut staging_buffers = self.staging_buffers.lock().unwrap();
@@ -344,7 +266,7 @@ pub struct RenderStats {
 }
 
 pub struct Bindings<'l> {
-    pub graph: &'l BuiltGraph,
+    pub graph: &'l BuiltGraph<'l>,
     pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
     pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
     pub resources: &'l[GpuResource],

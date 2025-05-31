@@ -106,7 +106,7 @@ impl TemplateRenderer {
             &mut || BatchInfo {
                 draws: 0..0,
             },
-            &mut |mut batch| {
+            &mut |mut batch, _clip| {
                 batch.push(Fill {
                     shape: shape.clone(),
                     pattern,

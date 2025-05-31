@@ -1,4 +1,4 @@
-use core::batching::{BatchFlags, BatchId, BatchList};
+use core::batching::{BatchFlags, BatchId, BatchList, RenderTaskInfo};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
@@ -49,6 +49,7 @@ impl Shape {
 
 pub(crate) struct Fill {
     shape: Shape,
+    task: RenderTaskInfo,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
@@ -131,6 +132,8 @@ impl TileRenderer {
             // Each shape has potententially a draw call for the masked tiles and
             // one for the opaque interriors, so letting them overlap would break
             // ordering.
+            // TODO: make it a single draw call instead to avoid the negative
+            // impact on batching.
             BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE
         };
 
@@ -140,14 +143,15 @@ impl TileRenderer {
 
         self.batches.add(ctx, &pattern.batch_key(), &aabb, batch_flags,
             &mut || BatchInfo {
-                    pattern,
-                    opaque_draw: None,
-                    masked_draw: None,
-                    blend_mode: pattern.blend_mode,
+                pattern,
+                opaque_draw: None,
+                masked_draw: None,
+                blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch| {
+            &mut |mut batch, task| {
                 batch.push(Fill {
                     shape: shape.clone(),
+                    task: *task,
                     pattern,
                     transform,
                     z_index,
@@ -427,6 +431,7 @@ impl TileRenderer {
         transforms: &Transforms,
         tolerance: f32,
     ) {
+        tiler.set_scissor_rect(fill.task.bounds);
         let transform = transforms.get(fill.transform).matrix();
 
         match &fill.shape {

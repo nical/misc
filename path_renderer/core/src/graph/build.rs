@@ -2,10 +2,10 @@ use std::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
+use crate::render_pass::{AttathchmentFlags, RenderCommands};
 use crate::{BindingsId, BindingsNamespace};
-use super::{Allocation, BufferKind, Command, CommandRef, CommandsIter, Dependency, NodeDescriptor, NodeId, NodeKind, RenderPassData, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
+use super::{Allocation, BufferKind, CommandList, Dependency, NodeDescriptor, NodeId, NodeKind, RenderPassData, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
 use super::ResourceFlags;
-use super::command::*;
 
 #[derive(Copy, Clone, Debug)]
 struct NodeResource {
@@ -67,11 +67,7 @@ impl RenderGraph {
         }
         let attachments_end = self.resources.len();
         let mut ds_resource = None;
-        let mut depth = false;
-        let mut stencil = false;
-        if let Some((attachment, d, s)) = desc.depth_stencil {
-            depth = d;
-            stencil = s;
+        if let Some((attachment, _, _)) = desc.depth_stencil {
             ds_resource = Some(self.resources.len() as u16);
             self.resources.push(NodeResource {
                 kind: TextureKind::depth_stencil().with_msaa(desc.msaa).as_resource(),
@@ -92,8 +88,6 @@ impl RenderGraph {
                 depth_stencil: ds_resource,
             },
             msaa: desc.msaa,
-            depth,
-            stencil,
             size: desc.size.map(|s| s.to_u32().to_tuple()).unwrap_or((0, 0)),
             dependecies: SmallVec::from_slice(desc.reads),
             readable: true,
@@ -108,6 +102,11 @@ impl RenderGraph {
     pub fn add_dependency(&mut self, node: NodeId, dep: Dependency) {
         debug_assert!(self.nodes[dep.node.index()].readable);
         self.nodes[node.index()].dependecies.push(dep);
+    }
+
+    #[inline]
+    pub(crate) fn set_dependencies(&mut self, node: NodeId, deps: SmallVec<[Dependency; 4]>) {
+        self.nodes[node.index()].dependecies = deps;
     }
 
     pub fn add_root(&mut self, root: Dependency) {
@@ -128,8 +127,8 @@ impl RenderGraph {
         self.tasks[node.index()]
     }
 
-    pub fn schedule(&self) -> Result<BuiltGraph, Box<GraphError>> {
-        build_graph(self)
+    pub fn schedule<'l>(&self, render_commands: &'l RenderCommands,) -> Result<BuiltGraph<'l>, Box<GraphError>> {
+        schedule_graph(self, render_commands)
     }
 }
 
@@ -140,8 +139,6 @@ struct Node {
     dependecies: SmallVec<[Dependency; 4]>,
     // render-specific, could be extracted out of Node.
     msaa: bool,
-    depth: bool,
-    stencil: bool,
     // Size is also render-specific but a bit annoying to
     // move out of Node because the graph uses it to determine
     // the size of allocations for attachments.
@@ -151,7 +148,7 @@ struct Node {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct NodeResources {
+pub(crate) struct NodeResources {
     pub(super) resources_start: u16,
     attachments_end: u16,
     resources_end: u16,
@@ -185,28 +182,17 @@ impl NodeResources {
 }
 
 #[derive(Debug)]
-pub struct BuiltGraph {
+pub struct BuiltGraph<'l> {
     pub temporary_resources: Vec<TempResourceKey>,
     pub resources: Vec<Option<NodeResourceInfo>>,
     pub pass_data: Vec<RenderPassData>,
-    pub commands: Vec<Command>,
+    pub commands: CommandList<'l>,
 }
 
-impl BuiltGraph {
+impl<'l> BuiltGraph<'l> {
     pub fn resolve_binding(&self, binding: BindingsId) -> Option<ResourceIndex> {
         debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
         self.resources[binding.index()].as_ref().map(|res| res.resolved_index)
-    }
-}
-
-impl<'l> IntoIterator for &'l BuiltGraph {
-    type Item = CommandRef<'l>;
-    type IntoIter = CommandsIter<'l>;
-    fn into_iter(self) -> Self::IntoIter {
-        CommandsIter {
-            graph: self,
-            inner: self.commands.iter(),
-        }
     }
 }
 
@@ -295,7 +281,10 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
     Ok(())
 }
 
-pub fn build_graph(graph: &RenderGraph) -> Result<BuiltGraph, Box<GraphError>> {
+pub fn schedule_graph<'l>(
+    graph: &RenderGraph,
+    render_commands: &'l RenderCommands,
+) -> Result<BuiltGraph<'l>, Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
 
@@ -405,8 +394,14 @@ pub fn build_graph(graph: &RenderGraph) -> Result<BuiltGraph, Box<GraphError>> {
         }
     }
 
-    let mut commands = Vec::with_capacity(sorted.len());
+    for root in &graph.roots {
+        let node = &graph.nodes[root.node.index()];
+        virtual_resources[node.resources.index(root.slot)].store = true;
+    }
+
     let mut pass_data = Vec::with_capacity(sorted.len());
+
+    let mut commands = CommandList::new();
 
     // Second pass allocates physical resources and writes the command buffer.
     for node_id in &sorted {
@@ -485,31 +480,57 @@ pub fn build_graph(graph: &RenderGraph) -> Result<BuiltGraph, Box<GraphError>> {
                     pass_data.push(pdata);
                 }
 
-                commands.push(Command::Render(RenderCommand {
-                    resources: node.resources.clone(),
-                    msaa: node.msaa,
-                    depth: node.depth,
-                    stencil: node.stencil,
-                    label: node.label,
-                    task_id: graph.tasks[node_id.index()],
-                    pass_data_index: pdata_idx as u16,
-                }));
+                let mut color = [(None, None, AttathchmentFlags { load: false, store: false,}); 3];
+                let mut attachments_iter = node.resources.color_attachments();
+                for i in 0..3 {
+                    let non_msaa = attachments_iter.next();
+                    let msaa = attachments_iter.next();
+                    debug_assert!(non_msaa.is_none() == msaa.is_none());
+                    let (Some(msaa_idx), Some(non_msaa_idx)) = (msaa, non_msaa) else {
+                        break;
+                    };
+
+                    if node.msaa {
+                        let res = &virtual_resources[msaa_idx];
+                        color[i] = (
+                            Some(BindingsId::graph(non_msaa_idx as u16)),
+                            Some(BindingsId::graph(msaa_idx as u16)),
+                            AttathchmentFlags {
+                                load: res.load,
+                                store: res.store,
+                            }
+                        )
+                    } else {
+                        let res = &virtual_resources[non_msaa_idx];
+                        color[i] = (
+                            Some(BindingsId::graph(non_msaa_idx as u16)),
+                            None,
+                            AttathchmentFlags {
+                                load: res.load,
+                                store: res.store,
+                            }
+                        )
+                    }
+                }
+
+                let depth_stencil = node.resources.depth_stencil.map(|idx| {
+                    BindingsId::graph(idx)
+                });
+
+                commands.push(
+                    render_commands.create_command(
+                        node.label,
+                        graph.tasks[node_id.index()].0 as u32,
+                        pdata_idx as u16,
+                        &color,
+                        depth_stencil
+                    ),
+                )
             }
-            NodeKind::Compute => {
-                commands.push(Command::Compute(ComputeCommand {
-                    task_id: graph.tasks[node_id.index()],
-                    label: node.label,
-                }));
-            }
-            NodeKind::Transfer => {
+            _ => {
                 todo!()
             }
         }
-    }
-
-    for root in &graph.roots {
-        let node = &graph.nodes[root.node.index()];
-        virtual_resources[node.resources.index(root.slot)].store = true;
     }
 
     let mut resources = Vec::with_capacity(virtual_resources.len());
@@ -525,8 +546,8 @@ pub fn build_graph(graph: &RenderGraph) -> Result<BuiltGraph, Box<GraphError>> {
     Ok(BuiltGraph {
         temporary_resources: temp_resources.resources,
         resources,
-        commands,
         pass_data,
+        commands,
     })
 }
 
@@ -650,26 +671,12 @@ fn test_nested() {
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted).unwrap();
 
-    let commands = graph.schedule().unwrap();
+    let mut render_cmds = RenderCommands::new();
+
+    let commands = graph.schedule(&mut render_cmds).unwrap();
 
     println!("sorted: {:?}", sorted);
     println!("allocations: {:?}", commands.temporary_resources);
-
-    for command in &commands.commands {
-        let Command::Render(command) = command else {
-            continue;
-        };
-        let label = command.label.unwrap_or("");
-        println!(" - {:?} ({label})", command.task_id);
-        for res in &commands.resources[command.resources.all()] {
-            let Some(res) = res else { continue; };
-            let kind = res.kind.as_texture().unwrap();
-            let kind = if kind.is_color() { "color" }
-                else if kind.is_depth_stencil() { "depth" }
-                else { "unknown" };
-            println!("   - {:?}({}_{}) store:{}", res.resolved_index.allocation, kind, res.resolved_index.index, res.store);
-        }
-    }
 
     // n11 should get culled out since it is not reachable from the root.
     assert!(!sorted.contains(&n11));

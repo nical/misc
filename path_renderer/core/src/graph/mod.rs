@@ -1,13 +1,10 @@
 mod build;
-mod command;
-mod stack;
 
 use std::{fmt, u16};
 use bitflags::bitflags;
 
-use crate::{units::SurfaceIntSize, SurfaceKind};
+use crate::{instance::RenderStats, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
 
-pub use command::*;
 pub use build::{RenderGraph, BuiltGraph, GraphError};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -84,6 +81,7 @@ impl fmt::Debug for Dependency {
     }
 }
 
+/// TODO: find another name for this.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TaskId(pub u64);
 
@@ -602,5 +600,39 @@ bitflags! {
         const LAZY = 1 << 0;
         const LOAD = 1 << 1;
         const CLEAR = 1 << 2;
+    }
+}
+
+pub struct CommandContext<'l> {
+    pub encoder: &'l mut wgpu::CommandEncoder,
+    pub renderers: &'l [&'l dyn Renderer],
+    pub resources: &'l GpuResources,
+    pub bindings: &'l dyn BindingResolver,
+    pub render_pipelines: &'l RenderPipelines,
+    pub stats: &'l mut RenderStats,
+}
+
+pub trait Command: std::fmt::Debug {
+    fn execute(&self, ctx: &mut CommandContext);
+}
+
+#[derive(Debug)]
+pub struct CommandList<'l> {
+    cmds: Vec<Box<dyn Command + 'l>>,
+}
+
+impl<'l> CommandList<'l> {
+    pub fn new() -> Self {
+        CommandList { cmds: Vec::with_capacity(128) }
+    }
+
+    pub fn push(&mut self, cmd: Box<dyn Command + 'l>) {
+        self.cmds.push(cmd)
+    }
+
+    pub fn execute(&self, ctx: &mut CommandContext) {
+        for cmd in &self.cmds {
+            cmd.execute(ctx);
+        }
     }
 }

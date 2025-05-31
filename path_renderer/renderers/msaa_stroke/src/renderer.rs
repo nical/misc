@@ -177,7 +177,7 @@ impl MsaaStrokeRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch| {
+            &mut |mut batch, _task| {
                 batch.push(Stroke {
                     shape: shape.clone(),
                     pattern,
