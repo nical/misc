@@ -10,9 +10,10 @@ mod flatten;
 mod simd4;
 
 use core::batching::RendererId;
+use core::render_task::RenderTaskHandle;
 use core::wgpu;
 use core::units::{LocalSpace, SurfaceSpace};
-use core::gpu::{GpuStoreDescriptor, GpuStoreResources};
+use core::gpu::{GpuBufferDescriptor, GpuBufferResources};
 use core::shading::{Shaders, PipelineDefaults, GeometryDescriptor, GeometryId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
 
 pub use renderer::*;
@@ -94,6 +95,7 @@ pub struct FillOptions<'l> {
     pub tolerance: f32,
     pub transform: Option<&'l Transform>,
     pub opacity: f32,
+    pub render_task: RenderTaskHandle,
 }
 
 impl<'l> FillOptions<'l> {
@@ -105,6 +107,7 @@ impl<'l> FillOptions<'l> {
             tolerance: 0.25,
             transform: None,
             opacity: 1.0,
+            render_task: RenderTaskHandle::INVALID,
         }
     }
 
@@ -116,6 +119,7 @@ impl<'l> FillOptions<'l> {
             tolerance: 0.25,
             transform: Some(transform),
             opacity: 1.0,
+            render_task: RenderTaskHandle::INVALID,
         }
     }
 
@@ -130,6 +134,7 @@ impl<'l> FillOptions<'l> {
             tolerance: self.tolerance,
             transform,
             opacity: self.opacity,
+            render_task: self.render_task,
         }
     }
 
@@ -155,6 +160,11 @@ impl<'l> FillOptions<'l> {
 
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
+        self
+    }
+
+    pub fn with_render_task(mut self, task: RenderTaskHandle) -> Self {
+        self.render_task = task;
         self
     }
 }
@@ -294,17 +304,17 @@ impl Tiling {
         renderer_id: RendererId,
         options: &RendererOptions,
     ) -> TileRenderer {
-        let path_desc = GpuStoreDescriptor::Texture {
+        let path_desc = GpuBufferDescriptor::Texture {
             format: wgpu::TextureFormat::Rgba32Uint,
             width: 2048,
             label: Some("tiling::paths"),
             alignment: std::mem::size_of::<EncodedPathInfo>() as u32,
         };
-        let mut path_store = GpuStoreResources::new(&path_desc);
+        let mut path_store = GpuBufferResources::new(&path_desc);
         path_store.allocate(4096 * 8, device);
 
-        let edge_desc = GpuStoreDescriptor::rgba8_unorm_texture("tiling::edges");
-        let mut edge_store = GpuStoreResources::new(&edge_desc);
+        let edge_desc = GpuBufferDescriptor::rgba8_unorm_texture("tiling::edges");
+        let mut edge_store = GpuBufferResources::new(&edge_desc);
         edge_store.allocate(4096 * 256, device);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -365,8 +375,8 @@ fn tile_position() {
 }
 
 pub struct TileGpuResources {
-    pub(crate) edges: GpuStoreResources,
-    pub(crate) paths: GpuStoreResources,
+    pub(crate) edges: GpuBufferResources,
+    pub(crate) paths: GpuBufferResources,
     pub(crate) bind_group: wgpu::BindGroup,
     pub(crate) bind_group_layout: BindGroupLayoutId,
     pub(crate) edges_epoch: u32,

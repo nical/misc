@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
 use crate::{
-    gpu::{GpuStoreHandle, GpuStoreWriter},
+    gpu::{GpuBufferAddress, GpuBufferWriter},
     units::{
         point, vector, LocalPoint, LocalSpace, LocalToSurfaceTransform, LocalTransform,
         SurfacePoint, SurfaceSpace, SurfaceVector, Vector,
@@ -110,7 +110,7 @@ pub struct Transform {
     transform: LocalToSurfaceTransform,
     parent: TransformId,
     flags: TransformFlags,
-    gpu_handle: GpuStoreHandle,
+    gpu_handle: GpuBufferAddress,
 }
 
 impl Transform {
@@ -145,7 +145,7 @@ impl Transforms {
             transform: LocalToSurfaceTransform::identity(),
             parent: TransformId::NONE,
             flags: TransformFlags::AXIS_ALIGNED,
-            gpu_handle: GpuStoreHandle::INVALID,
+            gpu_handle: GpuBufferAddress::INVALID,
         };
 
         Transforms {
@@ -169,7 +169,7 @@ impl Transforms {
                 transform: transform.with_destination::<SurfaceSpace>(),
                 parent: TransformId::ROOT,
                 flags,
-                gpu_handle: GpuStoreHandle::INVALID,
+                gpu_handle: GpuBufferAddress::INVALID,
             };
         } else {
             let transform = if is_scale_offset {
@@ -188,7 +188,7 @@ impl Transforms {
                 transform,
                 parent: self.current_id,
                 flags: TransformFlags::empty(),
-                gpu_handle: GpuStoreHandle::INVALID,
+                gpu_handle: GpuBufferAddress::INVALID,
             };
         }
 
@@ -208,7 +208,7 @@ impl Transforms {
             transform: *transform,
             parent: self.current_id,
             flags,
-            gpu_handle: GpuStoreHandle::INVALID,
+            gpu_handle: GpuBufferAddress::INVALID,
         };
 
         self.current_id = id;
@@ -223,8 +223,8 @@ impl Transforms {
         self.current = self.transforms[self.current_id.index()];
     }
 
-    pub fn get_current_gpu_handle(&mut self, gpu_store: &mut GpuStoreWriter) -> GpuStoreHandle {
-        if self.current.gpu_handle != GpuStoreHandle::INVALID {
+    pub fn get_current_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuBufferAddress {
+        if self.current.gpu_handle != GpuBufferAddress::INVALID {
             return self.current.gpu_handle;
         }
 
@@ -235,7 +235,7 @@ impl Transforms {
         };
         let t = &self.current.transform;
 
-        let handle = gpu_store.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
+        let handle = f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
 
         self.current.gpu_handle = handle;
         self.transforms[self.current_id.index()].gpu_handle = handle;

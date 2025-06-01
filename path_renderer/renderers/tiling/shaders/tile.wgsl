@@ -1,6 +1,6 @@
-#import render_target
 #import rect
 #import z_index
+#import render_task
 
 override TILE_SIZE: f32;
 const TILE_COORD_MASK: u32 = 0x3FFu;
@@ -17,6 +17,7 @@ struct PathInfo {
     opacity: f32,
     pattern_data: u32,
     fill_rule: u32,
+    render_task: u32,
     scissor: vec4f,
 };
 
@@ -49,7 +50,7 @@ fn decode_instance(encoded: vec4<u32>) -> TileInstance {
 }
 
 fn fetch_path(path_idx: u32) -> PathInfo {
-    // Must match the gpu_store texture width.
+    // Must match the gpu_buffer texture width.
     const PATH_TEXTURE_WIDTH: u32 = 2048;
     // The path data occupies two u32x4 pixels in the path texture.
     let idx = path_idx * 2u;
@@ -75,13 +76,15 @@ fn geometry_vertex(vertex_index: u32, instance_data: vec4<u32>) -> GeometryVerte
 
     var path = fetch_path(tile.path);
 
+    var task = render_task_fetch(path.render_task);
+
     // Clip to the scissor rect.
     var position = mix(tile.rect.xy, tile.rect.zw, uv);
     position = max(position, path.scissor.xy);
     position = min(position, path.scissor.zw);
     uv = (position - tile.rect.xy) / (tile.rect.zw - tile.rect.xy);
 
-    var target_position = canvas_to_target(position);
+    var target_position = render_task_target_position(task, position);
 
     return GeometryVertex(
         vec4f(target_position.x, target_position.y, path.z, 1.0),
@@ -187,7 +190,7 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             break;
         }
 
-        // Must match the gpu_store texture width.
+        // Must match the gpu_buffer texture width.
         const EDGE_TEXTURE_WIDTH: u32 = 2048;
         let edge_uv = vec2i(
             i32(edge_idx % EDGE_TEXTURE_WIDTH),

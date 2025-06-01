@@ -1,8 +1,4 @@
-
-struct RenderTarget {
-    resolution: vec2<f32>,
-    inv_resolution: vec2<f32>,
-};
+// Note: the RenderTarget struct is produced by the generator.
 
 fn canvas_to_target(pos: vec2<f32>) -> vec4<f32> {
     var p = pos * render_target.inv_resolution * 2.0 - vec2<f32>(1.0);

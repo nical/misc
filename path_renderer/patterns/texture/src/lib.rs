@@ -5,7 +5,7 @@ use core::shading::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
     Varying, BlendMode,
 };
-use core::gpu::GpuStoreWriter;
+use core::gpu::GpuBufferWriter;
 use core::pattern::BuiltPattern;
 use core::BindingsId;
 use core::wgpu;
@@ -80,13 +80,13 @@ impl TextureRenderer {
     #[inline]
     pub fn sample_rect(
         &self,
-        gpu_store: &mut GpuStoreWriter,
+        f32_buffer: &mut GpuBufferWriter,
         src_texture: BindingsId,
         src_rect: &Box2D<f32>,
         dst_rect: &Box2D<f32>,
         is_opaque: bool,
     ) -> BuiltPattern {
-        let handle = gpu_store.push_slice(&[
+        let handle = f32_buffer.push_slice(&[
             src_rect.min.x,
             src_rect.min.y,
             src_rect.max.x,
@@ -119,11 +119,11 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
 ";
 
 const SAMPLE_SHADER_SRC: &'static str = "
-#import gpu_store
+#import gpu_buffer
 #import pattern::color
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
-    let data = gpu_store_fetch_2(pattern_handle);
+    let data = f32_gpu_buffer_fetch_2(pattern_handle);
     // Source and destination rects in pixels.
     let src_rect = data.data0;
     let dst_rect = data.data1;

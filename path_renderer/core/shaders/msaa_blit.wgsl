@@ -1,6 +1,11 @@
 #import rect
 #import render_target
 
+struct RenderTarget {
+   resolution: vec2<f32>,
+   inv_resolution: vec2<f32>,
+};
+
 @group(0) @binding(0) var<uniform> render_target: RenderTarget;
 
 struct VertexOutput {

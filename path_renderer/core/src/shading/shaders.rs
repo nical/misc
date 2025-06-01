@@ -38,7 +38,7 @@ pub struct Shaders {
 }
 
 pub struct CommonBindGroupLayouts {
-    pub target_and_gpu_store: BindGroupLayoutId,
+    pub target_and_gpu_buffer: BindGroupLayoutId,
     pub color_texture: BindGroupLayoutId,
     pub alpha_texture: BindGroupLayoutId,
 }
@@ -105,9 +105,9 @@ impl Shaders {
     /// Here is an example of a simple gradient pattern:
     ///
     /// ```wgsl
-    ///    // The global gpu store is provided in the base bindings, so
-    ///    // patterns do not need to include in their own bindings.
-    ///    #import gpu_store
+    ///    // The global gpu buffers are provided in the base bindings, so
+    ///    // patterns do not need to include them in their own bindings.
+    ///    #import gpu_buffer
     ///
     ///    struct Gradient {
     ///        p0: vec2<f32>,
@@ -117,7 +117,7 @@ impl Shaders {
     ///    };
     ///
     ///    fn fetch_gradient(address: u32) -> Gradient {
-    ///        var raw = gpu_store_fetch_3(address);
+    ///        var raw = f32_gpu_buffer_fetch_3(address);
     ///        var gradient: Gradient;
     ///        gradient.p0 = raw.data0.xy;
     ///        gradient.p1 = raw.data0.zw;
@@ -241,7 +241,7 @@ impl Shaders {
         let pattern = pattern_id.map(|p| &self.patterns[p.index()]);
 
         let base_bindings =
-            &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_store.index()];
+            &self.bind_group_layouts[self.common_bind_group_layouts.target_and_gpu_buffer.index()];
         let geometry_bindings = geometry
             .bindings
             .map(|id| &self.bind_group_layouts[id.index()]);
@@ -298,7 +298,7 @@ impl Shaders {
 
         let module = self.module_cache.entry(module_key).or_insert_with(|| {
             let base_bindings = &self.bind_group_layouts
-                [self.common_bind_group_layouts.target_and_gpu_store.index()];
+                [self.common_bind_group_layouts.target_and_gpu_buffer.index()];
             let geometry_bindings = geometry
                 .bindings
                 .map(|id| &self.bind_group_layouts[id.index()]);
@@ -357,7 +357,7 @@ impl Shaders {
 
         let layout = self.pipeline_layouts.entry(key).or_insert_with(|| {
             let mut layouts = Vec::new();
-            let geometry_id = self.common_bind_group_layouts.target_and_gpu_store;
+            let geometry_id = self.common_bind_group_layouts.target_and_gpu_buffer;
             layouts.push(&self.bind_group_layouts[geometry_id.index()].handle);
 
             if let Some(id) = geometry.bindings {
@@ -662,12 +662,16 @@ impl ShaderSources {
             include_str!("../../shaders/lib/tiling.wgsl").into(),
         );
         library.insert(
-            "gpu_store".into(),
-            include_str!("../../shaders/lib/gpu_store.wgsl").into(),
+            "gpu_buffer".into(),
+            include_str!("../../shaders/lib/gpu_buffer.wgsl").into(),
         );
         library.insert(
             "render_target".into(),
             include_str!("../../shaders/lib/render_target.wgsl").into(),
+        );
+        library.insert(
+            "render_task".into(),
+            include_str!("../../shaders/lib/render_task.wgsl").into(),
         );
         library.insert(
             "mask::circle".into(),
@@ -724,7 +728,7 @@ fn init_common_layouts(
     let target_desc_buffer_size = std::mem::size_of::<crate::resources::RenderPassGpuData>() as u64;
     layouts.push(BindGroupLayout::new(
         device,
-        "target and gpu store".into(),
+        "target and gpu buffers".into(),
         vec![
             Binding {
                 name: "render_target".into(),
@@ -737,11 +741,21 @@ fn init_common_layouts(
                 },
             },
             Binding {
-                name: "gpu_store_texture".into(),
+                name: "f32_gpu_buffer_texture".into(),
                 struct_type: "f32".into(),
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+            },
+            Binding {
+                name: "u32_gpu_buffer_texture".into(),
+                struct_type: "u32".into(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
                     multisampled: false,
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
@@ -786,7 +800,7 @@ fn init_common_layouts(
     ));
 
     CommonBindGroupLayouts {
-        target_and_gpu_store: BindGroupLayoutId(0),
+        target_and_gpu_buffer: BindGroupLayoutId(0),
         color_texture: BindGroupLayoutId(1),
         alpha_texture: BindGroupLayoutId(2),
     }

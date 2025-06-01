@@ -1,6 +1,7 @@
 #![allow(unused)]
 
-use core::gpu::{GpuStoreHandle, GpuStoreWriter, GpuStreamWriter};
+use core::gpu::{GpuBufferAddress, GpuBufferWriter, GpuStreamWriter};
+use core::render_task::RenderTaskHandle;
 use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, vector};
 use core::{pattern::BuiltPattern, units::point};
 
@@ -129,6 +130,7 @@ impl Tiler {
             pattern_data: pattern.data,
             fill_rule: encoded_fill_rule,
             opacity: options.opacity,
+            render_task: options.render_task,
             scissor: [
                 self.scissor.min.x as u32,
                 self.scissor.min.y as u32,
@@ -484,7 +486,7 @@ impl Tiler {
         (tx, ty)
     }
 
-    fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, path_index: GpuStoreHandle, pattern: &BuiltPattern, output: &mut TilerOutput) {
+    fn generate_tiles(&mut self, fill_rule: FillRule, inverted: bool, path_index: GpuBufferAddress, pattern: &BuiltPattern, output: &mut TilerOutput) {
         if inverted {
             self.generate_tiles_inverted(fill_rule, path_index, pattern, output);
             return;
@@ -586,7 +588,7 @@ impl Tiler {
         }
     }
 
-    fn generate_tiles_inverted(&mut self, fill_rule: FillRule, path_index: GpuStoreHandle, pattern: &BuiltPattern, output: &mut TilerOutput) {
+    fn generate_tiles_inverted(&mut self, fill_rule: FillRule, path_index: GpuBufferAddress, pattern: &BuiltPattern, output: &mut TilerOutput) {
         let max_x = self.scissor_tiles.max.x as u16;
 
         let mut events = std::mem::take(&mut self.events);
@@ -768,6 +770,7 @@ impl Tiler {
         pattern: &BuiltPattern,
         opacity: f32,
         z_index: u32,
+        render_task: RenderTaskHandle,
         output: &mut TilerOutput,
     ) {
         let path_index = output.paths.push(PathInfo {
@@ -775,6 +778,7 @@ impl Tiler {
             pattern_data: pattern.data,
             fill_rule: 0,
             opacity,
+            render_task,
             scissor: [
                 self.scissor.min.x as u32,
                 self.scissor.min.y as u32,
@@ -872,8 +876,8 @@ fn event() {
 }
 
 pub struct TilerOutput<'l> {
-    pub paths: GpuStoreWriter<'l>,
-    pub edges: GpuStoreWriter<'l>,
+    pub paths: GpuBufferWriter<'l>,
+    pub edges: GpuBufferWriter<'l>,
     pub opaque_tiles: GpuStreamWriter<'l> ,
     pub mask_tiles: Vec<EncodedTileInstance>,
     pub occlusion: OcclusionBuffer,
@@ -881,8 +885,8 @@ pub struct TilerOutput<'l> {
 
 impl<'l> TilerOutput<'l> {
     pub fn new(
-        paths: GpuStoreWriter<'l>,
-        edges: GpuStoreWriter<'l>,
+        paths: GpuBufferWriter<'l>,
+        edges: GpuBufferWriter<'l>,
         opaque_tiles: GpuStreamWriter<'l> ,
     ) -> Self {
         TilerOutput {
@@ -941,13 +945,13 @@ impl TileInstance {
     }
 }
 
-#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct PathInfo {
     pub z_index: u32,
     pub pattern_data: u32,
     pub fill_rule: u16,
     pub opacity: f32,
+    pub render_task: RenderTaskHandle,
 
     // TODO: this can be [u16;4]
     pub scissor: [u32; 4],
@@ -961,7 +965,7 @@ impl PathInfo {
             self.z_index,
             self.pattern_data,
             (self.fill_rule as u32) << 16 | (self.opacity.max(0.0).min(1.0) * 65535.0) as u32,
-            0,
+            self.render_task.to_u32(),
             self.scissor[0],
             self.scissor[1],
             self.scissor[2],
@@ -975,7 +979,7 @@ impl PathInfo {
             pattern_data: data[1],
             fill_rule: (data[2] >> 16) as u16,
             opacity: (data[2] & 0xFFFF) as f32 / 65535.0,
-
+            render_task: RenderTaskHandle::from_u32(data[3]),
             scissor: [data[4], data[5], data[6], data[7]],
         }
     }

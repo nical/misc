@@ -3,7 +3,7 @@ use core::{
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
-use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
+use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
@@ -64,6 +64,15 @@ struct Fill {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PathInfo {
+    pub z_index: u32,
+    pub pattern: u32,
+    pub render_task: u32,
+    pub _padding: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Vertex {
     pub x: f32,
     pub y: f32,
@@ -76,7 +85,7 @@ unsafe impl bytemuck::Pod for Vertex {}
 
 struct GeomBuilder<'a, 'b, 'c> {
     indices: &'a mut GpuStreamWriter<'b>,
-    vertices: &'a mut GpuStoreWriter<'c>,
+    vertices: &'a mut GpuBufferWriter<'c>,
 
     pattern: u32,
     z_index: u32,
@@ -361,7 +370,7 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, vertices: &mut GpuStoreWriter, indices: &mut GpuStreamWriter) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, vertices: &mut GpuBufferWriter, indices: &mut GpuStreamWriter) {
         let transform = transforms.get(fill.transform).matrix();
         let z_index = fill.z_index;
         let pattern = fill.pattern.data;

@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use core::frame::{RenderNodeDescriptor, RenderNode};
-use core::gpu::gpu_store;
+use core::gpu::gpu_buffer;
 use core::instance::Instance;
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
@@ -116,11 +116,6 @@ struct App {
 
     renderers: Renderers,
     patterns: Patterns,
-
-    //shaders: Shaders,
-    //gpu_resources: GpuResources,
-    //render_pipelines: core::gpu::shader::RenderPipelines,
-    //gpu_store: GpuStore,
 
     overlay: Overlay,
     stats_renderer: OverlayRenderer,
@@ -684,9 +679,9 @@ impl App {
             descriptor = descriptor.depth_stencil(Resource::Auto, depth, stencil);
         }
 
-        let mut gpu_store = frame.gpu_store.write();
-        let mut main_surface = frame.graph.add_render_node(&mut gpu_store, descriptor);
-        std::mem::drop(gpu_store);
+        let mut f32_buffer = frame.f32_buffer.write();
+        let mut main_surface = frame.graph.add_render_node(&mut f32_buffer, descriptor);
+        std::mem::drop(f32_buffer);
         frame.graph.add_root(&main_surface);
 
         let tx = self.view.pan[0].round();
@@ -831,10 +826,10 @@ fn paint_scene(
     patterns: &Patterns,
     transform: &LocalTransform,
 ) {
-    let mut gpu_store = frame.gpu_store.write();
+    let mut f32_buffer = frame.f32_buffer.write();
     if testing {
         let gradient = patterns.gradients.add(
-            &mut gpu_store,
+            &mut f32_buffer,
             LinearGradient {
                 from: point(100.0, 100.0),
                 color0: Color {
@@ -875,7 +870,7 @@ fn paint_scene(
                     from,
                     to,
                 } => patterns.gradients.add(
-                    &mut gpu_store,
+                    &mut f32_buffer,
                     LinearGradient {
                         color0,
                         color1,
@@ -925,7 +920,7 @@ fn paint_scene(
                         continue;
                     }
                     patterns.gradients.add(
-                        &mut gpu_store,
+                        &mut f32_buffer,
                         LinearGradient {
                             color0,
                             color1,
@@ -974,12 +969,12 @@ fn paint_scene(
     }
 
     if testing {
-        let _tx2 = frame.transforms.get_current_gpu_handle(&mut gpu_store);
+        let _tx2 = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let transform_handle = frame.transforms.get_current_gpu_handle(&mut gpu_store);
+        let transform_handle = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
         let gradient = patterns.gradients.add(
-            &mut gpu_store,
+            &mut f32_buffer,
             LinearGradient {
                 from: point(0.0, 700.0),
                 to: point(0.0, 900.0),
@@ -1051,7 +1046,7 @@ fn paint_scene(
         //    transforms,
         //    Circle::new(point(500.0, 300.0), 200.0),
         //    patterns.gradients.add(
-        //        gpu_store,
+        //        f32_buffer,
         //        LinearGradient {
         //            from: point(300.0, 100.0),
         //            color0: Color {
@@ -1085,7 +1080,7 @@ fn paint_scene(
             &frame.transforms,
             fill,//.inverted(),
             patterns.checkerboards.add(
-                &mut gpu_store,
+                &mut f32_buffer,
                 &Checkerboard {
                     color0: Color {
                         r: 10,

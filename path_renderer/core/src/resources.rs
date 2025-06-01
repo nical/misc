@@ -1,4 +1,4 @@
-use crate::gpu::{GpuStoreDescriptor, GpuStoreResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
+use crate::gpu::{GpuBufferDescriptor, GpuBufferResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
 use crate::graph::{RenderPassData, TempResourceKey};
 use crate::shading::{PipelineDefaults, Shaders};
 use std::u32;
@@ -53,11 +53,12 @@ impl GpuResources {
 
 pub struct CommonGpuResources {
     pub quad_ibo: wgpu::Buffer,
-    pub vertices: GpuStoreResources,
+    pub vertices: GpuBufferResources,
     pub indices: GpuStreamsResources,
     pub instances: GpuStreamsResources,
 
-    pub gpu_store: GpuStoreResources,
+    pub f32_buffer: GpuBufferResources,
+    pub u32_buffer: GpuBufferResources,
 
     pub default_sampler: wgpu::Sampler,
 
@@ -82,8 +83,11 @@ impl CommonGpuResources {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let mut gpu_store = GpuStoreResources::new(&GpuStoreDescriptor::rgba32_float_texture("gpu_store"));
-        gpu_store.allocate(4096 * 1024, device);
+        let mut f32_buffer = GpuBufferResources::new(&GpuBufferDescriptor::rgba32_float_texture("f32 buffer"));
+        f32_buffer.allocate(4096 * 1024, device);
+
+        let mut u32_buffer = GpuBufferResources::new(&GpuBufferDescriptor::rgba32_uint_texture("u32 buffer"));
+        u32_buffer.allocate(4096 * 1024, device);
 
         let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("default sampler"),
@@ -100,7 +104,7 @@ impl CommonGpuResources {
             border_color: None,
         });
 
-        let vertices = GpuStoreResources::new(&GpuStoreDescriptor::Buffers {
+        let vertices = GpuBufferResources::new(&GpuBufferDescriptor::Buffers {
             usages: wgpu::BufferUsages::VERTEX,
             min_size: 1024 * 128,
             default_alignment: 16,
@@ -191,7 +195,8 @@ impl CommonGpuResources {
             vertices,
             indices,
             instances,
-            gpu_store,
+            f32_buffer,
+            u32_buffer,
             default_sampler,
             msaa_blit_pipeline: msaa_blit,
             msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
@@ -222,7 +227,8 @@ pub struct RenderGraphResources {
     resources: Vec<GpuResource>,
     pass_bind_groups: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
     default_sampler: wgpu::Sampler,
-    gpu_store_epoch: u32,
+    f32_buffer_epoch: u32,
+    u32_buffer_epoch: u32,
 }
 
 impl RenderGraphResources {
@@ -248,7 +254,8 @@ impl RenderGraphResources {
             resources: Vec::new(),
             pass_bind_groups: Vec::new(),
             default_sampler,
-            gpu_store_epoch: u32::MAX,
+            f32_buffer_epoch: u32::MAX,
+            u32_buffer_epoch: u32::MAX,
         }
     }
 
@@ -286,8 +293,9 @@ impl RenderGraphResources {
             self.resources.push(resource);
         }
 
-        if self.gpu_store_epoch != resources.gpu_store.epoch() {
-            self.gpu_store_epoch = resources.gpu_store.epoch();
+        if self.f32_buffer_epoch != resources.f32_buffer.epoch() || self.u32_buffer_epoch != resources.u32_buffer.epoch() {
+            self.f32_buffer_epoch = resources.f32_buffer.epoch();
+            self.u32_buffer_epoch = resources.u32_buffer.epoch();
             // If the gpu store texture ch_anges, we have to re-create the bind groups.
             self.pass_bind_groups.clear();
         }
@@ -299,7 +307,7 @@ impl RenderGraphResources {
         // now.
         // Ideally, the pass data would be provided via push constants.
         if self.pass_bind_groups.len() < pass_data.len() {
-            let target_and_gpu_store_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_store);
+            let target_and_gpu_buffers_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer);
             let size = std::mem::size_of::<RenderPassGpuData>() as u64;
 
             while self.pass_bind_groups.len() < pass_data.len() {
@@ -310,8 +318,8 @@ impl RenderGraphResources {
                     mapped_at_creation: false,
                 });
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Pass descriptor & gpu store"),
-                    layout: &target_and_gpu_store_layout.handle,
+                    label: Some("Pass descriptor & gpu buffers"),
+                    layout: &target_and_gpu_buffers_layout.handle,
                     entries: &[
                         wgpu::BindGroupEntry {
                             binding: 0,
@@ -321,9 +329,10 @@ impl RenderGraphResources {
                                 size: wgpu::BufferSize::new(size),
                             }),
                         },
-                        resources.gpu_store.as_bind_group_entry(1).unwrap(),
+                        resources.f32_buffer.as_bind_group_entry(1).unwrap(),
+                        resources.u32_buffer.as_bind_group_entry(2).unwrap(),
                         wgpu::BindGroupEntry {
-                            binding: 2,
+                            binding: 3,
                             resource: wgpu::BindingResource::Sampler(&self.default_sampler),
                         },
                     ],

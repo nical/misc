@@ -28,7 +28,7 @@ pub struct Instance {
     pub local_rect: LocalRect,
     pub z_index: u32,
     pub pattern: u32,
-    pub mask: u32,
+    pub render_task: u32,
     pub flags_transform: u32,
 }
 
@@ -38,14 +38,14 @@ unsafe impl bytemuck::Zeroable for Instance {}
 unsafe impl bytemuck::Pod for Instance {}
 
 #[derive(Clone)]
-pub(crate) struct Geometryes {
+pub(crate) struct Geometries {
     pub opaque: GeometryId,
     pub alpha: GeometryId,
     pub opaque_no_aa: GeometryId,
     pub alpha_no_aa: GeometryId,
 }
 
-impl Geometryes {
+impl Geometries {
     pub fn get(&self, opaque: bool, edge_aa: bool) -> GeometryId {
         match (opaque, edge_aa) {
             (true, true) => self.opaque,
@@ -57,7 +57,7 @@ impl Geometryes {
 }
 
 pub struct Rectangles {
-    pub(crate) geometryes: Geometryes,
+    pub(crate) geometryes: Geometries,
 }
 
 impl Rectangles {
@@ -70,7 +70,7 @@ impl Rectangles {
                 VertexAtribute::float32x4("local_rect"),
                 VertexAtribute::uint32("z_index"),
                 VertexAtribute::uint32("pattern"),
-                VertexAtribute::uint32("mask"),
+                VertexAtribute::uint32("render_task"),
                 VertexAtribute::uint32("flags"),
             ],
             varyings: vec![Varying::float32x4("aa_distances")],
@@ -100,7 +100,7 @@ impl Rectangles {
         });
 
         Rectangles {
-            geometryes: Geometryes {
+            geometryes: Geometries {
                 opaque,
                 alpha,
                 opaque_no_aa,
@@ -115,9 +115,9 @@ impl Rectangles {
 }
 
 const RECTANGLE_SRC: &'static str = "
-#import render_target
+#import render_task
 #import rect
-#import gpu_store
+#import gpu_buffer
 #import z_index
 
 const FLAG_AA_TOP: u32      = 1048576u; // 1u << 20u;
@@ -140,7 +140,7 @@ fn edge_aa_offset(mask: u32, flags: u32, offset: f32) -> f32 {
 }
 
 fn fetch_transform(address: u32) -> mat3x2<f32> {
-    if address == GPU_STORE_HANDLE_NONE {
+    if address == GPU_BUFFER_ADDRESS_NONE {
         return mat3x2<f32>(
             vec2<f32>(1.0, 0.0),
             vec2<f32>(0.0, 1.0),
@@ -148,7 +148,7 @@ fn fetch_transform(address: u32) -> mat3x2<f32> {
         );
     }
 
-    let d = gpu_store_fetch_2(address);
+    let d = f32_gpu_buffer_fetch_2(address);
 
     return mat3x2<f32>(
         d.data0.xy,
@@ -157,7 +157,7 @@ fn fetch_transform(address: u32) -> mat3x2<f32> {
     );
 }
 
-fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, mask: u32, transform_flags: u32) -> GeometryVertex {
+fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u32, render_task: u32, transform_flags: u32) -> GeometryVertex {
 
     let transform_id = transform_flags & 0xFFFFFu;
     let flags = transform_flags & 0xFFF00000u;
@@ -205,10 +205,12 @@ fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u3
         }
     }
 
+    let task = render_task_fetch(render_task);
+
     let local_position = mix(local_rect.xy, local_rect.zw, uv);
 
     let canvas_position = (transform * vec3(local_position, 1.0)).xy;
-    var target_position = canvas_to_target(canvas_position);
+    var target_position = render_task_target_position(task, canvas_position);
 
     var position = vec4<f32>(
         target_position.x,

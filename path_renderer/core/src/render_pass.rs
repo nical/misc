@@ -1,6 +1,6 @@
-use crate::batching::{BatchId, Batcher, RenderTaskInfo};
-use crate::gpu::GpuStoreHandle;
+use crate::batching::{BatchId, Batcher};
 use crate::graph::{Command, CommandContext, TaskId};
+use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::instance::RenderStats;
 use crate::path::FillRule;
@@ -9,17 +9,6 @@ use crate::units::SurfaceIntSize;
 use crate::{BindingResolver, BindingsId, RenderContext, Renderer};
 use std::ops::Range;
 use std::time::Instant;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RenderTaskHandle(pub(crate) GpuStoreHandle);
-
-impl RenderTaskHandle {
-    pub const INVALID: Self = RenderTaskHandle(GpuStoreHandle::INVALID);
-
-    pub fn to_u32(&self) -> u32 {
-        self.0.to_u32()
-    }
-}
 
 pub type ZIndex = u32;
 
@@ -184,7 +173,7 @@ impl RenderPassBuilder {
             config: RenderPassConfig::default(),
             size: SurfaceIntSize::new(0, 0),
             batcher: Batcher::new(),
-            render_task: RenderTaskHandle(GpuStoreHandle::INVALID),
+            render_task: RenderTaskHandle::INVALID,
         }
     }
 

@@ -5,7 +5,7 @@ use core::geom::traits::Transformation;
 use core::Point;
 
 use core::shading::{Shaders, PatternDescriptor, ShaderPatternId, Varying, BlendMode};
-use core::gpu::{GpuStoreWriter};
+use core::gpu::{GpuBufferWriter};
 use core::Color;
 
 use core::pattern::BuiltPattern;
@@ -50,11 +50,11 @@ impl CheckerboardRenderer {
         CheckerboardRenderer { shader }
     }
 
-    pub fn add(&self, gpu_store: &mut GpuStoreWriter, pattern: &Checkerboard) -> BuiltPattern {
+    pub fn add(&self, f32_buffer: &mut GpuBufferWriter, pattern: &Checkerboard) -> BuiltPattern {
         let is_opaque = pattern.color0.is_opaque() && pattern.color1.is_opaque();
         let color0 = pattern.color0.to_f32();
         let color1 = pattern.color1.to_f32();
-        let handle = gpu_store.push_slice(&[
+        let handle = f32_buffer.push_slice(&[
             color0[0],
             color0[1],
             color0[2],
@@ -76,10 +76,10 @@ impl CheckerboardRenderer {
 }
 
 const SHADER_SRC: &'static str = "
-#import gpu_store
+#import gpu_buffer
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
-    var pattern = gpu_store_fetch_3(pattern_handle);
+    var pattern = f32_gpu_buffer_fetch_3(pattern_handle);
     var offset = pattern.data2.xy;
     var scale = pattern.data2.z;
     var checker_uv = (pattern_pos - offset) / scale;

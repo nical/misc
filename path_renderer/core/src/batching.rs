@@ -1,7 +1,8 @@
 use bitflags::bitflags;
 use std::collections::VecDeque;
 
-use crate::render_pass::{RenderPassContext, RenderTaskHandle};
+use crate::render_pass::RenderPassContext;
+use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
 use crate::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceVector};
 use crate::worker::SendPtr;
 use crate::RenderPassConfig;
@@ -18,17 +19,6 @@ pub struct BatchId {
     pub renderer: RendererId,
     pub index: BatchIndex,
     pub surface: SurfaceIndex,
-}
-
-// TODO: Not a great name. In WR this would be RenderTaskInfo or something along
-// these lines.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct RenderTaskInfo {
-    /// Acts as a clip in surface space.
-    pub bounds: SurfaceIntRect,
-    /// An offset to apply after clipping.
-    pub offset: SurfaceVector,
-    pub handle: RenderTaskHandle,
 }
 
 bitflags! {

@@ -6,6 +6,7 @@ pub mod batching;
 pub mod cache;
 pub mod path;
 pub mod pattern;
+pub mod render_task;
 pub mod resources;
 pub mod shape;
 pub mod stroke;
@@ -23,7 +24,7 @@ pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode}
 use render_pass::{BuiltRenderPass, RenderPassContext};
 pub use render_pass::{RenderPassConfig};
 
-use gpu::{GpuStore, GpuStreams, StagingBufferPool, UploadStats};
+use gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
 use std::sync::{Arc, Mutex};
@@ -265,8 +266,9 @@ pub struct RenderContext<'a, 'b> {
 
 pub struct PrepareWorkerData {
     pub pipelines: PrepareRenderPipelines,
-    pub gpu_store: GpuStore,
-    pub vertices: GpuStore,
+    pub f32_buffer: GpuBuffer,
+    pub u32_buffer: GpuBuffer,
+    pub vertices: GpuBuffer,
     pub indices: GpuStreams,
     pub instances: GpuStreams,
     // allocator

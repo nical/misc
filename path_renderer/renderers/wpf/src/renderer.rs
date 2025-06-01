@@ -1,7 +1,7 @@
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
-use core::gpu::GpuStoreWriter;
+use core::gpu::GpuBufferWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
 
@@ -204,7 +204,7 @@ impl WpfMeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms, vertices: &mut GpuStoreWriter) {
+    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms, vertices: &mut GpuBufferWriter) {
         let transform = transforms.get(fill.transform).matrix();
         let pattern = fill.pattern.data;
 

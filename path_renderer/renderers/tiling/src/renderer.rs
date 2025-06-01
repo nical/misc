@@ -1,11 +1,12 @@
-use core::batching::{BatchFlags, BatchId, BatchList, RenderTaskInfo};
-use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
+use core::batching::{BatchFlags, BatchId, BatchList};
+use core::render_pass::{RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
-use core::gpu::{GpuStore, StreamId, TransferOps, UploadStats};
+use core::gpu::{GpuBuffer, StreamId, TransferOps, UploadStats};
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
+use core::render_task::RenderTaskInfo;
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalRect, SurfaceIntRect, SurfaceRect};
 use core::{wgpu, PrepareContext, UploadContext};
@@ -240,8 +241,8 @@ impl TileRenderer {
     pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
         struct WorkerData {
             tiler: Tiler,
-            edges: GpuStore,
-            paths: GpuStore,
+            edges: GpuBuffer,
+            paths: GpuBuffer,
         }
 
         let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
@@ -441,12 +442,13 @@ impl TileRenderer {
                     .with_fill_rule(shape.fill_rule)
                     .with_z_index(fill.z_index)
                     .with_tolerance(tolerance)
-                    .with_inverted(shape.inverted);
+                    .with_inverted(shape.inverted)
+                    .with_render_task(fill.task.handle);
                 tiler.fill_path(shape.path.iter(), &options, &fill.pattern, tiles);
             }
             Shape::Surface => {
                 let opacity = 1.0; // TODO
-                tiler.fill_surface(&fill.pattern, opacity, fill.z_index, tiles);
+                tiler.fill_surface(&fill.pattern, opacity, fill.z_index, fill.task.handle, tiles);
             }
         }
     }

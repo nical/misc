@@ -4,7 +4,7 @@ use core::geom::traits::Transformation;
 use core::geom::Point;
 
 use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
-use core::gpu::GpuStoreWriter;
+use core::gpu::GpuBufferWriter;
 use core::pattern::BuiltPattern;
 use core::Color;
 
@@ -49,14 +49,14 @@ impl LinearGradientRenderer {
         LinearGradientRenderer { shader }
     }
 
-    pub fn add(&self, gpu_store: &mut GpuStoreWriter, gradient: LinearGradient) -> BuiltPattern {
+    pub fn add(&self, f32_buffer: &mut GpuBufferWriter, gradient: LinearGradient) -> BuiltPattern {
         let can_stretch_horizontally =
             gradient.from.x == gradient.to.y || gradient.color0 == gradient.color1;
         let is_opaque = gradient.color0.is_opaque() && gradient.color1.is_opaque();
         let color0 = gradient.color0.to_f32();
         let color1 = gradient.color1.to_f32();
 
-        let handle = gpu_store.push_slice(&[
+        let handle = f32_buffer.push_slice(&[
             gradient.from.x,
             gradient.from.y,
             gradient.to.x,
@@ -80,7 +80,7 @@ impl LinearGradientRenderer {
 
 const SHADER_SRC: &'static str = "
 #import pattern::color
-#import gpu_store
+#import gpu_buffer
 
 struct Gradient {
     p0: vec2<f32>,
@@ -90,7 +90,7 @@ struct Gradient {
 };
 
 fn fetch_gradient(address: u32) -> Gradient {
-    var raw = gpu_store_fetch_3(address);
+    var raw = f32_gpu_buffer_fetch_3(address);
     var gradient: Gradient;
     gradient.p0 = raw.data0.xy;
     gradient.p1 = raw.data0.zw;

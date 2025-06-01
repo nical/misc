@@ -19,6 +19,11 @@ pub(crate) struct StencilAndCoverResources {
 const STENCIL_SHADER_SRC: &'static str = "
 @group(0) @binding(0) var<uniform> render_target: RenderTarget;
 
+struct RenderTarget {
+   resolution: vec2<f32>,
+   inv_resolution: vec2<f32>,
+};
+
 #import render_target
 
 @vertex fn vs_main(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
@@ -48,7 +53,7 @@ impl StencilAndCover {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stencil"),
             bind_group_layouts: &[&shaders
-                .get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_store)
+                .get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer)
                 .handle],
             push_constant_ranges: &[],
         });

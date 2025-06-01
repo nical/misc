@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use guillotiere::AtlasAllocator;
 use smallvec::SmallVec;
 
-use crate::batching::RenderTaskInfo;
-use crate::render_pass::{RenderCommands, RenderPassBuilder, RenderPassContext, RenderTaskHandle};
-use crate::gpu::{GpuStore, GpuStoreWriter, GpuStreams};
+use crate::render_pass::{RenderCommands, RenderPassBuilder, RenderPassContext};
+use crate::gpu::{GpuBuffer, GpuBufferWriter, GpuStreams};
 use crate::graph::{ColorAttachment, Dependency, NodeDescriptor, NodeId, NodeKind, RenderGraph, Resource, Slot, TaskId};
-use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceSize, SurfaceVector};
+use crate::render_task::{RenderTaskData, RenderTaskInfo, RenderTaskHandle};
+use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 use crate::{transform::Transforms, SurfaceKind, RenderPassConfig};
 
 type RenderGraphRef = Arc<Mutex<FrameGraphInner>>;
@@ -17,8 +17,9 @@ pub struct FrameGraph {
 }
 
 pub struct Frame {
-    pub gpu_store: GpuStore,
-    pub vertices: GpuStore,
+    pub f32_buffer: GpuBuffer,
+    pub u32_buffer: GpuBuffer,
+    pub vertices: GpuBuffer,
     pub indices: GpuStreams,
     pub instances: GpuStreams,
     pub transforms: Transforms,
@@ -32,30 +33,18 @@ pub(crate) struct FrameGraphInner {
     pub render_passes: RenderCommands,
 }
 
-unsafe impl bytemuck::Pod for RenderTaskData {}
-unsafe impl bytemuck::Zeroable for RenderTaskData {}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct RenderTaskData {
-    /// Acts as a clip.
-    pub rect: SurfaceRect,
-    /// Optional offset.
-    pub content_offset: SurfaceVector,
-
-    pub target_size: SurfaceSize,
-}
-
 impl Frame {
     pub(crate) fn new(
         index: u32,
-        gpu_store: GpuStore,
-        vertices: GpuStore,
+        f32_buffer: GpuBuffer,
+        u32_buffer: GpuBuffer,
+        vertices: GpuBuffer,
         indices: GpuStreams,
         instances: GpuStreams,
     ) -> Self {
         Frame {
-            gpu_store,
+            f32_buffer,
+            u32_buffer,
             vertices,
             indices,
             instances,
@@ -76,7 +65,7 @@ impl Frame {
 }
 
 impl FrameGraph {
-    pub fn add_render_node(&mut self, gpu_store: &mut GpuStoreWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
+    pub fn add_render_node(&mut self, f32_buffer: &mut GpuBufferWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
         let mut guard = self.inner.lock().unwrap();
 
         let task_id = guard.render_passes.next_render_pass_id();
@@ -102,10 +91,11 @@ impl FrameGraph {
         }
 
         let size = descriptor.size.unwrap().to_f32();
-        let render_task = RenderTaskHandle(gpu_store.push(RenderTaskData {
+        let render_task = RenderTaskHandle(f32_buffer.push(RenderTaskData {
             rect: SurfaceRect::from_size(size),
             content_offset: SurfaceVector::zero(),
-            target_size: size,
+            rcp_target_width: 1.0 / size.width,
+            rcp_target_height: 1.0 / size.height,
         }));
 
         let task_info = RenderTaskInfo {
@@ -330,17 +320,19 @@ pub struct AtlasRenderNode {
 }
 
 impl AtlasRenderNode {
-    pub fn allocate(&mut self, gpu_store: &mut GpuStoreWriter, rect: &SurfaceIntRect) -> Option<RenderPassContext> {
+    pub fn allocate(&mut self, f32_buffer: &mut GpuBufferWriter, rect: &SurfaceIntRect) -> Option<RenderPassContext> {
         let alloc = self.atlas.allocate(rect.size().cast_unit())?;
         let offset = alloc.rectangle.min.cast_unit() - rect.min;
 
+        let target = self.inner.pass.size.to_f32();
         let data = RenderTaskData {
             rect: alloc.rectangle.to_f32().cast_unit(),
             content_offset: offset.to_f32(),
-            target_size: self.inner.pass.size.to_f32(),
+            rcp_target_width: 1.0 / target.width,
+            rcp_target_height: 1.0 / target.height,
         };
 
-        let handle = RenderTaskHandle(gpu_store.push(data));
+        let handle = RenderTaskHandle(f32_buffer.push(data));
 
         self.inner.pass.batcher.set_render_task(&RenderTaskInfo {
             bounds: *rect,

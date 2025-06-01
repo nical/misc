@@ -10,6 +10,13 @@ pub fn generate_shader_source(
 ) -> String {
     let mut source = String::new();
 
+    // TODO: the base bindings expect this struct to be present, but it is being
+    // replaced by the RenderTask infrastructure.
+    writeln!(source, "struct RenderTarget {{").unwrap();
+    writeln!(source, "   resolution: vec2<f32>,").unwrap();
+    writeln!(source, "   inv_resolution: vec2<f32>,").unwrap();
+    writeln!(source, "}};").unwrap();
+
     let mut group_index = 0;
     generate_bind_group_shader_source(&base_bindings, group_index, &mut source);
 

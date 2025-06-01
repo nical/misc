@@ -32,24 +32,32 @@ impl std::ops::AddAssign for UploadStats {
     }
 }
 
-const GPU_STORE_WIDTH: u32 = 2048;
+const GPU_BUFFER_WIDTH: u32 = 2048;
 
 // Packed into 20 bits, leaving 12 bits unused so that it can be packed
 // with other data in GPU instances.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GpuStoreHandle(u32);
+pub struct GpuBufferAddress(pub(crate) u32);
 
-unsafe impl bytemuck::Pod for GpuStoreHandle {}
-unsafe impl bytemuck::Zeroable for GpuStoreHandle {}
+unsafe impl bytemuck::Pod for GpuBufferAddress {}
+unsafe impl bytemuck::Zeroable for GpuBufferAddress {}
 
-impl GpuStoreHandle {
+// Offset in number of units (not necessarily bytes) into a buffer.
+// The unit size depends on the pixel format of the underlying resource.
+impl GpuBufferAddress {
     pub const MASK: u32 = 0xFFFFF;
-    pub const INVALID: Self = GpuStoreHandle(Self::MASK);
+    pub const INVALID: Self = GpuBufferAddress(Self::MASK);
 
     pub fn to_u32(self) -> u32 {
         self.0
     }
 }
+
+// Offset in number of items (not necessarily bytes) into a buffer.
+// TODO: this almost redundant with GpuBufferHandle, it should probably
+// be refactored away.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct GpuOffset(u32);
 
 fn round_up_to_power_of_two(val: u32) -> u32 {
     if val.is_power_of_two() {
@@ -58,14 +66,6 @@ fn round_up_to_power_of_two(val: u32) -> u32 {
         val.next_power_of_two()
     }
 }
-
-// Offset in number of items (not necessarily bytes) into a buffer.
-// TODO: this is redundant with GpuStoreHandle
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct GpuOffset(pub u32);
-// Offset in bytes into a buffer.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct GpuByteOffset(pub u32);
 
 #[derive(Debug)]
 struct TransferOp {
@@ -86,7 +86,7 @@ impl TransferOps {
     pub fn len(&self) -> usize { self.ops.len() }
 }
 
-pub enum GpuStoreDescriptor {
+pub enum GpuBufferDescriptor {
     Texture {
         format: wgpu::TextureFormat,
         width: u32,
@@ -101,29 +101,29 @@ pub enum GpuStoreDescriptor {
     },
 }
 
-impl GpuStoreDescriptor {
+impl GpuBufferDescriptor {
     pub fn rgba32_float_texture(label: &'static str) -> Self {
-        GpuStoreDescriptor::Texture {
+        GpuBufferDescriptor::Texture {
             format: wgpu::TextureFormat::Rgba32Float,
-            width: GPU_STORE_WIDTH,
+            width: GPU_BUFFER_WIDTH,
             label: Some(label),
             alignment: 16,
         }
     }
 
     pub fn rgba32_uint_texture(label: &'static str) -> Self {
-        GpuStoreDescriptor::Texture {
+        GpuBufferDescriptor::Texture {
             format: wgpu::TextureFormat::Rgba32Uint,
-            width: GPU_STORE_WIDTH,
+            width: GPU_BUFFER_WIDTH,
             label: Some(label),
             alignment: 16,
         }
     }
 
     pub fn rgba8_unorm_texture(label: &'static str) -> Self {
-        GpuStoreDescriptor::Texture {
+        GpuBufferDescriptor::Texture {
             format: wgpu::TextureFormat::Rgba8Unorm,
-            width: GPU_STORE_WIDTH,
+            width: GPU_BUFFER_WIDTH,
             label: Some(label),
             alignment: 4,
         }
@@ -131,7 +131,7 @@ impl GpuStoreDescriptor {
 }
 
 // Lives in the instance.
-pub struct GpuStoreResources {
+pub struct GpuBufferResources {
     storage: Storage,
     default_alignment: u32,
     chunk_size: u32,
@@ -158,16 +158,16 @@ enum Storage {
     },
 }
 
-impl GpuStoreResources {
-    pub fn new(desc: &GpuStoreDescriptor) -> Self {
+impl GpuBufferResources {
+    pub fn new(desc: &GpuBufferDescriptor) -> Self {
         match desc {
-            GpuStoreDescriptor::Texture {
+            GpuBufferDescriptor::Texture {
                 format,
                 width,
                 label,
                 alignment,
             } => Self::new_texture(*format, *width, *alignment, *label),
-            GpuStoreDescriptor::Buffers {
+            GpuBufferDescriptor::Buffers {
                 usages,
                 default_alignment,
                 min_size,
@@ -191,7 +191,7 @@ impl GpuStoreResources {
             _ => unimplemented!(),
         };
 
-        GpuStoreResources {
+        GpuBufferResources {
             storage: Storage::Texture {
                 handle: None,
                 view: None,
@@ -214,7 +214,7 @@ impl GpuStoreResources {
         min_size: u32,
         label: Option<&'static str>,
     ) -> Self {
-        GpuStoreResources {
+        GpuBufferResources {
             storage: Storage::Buffer {
                 handle: None,
                 allocated_size: 0,
@@ -293,11 +293,11 @@ impl GpuStoreResources {
         }
     }
 
-    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuStore {
+    pub fn begin_frame(&self, staging_buffers: Arc<Mutex<StagingBufferPool>>) -> GpuBuffer {
         debug_assert!(Arc::strong_count(&self.next_gpu_offset) == 1);
         self.next_gpu_offset.store(0, Ordering::Release);
 
-        GpuStore {
+        GpuBuffer {
             chunk_size: self.chunk_size,
             default_alignment: self.default_alignment,
             ops: RefCell::new(Vec::new()),
@@ -474,10 +474,9 @@ impl GpuStoreResources {
     }
 }
 
-// TODO: GpuStore isn't a very good name for what this does.
 
-// TODO: Add a reserve(size) API to GpuStoreWriter and GpuStreamWriter that
-// asks for a larger staging buffer (and ensure in the case of GpuStore that
+// TODO: Add a reserve(size) API to GpuBufferWriter and GpuStreamWriter that
+// asks for a larger staging buffer (and ensure in the case of GpuBuffer that
 // the push within the reseved space will be contiguous).
 
 // There can be multiple writers for a single store (for example to write multiple
@@ -490,16 +489,16 @@ impl GpuStoreResources {
 // It could be done in by the staging buffer pool, or using a worker-local
 // pool of available chunks.
 
-// Right now GpuStore is clonable and there is one per worker. This allows the
+// Right now GpuBuffer is clonable and there is one per worker. This allows the
 // TransferOp verctor to be accessible to writers without a mutex and maybe avoids
 // lifetimes in the worker data. would it be better to have a single non-clonable one
 // with a mutex aorund the transfer ops?
 
 // TODO: either:
-// - A GpuStore could map to a single resource and offsets are relative to the start of
+// - A GpuBuffer could map to a single resource and offsets are relative to the start of
 //   the resource. It's the simplest approach, but it means that unrelated users must
 //   either chose to be in different resources, or fit in the single common resource.
-// - A GpuStore could map to multiple resources but just like with GpuStreams, an ID
+// - A GpuBuffer could map to multiple resources but just like with GpuStreams, an ID
 //   could be provided to ensure that all pushes for the same ID go to the same resource.
 //   The offsets would then be relative to a per-ID base offset which could be either
 //   passed to the shader or in the case of vertex buffers, the buffers could be bound at
@@ -511,10 +510,10 @@ impl GpuStoreResources {
 /// Used to push data to the GPU at known offsets in the destination resource.
 /// For example pattern parameters or vertices.
 ///
-/// GpuStore does not guarantee that all consecutive pushes are contiguous, but
+/// GpuBuffer does not guarantee that all consecutive pushes are contiguous, but
 /// consecutive pushes on the same writer tend to be contiguous because each writer
 /// manages its own staging buffer chunk.
-pub struct GpuStore {
+pub struct GpuBuffer {
     ops: RefCell<Vec<TransferOp>>,
     // In bytes.
     chunk_size: u32,
@@ -525,23 +524,23 @@ pub struct GpuStore {
     staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 
-impl GpuStore {
-    pub fn write(&self) -> GpuStoreWriter {
+impl GpuBuffer {
+    pub fn write(&self) -> GpuBufferWriter {
         self.write_with_alignment(self.default_alignment)
     }
 
-    pub fn write_items<T>(&self) -> GpuStoreWriter {
+    pub fn write_items<T>(&self) -> GpuBufferWriter {
         let size = std::mem::size_of::<T>() as u32;
         debug_assert!(size.is_power_of_two());
         self.write_with_alignment(size)
     }
 
-    pub fn write_with_alignment(&self, item_size: u32) -> GpuStoreWriter {
+    pub fn write_with_alignment(&self, item_size: u32) -> GpuBufferWriter {
         debug_assert!(item_size.is_power_of_two());
         let offset_shift = item_size.trailing_zeros();
         let align_mask = (item_size - 1) as usize;
 
-        GpuStoreWriter {
+        GpuBufferWriter {
             store: self,
             chunk_start: std::ptr::null_mut(),
             chunk_gpu_offset: GpuOffset(0),
@@ -570,11 +569,11 @@ impl GpuStore {
     }
 }
 
-unsafe impl Send for GpuStore {}
+unsafe impl Send for GpuBuffer {}
 
-impl Clone for GpuStore {
+impl Clone for GpuBuffer {
     fn clone(&self) -> Self {
-        GpuStore {
+        GpuBuffer {
             ops: RefCell::new(Vec::new()),
             chunk_size: self.chunk_size,
             default_alignment: self.default_alignment,
@@ -585,8 +584,8 @@ impl Clone for GpuStore {
 }
 
 // Associated with a specific resource.
-pub struct GpuStoreWriter<'l> {
-    store: &'l GpuStore,
+pub struct GpuBufferWriter<'l> {
+    store: &'l GpuBuffer,
 
     chunk_start: *mut u8,
     // Offset of the current chunk in the destination buffer (not necessarily in bytes)
@@ -613,9 +612,9 @@ pub struct GpuStoreWriter<'l> {
     staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 
-impl<'l> GpuStoreWriter<'l> {
+impl<'l> GpuBufferWriter<'l> {
     #[inline]
-    pub fn push_bytes(&mut self, data: &[u8]) -> GpuStoreHandle {
+    pub fn push_bytes(&mut self, data: &[u8]) -> GpuBufferAddress {
         self.pushed_bytes += data.len() as u32;
         if data.len() > self.chunk_size as usize {
             return self.push_bytes_large(data);
@@ -639,16 +638,16 @@ impl<'l> GpuStoreWriter<'l> {
         self.cursor_gpu_offset.0 += aligned_size as u32 >> self.offset_shift;
         self.staging_local_offset = new_local_offset;
 
-        GpuStoreHandle(address.0)
+        GpuBufferAddress(address.0)
     }
 
     #[inline]
-    pub fn push_slice<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuStoreHandle {
+    pub fn push_slice<T: bytemuck::Pod>(&mut self, data: &[T]) -> GpuBufferAddress {
         self.push_bytes(bytemuck::cast_slice(data))
     }
 
     #[inline]
-    pub fn push<T: bytemuck::Pod>(&mut self, data: T) -> GpuStoreHandle {
+    pub fn push<T: bytemuck::Pod>(&mut self, data: T) -> GpuBufferAddress {
         let size_of = std::mem::size_of::<T>();
         let size = size_of as u32;
         self.pushed_bytes += size;
@@ -670,11 +669,11 @@ impl<'l> GpuStoreWriter<'l> {
         self.cursor_gpu_offset.0 += aligned_size as u32 >> self.offset_shift;
         self.staging_local_offset = new_local_offset;
 
-        GpuStoreHandle(address.0)
+        GpuBufferAddress(address.0)
     }
 
     #[inline(never)]
-    fn push_bytes_large(&mut self, data: &[u8]) -> GpuStoreHandle {
+    fn push_bytes_large(&mut self, data: &[u8]) -> GpuBufferAddress {
         self.flush_staging_buffer();
         self.chunk_start = std::ptr::null_mut();
         self.staging_buffer_offset = StagingOffset(0);
@@ -734,7 +733,7 @@ impl<'l> GpuStoreWriter<'l> {
             }
         }
 
-        GpuStoreHandle(gpu_byte_offset >> self.offset_shift)
+        GpuBufferAddress(gpu_byte_offset >> self.offset_shift)
     }
 
     // Note: this does not reset the offsets and pointers into
@@ -762,7 +761,7 @@ impl<'l> GpuStoreWriter<'l> {
             .unwrap()
             .get_mapped_chunk(self.chunk_size);
 
-        //println!("GpuStoreWriter::flush_buffer ptr:{:?} size:{:?} id:{:?} offset:{:?}", chunk.ptr, chunk.size, chunk.id, chunk.offset);
+        //println!("GpuBufferWriter::flush_buffer ptr:{:?} size:{:?} id:{:?} offset:{:?}", chunk.ptr, chunk.size, chunk.id, chunk.offset);
 
         self.staging_buffer_id = chunk.id;
         self.staging_buffer_offset = chunk.offset;
@@ -784,15 +783,15 @@ impl<'l> GpuStoreWriter<'l> {
     }
 }
 
-impl<'l> Drop for GpuStoreWriter<'l> {
+impl<'l> Drop for GpuBufferWriter<'l> {
     fn drop(&mut self) {
         self.flush_staging_buffer();
     }
 }
 
-impl<'l> Clone for GpuStoreWriter<'l> {
+impl<'l> Clone for GpuBufferWriter<'l> {
     fn clone(&self) -> Self {
-        GpuStoreWriter {
+        GpuBufferWriter {
             store: self.store,
             chunk_start: std::ptr::null_mut(),
             chunk_gpu_offset: GpuOffset(0),
@@ -813,13 +812,13 @@ impl<'l> Clone for GpuStoreWriter<'l> {
 }
 
 #[test]
-fn gpu_store_simple() {
+fn gpu_buffer_simple() {
     let staging_buffers = Arc::new(Mutex::new(StagingBufferPool::new_for_testing(1024 * 32)));
 
-    let resource = GpuStoreResources::new(&GpuStoreDescriptor::Texture {
+    let resource = GpuBufferResources::new(&GpuBufferDescriptor::Texture {
         format: wgpu::TextureFormat::Rgba8Unorm,
         width: 128,
-        label: Some("gpu store"),
+        label: Some("gpu buffer"),
         alignment: 8,
     });
 

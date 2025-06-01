@@ -58,7 +58,10 @@ impl Instance {
         self.next_frame_index += 1;
         Frame::new(
             idx,
-            self.resources.common.gpu_store.begin_frame(
+            self.resources.common.f32_buffer.begin_frame(
+                self.staging_buffers.clone()
+            ),
+            self.resources.common.u32_buffer.begin_frame(
                 self.staging_buffers.clone()
             ),
             self.resources.common.vertices.begin_frame(
@@ -99,7 +102,8 @@ impl Instance {
         for _ in 0..(num_workers - 1) {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
-                gpu_store: frame.gpu_store.clone(),
+                f32_buffer: frame.f32_buffer.clone(),
+                u32_buffer: frame.u32_buffer.clone(),
                 vertices: frame.vertices.clone(),
                 indices: frame.indices.clone(),
                 instances: frame.instances.clone(),
@@ -107,7 +111,8 @@ impl Instance {
         }
         worker_data.push(PrepareWorkerData {
             pipelines: self.render_pipelines.prepare(),
-            gpu_store: frame.gpu_store,
+            f32_buffer: frame.f32_buffer,
+            u32_buffer: frame.u32_buffer,
             vertices: frame.vertices,
             indices: frame.indices,
             instances: frame.instances,
@@ -128,13 +133,15 @@ impl Instance {
             }
         }
 
-        let mut gpu_store_ops = Vec::with_capacity(worker_data.len());
+        let mut f32_buffer_ops = Vec::with_capacity(worker_data.len());
+        let mut u32_buffer_ops = Vec::with_capacity(worker_data.len());
         let mut vtx_ops = Vec::with_capacity(worker_data.len());
         let mut idx_ops = Vec::with_capacity(worker_data.len());
         let mut inst_ops = Vec::with_capacity(worker_data.len());
         let mut pipeline_changes = Vec::with_capacity(worker_data.len());
         for mut wd in worker_data {
-            gpu_store_ops.push(wd.gpu_store.finish());
+            f32_buffer_ops.push(wd.f32_buffer.finish());
+            u32_buffer_ops.push(wd.u32_buffer.finish());
             vtx_ops.push(wd.vertices.finish());
             idx_ops.push(wd.indices.finish());
             inst_ops.push(wd.instances.finish());
@@ -167,8 +174,14 @@ impl Instance {
         let mut upload_stats = UploadStats::default();
         {
             let staging_buffers = self.staging_buffers.lock().unwrap();
-            upload_stats += self.resources.common.gpu_store.upload(
-                &gpu_store_ops,
+            upload_stats += self.resources.common.f32_buffer.upload(
+                &f32_buffer_ops,
+                &staging_buffers,
+                &self.device,
+                encoder,
+            );
+            upload_stats += self.resources.common.u32_buffer.upload(
+                &u32_buffer_ops,
                 &staging_buffers,
                 &self.device,
                 encoder,

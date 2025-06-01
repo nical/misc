@@ -9,12 +9,12 @@ use core::{
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
-use core::gpu::{GpuStoreHandle, StreamId};
+use core::gpu::{GpuBufferAddress, StreamId};
 use core::utils::DrawHelper;
 
 use std::ops::Range;
 
-use super::resources::Geometryes;
+use super::resources::Geometries;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
@@ -45,14 +45,14 @@ pub struct Batch {
 
 pub struct RectangleRenderer {
     batches: BatchList<Instance, Batch>,
-    pipelines: crate::resources::Geometryes,
+    pipelines: crate::resources::Geometries,
     instances: Option<StreamId>,
 }
 
 impl RectangleRenderer {
     pub(crate) fn new(
         renderer_id: RendererId,
-        pipelines: Geometryes,
+        pipelines: Geometries,
     ) -> Self {
         RectangleRenderer {
             batches: BatchList::new(renderer_id),
@@ -78,7 +78,7 @@ impl RectangleRenderer {
         mut aa: Aa,
         pattern: BuiltPattern,
         // TODO: get this from Transforms.
-        transform_handle: GpuStoreHandle,
+        transform_handle: GpuBufferAddress,
     ) {
         let z_index = ctx.z_indices.push();
         let aabb = transforms
@@ -117,14 +117,14 @@ impl RectangleRenderer {
                     edge_aa: true,
                     pipeline_idx: None,
                 },
-                &mut |mut batch, _task| {
+                &mut |mut batch, task| {
                     batch.push(Instance {
                         local_rect: *local_rect,
                         z_index,
                         pattern: pattern.data,
                         flags_transform: transform_handle.to_u32()
                             | (instance_flags | InstanceFlags::AaCenter).bits(),
-                        mask: 0,
+                        render_task: task.handle.to_u32(),
                     });
                 }
             );
@@ -152,14 +152,14 @@ impl RectangleRenderer {
                 edge_aa: false,
                 pipeline_idx: None,
             },
-            &mut |mut batch, _task| {
+            &mut |mut batch, task| {
                 batch.batch_data().edge_aa |= aa != Aa::NONE;
                 batch.push(Instance {
                     local_rect: *local_rect,
                     z_index,
                     pattern: pattern.data,
                     flags_transform: transform_handle.to_u32() | instance_flags.bits(),
-                    mask: 0,
+                    render_task: task.handle.to_u32(),
                 });
             }
         );

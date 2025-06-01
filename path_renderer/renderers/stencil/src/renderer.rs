@@ -9,8 +9,8 @@ use lyon::{
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{batching::RenderTaskInfo, units::SurfacePoint, wgpu};
-use core::gpu::{GpuStoreWriter, GpuStreamWriter, StreamId};
+use core::{units::SurfacePoint, wgpu};
+use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
     bytemuck,
@@ -20,6 +20,7 @@ use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex,
 use core::batching::{BatchId, BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
 use core::render_pass::{RenderPassContext, RendererId, ZIndex};
+use core::render_task::RenderTaskInfo;
 use core::pattern::BuiltPattern;
 use core::transform::{Transforms, TransformId};
 use core::utils::DrawHelper;
@@ -51,7 +52,7 @@ pub struct CoverVertex {
 
 struct GeomBuilder<'a, 'b, 'c> {
     indices: &'a mut GpuStreamWriter<'b>,
-    vertices: &'a mut GpuStoreWriter<'c>,
+    vertices: &'a mut GpuBufferWriter<'c>,
 
     pattern: u32,
     z_index: u32,
@@ -136,7 +137,7 @@ struct Fill {
 }
 
 struct Geometry<'a, 'b> {
-    vertices: GpuStoreWriter<'a>,
+    vertices: GpuBufferWriter<'a>,
     indices: GpuStreamWriter<'b>,
 }
 
@@ -531,7 +532,7 @@ fn generate_stencil_geometry(
 ) {
     let transform = &transform.to_untyped();
 
-    fn vertex(vertices: &mut GpuStoreWriter, p: Point) -> u32 {
+    fn vertex(vertices: &mut GpuBufferWriter, p: Point) -> u32 {
         let handle = vertices.push(StencilVertex::from_point(p));
         handle.to_u32()
     }
