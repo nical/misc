@@ -1,6 +1,6 @@
 use crate::gpu::{GpuBufferDescriptor, GpuBufferResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
 use crate::graph::{RenderPassData, TempResourceKey};
-use crate::shading::{PipelineDefaults, Shaders};
+use crate::shading::Shaders;
 use std::u32;
 use std::marker::PhantomData;
 use wgpu::util::DeviceExt;
@@ -14,10 +14,9 @@ pub struct GpuResources {
 impl GpuResources {
     pub fn new(
         device: &wgpu::Device,
-        shaders: &mut Shaders,
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
-        let common = CommonGpuResources::new(device, shaders, staging_buffers);
+        let common = CommonGpuResources::new(device, staging_buffers);
         let graph = RenderGraphResources::new(device);
 
         GpuResources {
@@ -62,18 +61,12 @@ pub struct CommonGpuResources {
 
     pub default_sampler: wgpu::Sampler,
 
-    pub msaa_blit_layout: wgpu::PipelineLayout,
-    pub msaa_blit_pipeline: wgpu::RenderPipeline,
-    pub msaa_blit_with_depth_stencil_pipeline: wgpu::RenderPipeline,
-    pub msaa_blit_src_bind_group_layout: wgpu::BindGroupLayout,
-
     pub staging_buffers: StagingBufferPoolRef,
 }
 
 impl CommonGpuResources {
     pub fn new(
         device: &wgpu::Device,
-        shaders: &mut Shaders,
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let quad_indices = [0u16, 1, 2, 0, 2, 3];
@@ -125,71 +118,6 @@ impl CommonGpuResources {
             label: Some("instances"),
         });
 
-        let msaa_blit_src_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Msaa blit source"),
-                entries: &[
-                    // target descriptor
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let src = include_str!("./../shaders/msaa_blit.wgsl");
-        let color_module = shaders.create_shader_module(device, "msaa-blit", src, &[]);
-
-        let msaa_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("color-to-msaa"),
-            bind_group_layouts: &[&msaa_blit_src_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let targets = &[shaders.defaults.color_target_state_no_blend()];
-        let mut descriptor = wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&msaa_blit_layout),
-            vertex: wgpu::VertexState {
-                module: &color_module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_module,
-                entry_point: Some("fs_main"),
-                targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: PipelineDefaults::primitive_state(),
-            depth_stencil: None,
-            multiview: None,
-            multisample: wgpu::MultisampleState {
-                count: shaders.defaults.msaa_sample_count(),
-                ..wgpu::MultisampleState::default()
-            },
-            cache: None,
-        };
-
-        let msaa_blit = device.create_render_pipeline(&descriptor);
-
-        descriptor.depth_stencil = Some(wgpu::DepthStencilState {
-            format: shaders.defaults.depth_stencil_format().unwrap(),
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
-            bias: wgpu::DepthBiasState::default(),
-            stencil: wgpu::StencilState::default(),
-        });
-
-        let msaa_blit_depth_stencil = device.create_render_pipeline(&descriptor);
-
         CommonGpuResources {
             quad_ibo,
             vertices,
@@ -198,10 +126,6 @@ impl CommonGpuResources {
             f32_buffer,
             u32_buffer,
             default_sampler,
-            msaa_blit_pipeline: msaa_blit,
-            msaa_blit_with_depth_stencil_pipeline: msaa_blit_depth_stencil,
-            msaa_blit_layout,
-            msaa_blit_src_bind_group_layout,
             staging_buffers,
         }
     }

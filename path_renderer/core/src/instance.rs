@@ -31,11 +31,10 @@ impl Instance {
             Arc::new(Mutex::new(StagingBufferPool::new(1024 * 64, device.clone())))
         };
 
-        let mut shaders = Shaders::new(&device);
+        let shaders = Shaders::new(&device);
         let render_pipelines = RenderPipelines::new();
         let resources = GpuResources::new(
             &device,
-            &mut shaders,
             staging_buffers.clone(),
         );
 
