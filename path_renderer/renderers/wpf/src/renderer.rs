@@ -1,6 +1,7 @@
+use core::render_task::RenderTaskHandle;
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
+use core::render_pass::{RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::gpu::GpuBufferWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -17,13 +18,36 @@ use std::ops::Range;
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
 
+
+pub struct PrimitiveInfo {
+    pub z_index: u32,
+    pub pattern: u32,
+    pub opacity: f32,
+    pub render_task: RenderTaskHandle,
+}
+
+pub type EncodedPrimitiveInfo = [u32; 4];
+
+impl PrimitiveInfo {
+    pub fn encode(&self) -> EncodedPrimitiveInfo {
+        [
+            self.z_index,
+            self.pattern,
+            (self.opacity.max(0.0).min(1.0) * 65535.0) as u32,
+            self.render_task.to_u32(),
+        ]
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Vertex {
+    // Note: x and y chould be encoded into a pair of u16.
     pub x: f32,
     pub y: f32,
+    // Note: coverage could be a u8.
     pub coverage: f32,
-    pub pattern: u32,
+    pub prim_address: u32,
 }
 
 unsafe impl bytemuck::Zeroable for Vertex {}
@@ -50,8 +74,10 @@ impl Shape {
 
 struct Fill {
     shape: Shape,
+    render_task: RenderTaskHandle,
     pattern: BuiltPattern,
     transform: TransformId,
+    z_index: ZIndex,
 }
 
 struct Draw {
@@ -105,7 +131,7 @@ impl WpfMeshRenderer {
 
     fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
         let transform = transforms.current_id();
-        let _ = ctx.z_indices.push();
+        let z_index = ctx.z_indices.push();
 
         let aabb = transforms
             .get_current()
@@ -121,11 +147,13 @@ impl WpfMeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode.with_alpha(true),
             },
-            &mut |mut batch, _task| {
+            &mut |mut batch, task| {
                 batch.push(Fill {
                     shape: shape.clone(),
+                    render_task: task.handle,
                     pattern,
                     transform,
+                    z_index,
                 });
             }
         );
@@ -141,6 +169,7 @@ impl WpfMeshRenderer {
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
         let mut vertices = worker_data.vertices.write_items::<Vertex>();
+        let mut prim_buffer = worker_data.u32_buffer.write_items::<EncodedPrimitiveInfo>();
 
         let surface_size = pass.surface_size();
 
@@ -180,7 +209,7 @@ impl WpfMeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, surface_size, transforms, &mut vertices);
+                self.prepare_fill(fill, surface_size, transforms, &mut vertices, &mut prim_buffer);
             }
 
             let end = vertices.pushed_items();
@@ -204,9 +233,15 @@ impl WpfMeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms, vertices: &mut GpuBufferWriter) {
+    fn prepare_fill(&mut self, fill: &Fill, surface_size: SurfaceIntSize, transforms: &Transforms, vertices: &mut GpuBufferWriter, u32_buffer: &mut GpuBufferWriter) {
         let transform = transforms.get(fill.transform).matrix();
-        let pattern = fill.pattern.data;
+
+        let prim_address = u32_buffer.push(PrimitiveInfo {
+            z_index: fill.z_index,
+            pattern: fill.pattern.data,
+            opacity: 1.0, // TODO,
+            render_task: fill.render_task,
+        }.encode()).to_u32();
 
         match &fill.shape {
             Shape::Path(shape) => {
@@ -254,9 +289,9 @@ impl WpfMeshRenderer {
                     // guaranteed to go in the same chunk which means that the last slice of a
                     // chunk may be moved to another chunk and leave a hole if it does not fit
                     // exactly.
-                    vertices.push(Vertex { x: v2.x, y: v2.y, coverage: v2.coverage, pattern });
-                    vertices.push(Vertex { x: v1.x, y: v1.y, coverage: v1.coverage, pattern });
-                    vertices.push(Vertex { x: v0.x, y: v0.y, coverage: v0.coverage, pattern });
+                    vertices.push(Vertex { x: v2.x, y: v2.y, coverage: v2.coverage, prim_address });
+                    vertices.push(Vertex { x: v1.x, y: v1.y, coverage: v1.coverage, prim_address });
+                    vertices.push(Vertex { x: v0.x, y: v0.y, coverage: v0.coverage, prim_address });
                 }
             }
         }

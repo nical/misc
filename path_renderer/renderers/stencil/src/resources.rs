@@ -4,6 +4,8 @@ use core::resources::CommonGpuResources;
 use core::render_pass::RendererId;
 use std::sync::Arc;
 
+use tess::{Tessellation};
+
 use crate::StencilAndCoverRenderer;
 
 pub struct StencilAndCover {
@@ -17,17 +19,36 @@ pub(crate) struct StencilAndCoverResources {
 }
 
 const STENCIL_SHADER_SRC: &'static str = "
-@group(0) @binding(0) var<uniform> render_target: RenderTarget;
+#import render_task
+#import z_index
 
-struct RenderTarget {
-   resolution: vec2<f32>,
-   inv_resolution: vec2<f32>,
+@group(0) @binding(1) var f32_gpu_buffer_texture: texture_2d<f32>;
+@group(0) @binding(2) var u32_gpu_buffer_texture: texture_2d<u32>;
+
+struct PrimInfo {
+    z: f32,
+    pattern: u32,
+    opacity: f32,
+    render_task: u32,
 };
 
-#import render_target
+fn fecth_primtive(address: u32) -> PrimInfo {
+    let encoded = u32_gpu_buffer_fetch_1(address);
+    return PrimInfo(
+        z_index_to_f32(encoded.x),
+        encoded.y,
+        f32(encoded.z & 0xFFFFu) / 65535.0,
+        encoded.w,
+    );
+}
 
-@vertex fn vs_main(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
-    var pos = canvas_to_target(position);
+@vertex fn vs_main(
+    @location(0) position: vec2<f32>,
+    @location(1) prim_address: u32,
+) -> @builtin(position) vec4<f32> {
+    var prim = fecth_primtive(prim_address);
+    var task = render_task_fetch(prim.render_task);
+    var pos = render_task_target_position(task, position);
     return vec4<f32>(pos.x, pos.y, 0.0, 1.0);
 }
 
@@ -39,6 +60,7 @@ struct RenderTarget {
 impl StencilAndCover {
     pub fn new(
         _common: &mut CommonGpuResources,
+        tess: &Tessellation,
         device: &wgpu::Device,
         shaders: &mut Shaders,
     ) -> Self {
@@ -47,7 +69,11 @@ impl StencilAndCover {
 
         let vertex_attributes = VertexBuilder::from_slice(
             wgpu::VertexStepMode::Vertex,
-            &[wgpu::VertexFormat::Float32x2],
+            &[
+                wgpu::VertexFormat::Float32x2,
+                wgpu::VertexFormat::Uint32,
+                wgpu::VertexFormat::Float32,
+            ],
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -115,7 +141,7 @@ impl StencilAndCover {
         let msaa_stencil_pipeline = device.create_render_pipeline(&descriptor);
 
         // TODO: this creates an implicit dependency to the mesh renderer.
-        let cover_geometry = shaders.find_geometry("geometry::simple_mesh").unwrap();
+        let cover_geometry = tess.geometry();
 
         StencilAndCover {
             resources: Arc::new(StencilAndCoverResources {

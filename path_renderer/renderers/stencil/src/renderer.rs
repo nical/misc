@@ -2,10 +2,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use lyon::{
-    tessellation::{FillGeometryBuilder, VertexId, FillOptions, FillTessellator},
-    geom::{CubicBezierSegment, QuadraticBezierSegment},
-    path::{PathEvent, PathSlice},
+    geom::{CubicBezierSegment, QuadraticBezierSegment}, path::{PathEvent, PathSlice}, tessellation::{FillGeometryBuilder, FillOptions, FillTessellator, VertexId}
 };
+use tess::EncodedPrimitiveInfo;
 
 use crate::resources::StencilAndCoverResources;
 
@@ -30,32 +29,26 @@ use core::utils::DrawHelper;
 pub struct StencilVertex {
     pub x: f32,
     pub y: f32,
+    pub path: u32,
+    pub _pad: f32,
 }
 
 impl StencilVertex {
-    pub fn from_point(p: Point) -> Self {
-        StencilVertex { x: p.x, y: p.y }
+    pub fn new(p: Point, addr: u32) -> Self {
+        StencilVertex { x: p.x, y: p.y, path: addr, _pad: 0.0 }
     }
 }
 
 unsafe impl bytemuck::Pod for StencilVertex {}
 unsafe impl bytemuck::Zeroable for StencilVertex {}
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct CoverVertex {
-    pub x: f32,
-    pub y: f32,
-    pub z_index: u32,
-    pub pattern: u32,
-}
+pub type CoverVertex = tess::Vertex;
 
 struct GeomBuilder<'a, 'b, 'c> {
     indices: &'a mut GpuStreamWriter<'b>,
     vertices: &'a mut GpuBufferWriter<'c>,
 
-    pattern: u32,
-    z_index: u32,
+    prim_address: u32,
 }
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
@@ -75,16 +68,13 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         let handle = self.vertices.push(CoverVertex {
             x,
             y,
-            z_index: self.z_index,
-            pattern: self.pattern,
+            prim_address: self.prim_address,
+            _pad: 0.0,
         });
 
         Ok(VertexId(handle.to_u32()))
     }
 }
-
-unsafe impl bytemuck::Pod for CoverVertex {}
-unsafe impl bytemuck::Zeroable for CoverVertex {}
 
 #[derive(Clone)]
 enum Shape {
@@ -130,7 +120,7 @@ pub struct BatchInfo {
 
 struct Fill {
     shape: Shape,
-    view: RenderTaskInfo,
+    task: RenderTaskInfo,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
@@ -165,7 +155,7 @@ pub struct StencilAndCoverRenderer {
     draws: Vec<Draw>,
     parallel_draws: Vec<Vec<Draw>>,
     batches: BatchList<Fill, BatchInfo>,
-    cover_pipeline: GeometryId,
+    cover_geometry: GeometryId,
     pub stats: Stats,
     pub tolerance: f32,
     pub parallel: bool,
@@ -186,7 +176,7 @@ impl StencilAndCoverRenderer {
             draws: Vec::new(),
             parallel_draws: Vec::new(),
             batches: BatchList::new(renderer_id),
-            cover_pipeline: shared.cover_geometry,
+            cover_geometry: shared.cover_geometry,
             stats: Stats {
                 stencil_batches: 0,
                 cover_batches: 0,
@@ -269,7 +259,7 @@ impl StencilAndCoverRenderer {
             &mut |mut batch, view| {
                 batch.push(Fill {
                     shape: shape.clone(),
-                    view: *view,
+                    task: *view,
                     pattern,
                     transform: transforms.current_id(),
                     z_index,
@@ -288,6 +278,7 @@ impl StencilAndCoverRenderer {
         let shaders = &mut worker_data.pipelines;
         let vertices = &mut worker_data.vertices;
         let indices = &mut worker_data.indices;
+        let mut prim_buffer = worker_data.u32_buffer.write_items::<EncodedPrimitiveInfo>();
 
         let stencil_idx_stream = indices.next_stream_id();
         let cover_idx_stream = indices.next_stream_id();
@@ -317,7 +308,7 @@ impl StencilAndCoverRenderer {
             let cover_idx_start = cover.indices.pushed_bytes() / 4;
 
             for fill in commands.iter() {
-                Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, self.tolerance);
+                Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, &mut prim_buffer, self.tolerance);
             }
 
             let stencil_idx_end = stencil.indices.pushed_bytes() / 4;
@@ -335,7 +326,7 @@ impl StencilAndCoverRenderer {
             if cover_idx_end > cover_idx_start {
                 let surface = surface.draw_config(true, None).with_stencil(batch_info.stencil_mode);
                 let pipeline_idx =
-                    shaders.prepare(RenderPipelineKey::new(self.cover_pipeline, batch_info.pattern_shader, batch_info.blend_mode, surface));
+                    shaders.prepare(RenderPipelineKey::new(self.cover_geometry, batch_info.pattern_shader, batch_info.blend_mode, surface));
                 self.draws.push(Draw::Cover {
                     stream_id: None,
                     indices: cover_idx_start..cover_idx_end,
@@ -390,6 +381,7 @@ impl StencilAndCoverRenderer {
                     {
                         let indices = &workers.const_data().0.indices;
                         let vertices = &workers.const_data().0.vertices;
+                        let mut prim_buffer = workers.const_data().0.u32_buffer.write_items::<EncodedPrimitiveInfo>();
 
                         stencil_stream = indices.next_stream_id();
                         cover_stream = indices.next_stream_id();
@@ -404,7 +396,7 @@ impl StencilAndCoverRenderer {
                         };
 
                         for fill in commands.iter() {
-                            Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, self.tolerance);
+                            Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, &mut prim_buffer, self.tolerance);
                         }
 
                         num_stencil_indices = stencil.indices.pushed_items::<u32>();
@@ -432,7 +424,7 @@ impl StencilAndCoverRenderer {
                     if num_cover_indices > 0 {
                         let surface = surface.draw_config(true, None).with_stencil(batch_info.stencil_mode);
                         let pipeline_idx = worker_data.pipelines.prepare(RenderPipelineKey::new(
-                            self.cover_pipeline,
+                            self.cover_geometry,
                             batch_info.pattern_shader,
                             batch_info.blend_mode,
                             surface
@@ -460,23 +452,31 @@ impl StencilAndCoverRenderer {
         }
     }
 
-    fn prepare_fill(transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry, tolerance: f32) {
+    fn prepare_fill(transforms: &Transforms, fill: &Fill, stencil: &mut Geometry, cover: &mut Geometry, prim_buffer: &mut GpuBufferWriter, tolerance: f32) {
 
         let transform = transforms.get(fill.transform);
         let local_aabb = fill.shape.aabb();
         let transformed_aabb = transform.matrix()
             .outer_transformed_box(&local_aabb)
-            .intersection_unchecked(&fill.view.bounds.to_f32());
+            .intersection_unchecked(&fill.task.bounds.to_f32());
 
         if transformed_aabb.is_empty() {
             // Note: In theory this should have been skipped during batching.
             return;
         }
 
+        let prim_address = prim_buffer.push(tess::PrimitiveInfo {
+            z_index: fill.z_index,
+            pattern: fill.pattern.data,
+            opacity: 1.0, // TODO,
+            render_task: fill.task.handle,
+        }.encode()).to_u32();
+
         match &fill.shape {
             Shape::Path(shape) => {
                 generate_stencil_geometry(
                     shape.path.as_slice(),
+                    prim_address,
                     transform.matrix(),
                     tolerance,
                     &transformed_aabb,
@@ -502,20 +502,19 @@ impl StencilAndCoverRenderer {
                             &mut GeomBuilder {
                                 vertices: &mut cover.vertices,
                                 indices: &mut cover.indices,
-                                z_index: fill.z_index,
-                                pattern: fill.pattern.data,
+                                prim_address,
                             }
                         )
                         .unwrap();
                 }
             }
             _ => {
-                let clip = fill.view.bounds.to_f32();
+                let clip = fill.task.bounds.to_f32();
                 generate_cover_geometry(
                     &local_aabb,
                     transform.matrix(),
-                    fill,
                     &clip,
+                    prim_address,
                     cover,
                 );
             }
@@ -525,6 +524,7 @@ impl StencilAndCoverRenderer {
 
 fn generate_stencil_geometry(
     path: PathSlice,
+    prim: u32,
     transform: &LocalToSurfaceTransform,
     tolerance: f32,
     aabb: &SurfaceRect,
@@ -532,8 +532,8 @@ fn generate_stencil_geometry(
 ) {
     let transform = &transform.to_untyped();
 
-    fn vertex(vertices: &mut GpuBufferWriter, p: Point) -> u32 {
-        let handle = vertices.push(StencilVertex::from_point(p));
+    fn vertex(vertices: &mut GpuBufferWriter, p: Point, prim_addr: u32) -> u32 {
+        let handle = vertices.push(StencilVertex::new(p, prim_addr));
         handle.to_u32()
     }
 
@@ -544,7 +544,7 @@ fn generate_stencil_geometry(
     }
 
     // Use the center of the bounding box as the pivot point.
-    let pivot = vertex(&mut stencil.vertices, aabb.center().cast_unit());
+    let pivot = vertex(&mut stencil.vertices, aabb.center().cast_unit(), prim);
 
     let mut skipped = None;
     for evt in path.iter() {
@@ -557,14 +557,14 @@ fn generate_stencil_geometry(
                 let first = transform.transform_point(first);
 
                 if let Some(prev) = skipped {
-                    let a = vertex(&mut stencil.vertices, prev);
-                    let b = vertex(&mut stencil.vertices, last);
+                    let a = vertex(&mut stencil.vertices, prev, prim);
+                    let b = vertex(&mut stencil.vertices, last, prim);
                     triangle(&mut stencil.indices, pivot, a, b);
                     skipped = None;
                 }
 
-                let a = vertex(&mut stencil.vertices, last);
-                let b = vertex(&mut stencil.vertices, first);
+                let a = vertex(&mut stencil.vertices, last, prim);
+                let b = vertex(&mut stencil.vertices, first, prim);
                 triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Line { from, to } => {
@@ -578,14 +578,14 @@ fn generate_stencil_geometry(
                 }
 
                 if let Some(prev) = skipped {
-                    let a = vertex(&mut stencil.vertices, prev);
-                    let b = vertex(&mut stencil.vertices, from);
+                    let a = vertex(&mut stencil.vertices, prev, prim);
+                    let b = vertex(&mut stencil.vertices, from, prim);
                     triangle(&mut stencil.indices, pivot, a, b);
                     skipped = None;
                 }
 
-                let a = vertex(&mut stencil.vertices, from);
-                let b = vertex(&mut stencil.vertices, to);
+                let a = vertex(&mut stencil.vertices, from, prim);
+                let b = vertex(&mut stencil.vertices, to, prim);
                 triangle(&mut stencil.indices, pivot, a, b);
             }
             PathEvent::Quadratic { from, ctrl, to } => {
@@ -600,21 +600,21 @@ fn generate_stencil_geometry(
 
                 if seg_aabb.intersects(&aabb) {
                     if let Some(prev) = skipped {
-                        let a = vertex(&mut stencil.vertices, prev);
-                        let b = vertex(&mut stencil.vertices, from);
+                        let a = vertex(&mut stencil.vertices, prev, prim);
+                        let b = vertex(&mut stencil.vertices, from, prim);
                         triangle(&mut stencil.indices, pivot, a, b);
                         skipped = None;
                     }
 
-                    let a = vertex(&mut stencil.vertices, from);
-                    let b = vertex(&mut stencil.vertices, to);
+                    let a = vertex(&mut stencil.vertices, from, prim);
+                    let b = vertex(&mut stencil.vertices, to, prim);
                     triangle(&mut stencil.indices, pivot, a, b);
 
                     let mut prev = a;
                     QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(
                         tolerance,
                         &mut |seg| {
-                            let next = vertex(&mut stencil.vertices, seg.to);
+                            let next = vertex(&mut stencil.vertices, seg.to, prim);
                             if prev != a {
                                 triangle(&mut stencil.indices, a, prev, next);
 
@@ -625,13 +625,13 @@ fn generate_stencil_geometry(
                 } else if (seg_aabb.min.y < aabb.min.y) & (seg_aabb.max.y > aabb.min.y)
                         | (seg_aabb.min.y < aabb.max.y) & (seg_aabb.max.y > aabb.max.y) {
                     if let Some(prev) = skipped {
-                        let a = vertex(&mut stencil.vertices, prev);
-                        let b = vertex(&mut stencil.vertices, from);
+                        let a = vertex(&mut stencil.vertices, prev, prim);
+                        let b = vertex(&mut stencil.vertices, from, prim);
                         triangle(&mut stencil.indices, pivot, a, b);
                         skipped = None;
                     }
-                    let a = vertex(&mut stencil.vertices, from);
-                    let b = vertex(&mut stencil.vertices, to);
+                    let a = vertex(&mut stencil.vertices, from, prim);
+                    let b = vertex(&mut stencil.vertices, to, prim);
                     triangle(&mut stencil.indices, pivot, a, b);
                 } else if skipped.is_none() {
                     skipped = Some(from);
@@ -661,8 +661,8 @@ fn generate_stencil_geometry(
 
                 if seg_aabb.intersects(&aabb) {
                     if let Some(prev) = skipped {
-                        let a = vertex(&mut stencil.vertices, prev);
-                        let b = vertex(&mut stencil.vertices, from);
+                        let a = vertex(&mut stencil.vertices, prev, prim);
+                        let b = vertex(&mut stencil.vertices, from, prim);
                         triangle(&mut stencil.indices, pivot, a, b);
                         skipped = None;
                     }
@@ -674,13 +674,13 @@ fn generate_stencil_geometry(
                         to,
                     }
                     .for_each_quadratic_bezier(tolerance, &mut |quad| {
-                        let a = vertex(&mut stencil.vertices, quad.from);
-                        let b = vertex(&mut stencil.vertices, quad.to);
+                        let a = vertex(&mut stencil.vertices, quad.from, prim);
+                        let b = vertex(&mut stencil.vertices, quad.to, prim);
 
                         triangle(&mut stencil.indices, pivot, a, b);
                         let mut prev = a;
                         quad.for_each_flattened(tolerance, &mut |seg| {
-                            let next = vertex(&mut stencil.vertices, seg.to);
+                            let next = vertex(&mut stencil.vertices, seg.to, prim);
                             if prev != a {
                                 triangle(&mut stencil.indices, a, prev, next);
                             }
@@ -690,13 +690,13 @@ fn generate_stencil_geometry(
                 } else if (seg_aabb.min.y < aabb.min.y) & (seg_aabb.max.y > aabb.min.y)
                         | (seg_aabb.min.y < aabb.max.y) & (seg_aabb.max.y > aabb.max.y) {
                     if let Some(prev) = skipped {
-                        let a = vertex(&mut stencil.vertices, prev);
-                        let b = vertex(&mut stencil.vertices, from);
+                        let a = vertex(&mut stencil.vertices, prev, prim);
+                        let b = vertex(&mut stencil.vertices, from, prim);
                         triangle(&mut stencil.indices, pivot, a, b);
                         skipped = None;
                     }
-                    let a = vertex(&mut stencil.vertices, from);
-                    let b = vertex(&mut stencil.vertices, to);
+                    let a = vertex(&mut stencil.vertices, from, prim);
+                    let b = vertex(&mut stencil.vertices, to, prim);
                     triangle(&mut stencil.indices, pivot, a, b);
                 } else if skipped.is_none() {
                     skipped = Some(from);
@@ -709,8 +709,8 @@ fn generate_stencil_geometry(
 fn generate_cover_geometry(
     aabb: &LocalRect,
     transform: &LocalToSurfaceTransform,
-    fill: &Fill,
     clip: &SurfaceRect,
+    prim_address: u32,
     cover: &mut Geometry,
 ) {
     // TODO: The clip could be applied in the verex shader.
@@ -720,12 +720,10 @@ fn generate_cover_geometry(
     let c = r.max;
     let d = SurfacePoint::new(r.min.x, r.max.y);
 
-    let z_index = fill.z_index;
-    let pattern = fill.pattern.data;
-    let a = cover.vertices.push(CoverVertex { x: a.x, y: a.y, z_index, pattern });
-    let b = cover.vertices.push(CoverVertex { x: b.x, y: b.y, z_index, pattern });
-    let c = cover.vertices.push(CoverVertex { x: c.x, y: c.y, z_index, pattern });
-    let d = cover.vertices.push(CoverVertex { x: d.x, y: d.y, z_index, pattern });
+    let a = cover.vertices.push(CoverVertex { x: a.x, y: a.y, prim_address: prim_address, _pad: 0.0 });
+    let b = cover.vertices.push(CoverVertex { x: b.x, y: b.y, prim_address: prim_address, _pad: 0.0 });
+    let c = cover.vertices.push(CoverVertex { x: c.x, y: c.y, prim_address: prim_address, _pad: 0.0 });
+    let d = cover.vertices.push(CoverVertex { x: d.x, y: d.y, prim_address: prim_address, _pad: 0.0 });
 
     cover.indices.push(a);
     cover.indices.push(b);

@@ -71,7 +71,7 @@ impl MsaaStroke {
 }
 
 const SHADER_SRC: &'static str = "
-#import render_target
+#import render_task
 #import z_index
 
 struct PathData {
@@ -82,7 +82,7 @@ struct PathData {
     pad0: f32,
     pattern: u32,
     z_index: u32,
-    pad1: u32,
+    render_task: u32,
     pad2: u32,
 };
 
@@ -145,7 +145,9 @@ fn geometry_vertex(
 
     var canvas_position = local_position * transform + translation;
 
-    var target_position = canvas_to_target(canvas_position);
+    let task = render_task_fetch(path.render_task);
+
+    var target_position = render_task_target_position(task, canvas_position);
 
     var position = vec4<f32>(
         target_position.x,

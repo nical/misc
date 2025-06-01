@@ -38,7 +38,7 @@ unsafe impl bytemuck::Zeroable for Instance {}
 unsafe impl bytemuck::Pod for Instance {}
 
 #[derive(Clone)]
-pub(crate) struct Geometries {
+pub struct Geometries {
     pub opaque: GeometryId,
     pub alpha: GeometryId,
     pub opaque_no_aa: GeometryId,

@@ -2177,6 +2177,7 @@ dependencies = [
  "core",
  "lyon",
  "profiling",
+ "tess",
 ]
 
 [[package]]

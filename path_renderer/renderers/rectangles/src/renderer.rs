@@ -70,6 +70,10 @@ impl RectangleRenderer {
         true
     }
 
+    pub fn geometries(&self) -> &Geometries {
+        &self.pipelines
+    }
+
     pub fn fill_rect(
         &mut self,
         ctx: &mut RenderPassContext,

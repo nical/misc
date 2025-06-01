@@ -342,7 +342,7 @@ impl App {
         let tiling = Tiling::new(&device, &mut instance.shaders, &TilingOptions {
             antialiasing,
         });
-        let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &device, &mut instance.shaders);
+        let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &tessellation, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
 

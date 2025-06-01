@@ -1,5 +1,5 @@
 use core::{
-    bytemuck, path::Path, pattern::BuiltPattern, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
+    bytemuck, path::Path, pattern::BuiltPattern, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
@@ -60,15 +60,27 @@ struct Fill {
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
+    render_task: RenderTaskHandle,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct PathInfo {
+pub struct PrimitiveInfo {
     pub z_index: u32,
     pub pattern: u32,
-    pub render_task: u32,
-    pub _padding: u32,
+    pub opacity: f32,
+    pub render_task: RenderTaskHandle,
+}
+
+pub type EncodedPrimitiveInfo = [u32; 4];
+
+impl PrimitiveInfo {
+    pub fn encode(&self) -> EncodedPrimitiveInfo {
+        [
+            self.z_index,
+            self.pattern,
+            (self.opacity.max(0.0).min(1.0) * 65535.0) as u32,
+            self.render_task.to_u32(),
+        ]
+    }
 }
 
 #[repr(C)]
@@ -76,8 +88,8 @@ pub struct PathInfo {
 pub struct Vertex {
     pub x: f32,
     pub y: f32,
-    pub z_index: u32,
-    pub pattern: u32,
+    pub prim_address: u32,
+    pub _pad: f32,
 }
 
 unsafe impl bytemuck::Zeroable for Vertex {}
@@ -87,8 +99,7 @@ struct GeomBuilder<'a, 'b, 'c> {
     indices: &'a mut GpuStreamWriter<'b>,
     vertices: &'a mut GpuBufferWriter<'c>,
 
-    pattern: u32,
-    z_index: u32,
+    prim_address: u32,
 }
 
 impl<'a, 'b, 'c> lyon::tessellation::GeometryBuilder for GeomBuilder<'a ,'b, 'c> {
@@ -108,8 +119,8 @@ impl<'a, 'b, 'c> FillGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         let handle = self.vertices.push(Vertex {
             x,
             y,
-            z_index: self.z_index,
-            pattern: self.pattern,
+            prim_address: self.prim_address,
+            _pad: 0.0,
         });
 
         Ok(VertexId(handle.to_u32()))
@@ -125,8 +136,8 @@ impl<'a, 'b, 'c> StrokeGeometryBuilder for GeomBuilder<'a, 'b, 'c> {
         let handle = self.vertices.push(Vertex {
             x,
             y,
-            z_index: self.z_index,
-            pattern: self.pattern,
+            prim_address: self.prim_address,
+            _pad: 0.0,
         });
 
         Ok(VertexId(handle.to_u32()))
@@ -239,12 +250,13 @@ impl MeshRenderer {
                 draws: 0..0,
                 blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch, _task| {
+            &mut |mut batch, task| {
                 batch.push(Fill {
                     shape: shape.clone(),
                     pattern,
                     transform,
                     z_index,
+                    render_task: task.handle,
                 });
             }
         );
@@ -262,6 +274,7 @@ impl MeshRenderer {
         let indices = &mut worker_data.indices;
 
         let mut vertices = worker_data.vertices.write_items::<Vertex>();
+        let mut prim_buffer = worker_data.u32_buffer.write_items::<EncodedPrimitiveInfo>();
 
         let idx_stream = indices.next_stream_id();
         let mut indices = indices.write(idx_stream, 0);
@@ -305,7 +318,7 @@ impl MeshRenderer {
                         geom_start = end;
                         key = fill.pattern.shader_and_bindings();
                     }
-                    self.prepare_fill(fill, transforms, &mut vertices, &mut indices);
+                    self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
                 }
             }
 
@@ -346,7 +359,7 @@ impl MeshRenderer {
                     geom_start = end;
                     key = fill.pattern.shader_and_bindings();
                 }
-                self.prepare_fill(fill, transforms, &mut vertices, &mut indices);
+                self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
             }
 
             let end = indices.pushed_bytes() / 4;
@@ -370,10 +383,16 @@ impl MeshRenderer {
         self.batches = batches;
     }
 
-    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, vertices: &mut GpuBufferWriter, indices: &mut GpuStreamWriter) {
+    fn prepare_fill(&mut self, fill: &Fill, transforms: &Transforms, vertices: &mut GpuBufferWriter, indices: &mut GpuStreamWriter, prim_buffer: &mut GpuBufferWriter) {
         let transform = transforms.get(fill.transform).matrix();
-        let z_index = fill.z_index;
-        let pattern = fill.pattern.data;
+
+        let prim_address = prim_buffer.push(PrimitiveInfo {
+            z_index: fill.z_index,
+            pattern: fill.pattern.data,
+            opacity: 1.0, // TODO,
+            render_task: fill.render_task,
+        }.encode()).to_u32();
+
 
         match &fill.shape {
             Shape::Path(shape) => {
@@ -390,8 +409,7 @@ impl MeshRenderer {
                         &mut GeomBuilder {
                             vertices,
                             indices,
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
+                            prim_address,
                         }
                     )
                     .unwrap();
@@ -409,8 +427,7 @@ impl MeshRenderer {
                         &mut GeomBuilder {
                             vertices,
                             indices,
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
+                            prim_address,
                         }
                     )
                     .unwrap();
@@ -437,10 +454,10 @@ impl MeshRenderer {
                 let c = transform.transform_point(rect.max);
                 let d = transform.transform_point(point(rect.min.x, rect.max.y));
 
-                let a = vertices.push(Vertex { x: a.x, y: a.y, z_index, pattern }).to_u32();
-                let b = vertices.push(Vertex { x: b.x, y: b.y, z_index, pattern }).to_u32();
-                let c = vertices.push(Vertex { x: c.x, y: c.y, z_index, pattern }).to_u32();
-                let d = vertices.push(Vertex { x: d.x, y: d.y, z_index, pattern }).to_u32();
+                let a = vertices.push(Vertex { x: a.x, y: a.y, prim_address: prim_address, _pad: 0.0 }).to_u32();
+                let b = vertices.push(Vertex { x: b.x, y: b.y, prim_address: prim_address, _pad: 0.0 }).to_u32();
+                let c = vertices.push(Vertex { x: c.x, y: c.y, prim_address: prim_address, _pad: 0.0 }).to_u32();
+                let d = vertices.push(Vertex { x: d.x, y: d.y, prim_address: prim_address, _pad: 0.0 }).to_u32();
 
                 indices.push(a);
                 indices.push(b);
@@ -462,8 +479,7 @@ impl MeshRenderer {
                         &mut GeomBuilder {
                             vertices,
                             indices,
-                            z_index: fill.z_index,
-                            pattern: fill.pattern.data,
+                            prim_address,
                         },
                     )
                     .unwrap();

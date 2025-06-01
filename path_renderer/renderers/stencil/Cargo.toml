@@ -7,5 +7,6 @@ workspace = "../.."
 
 [dependencies]
 core = { path = "../../core" }
+tess = { path = "../tess" }
 lyon = "1.0.0"
 profiling = "1.0.4"
