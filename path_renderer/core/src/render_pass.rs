@@ -242,7 +242,7 @@ impl BuiltRenderPass {
             return;
         }
 
-        let base_bind_group = resources.graph.get_base_bindgroup();
+        let base_bind_group = resources.common.get_base_bindgroup();
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
         // Traverse batches, grouping consecutive items with the same renderer.

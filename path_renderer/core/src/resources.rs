@@ -16,7 +16,7 @@ impl GpuResources {
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let common = CommonGpuResources::new(device, staging_buffers);
-        let graph = RenderGraphResources::new(device);
+        let graph = RenderGraphResources::new();
 
         GpuResources {
             common,
@@ -31,11 +31,12 @@ impl GpuResources {
 
     pub fn upload(&mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         shaders: &Shaders,
         allocations: &[TempResourceKey],
     ) {
-        self.graph.upload(device, queue, shaders, &self.common, allocations);
+        self.common.upload(device, shaders);
+        self.graph.upload(device, shaders, allocations);
     }
 
     pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -54,12 +55,15 @@ pub struct CommonGpuResources {
     pub indices: GpuStreamsResources,
     pub instances: GpuStreamsResources,
 
+    pub default_sampler: wgpu::Sampler,
     pub f32_buffer: GpuBufferResources,
     pub u32_buffer: GpuBufferResources,
-
-    pub default_sampler: wgpu::Sampler,
+    pub base_bind_group: Option<wgpu::BindGroup>,
 
     pub staging_buffers: StagingBufferPoolRef,
+
+    f32_buffer_epoch: u32,
+    u32_buffer_epoch: u32,
 }
 
 impl CommonGpuResources {
@@ -79,21 +83,6 @@ impl CommonGpuResources {
 
         let mut u32_buffer = GpuBufferResources::new(&GpuBufferDescriptor::rgba32_uint_texture("u32 buffer"));
         u32_buffer.allocate(4096 * 1024, device);
-
-        let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("default sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
-            compare: None,
-            anisotropy_clamp: 1,
-            border_color: None,
-        });
 
         let vertices = GpuBufferResources::new(&GpuBufferDescriptor::Buffers {
             usages: wgpu::BufferUsages::VERTEX,
@@ -116,6 +105,21 @@ impl CommonGpuResources {
             label: Some("instances"),
         });
 
+        let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("default sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 0.0,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+
         CommonGpuResources {
             quad_ibo,
             vertices,
@@ -124,11 +128,47 @@ impl CommonGpuResources {
             f32_buffer,
             u32_buffer,
             default_sampler,
+            base_bind_group: None,
             staging_buffers,
+            f32_buffer_epoch: u32::MAX,
+            u32_buffer_epoch: u32::MAX,
         }
     }
 
     fn begin_frame(&mut self) {}
+
+    fn upload(&mut self, device: &wgpu::Device, shaders: &Shaders) {
+        if self.f32_buffer_epoch != self.f32_buffer.epoch() || self.u32_buffer_epoch != self.u32_buffer.epoch() {
+            self.f32_buffer_epoch = self.f32_buffer.epoch();
+            self.u32_buffer_epoch = self.u32_buffer.epoch();
+            // If the gpu store texture ch_anges, we have to re-create the bind groups.
+            self.base_bind_group = None;
+        }
+
+        if self.base_bind_group.is_none() {
+            let target_and_gpu_buffers_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer);
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Pass descriptor & gpu buffers"),
+                layout: &target_and_gpu_buffers_layout.handle,
+                entries: &[
+                    self.f32_buffer.as_bind_group_entry(0).unwrap(),
+                    self.u32_buffer.as_bind_group_entry(1).unwrap(),
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.default_sampler),
+                    },
+                ],
+            });
+
+            self.base_bind_group = Some(bind_group);
+        }
+    }
+
+    // Should be called only between upload and end_frame.
+    pub fn get_base_bindgroup(&self) -> &wgpu::BindGroup {
+        &self.base_bind_group.as_ref().unwrap()
+    }
 
     fn begin_rendering(&mut self, _encoder: &mut wgpu::CommandEncoder) {
     }
@@ -147,37 +187,13 @@ pub struct GpuResource {
 pub struct RenderGraphResources {
     pool: Vec<GpuResource>,
     resources: Vec<GpuResource>,
-    base_bind_group: Option<wgpu::BindGroup>,
-    default_sampler: wgpu::Sampler,
-    f32_buffer_epoch: u32,
-    u32_buffer_epoch: u32,
 }
 
 impl RenderGraphResources {
-    pub fn new(device: &wgpu::Device) -> Self {
-
-        let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("default sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
-            compare: None,
-            anisotropy_clamp: 1,
-            border_color: None,
-        });
-
+    pub fn new() -> Self {
         RenderGraphResources {
             pool: Vec::new(),
             resources: Vec::new(),
-            default_sampler,
-            base_bind_group: None,
-            f32_buffer_epoch: u32::MAX,
-            u32_buffer_epoch: u32::MAX,
         }
     }
 
@@ -188,9 +204,7 @@ impl RenderGraphResources {
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
         shaders: &Shaders,
-        resources: &CommonGpuResources,
         allocations: &[TempResourceKey],
     ) {
         for key in allocations {
@@ -212,32 +226,6 @@ impl RenderGraphResources {
             };
 
             self.resources.push(resource);
-        }
-
-        if self.f32_buffer_epoch != resources.f32_buffer.epoch() || self.u32_buffer_epoch != resources.u32_buffer.epoch() {
-            self.f32_buffer_epoch = resources.f32_buffer.epoch();
-            self.u32_buffer_epoch = resources.u32_buffer.epoch();
-            // If the gpu store texture ch_anges, we have to re-create the bind groups.
-            self.base_bind_group = None;
-        }
-
-        if self.base_bind_group.is_none() {
-            let target_and_gpu_buffers_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer);
-
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Pass descriptor & gpu buffers"),
-                layout: &target_and_gpu_buffers_layout.handle,
-                entries: &[
-                    resources.f32_buffer.as_bind_group_entry(0).unwrap(),
-                    resources.u32_buffer.as_bind_group_entry(1).unwrap(),
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.default_sampler),
-                    },
-                ],
-            });
-
-            self.base_bind_group = Some(bind_group);
         }
     }
 
@@ -312,11 +300,6 @@ impl RenderGraphResources {
     // Should be called only between upload and end_frame.
     pub fn get_resource(&self, index: u16) -> &GpuResource {
         &self.resources[index as usize]
-    }
-
-    // Should be called only between upload and end_frame.
-    pub fn get_base_bindgroup(&self) -> &wgpu::BindGroup {
-        &self.base_bind_group.as_ref().unwrap()
     }
 
     pub fn resources(&self) -> &[GpuResource] {
