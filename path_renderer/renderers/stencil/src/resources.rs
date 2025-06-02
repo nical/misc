@@ -22,8 +22,8 @@ const STENCIL_SHADER_SRC: &'static str = "
 #import render_task
 #import z_index
 
-@group(0) @binding(1) var f32_gpu_buffer_texture: texture_2d<f32>;
-@group(0) @binding(2) var u32_gpu_buffer_texture: texture_2d<u32>;
+@group(0) @binding(0) var f32_gpu_buffer_texture: texture_2d<f32>;
+@group(0) @binding(1) var u32_gpu_buffer_texture: texture_2d<u32>;
 
 struct PrimInfo {
     z: f32,

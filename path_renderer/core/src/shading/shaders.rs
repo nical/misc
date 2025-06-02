@@ -666,10 +666,6 @@ impl ShaderSources {
             include_str!("../../shaders/lib/gpu_buffer.wgsl").into(),
         );
         library.insert(
-            "render_target".into(),
-            include_str!("../../shaders/lib/render_target.wgsl").into(),
-        );
-        library.insert(
             "render_task".into(),
             include_str!("../../shaders/lib/render_task.wgsl").into(),
         );
@@ -725,21 +721,10 @@ fn init_common_layouts(
 ) -> CommonBindGroupLayouts {
     assert!(layouts.is_empty());
 
-    let target_desc_buffer_size = std::mem::size_of::<crate::resources::RenderPassGpuData>() as u64;
     layouts.push(BindGroupLayout::new(
         device,
         "target and gpu buffers".into(),
         vec![
-            Binding {
-                name: "render_target".into(),
-                struct_type: "RenderTarget".into(),
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(target_desc_buffer_size),
-                },
-            },
             Binding {
                 name: "f32_gpu_buffer_texture".into(),
                 struct_type: "f32".into(),

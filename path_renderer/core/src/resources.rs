@@ -1,10 +1,9 @@
 use crate::gpu::{GpuBufferDescriptor, GpuBufferResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
-use crate::graph::{RenderPassData, TempResourceKey};
+use crate::graph::TempResourceKey;
 use crate::shading::Shaders;
 use std::u32;
 use std::marker::PhantomData;
 use wgpu::util::DeviceExt;
-use wgpu::BufferUsages;
 
 pub struct GpuResources {
     pub common: CommonGpuResources,
@@ -35,9 +34,8 @@ impl GpuResources {
         queue: &wgpu::Queue,
         shaders: &Shaders,
         allocations: &[TempResourceKey],
-        pass_data: &[RenderPassData],
     ) {
-        self.graph.upload(device, queue, shaders, &self.common, allocations, pass_data);
+        self.graph.upload(device, queue, shaders, &self.common, allocations);
     }
 
     pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -149,7 +147,7 @@ pub struct GpuResource {
 pub struct RenderGraphResources {
     pool: Vec<GpuResource>,
     resources: Vec<GpuResource>,
-    pass_bind_groups: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
+    base_bind_group: Option<wgpu::BindGroup>,
     default_sampler: wgpu::Sampler,
     f32_buffer_epoch: u32,
     u32_buffer_epoch: u32,
@@ -176,8 +174,8 @@ impl RenderGraphResources {
         RenderGraphResources {
             pool: Vec::new(),
             resources: Vec::new(),
-            pass_bind_groups: Vec::new(),
             default_sampler,
+            base_bind_group: None,
             f32_buffer_epoch: u32::MAX,
             u32_buffer_epoch: u32::MAX,
         }
@@ -190,11 +188,10 @@ impl RenderGraphResources {
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         shaders: &Shaders,
         resources: &CommonGpuResources,
         allocations: &[TempResourceKey],
-        pass_data: &[RenderPassData],
     ) {
         for key in allocations {
             let mut pool_idx = self.pool.len();
@@ -221,59 +218,26 @@ impl RenderGraphResources {
             self.f32_buffer_epoch = resources.f32_buffer.epoch();
             self.u32_buffer_epoch = resources.u32_buffer.epoch();
             // If the gpu store texture ch_anges, we have to re-create the bind groups.
-            self.pass_bind_groups.clear();
+            self.base_bind_group = None;
         }
 
-        // Unfortunately there is a default minimum alignment of 256 bytes for UBOs, so
-        // storing the pass data in a single uniform buffer and creating bindings at
-        // different offsets is quite a bit wastful and tedious. On the other hand creating
-        // an UBO per pass data is probably even more wasteful but that's what this does for
-        // now.
-        // Ideally, the pass data would be provided via push constants.
-        if self.pass_bind_groups.len() < pass_data.len() {
+        if self.base_bind_group.is_none() {
             let target_and_gpu_buffers_layout = shaders.get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer);
-            let size = std::mem::size_of::<RenderPassGpuData>() as u64;
 
-            while self.pass_bind_groups.len() < pass_data.len() {
-                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    size,
-                    usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
-                    label: Some("Render pass descriptor"),
-                    mapped_at_creation: false,
-                });
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Pass descriptor & gpu buffers"),
-                    layout: &target_and_gpu_buffers_layout.handle,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer: &buffer,
-                                offset: 0,
-                                size: wgpu::BufferSize::new(size),
-                            }),
-                        },
-                        resources.f32_buffer.as_bind_group_entry(1).unwrap(),
-                        resources.u32_buffer.as_bind_group_entry(2).unwrap(),
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(&self.default_sampler),
-                        },
-                    ],
-                });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Pass descriptor & gpu buffers"),
+                layout: &target_and_gpu_buffers_layout.handle,
+                entries: &[
+                    resources.f32_buffer.as_bind_group_entry(0).unwrap(),
+                    resources.u32_buffer.as_bind_group_entry(1).unwrap(),
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.default_sampler),
+                    },
+                ],
+            });
 
-                self.pass_bind_groups.push((buffer, bind_group));
-            }
-        }
-
-        for (data, (buffer, _)) in pass_data.iter().zip(self.pass_bind_groups.iter()) {
-            let w = data.target_size.0;
-            let h = data.target_size.1;
-            queue.write_buffer(
-                buffer,
-                0,
-                bytemuck::cast_slice(&[RenderPassGpuData::new(w, h)]),
-            );
+            self.base_bind_group = Some(bind_group);
         }
     }
 
@@ -351,8 +315,8 @@ impl RenderGraphResources {
     }
 
     // Should be called only between upload and end_frame.
-    pub fn get_base_bindgroup(&self, index: u16) -> &wgpu::BindGroup {
-        &self.pass_bind_groups[index as usize].1
+    pub fn get_base_bindgroup(&self) -> &wgpu::BindGroup {
+        &self.base_bind_group.as_ref().unwrap()
     }
 
     pub fn resources(&self) -> &[GpuResource] {
@@ -370,33 +334,6 @@ impl RenderGraphResources {
         }
     }
 }
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct RenderPassGpuData {
-    pub width: f32,
-    pub height: f32,
-    pub inv_width: f32,
-    pub inv_height: f32,
-}
-
-impl RenderPassGpuData {
-    pub fn new(w: u32, h: u32) -> Self {
-        let width = w as f32;
-        let height = h as f32;
-        let inv_width = 1.0 / width;
-        let inv_height = 1.0 / height;
-        RenderPassGpuData {
-            width,
-            height,
-            inv_width,
-            inv_height,
-        }
-    }
-}
-
-unsafe impl bytemuck::Pod for RenderPassGpuData {}
-unsafe impl bytemuck::Zeroable for RenderPassGpuData {}
 
 pub struct ResourcesHandle<T> {
     index: u8,

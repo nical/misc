@@ -231,7 +231,6 @@ impl BuiltRenderPass {
 
     pub fn render<'pass, 'resources: 'pass>(
         &self,
-        pass_index: u16,
         renderers: &[&'resources dyn Renderer],
         resources: &'resources GpuResources,
         bindings: &'resources dyn BindingResolver,
@@ -243,19 +242,7 @@ impl BuiltRenderPass {
             return;
         }
 
-        //if let Some(bind_group) = blit_src {
-        //    let common = &resources[common_resources];
-        //    wgpu_pass.set_bind_group(0, bind_group, &[]);
-        //    wgpu_pass.set_index_buffer(common.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-        //    wgpu_pass.set_pipeline(if surface_cfg.depth || surface_cfg.stencil {
-        //        &common.msaa_blit_with_depth_stencil_pipeline
-        //    } else {
-        //        &common.msaa_blit_pipeline
-        //    });
-        //    wgpu_pass.draw_indexed(0..6, 0, 0..1);
-        //}
-
-        let base_bind_group = resources.graph.get_base_bindgroup(pass_index);
+        let base_bind_group = resources.graph.get_base_bindgroup();
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
         // Traverse batches, grouping consecutive items with the same renderer.
@@ -319,8 +306,6 @@ pub struct RenderCommand<'l> {
     label: Option<&'static str>,
     commands: &'l RenderCommands,
     built_pass: u32,
-    // TODO: This is how we get the base bind group from the render graph resources.
-    pass_data_index: u16,
     // [(non-msaa, msaa, flags); 3]
     color_attachments: [(Option<BindingsId>, Option<BindingsId>, AttathchmentFlags); 3],
     depth_stencil_attachment: Option<BindingsId>,
@@ -416,7 +401,6 @@ impl<'l> Command for RenderCommand<'l> {
         let mut wgpu_pass = ctx.encoder.begin_render_pass(&pass_descriptor);
 
         built_pass.render(
-            self.pass_data_index,
             ctx.renderers,
             ctx.resources,
             ctx.bindings,
@@ -464,7 +448,6 @@ impl RenderCommands {
         &'l self,
         label: Option<&'static str>,
         built_pass: u32,
-        pass_data_index: u16,
         color_attachments: &[(Option<BindingsId>, Option<BindingsId>, AttathchmentFlags); 3],
         depth_stencil_attachment: Option<BindingsId>,
     ) -> Box<dyn Command + 'l> {
@@ -472,7 +455,6 @@ impl RenderCommands {
             label,
             commands: self,
             built_pass,
-            pass_data_index,
             color_attachments: *color_attachments,
             depth_stencil_attachment,
         })

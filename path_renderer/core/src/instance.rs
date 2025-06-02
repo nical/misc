@@ -167,7 +167,6 @@ impl Instance {
             queue,
             &self.shaders,
             &graph.temporary_resources,
-            &graph.pass_data,
         );
 
         let mut upload_stats = UploadStats::default();

@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use crate::render_pass::{AttathchmentFlags, RenderCommands};
 use crate::{BindingsId, BindingsNamespace};
-use super::{Allocation, BufferKind, CommandList, Dependency, NodeDescriptor, NodeId, NodeKind, RenderPassData, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
+use super::{Allocation, BufferKind, CommandList, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
 use super::ResourceFlags;
 
 #[derive(Copy, Clone, Debug)]
@@ -185,7 +185,6 @@ impl NodeResources {
 pub struct BuiltGraph<'l> {
     pub temporary_resources: Vec<TempResourceKey>,
     pub resources: Vec<Option<NodeResourceInfo>>,
-    pub pass_data: Vec<RenderPassData>,
     pub commands: CommandList<'l>,
 }
 
@@ -399,8 +398,6 @@ pub fn schedule_graph<'l>(
         virtual_resources[node.resources.index(root.slot)].store = true;
     }
 
-    let mut pass_data = Vec::with_capacity(sorted.len());
-
     let mut commands = CommandList::new();
 
     // Second pass allocates physical resources and writes the command buffer.
@@ -465,21 +462,6 @@ pub fn schedule_graph<'l>(
 
         match node.kind {
             NodeKind::Render => {
-                let pdata = RenderPassData {
-                    target_size: node.size,
-                };
-
-                // Deduplicate the render pass data if possible.
-                let mut pdata_idx = pass_data.len();
-                for (idx, existing) in pass_data.iter().enumerate() {
-                    if *existing == pdata {
-                        pdata_idx = idx;
-                    }
-                }
-                if pdata_idx == pass_data.len() {
-                    pass_data.push(pdata);
-                }
-
                 let mut color = [(None, None, AttathchmentFlags { load: false, store: false,}); 3];
                 let mut attachments_iter = node.resources.color_attachments();
                 for i in 0..3 {
@@ -521,7 +503,6 @@ pub fn schedule_graph<'l>(
                     render_commands.create_command(
                         node.label,
                         graph.tasks[node_id.index()].0 as u32,
-                        pdata_idx as u16,
                         &color,
                         depth_stencil
                     ),
@@ -546,7 +527,6 @@ pub fn schedule_graph<'l>(
     Ok(BuiltGraph {
         temporary_resources: temp_resources.resources,
         resources,
-        pass_data,
         commands,
     })
 }

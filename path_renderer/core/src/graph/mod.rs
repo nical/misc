@@ -405,14 +405,6 @@ impl fmt::Debug for ResourceKey {
 // is assigned a physical resource when scheduling the graph. Physical resources
 // are used by as many nodes as possible to minimize memory usage.
 
-/// Global per render node data that will be passed to shaders
-/// via a an offset into a globals buffer.
-#[derive(Debug, PartialEq)]
-pub struct RenderPassData {
-    // TODO: should be viewport size.
-    pub target_size: (u32, u32),
-}
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TempResourceKey {
     pub kind: ResourceKind,
