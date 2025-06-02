@@ -2,7 +2,6 @@ use crate::gpu::{GpuBufferDescriptor, GpuBufferResources, GpuStreamsDescritptor,
 use crate::graph::TempResourceKey;
 use crate::shading::Shaders;
 use std::u32;
-use std::marker::PhantomData;
 use wgpu::util::DeviceExt;
 
 pub struct GpuResources {
@@ -315,30 +314,5 @@ impl RenderGraphResources {
         while let Some(res) = self.resources.pop() {
             self.pool.push(res);
         }
-    }
-}
-
-pub struct ResourcesHandle<T> {
-    index: u8,
-    _marker: PhantomData<T>,
-}
-
-impl<T> ResourcesHandle<T> {
-    pub fn new(index: u8) -> Self {
-        ResourcesHandle {
-            index,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn index(&self) -> usize {
-        self.index as usize
-    }
-}
-
-impl<T> Copy for ResourcesHandle<T> {}
-impl<T> Clone for ResourcesHandle<T> {
-    fn clone(&self) -> Self {
-        *self
     }
 }
