@@ -5,7 +5,7 @@ use bitflags::bitflags;
 
 use crate::{instance::RenderStats, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
 
-pub use build::{RenderGraph, BuiltGraph, GraphError};
+pub use build::{RenderGraph, GraphBindings, GraphError};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);

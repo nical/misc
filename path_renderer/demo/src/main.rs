@@ -4,7 +4,7 @@ use core::frame::{RenderNodeDescriptor, RenderNode};
 use core::gpu::gpu_buffer;
 use core::instance::Instance;
 use core::pattern::BuiltPattern;
-use core::graph::{Allocation, Resource, BuiltGraph, ColorAttachment};
+use core::graph::{Allocation, Resource, GraphBindings, ColorAttachment};
 use core::{FillPath, Renderer};
 use core::shading::BlendMode;
 use core::path::Path;
@@ -1481,56 +1481,6 @@ pub mod counters {
     });
 
     pub use debug_overlay::wgpu_counters as wgpu;
-}
-
-
-pub struct Bindings<'l> {
-    pub graph: &'l BuiltGraph<'l>,
-    pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
-    pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
-    pub resources: &'l[GpuResource],
-}
-
-impl<'l> BindingResolver for Bindings<'l> {
-    fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
-        match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                if let Some(id) = self.graph.resolve_binding(binding) {
-                    let index = id.index as usize;
-                    match id.allocation {
-                        Allocation::Temporary => self.resources[index].as_input.as_ref(),
-                        Allocation::External => self.external_inputs[index],
-                    }
-                } else {
-                    None
-                }
-            }
-            BindingsNamespace::External => {
-                self.external_inputs[binding.index()]
-            }
-            _ => None
-        }
-    }
-
-    fn resolve_attachment(&self, binding: BindingsId) -> Option<&wgpu::TextureView> {
-        match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                if let Some(id) = self.graph.resolve_binding(binding) {
-                    let index = id.index as usize;
-                    match id.allocation {
-                        Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
-                        Allocation::External => self.external_attachments[index]
-                    }
-                } else {
-                    return None;
-                }
-            }
-            BindingsNamespace::External => {
-                self.external_attachments[binding.index()]
-            }
-            _ => None
-        }
-    }
 }
 
 pub struct Cache<K, T, const N: usize> {

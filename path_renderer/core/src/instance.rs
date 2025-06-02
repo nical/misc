@@ -5,7 +5,7 @@ use crate::gpu::{StagingBufferPool, UploadStats};
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
 use crate::frame::Frame;
-use crate::graph::{Allocation, BuiltGraph, CommandContext};
+use crate::graph::{Allocation, GraphBindings, CommandContext};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 
@@ -89,7 +89,7 @@ impl Instance {
         let mut guard = frame.graph.inner.lock().unwrap();
         let graph = &mut *guard;
         let render_cmds = &mut graph.render_passes;
-        let graph = graph.graph.schedule(render_cmds).unwrap(); // TODO
+        let (graph_bindings, commands) = graph.graph.schedule(render_cmds).unwrap(); // TODO
 
         // TODO: does this need to be a separate step from upload?
         self.resources.begin_frame();
@@ -166,7 +166,7 @@ impl Instance {
             device,
             queue,
             &self.shaders,
-            &graph.temporary_resources,
+            &graph_bindings.temporary_resources,
         );
 
         let mut upload_stats = UploadStats::default();
@@ -221,7 +221,7 @@ impl Instance {
         self.resources.begin_rendering(encoder);
 
         let bindings = Bindings {
-            graph: &graph,
+            graph: &graph_bindings,
             external_inputs,
             external_attachments,
             resources: &self.resources.graph.resources(),
@@ -232,7 +232,7 @@ impl Instance {
             std::mem::transmute(renderers)
         };
 
-        graph.commands.execute(&mut CommandContext {
+        commands.execute(&mut CommandContext {
             encoder,
             renderers: const_renderers,
             resources: &self.resources,
@@ -277,7 +277,7 @@ pub struct RenderStats {
 }
 
 pub struct Bindings<'l> {
-    pub graph: &'l BuiltGraph<'l>,
+    pub graph: &'l GraphBindings,
     pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
     pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
     pub resources: &'l[GpuResource],

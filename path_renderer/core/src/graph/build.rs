@@ -127,7 +127,7 @@ impl RenderGraph {
         self.tasks[node.index()]
     }
 
-    pub fn schedule<'l>(&self, render_commands: &'l RenderCommands,) -> Result<BuiltGraph<'l>, Box<GraphError>> {
+    pub fn schedule<'l>(&self, render_commands: &'l RenderCommands,) -> Result<(GraphBindings, CommandList<'l>), Box<GraphError>> {
         schedule_graph(self, render_commands)
     }
 }
@@ -182,13 +182,12 @@ impl NodeResources {
 }
 
 #[derive(Debug)]
-pub struct BuiltGraph<'l> {
+pub struct GraphBindings {
     pub temporary_resources: Vec<TempResourceKey>,
     pub resources: Vec<Option<NodeResourceInfo>>,
-    pub commands: CommandList<'l>,
 }
 
-impl<'l> BuiltGraph<'l> {
+impl GraphBindings {
     pub fn resolve_binding(&self, binding: BindingsId) -> Option<ResourceIndex> {
         debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
         self.resources[binding.index()].as_ref().map(|res| res.resolved_index)
@@ -283,7 +282,7 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 pub fn schedule_graph<'l>(
     graph: &RenderGraph,
     render_commands: &'l RenderCommands,
-) -> Result<BuiltGraph<'l>, Box<GraphError>> {
+) -> Result<(GraphBindings, CommandList<'l>), Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
 
@@ -524,11 +523,13 @@ pub fn schedule_graph<'l>(
         }));
     }
 
-    Ok(BuiltGraph {
-        temporary_resources: temp_resources.resources,
-        resources,
+    Ok((
+        GraphBindings {
+            temporary_resources: temp_resources.resources,
+            resources,
+        },
         commands,
-    })
+    ))
 }
 
 struct TemporaryResources {
@@ -653,10 +654,10 @@ fn test_nested() {
 
     let mut render_cmds = RenderCommands::new();
 
-    let commands = graph.schedule(&mut render_cmds).unwrap();
+    let (bindings, _commands) = graph.schedule(&mut render_cmds).unwrap();
 
     println!("sorted: {:?}", sorted);
-    println!("allocations: {:?}", commands.temporary_resources);
+    println!("allocations: {:?}", bindings.temporary_resources);
 
     // n11 should get culled out since it is not reachable from the root.
     assert!(!sorted.contains(&n11));
