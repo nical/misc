@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::gpu::{StagingBufferPool, UploadStats};
+use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
+use crate::render_pass::RenderPasses;
+use crate::transform::Transforms;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
-use crate::frame::Frame;
-use crate::graph::{Allocation, GraphBindings, CommandContext};
+use crate::graph::{Allocation, CommandContext, CommandList, GraphBindings};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 
@@ -75,21 +76,70 @@ impl Instance {
         )
     }
 
+    // TODO: reduce the number of arguments
     pub fn render(
         &mut self,
         frame: Frame,
+        commands: CommandList,
+        // TODO: ideally we could remove this one, but we need some way
+        // for the prepare phase to iterate over the batches per render
+        // pass (to be able to do per-pass things like occlusion culling)
+        render_passes: &RenderPasses,
+        graph_bindings: &GraphBindings,
         renderers: &mut[&mut dyn Renderer],
         external_inputs: &[Option<&wgpu::BindGroup>],
         external_attachments: &[Option<&wgpu::TextureView>],
         encoder: &mut wgpu::CommandEncoder,
     ) -> RenderStats {
+        let mut stats = self.prepare(
+            frame,
+            render_passes,
+            graph_bindings,
+            renderers,
+            encoder
+        );
+
+        let render_start = Instant::now();
+
+        self.resources.begin_rendering(encoder);
+
+        let bindings = Bindings {
+            graph: &graph_bindings,
+            external_inputs,
+            external_attachments,
+            resources: &self.resources.graph.resources(),
+        };
+
+        // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
+        let const_renderers: &[&dyn Renderer] = unsafe {
+            std::mem::transmute(renderers)
+        };
+
+        commands.execute(&mut CommandContext {
+            encoder,
+            renderers: const_renderers,
+            resources: &self.resources,
+            bindings: &bindings,
+            render_pipelines: &self.render_pipelines,
+            stats: &mut stats,
+        });
+
+
+        stats.render_time_ms = ms(Instant::now() - render_start);
+
+        stats
+    }
+
+    pub fn prepare(
+        &mut self,
+        frame: Frame,
+        render_passes: &RenderPasses,
+        graph_bindings: &GraphBindings,
+        renderers: &mut[&mut dyn Renderer],
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> RenderStats {
         let mut stats = RenderStats::default();
         stats.renderers = vec![RendererStats::default(); renderers.len()];
-
-        let mut guard = frame.graph.inner.lock().unwrap();
-        let graph = &mut *guard;
-        let render_cmds = &mut graph.render_passes;
-        let (graph_bindings, commands) = graph.graph.schedule(render_cmds).unwrap(); // TODO
 
         // TODO: does this need to be a separate step from upload?
         self.resources.begin_frame();
@@ -117,7 +167,7 @@ impl Instance {
             instances: frame.instances,
         });
 
-        for pass in render_cmds.passes() {
+        for pass in render_passes.passes() {
             let Some(pass) = pass else { continue; };
             for (idx, renderer) in renderers.iter_mut().enumerate() {
                 let renderer_prepare_start = Instant::now();
@@ -216,36 +266,10 @@ impl Instance {
             stats.upload_time = ms(Instant::now() - renderer_upload_start);
         }
 
-        let render_start = Instant::now();
-
-        self.resources.begin_rendering(encoder);
-
-        let bindings = Bindings {
-            graph: &graph_bindings,
-            external_inputs,
-            external_attachments,
-            resources: &self.resources.graph.resources(),
-        };
-
-        // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
-        let const_renderers: &[&dyn Renderer] = unsafe {
-            std::mem::transmute(renderers)
-        };
-
-        commands.execute(&mut CommandContext {
-            encoder,
-            renderers: const_renderers,
-            resources: &self.resources,
-            bindings: &bindings,
-            render_pipelines: &self.render_pipelines,
-            stats: &mut stats,
-        });
-
-        self.resources.end_frame();
+        let upload_end = Instant::now();
 
         stats.prepare_time_ms = ms(upload_start - prepare_start);
-        stats.upload_time_ms = ms(render_start - upload_start);
-        stats.render_time_ms = ms(Instant::now() - render_start);
+        stats.upload_time_ms = ms(upload_end - upload_start);
         stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
         stats.uploads_kb = upload_stats.bytes as f32 / 1000.0;
         stats.copy_ops = upload_stats.copy_ops;
@@ -254,11 +278,48 @@ impl Instance {
 
     /// Should be called after submitting the frame.
     pub fn end_frame(&mut self) {
+        self.resources.end_frame();
         {
             let mut staging_buffers = self.staging_buffers.lock().unwrap();
             staging_buffers.triage_available_buffers();
             staging_buffers.recycle_active_buffers();
         }
+    }
+}
+
+pub struct Frame {
+    pub f32_buffer: GpuBuffer,
+    pub u32_buffer: GpuBuffer,
+    pub vertices: GpuBuffer,
+    pub indices: GpuStreams,
+    pub instances: GpuStreams,
+    pub transforms: Transforms,
+    // pub allocator: FrameAllocator, // TODO
+    index: u32,
+}
+
+impl Frame {
+    pub(crate) fn new(
+        index: u32,
+        f32_buffer: GpuBuffer,
+        u32_buffer: GpuBuffer,
+        vertices: GpuBuffer,
+        indices: GpuStreams,
+        instances: GpuStreams,
+    ) -> Self {
+        Frame {
+            f32_buffer,
+            u32_buffer,
+            vertices,
+            indices,
+            instances,
+            transforms: Transforms::new(),
+            index,
+        }
+    }
+
+    pub fn index(&self) -> u32 {
+        self.index
     }
 }
 
@@ -276,11 +337,11 @@ pub struct RenderStats {
     pub stagin_buffer_chunks: u32,
 }
 
-pub struct Bindings<'l> {
-    pub graph: &'l GraphBindings,
-    pub external_inputs: &'l[Option<&'l wgpu::BindGroup>],
-    pub external_attachments: &'l[Option<&'l wgpu::TextureView>],
-    pub resources: &'l[GpuResource],
+struct Bindings<'l> {
+    graph: &'l GraphBindings,
+    external_inputs: &'l[Option<&'l wgpu::BindGroup>],
+    external_attachments: &'l[Option<&'l wgpu::TextureView>],
+    resources: &'l[GpuResource],
 }
 
 impl<'l> BindingResolver for Bindings<'l> {

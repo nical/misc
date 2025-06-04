@@ -1,11 +1,14 @@
 mod schedule;
+pub mod render_nodes;
 
-use std::{fmt, u16};
+use std::{fmt, sync::{Arc, Mutex}, u16};
 use bitflags::bitflags;
+use smallvec::SmallVec;
 
-use crate::{instance::RenderStats, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
+use crate::{instance::RenderStats, render_pass::RenderPasses, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
 
-pub use schedule::{RenderGraph, GraphBindings, GraphError};
+use schedule::RenderGraph;
+pub use schedule::{GraphBindings, GraphError};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);
@@ -626,5 +629,102 @@ impl<'l> CommandList<'l> {
         for cmd in &self.cmds {
             cmd.execute(ctx);
         }
+    }
+}
+
+// TODO: Do we need both RenderGraph and FrameGraph?
+
+type FrameGraphRef = Arc<Mutex<FrameGraphInner>>;
+
+pub struct FrameGraph {
+    pub(crate) inner: FrameGraphRef,
+}
+
+pub(crate) struct FrameGraphInner {
+    pub graph: RenderGraph,
+}
+
+impl FrameGraph {
+    pub fn new() -> Self {
+        FrameGraph {
+            inner: Arc::new(Mutex::new(FrameGraphInner {
+                graph: RenderGraph::new(),
+            })),
+        }
+    }
+
+    pub fn new_ref(&self) -> Self {
+        FrameGraph { inner: self.inner.clone() }
+    }
+
+    // TODO: mark root as a flag in the node instead to avoid accessing/locking
+    // the graph.
+    pub fn add_root<'l>(&mut self, root: impl Into<NodeDependency<'l>>) {
+        self.inner.lock().unwrap().graph.add_root(root.into().as_graph_dependency());
+    }
+
+    pub fn add_node(&self, descriptor: &NodeDescriptor, task_id: TaskId) -> Node {
+        let mut guard = self.inner.lock().unwrap();
+
+        let node = Node {
+            id: guard.graph.add_node(&descriptor),
+            task: task_id,
+            graph: self.inner.clone(),
+            dependencies: SmallVec::new(),
+        };
+
+        node
+    }
+
+    pub fn schedule<'l>(&mut self, render_passes: &'l RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+        let mut guard = self.inner.lock().unwrap();
+        let inner = &mut *guard;
+        let bindings = inner.graph.schedule(render_passes, commands)?;
+
+        Ok(bindings)
+    }
+}
+
+pub struct Node {
+    id: NodeId,
+    task: TaskId,
+    pub(crate) graph: FrameGraphRef,
+    pub(crate) dependencies: SmallVec<[Dependency; 4]>,
+}
+
+impl Node {
+    pub fn task_id(&self) -> TaskId {
+        self.task
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+pub struct NodeDependency<'l> {
+    pub(crate) node: &'l Node,
+    pub(crate) slot: Slot,
+}
+
+impl<'l> NodeDependency<'l> {
+    pub(crate) fn as_graph_dependency(&self) -> crate::graph::Dependency {
+        crate::graph::Dependency {
+            node: self.node.id,
+            slot: self.slot,
+        }
+    }
+}
+
+impl Node {
+    pub fn add_dependency<'l>(&mut self, dep: impl Into<NodeDependency<'l>>) {
+        let dep = dep.into().as_graph_dependency();
+        self.dependencies.push(dep);
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        self.graph.lock().unwrap().graph.finish_node(self.id);
     }
 }

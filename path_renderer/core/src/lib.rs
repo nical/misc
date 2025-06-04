@@ -12,7 +12,6 @@ pub mod shape;
 pub mod stroke;
 pub mod transform;
 pub mod graph;
-pub mod frame;
 pub mod instance;
 pub mod worker;
 pub mod shading;

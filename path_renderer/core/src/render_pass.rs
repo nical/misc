@@ -304,7 +304,7 @@ pub struct AttathchmentFlags {
 
 pub struct RenderCommand<'l> {
     label: Option<&'static str>,
-    commands: &'l RenderCommands,
+    commands: &'l RenderPasses,
     built_pass: u32,
     // [(non-msaa, msaa, flags); 3]
     color_attachments: [(Option<BindingsId>, Option<BindingsId>, AttathchmentFlags); 3],
@@ -411,24 +411,27 @@ impl<'l> Command for RenderCommand<'l> {
     }
 }
 
-pub struct RenderCommands {
+pub struct RenderPasses {
     built_render_passes: Vec<Option<BuiltRenderPass>>,
     next_id: u64,
 }
 
-impl RenderCommands {
+impl RenderPasses {
     pub fn new() -> Self {
-        RenderCommands { built_render_passes: Vec::with_capacity(128), next_id: 0, }
+        RenderPasses {
+            built_render_passes: Vec::with_capacity(128),
+            next_id: 0,
+        }
     }
 
-    pub fn next_render_pass_id(&mut self) -> TaskId {
+    pub(crate) fn next_render_pass_id(&mut self) -> TaskId {
         let id = TaskId(self.next_id);
         self.next_id += 1;
 
         id
     }
 
-    pub fn add_built_render_pass(&mut self, id: TaskId, pass: BuiltRenderPass) {
+    pub(crate) fn add_built_render_pass(&mut self, id: TaskId, pass: BuiltRenderPass) {
         let index = id.0 as usize;
         if self.built_render_passes.len() <= index {
             let n = index + 1 - self.built_render_passes.len();
@@ -440,7 +443,7 @@ impl RenderCommands {
         self.built_render_passes[index] = Some(pass);
     }
 
-    pub fn passes(&self) -> &[Option<BuiltRenderPass>] {
+    pub(crate) fn passes(&self) -> &[Option<BuiltRenderPass>] {
         &self.built_render_passes
     }
 

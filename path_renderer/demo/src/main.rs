@@ -1,14 +1,15 @@
 #![allow(unused)]
 
-use core::frame::{RenderNodeDescriptor, RenderNode};
+use core::graph::FrameGraph;
 use core::gpu::gpu_buffer;
-use core::instance::Instance;
+use core::instance::{Instance, Frame};
 use core::pattern::BuiltPattern;
-use core::graph::{Allocation, Resource, GraphBindings, ColorAttachment};
+use core::graph::{Allocation, ColorAttachment, CommandList, GraphBindings, Resource};
+use core::render_pass::RenderPasses;
+use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
 use core::{FillPath, Renderer};
 use core::shading::BlendMode;
 use core::path::Path;
-use core::frame::Frame;
 use core::resources::GpuResource;
 use core::shape::*;
 use core::stroke::*;
@@ -31,6 +32,7 @@ use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
 use tiling::{AaMode, Occlusion, TileRenderer, Tiling, TilingOptions};
+use winit::dpi::PhysicalSize;
 use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
@@ -130,7 +132,7 @@ struct App {
 
 impl ApplicationHandler for AppState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let win_attrs = Window::default_attributes();
+        let win_attrs = Window::default_attributes().with_maximized(true);
         let window = Arc::new(event_loop.create_window(win_attrs).unwrap());
 
         match self {
@@ -581,6 +583,8 @@ impl App {
         };
 
         let mut frame = self.instance.begin_frame();
+        let mut graph = FrameGraph::new();
+        let mut render_nodes = RenderNodes::new(&graph);
 
         self.renderers.begin_frame();
 
@@ -680,9 +684,9 @@ impl App {
         }
 
         let mut f32_buffer = frame.f32_buffer.write();
-        let mut main_surface = frame.graph.add_render_node(&mut f32_buffer, descriptor);
+        let mut main_surface = render_nodes.add_node(&mut f32_buffer, descriptor);
         std::mem::drop(f32_buffer);
-        frame.graph.add_root(&main_surface);
+        graph.add_root(&main_surface);
 
         let tx = self.view.pan[0].round();
         let ty = self.view.pan[1].round();
@@ -708,7 +712,7 @@ impl App {
             &transform,
         );
 
-        main_surface.finish();
+        main_surface.finish(&mut render_nodes);
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
@@ -725,8 +729,14 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        let mut commands = CommandList::new();
+        let bindings = graph.schedule(&render_nodes.passes, &mut commands).unwrap();
+
         let render_stats = self.instance.render(
             frame,
+            commands,
+            &render_nodes.passes,
+            &bindings,
             &mut [
                 &mut self.renderers.tiling as &mut dyn Renderer,
                 &mut self.renderers.stencil,

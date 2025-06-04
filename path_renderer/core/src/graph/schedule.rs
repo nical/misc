@@ -2,7 +2,7 @@ use std::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
-use crate::render_pass::{AttathchmentFlags, RenderCommands};
+use crate::render_pass::{AttathchmentFlags, RenderPasses};
 use crate::{BindingsId, BindingsNamespace};
 use super::{Allocation, BufferKind, CommandList, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
 use super::ResourceFlags;
@@ -105,8 +105,8 @@ impl RenderGraph {
     }
 
     #[inline]
-    pub(crate) fn set_dependencies(&mut self, node: NodeId, deps: SmallVec<[Dependency; 4]>) {
-        self.nodes[node.index()].dependecies = deps;
+    pub(crate) fn add_dependencies(&mut self, node: NodeId, deps: &[Dependency]) {
+        self.nodes[node.index()].dependecies.extend_from_slice(deps);
     }
 
     pub fn add_root(&mut self, root: Dependency) {
@@ -123,12 +123,8 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn get_task_id(&self, node: NodeId) -> TaskId {
-        self.tasks[node.index()]
-    }
-
-    pub fn schedule<'l>(&self, render_commands: &'l RenderCommands,) -> Result<(GraphBindings, CommandList<'l>), Box<GraphError>> {
-        schedule_graph(self, render_commands)
+    pub fn schedule<'l>(&self, passes: &'l RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+        schedule_graph(self, passes, commands)
     }
 }
 
@@ -181,7 +177,9 @@ impl NodeResources {
     }
 }
 
-#[derive(Debug)]
+// TODO: turn this into something less graph-specific, so that other
+// things can use it.
+#[derive(Debug, Default)]
 pub struct GraphBindings {
     pub temporary_resources: Vec<TempResourceKey>,
     pub resources: Vec<Option<NodeResourceInfo>>,
@@ -281,8 +279,9 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 
 pub fn schedule_graph<'l>(
     graph: &RenderGraph,
-    render_commands: &'l RenderCommands,
-) -> Result<(GraphBindings, CommandList<'l>), Box<GraphError>> {
+    render_commands: &'l RenderPasses,
+    commands: &mut CommandList<'l>,
+) -> Result<GraphBindings, Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
 
@@ -396,8 +395,6 @@ pub fn schedule_graph<'l>(
         let node = &graph.nodes[root.node.index()];
         virtual_resources[node.resources.index(root.slot)].store = true;
     }
-
-    let mut commands = CommandList::new();
 
     // Second pass allocates physical resources and writes the command buffer.
     for node_id in &sorted {
@@ -523,13 +520,10 @@ pub fn schedule_graph<'l>(
         }));
     }
 
-    Ok((
-        GraphBindings {
-            temporary_resources: temp_resources.resources,
-            resources,
-        },
-        commands,
-    ))
+    Ok(GraphBindings {
+        temporary_resources: temp_resources.resources,
+        resources,
+    })
 }
 
 struct TemporaryResources {
@@ -652,9 +646,10 @@ fn test_nested() {
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted).unwrap();
 
-    let mut render_cmds = RenderCommands::new();
+    let mut render_passes = RenderPasses::new();
+    let mut commands = CommandList::new();
 
-    let (bindings, _commands) = graph.schedule(&mut render_cmds).unwrap();
+    let bindings = graph.schedule(&mut render_passes, &mut commands).unwrap();
 
     println!("sorted: {:?}", sorted);
     println!("allocations: {:?}", bindings.temporary_resources);
