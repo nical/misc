@@ -1,5 +1,7 @@
+use std::u16;
+
 use bitflags::bitflags;
-use lyon::geom::euclid::Transform2D;
+use lyon::geom::euclid::{Vector2D, Transform2D};
 
 use crate::{
     gpu::{GpuBufferAddress, GpuBufferWriter},
@@ -101,6 +103,23 @@ impl ScaleOffset {
         ScaleOffset {
             scale: vector(mat.m11, mat.m22),
             offset: vector(mat.m31, mat.m32),
+        }
+    }
+
+    pub fn inverse(&self) -> Self {
+        //if self.scale.x.approx_eq(&0.0) || self.scale.y.approx_eq(&0.0) {
+        //    return ScaleOffset::new(0.0, 0.0, 0.0, 0.0);
+        //}
+
+        ScaleOffset {
+            scale: Vector2D::new(
+                1.0 / self.scale.x,
+                1.0 / self.scale.y,
+            ),
+            offset: Vector2D::new(
+                -self.offset.x / self.scale.x,
+                -self.offset.y / self.scale.y,
+            ),
         }
     }
 }
@@ -273,4 +292,81 @@ const EPSILON: f32 = 1.0 / 4096.0;
 
 pub fn is_scale_offset<S, D>(m: &Transform2D<f32, S, D>) -> bool {
     m.m12.abs() <= EPSILON && m.m21.abs() <= EPSILON
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CoordinateSystemId(u16);
+
+impl CoordinateSystemId {
+    const NONE: Self = CoordinateSystemId(u16::MAX);
+
+    #[inline]
+    fn index(self) -> usize { self.0 as usize }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CoordinateSpaceId(u16);
+
+impl CoordinateSpaceId {
+    const NONE: Self = CoordinateSpaceId(u16::MAX);
+
+    #[inline]
+    fn index(self) -> usize { self.0 as usize }
+}
+
+pub struct CoordinateSystem {
+    transform: Transform2D<f32, LocalSpace, LocalSpace>,
+    parent: CoordinateSystemId
+}
+
+pub struct CoordinateSpace {
+    // Transform from the node to the coordinate system root.
+    transform: ScaleOffset,
+    system: CoordinateSystemId,
+}
+
+pub struct TransformTree {
+    coordinate_systems: Vec<CoordinateSystem>,
+    coordinate_spaces: Vec<CoordinateSpace>,
+}
+
+pub enum Transformation<Src, Dst> {
+    Noop,
+    ScaleOffset(ScaleOffset),
+    Transform(Transform2D<f32, Src, Dst>),
+}
+
+impl TransformTree {
+    pub fn new() -> Self {
+        TransformTree {
+            coordinate_systems: Vec::new(),
+            coordinate_spaces: Vec::new(),
+        }
+    }
+
+    pub fn get_transform<Src, Dst>(&self, from: CoordinateSpaceId, to: CoordinateSpaceId) -> Transformation<Src, Dst> {
+        if from == to {
+            return Transformation::Noop;
+        }
+
+        let from = &self.coordinate_spaces[from.index()];
+        let to = &self.coordinate_spaces[to.index()];
+
+        if from.system == to.system {
+            let tx = from.transform.then(&to.transform.inverse());
+            return Transformation::ScaleOffset(tx);
+        }
+
+        let mut system = from.system;
+        let mut transform = from.transform.to_matrix().with_destination::<LocalSpace>();
+
+        while system != to.system {
+            assert!(system != CoordinateSystemId::NONE);
+            let node = &self.coordinate_systems[system.index()];
+            transform = transform.then(&node.transform);
+            system = node.parent;
+        }
+
+        Transformation::Transform(transform.with_source::<Src>().with_destination::<Dst>())
+    }
 }

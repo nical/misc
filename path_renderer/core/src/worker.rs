@@ -1,6 +1,6 @@
 #![allow(private_bounds)]
 
-use std::{marker::PhantomData, ptr::NonNull, sync::Arc};
+use std::{marker::PhantomData, ptr::NonNull, sync::{Arc}};
 
 pub struct Workers {
     thread_pool: Arc<rayon::ThreadPool>,

@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::allocator::chunk::ChunkPool;
+use crate::allocator::frame::FrameAllocators;
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
 use crate::graph::render_nodes::RenderNodes;
 use crate::transform::Transforms;
@@ -24,6 +26,7 @@ pub struct Instance {
     pub queue: wgpu::Queue,
     pub gpu_profiler: wgpu_profiler::GpuProfiler,
     pub gpu_profiling_enabled: bool,
+    chunks: ChunkPool,
     next_frame_index: u32,
 }
 
@@ -48,6 +51,8 @@ impl Instance {
             max_num_pending_frames: 4,
         }).unwrap();
 
+        let chunks = ChunkPool::new();
+
         Instance {
             shaders,
             render_pipelines,
@@ -59,30 +64,41 @@ impl Instance {
             next_frame_index: 0,
             gpu_profiler,
             gpu_profiling_enabled,
+            chunks,
         }
     }
 
     pub fn begin_frame(&mut self) -> Frame {
-        let idx = self.next_frame_index;
+        let index = self.next_frame_index;
         self.next_frame_index += 1;
-        Frame::new(
-            idx,
-            self.resources.common.f32_buffer.begin_frame(
+
+        let num_workers = self.workers.num_workers();
+        let mut allocators = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            allocators.push(FrameAllocators::new(self.chunks.clone()));
+        }
+        Frame {
+            f32_buffer: self.resources.common.f32_buffer.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.u32_buffer.begin_frame(
+            u32_buffer: self.resources.common.u32_buffer.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.vertices.begin_frame(
+            vertices: self.resources.common.vertices.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.indices.begin_frame(
+            indices: self.resources.common.indices.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.instances.begin_frame(
+            instances: self.resources.common.instances.begin_frame(
                 self.staging_buffers.clone()
             ),
-        )
+            transforms: Transforms::new(),
+            graph: FrameGraph::new(),
+            render_nodes: RenderNodes::new(),
+            index,
+            allocators,
+        }
     }
 
     pub fn render_frame(
@@ -108,7 +124,7 @@ impl Instance {
 
         let num_workers = self.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
-        for _ in 0..(num_workers - 1) {
+        for idx in 0..(num_workers - 1) {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
                 f32_buffer: frame.f32_buffer.clone(),
@@ -116,6 +132,7 @@ impl Instance {
                 vertices: frame.vertices.clone(),
                 indices: frame.indices.clone(),
                 instances: frame.instances.clone(),
+                allocator: &frame.allocators[idx],
             });
         }
         worker_data.push(PrepareWorkerData {
@@ -125,6 +142,7 @@ impl Instance {
             vertices: frame.vertices,
             indices: frame.indices,
             instances: frame.instances,
+            allocator: &frame.allocators[num_workers - 1],
         });
 
         let mut ctx = PrepareContext {
@@ -319,31 +337,11 @@ pub struct Frame {
     pub graph: FrameGraph,
     pub render_nodes: RenderNodes,
     // pub allocator: FrameAllocator, // TODO
+    allocators: Vec<FrameAllocators>,
     index: u32,
 }
 
 impl Frame {
-    pub(crate) fn new(
-        index: u32,
-        f32_buffer: GpuBuffer,
-        u32_buffer: GpuBuffer,
-        vertices: GpuBuffer,
-        indices: GpuStreams,
-        instances: GpuStreams,
-    ) -> Self {
-        Frame {
-            f32_buffer,
-            u32_buffer,
-            vertices,
-            indices,
-            instances,
-            transforms: Transforms::new(),
-            graph: FrameGraph::new(),
-            render_nodes: RenderNodes::new(),
-            index,
-        }
-    }
-
     pub fn index(&self) -> u32 {
         self.index
     }
