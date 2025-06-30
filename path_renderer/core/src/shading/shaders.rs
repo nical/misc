@@ -728,7 +728,7 @@ fn init_common_layouts(
             Binding {
                 name: "f32_gpu_buffer_texture".into(),
                 struct_type: "f32".into(),
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     multisampled: false,
@@ -738,7 +738,7 @@ fn init_common_layouts(
             Binding {
                 name: "u32_gpu_buffer_texture".into(),
                 struct_type: "u32".into(),
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Uint,
                     multisampled: false,

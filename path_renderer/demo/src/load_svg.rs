@@ -2,9 +2,10 @@ use core::stroke::{LineCap, LineJoin};
 use std::sync::Arc;
 
 use core::path::Path;
-use core::Color;
+use core::{Color, ColorF};
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{point, Point};
+use pattern_gradients::ColorStop;
 use usvg::TreeParsing;
 
 pub const FALLBACK_COLOR: Color = Color {
@@ -18,8 +19,7 @@ pub const FALLBACK_COLOR: Color = Color {
 pub enum SvgPattern {
     Color(Color),
     Gradient {
-        color0: Color,
-        color1: Color,
+        stops: Vec<ColorStop>,
         from: Point,
         to: Point,
     },
@@ -62,31 +62,20 @@ pub fn load_svg(
                         SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
                     }
                     usvg::Paint::LinearGradient(gradient) => {
-                        let color0 = gradient
-                            .base
-                            .stops
-                            .first()
-                            .map(|stop| Color {
-                                r: stop.color.red,
-                                g: stop.color.green,
-                                b: stop.color.blue,
-                                a: (stop.opacity.get() * 255.0) as u8,
-                            })
-                            .unwrap_or(FALLBACK_COLOR);
-                        let color1 = gradient
-                            .base
-                            .stops
-                            .last()
-                            .map(|stop| Color {
-                                r: stop.color.red,
-                                g: stop.color.green,
-                                b: stop.color.blue,
-                                a: (stop.opacity.get() * 255.0) as u8,
-                            })
-                            .unwrap_or(FALLBACK_COLOR);
+                        let mut stops = Vec::new();
+                        for stop in &gradient.base.stops {
+                            stops.push(ColorStop {
+                                color: ColorF {
+                                    r: stop.color.red as f32 * 255.0,
+                                    g: stop.color.green as f32 * 255.0,
+                                    b: stop.color.blue as f32 * 255.0,
+                                    a: stop.opacity.get(),
+                                },
+                                offset: stop.offset.get(),
+                            });
+                        }
                         SvgPattern::Gradient {
-                            color0,
-                            color1,
+                            stops,
                             from: point(gradient.x1 as f32, gradient.y1 as f32),
                             to: point(gradient.x2 as f32, gradient.y2 as f32),
                         }
@@ -100,31 +89,20 @@ pub fn load_svg(
                             SvgPattern::Color(Color::new(c.red, c.green, c.blue, 255))
                         }
                         usvg::Paint::LinearGradient(gradient) => {
-                            let color0 = gradient
-                                .base
-                                .stops
-                                .first()
-                                .map(|stop| Color {
-                                    r: stop.color.red,
-                                    g: stop.color.green,
-                                    b: stop.color.blue,
-                                    a: (stop.opacity.get() * 255.0) as u8,
-                                })
-                                .unwrap_or(FALLBACK_COLOR);
-                            let color1 = gradient
-                                .base
-                                .stops
-                                .last()
-                                .map(|stop| Color {
-                                    r: stop.color.red,
-                                    g: stop.color.green,
-                                    b: stop.color.blue,
-                                    a: (stop.opacity.get() * 255.0) as u8,
-                                })
-                                .unwrap_or(FALLBACK_COLOR);
+                            let mut stops = Vec::new();
+                            for stop in &gradient.base.stops {
+                                stops.push(ColorStop {
+                                    color: ColorF {
+                                        r: stop.color.red as f32 * 255.0,
+                                        g: stop.color.green as f32 * 255.0,
+                                        b: stop.color.blue as f32 * 255.0,
+                                        a: stop.opacity.get(),
+                                    },
+                                    offset: stop.offset.get(),
+                                });
+                            }
                             SvgPattern::Gradient {
-                                color0,
-                                color1,
+                                stops,
                                 from: point(gradient.x1 as f32, gradient.y1 as f32),
                                 to: point(gradient.x2 as f32, gradient.y2 as f32),
                             }

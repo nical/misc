@@ -45,6 +45,7 @@ use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
 use pattern_linear_gradient::{LinearGradient, LinearGradientRenderer};
 use pattern_texture::TextureRenderer;
+use pattern_gradients::{ColorStop, GradientRenderer, LinearGradientDescriptor};
 
 use futures::executor::block_on;
 use winit::application::ApplicationHandler;
@@ -309,7 +310,8 @@ impl App {
 
         let patterns = Patterns {
             colors: SolidColorRenderer::register(&mut instance.shaders),
-            gradients: LinearGradientRenderer::register(&mut instance.shaders),
+            simple_gradients: LinearGradientRenderer::register(&mut instance.shaders),
+            gradients: GradientRenderer::register(&mut instance.shaders),
             checkerboards: CheckerboardRenderer::register(&mut instance.shaders),
             textures: TextureRenderer::register(&device, &mut instance.shaders),
         };
@@ -708,7 +710,7 @@ impl App {
             &mut frame,
             &mut self.instance,
             &mut self.renderers,
-            &self.patterns,
+            &mut self.patterns,
             &transform,
         );
 
@@ -833,12 +835,12 @@ fn paint_scene(
     frame: &mut Frame,
     _instance: &mut Instance,
     renderers: &mut Renderers,
-    patterns: &Patterns,
+    patterns: &mut Patterns,
     transform: &LocalTransform,
 ) {
     let mut f32_buffer = frame.f32_buffer.write();
     if testing {
-        let gradient = patterns.gradients.add(
+        let gradient = patterns.simple_gradients.add(
             &mut f32_buffer,
             LinearGradient {
                 from: point(100.0, 100.0),
@@ -874,18 +876,16 @@ fn paint_scene(
                 &SvgPattern::Color(color) => {
                     *color_cache.get(color, || patterns.colors.add(color))
                 }
-                &SvgPattern::Gradient {
-                    color0,
-                    color1,
+                SvgPattern::Gradient {
+                    stops,
                     from,
                     to,
-                } => patterns.gradients.add(
+                } => patterns.gradients.add_linear(
                     &mut f32_buffer,
-                    LinearGradient {
-                        color0,
-                        color1,
-                        from,
-                        to,
+                    &LinearGradientDescriptor {
+                        stops: &stops,
+                        from: *from,
+                        to: *to
                     }
                     .transformed(&frame.transforms.get_current().matrix().to_untyped()),
                 ),
@@ -903,9 +903,9 @@ fn paint_scene(
             let width = f32::max(stroke.line_width, 1.0 / scale);
             let alpha_adjust = f32::min(stroke.line_width * scale, 1.0);
 
-            let pattern = match stroke.pattern {
+            let pattern = match &stroke.pattern {
                 SvgPattern::Color(color) => {
-                    let mut color = color;
+                    let mut color = *color;
                     if alpha_adjust < 0.9961 {
                         color.a = (color.a as f32 * alpha_adjust) as u8;
                     }
@@ -915,30 +915,43 @@ fn paint_scene(
                     *color_cache.get(color, || patterns.colors.add(color))
                 }
                 SvgPattern::Gradient {
-                    color0,
-                    color1,
+                    stops,
                     from,
                     to,
                 } => {
-                    let mut color0 = color0;
-                    let mut color1 = color1;
                     if alpha_adjust < 0.9961 {
-                        color0.a = (color0.a as f32 * alpha_adjust) as u8;
-                        color1.a = (color1.a as f32 * alpha_adjust) as u8;
-                    }
-                    if color0.a == 0 && color1.a == 0 {
-                        continue;
-                    }
-                    patterns.gradients.add(
-                        &mut f32_buffer,
-                        LinearGradient {
-                            color0,
-                            color1,
-                            from,
-                            to,
+                        let mut adjusted_stops = Vec::with_capacity(stops.len());
+                        let mut max_a = 0.0f32;
+                        for stop in stops {
+                            let mut color = stop.color;
+                            color.a = color.a * alpha_adjust;
+                            max_a = max_a.max(color.a);
+                            adjusted_stops.push(ColorStop { color, offset: stop.offset });
                         }
-                        .transformed(&frame.transforms.get_current().matrix().to_untyped()),
-                    )
+                        if max_a < 1.0 / 255.0 {
+                            continue;
+                        }
+
+                        patterns.gradients.add_linear(
+                            &mut f32_buffer,
+                            &LinearGradientDescriptor {
+                                stops: &adjusted_stops,
+                                from: *from,
+                                to: *to
+                            }
+                            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                        )
+                    } else {
+                        patterns.gradients.add_linear(
+                            &mut f32_buffer,
+                            &LinearGradientDescriptor {
+                                stops: &stops,
+                                from: *from,
+                                to: *to
+                            }
+                            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                        )
+                    }
                 }
             };
 
@@ -983,23 +996,18 @@ fn paint_scene(
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
-        let gradient = patterns.gradients.add(
+        let gradient = patterns.gradients.add_linear(
             &mut f32_buffer,
-            LinearGradient {
+            &LinearGradientDescriptor {
                 from: point(0.0, 700.0),
                 to: point(0.0, 900.0),
-                color0: Color {
-                    r: 0,
-                    g: 30,
-                    b: 100,
-                    a: 255,
-                },
-                color1: Color {
-                    r: 0,
-                    g: 60,
-                    b: 250,
-                    a: 255,
-                },
+                stops: &[
+                    ColorStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+                    ColorStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+                    ColorStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+                    ColorStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+                    ColorStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+                ]
             },
         );
 
@@ -1386,7 +1394,8 @@ fn update_title(window: &Window, fill_renderer: usize, stroke_renderer: usize, m
 
 struct Patterns {
     colors: SolidColorRenderer,
-    gradients: LinearGradientRenderer,
+    simple_gradients: LinearGradientRenderer,
+    gradients: GradientRenderer,
     checkerboards: CheckerboardRenderer,
     textures: TextureRenderer,
 }

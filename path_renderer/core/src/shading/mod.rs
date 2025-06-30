@@ -1,6 +1,6 @@
 mod generator;
-pub mod preprocessor;
 mod shaders;
+pub mod preprocessor;
 
 use lyon::path::FillRule;
 use preprocessor::Source;

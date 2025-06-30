@@ -9,6 +9,7 @@ members = [
     "renderers/msaa_stroke",
     "renderers/template",
     "patterns/color",
+    "patterns/gradients",
     "patterns/linear_gradient",
     "patterns/checkerboard",
     "patterns/texture",

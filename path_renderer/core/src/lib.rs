@@ -68,6 +68,14 @@ pub mod units {
     pub use euclid::vec2 as vector;
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ColorF {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
@@ -123,6 +131,15 @@ impl Color {
             self.b as f32 / 255.0,
             self.a as f32 / 255.0,
         ]
+    }
+
+    pub fn to_colorf(self) -> ColorF {
+        ColorF {
+            r: self.r as f32 / 255.0,
+            g: self.g as f32 / 255.0,
+            b: self.b as f32 / 255.0,
+            a: self.a as f32 / 255.0,
+        }
     }
 
     pub fn to_wgpu(self) -> wgpu::Color {
