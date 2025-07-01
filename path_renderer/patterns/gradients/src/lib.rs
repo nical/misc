@@ -118,6 +118,8 @@ pub struct GradientRenderer {
 
     /// Variant that supports a large number of gradient stops.
     radial: ShaderPatternId,
+    /// Fast path that supports only two gradient stops.
+    radial_2: ShaderPatternId,
 }
 
 impl GradientRenderer {
@@ -161,11 +163,25 @@ impl GradientRenderer {
             bindings: None,
         });
 
+        let radial_2 = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::radial2".into(),
+            source: RADIAL_GRADIENT_2_SRC.into(),
+            varyings: vec![
+                Varying::float32x3("position_and_start").with_interpolation(true),
+                Varying::float32x2("stop_offsets").flat(),
+                Varying::float32x4("color0").flat(),
+                Varying::float32x4("color1").flat(),
+                Varying::uint32("extend_mode").flat(),
+            ],
+            bindings: None,
+        });
+
         GradientRenderer {
             buffer: Vec::new(),
             linear,
             linear_2,
             radial,
+            radial_2,
         }
     }
 
@@ -229,7 +245,7 @@ impl GradientRenderer {
         let handle = self.upload_radial_gradient(f32_buffer, gradient);
 
         let shader = if gradient.stops.len() == 2 {
-            self.radial // TODO
+            self.radial_2
         } else {
             self.radial
         };
@@ -247,3 +263,4 @@ const RADIAL_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/radia
 const LINEAR_GRADIENT_SRC: &'static str = include_str!("../shaders/linear.wgsl");
 const LINEAR_GRADIENT_2_SRC: &'static str = include_str!("../shaders/linear2.wgsl");
 const RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/radial.wgsl");
+const RADIAL_GRADIENT_2_SRC: &'static str = include_str!("../shaders/radial2.wgsl");
