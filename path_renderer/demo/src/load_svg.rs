@@ -2,7 +2,7 @@ use core::stroke::{LineCap, LineJoin};
 use std::sync::Arc;
 
 use core::path::Path;
-use core::{Color, ColorF};
+use core::{Color, ColorF, Vector};
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{point, Point};
 use pattern_gradients::GradientStop;
@@ -18,7 +18,7 @@ pub const FALLBACK_COLOR: Color = Color {
 #[derive(Clone, Debug)]
 pub enum SvgPattern {
     Color(Color),
-    Gradient {
+    LinearGradient {
         stops: Vec<GradientStop>,
         from: Point,
         to: Point,
@@ -74,7 +74,7 @@ pub fn load_svg(
                                 offset: stop.offset.get(),
                             });
                         }
-                        SvgPattern::Gradient {
+                        SvgPattern::LinearGradient {
                             stops,
                             from: point(gradient.x1 as f32, gradient.y1 as f32),
                             to: point(gradient.x2 as f32, gradient.y2 as f32),
@@ -101,7 +101,7 @@ pub fn load_svg(
                                     offset: stop.offset.get(),
                                 });
                             }
-                            SvgPattern::Gradient {
+                            SvgPattern::LinearGradient {
                                 stops,
                                 from: point(gradient.x1 as f32, gradient.y1 as f32),
                                 to: point(gradient.x2 as f32, gradient.y2 as f32),

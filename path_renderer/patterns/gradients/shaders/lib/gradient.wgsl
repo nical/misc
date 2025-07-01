@@ -80,6 +80,7 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
         factor = clamp((offset - prev_stop_offset) / d, 0.0, 1.0);
     }
 
+    //return vec4f(offset, offset, offset, 1.0);
     return mix(color_pair.data0, color_pair.data1, factor);
 }
 

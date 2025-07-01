@@ -7,7 +7,7 @@ use core::pattern::BuiltPattern;
 use core::graph::{Allocation, ColorAttachment, CommandList, GraphBindings, Resource};
 use core::render_pass::RenderPasses;
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
-use core::{FillPath, Renderer};
+use core::{FillPath, Renderer, Vector};
 use core::shading::BlendMode;
 use core::path::Path;
 use core::resources::GpuResource;
@@ -44,7 +44,7 @@ use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
 use pattern_texture::TextureRenderer;
-use pattern_gradients::{GradientStop, ExtendMode, GradientRenderer, LinearGradientDescriptor};
+use pattern_gradients::{ExtendMode, GradientRenderer, GradientStop, LinearGradientDescriptor, RadialGradientDescriptor};
 
 use futures::executor::block_on;
 use winit::application::ApplicationHandler;
@@ -867,7 +867,7 @@ fn paint_scene(
                 &SvgPattern::Color(color) => {
                     *color_cache.get(color, || patterns.colors.add(color))
                 }
-                SvgPattern::Gradient {
+                SvgPattern::LinearGradient {
                     stops,
                     from,
                     to,
@@ -906,7 +906,7 @@ fn paint_scene(
                     }
                     *color_cache.get(color, || patterns.colors.add(color))
                 }
-                SvgPattern::Gradient {
+                SvgPattern::LinearGradient {
                     stops,
                     from,
                     to,
@@ -1000,6 +1000,23 @@ fn paint_scene(
                     GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
                 ]
             },
+        );
+        let gradient = patterns.gradients.add_radial(
+            &mut f32_buffer,
+            &RadialGradientDescriptor {
+                stops: &[
+                    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+                ],
+                start_radius: 10.0,
+                end_radius: 50.0,
+                extend_mode: ExtendMode::Repeat,
+                center: point(200.0, 700.0),
+                scale: Vector::new(1.0, 0.5),
+            }
         );
 
         //for i in 0..5000 {

@@ -6,7 +6,7 @@ use core::geom::Point;
 use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
 use core::gpu::{GpuBufferAddress, GpuBufferWriter};
 use core::pattern::BuiltPattern;
-use core::{ColorF};
+use core::{ColorF, Vector};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ExtendMode {
@@ -34,6 +34,28 @@ impl<'l> LinearGradientDescriptor<'l> {
             to: tx.transform_point(self.to),
             extend_mode: self.extend_mode,
             stops: self.stops,
+        }
+    }
+}
+
+pub struct RadialGradientDescriptor<'l> {
+    pub stops: &'l [GradientStop],
+    pub extend_mode: ExtendMode,
+    pub center: Point<f32>,
+    pub scale: Vector,
+    pub start_radius: f32,
+    pub end_radius: f32,
+}
+
+impl<'l> RadialGradientDescriptor<'l> {
+    pub fn transformed<T: Transformation<f32>>(&self, tx: &T) -> Self {
+        RadialGradientDescriptor {
+            center: tx.transform_point(self.center),
+            scale: tx.transform_vector(self.scale),
+            extend_mode: self.extend_mode,
+            stops: self.stops,
+            start_radius: self.start_radius, // TODO
+            end_radius: self.end_radius, // TODO
         }
     }
 }
@@ -93,12 +115,16 @@ pub struct GradientRenderer {
     linear: ShaderPatternId,
     /// Fast path that supports only two gradient stops.
     linear_2: ShaderPatternId,
+
+    /// Variant that supports a large number of gradient stops.
+    radial: ShaderPatternId,
 }
 
 impl GradientRenderer {
     pub fn register(shaders: &mut Shaders) -> Self {
         shaders.register_library("pattern::gradient", GRADIENT_LIB_SRC.into());
         shaders.register_library("pattern::linear_gradient", LINEAR_GRADIENT_LIB_SRC.into());
+        shaders.register_library("pattern::radial_gradient", RADIAL_GRADIENT_LIB_SRC.into());
 
         let linear = shaders.register_pattern(PatternDescriptor {
             name: "gradients::linear".into(),
@@ -125,10 +151,21 @@ impl GradientRenderer {
             bindings: None,
         });
 
+        let radial = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::radial".into(),
+            source: RADIAL_GRADIENT_SRC.into(),
+            varyings: vec![
+                Varying::float32x3("position_and_start").with_interpolation(true),
+                Varying::uint32x4("gradient_header").flat(),
+            ],
+            bindings: None,
+        });
+
         GradientRenderer {
             buffer: Vec::new(),
             linear,
             linear_2,
+            radial,
         }
     }
 
@@ -142,6 +179,26 @@ impl GradientRenderer {
         self.buffer.push(gradient.from.y);
         self.buffer.push(gradient.to.x);
         self.buffer.push(gradient.to.y);
+
+        push_color_stops(&mut self.buffer, gradient.extend_mode, gradient.stops);
+
+        f32_buffer.push_slice(&self.buffer)
+    }
+
+    fn upload_radial_gradient(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &RadialGradientDescriptor) -> GpuBufferAddress {
+        let stops_len = gradient.stops.len() * 5 + 8;
+
+        self.buffer.clear();
+        self.buffer.reserve(stops_len + 8);
+
+        self.buffer.push(gradient.center.x);
+        self.buffer.push(gradient.center.y);
+        self.buffer.push(gradient.scale.x);
+        self.buffer.push(gradient.scale.y);
+        self.buffer.push(gradient.start_radius);
+        self.buffer.push(gradient.end_radius);
+        self.buffer.push(0.0);
+        self.buffer.push(0.0);
 
         push_color_stops(&mut self.buffer, gradient.extend_mode, gradient.stops);
 
@@ -165,9 +222,28 @@ impl GradientRenderer {
             .with_horizontal_stretching(can_stretch_horizontally)
             .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
+
+    pub fn add_radial(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &RadialGradientDescriptor) -> BuiltPattern {
+        let is_opaque = gradient.stops.iter().all(|stop| stop.color.a >= 1.0);
+
+        let handle = self.upload_radial_gradient(f32_buffer, gradient);
+
+        let shader = if gradient.stops.len() == 2 {
+            self.radial // TODO
+        } else {
+            self.radial
+        };
+
+        BuiltPattern::new(shader, handle.to_u32())
+            .with_opacity(is_opaque)
+            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
+    }
 }
 
 const GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/gradient.wgsl");
 const LINEAR_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/linear.wgsl");
+const RADIAL_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/radial.wgsl");
+
 const LINEAR_GRADIENT_SRC: &'static str = include_str!("../shaders/linear.wgsl");
 const LINEAR_GRADIENT_2_SRC: &'static str = include_str!("../shaders/linear2.wgsl");
+const RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/radial.wgsl");
