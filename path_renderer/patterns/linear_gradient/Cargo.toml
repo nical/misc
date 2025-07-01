@@ -1,8 +1,0 @@
-[package]
-name = "pattern_linear_gradient"
-version = "0.1.0"
-edition = "2021"
-workspace = "../.."
-
-[dependencies]
-core = { path = "../../core" }

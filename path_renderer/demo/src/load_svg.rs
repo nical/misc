@@ -5,7 +5,7 @@ use core::path::Path;
 use core::{Color, ColorF};
 use lyon::path::geom::euclid::default::{Box2D, Transform2D};
 use lyon::path::math::{point, Point};
-use pattern_gradients::ColorStop;
+use pattern_gradients::GradientStop;
 use usvg::TreeParsing;
 
 pub const FALLBACK_COLOR: Color = Color {
@@ -19,7 +19,7 @@ pub const FALLBACK_COLOR: Color = Color {
 pub enum SvgPattern {
     Color(Color),
     Gradient {
-        stops: Vec<ColorStop>,
+        stops: Vec<GradientStop>,
         from: Point,
         to: Point,
     },
@@ -64,7 +64,7 @@ pub fn load_svg(
                     usvg::Paint::LinearGradient(gradient) => {
                         let mut stops = Vec::new();
                         for stop in &gradient.base.stops {
-                            stops.push(ColorStop {
+                            stops.push(GradientStop {
                                 color: ColorF {
                                     r: stop.color.red as f32 * 255.0,
                                     g: stop.color.green as f32 * 255.0,
@@ -91,7 +91,7 @@ pub fn load_svg(
                         usvg::Paint::LinearGradient(gradient) => {
                             let mut stops = Vec::new();
                             for stop in &gradient.base.stops {
-                                stops.push(ColorStop {
+                                stops.push(GradientStop {
                                     color: ColorF {
                                         r: stop.color.red as f32 * 255.0,
                                         g: stop.color.green as f32 * 255.0,

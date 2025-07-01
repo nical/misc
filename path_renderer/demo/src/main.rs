@@ -43,9 +43,8 @@ use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
-use pattern_linear_gradient::{LinearGradient, LinearGradientRenderer};
 use pattern_texture::TextureRenderer;
-use pattern_gradients::{ColorStop, GradientRenderer, LinearGradientDescriptor};
+use pattern_gradients::{GradientStop, ExtendMode, GradientRenderer, LinearGradientDescriptor};
 
 use futures::executor::block_on;
 use winit::application::ApplicationHandler;
@@ -310,7 +309,6 @@ impl App {
 
         let patterns = Patterns {
             colors: SolidColorRenderer::register(&mut instance.shaders),
-            simple_gradients: LinearGradientRenderer::register(&mut instance.shaders),
             gradients: GradientRenderer::register(&mut instance.shaders),
             checkerboards: CheckerboardRenderer::register(&mut instance.shaders),
             textures: TextureRenderer::register(&device, &mut instance.shaders),
@@ -840,23 +838,16 @@ fn paint_scene(
 ) {
     let mut f32_buffer = frame.f32_buffer.write();
     if testing {
-        let gradient = patterns.simple_gradients.add(
+        let gradient = patterns.gradients.add_linear(
             &mut f32_buffer,
-            LinearGradient {
+            &LinearGradientDescriptor {
                 from: point(100.0, 100.0),
-                color0: Color {
-                    r: 10,
-                    g: 50,
-                    b: 250,
-                    a: 255,
-                },
                 to: point(100.0, 1500.0),
-                color1: Color {
-                    r: 50,
-                    g: 0,
-                    b: 50,
-                    a: 255,
-                },
+                extend_mode: ExtendMode::Clamp,
+                stops: &[
+                    GradientStop { color: Color { r: 10, g: 50, b: 250, a: 255 }.to_colorf(), offset: 0.0 },
+                    GradientStop { color: Color { r: 50, g: 0, b: 50, a: 255 }.to_colorf(), offset: 1.0 },
+                ],
             }
             .transformed(&frame.transforms.get_current().matrix().to_untyped()),
         );
@@ -884,6 +875,7 @@ fn paint_scene(
                     &mut f32_buffer,
                     &LinearGradientDescriptor {
                         stops: &stops,
+                        extend_mode: ExtendMode::Clamp,
                         from: *from,
                         to: *to
                     }
@@ -919,39 +911,37 @@ fn paint_scene(
                     from,
                     to,
                 } => {
+                    let mut adjusted_stops = Vec::new();
                     if alpha_adjust < 0.9961 {
-                        let mut adjusted_stops = Vec::with_capacity(stops.len());
+                        adjusted_stops.reserve(stops.len());
                         let mut max_a = 0.0f32;
                         for stop in stops {
                             let mut color = stop.color;
                             color.a = color.a * alpha_adjust;
                             max_a = max_a.max(color.a);
-                            adjusted_stops.push(ColorStop { color, offset: stop.offset });
+                            adjusted_stops.push(GradientStop { color, offset: stop.offset });
                         }
                         if max_a < 1.0 / 255.0 {
                             continue;
                         }
-
-                        patterns.gradients.add_linear(
-                            &mut f32_buffer,
-                            &LinearGradientDescriptor {
-                                stops: &adjusted_stops,
-                                from: *from,
-                                to: *to
-                            }
-                            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
-                        )
-                    } else {
-                        patterns.gradients.add_linear(
-                            &mut f32_buffer,
-                            &LinearGradientDescriptor {
-                                stops: &stops,
-                                from: *from,
-                                to: *to
-                            }
-                            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
-                        )
                     }
+
+                    let stops = if adjusted_stops.len() > 0 {
+                        adjusted_stops.as_slice()
+                    } else {
+                        stops.as_slice()
+                    };
+
+                    patterns.gradients.add_linear(
+                        &mut f32_buffer,
+                        &LinearGradientDescriptor {
+                            stops,
+                            extend_mode: ExtendMode::Clamp,
+                            from: *from,
+                            to: *to
+                        }
+                        .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                    )
                 }
             };
 
@@ -999,14 +989,15 @@ fn paint_scene(
         let gradient = patterns.gradients.add_linear(
             &mut f32_buffer,
             &LinearGradientDescriptor {
-                from: point(0.0, 700.0),
-                to: point(0.0, 900.0),
+                from: point(0.0, 750.0),
+                to: point(0.0, 800.0),
+                extend_mode: ExtendMode::Repeat,
                 stops: &[
-                    ColorStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-                    ColorStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-                    ColorStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-                    ColorStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-                    ColorStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+                    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
                 ]
             },
         );
@@ -1394,7 +1385,6 @@ fn update_title(window: &Window, fill_renderer: usize, stroke_renderer: usize, m
 
 struct Patterns {
     colors: SolidColorRenderer,
-    simple_gradients: LinearGradientRenderer,
     gradients: GradientRenderer,
     checkerboards: CheckerboardRenderer,
     textures: TextureRenderer,

@@ -525,7 +525,6 @@ dependencies = [
  "pattern_checkerboard",
  "pattern_color",
  "pattern_gradients",
- "pattern_linear_gradient",
  "pattern_texture",
  "profiling",
  "rectangles",
@@ -1712,13 +1711,6 @@ dependencies = [
 
 [[package]]
 name = "pattern_gradients"
-version = "0.1.0"
-dependencies = [
- "core",
-]
-
-[[package]]
-name = "pattern_linear_gradient"
 version = "0.1.0"
 dependencies = [
  "core",
