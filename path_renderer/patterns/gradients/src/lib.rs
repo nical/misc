@@ -60,6 +60,18 @@ impl<'l> RadialGradientDescriptor<'l> {
     }
 }
 
+pub struct ConicGradientDescriptor<'l> {
+    pub stops: &'l [GradientStop],
+    pub extend_mode: ExtendMode,
+    pub center: Point<f32>,
+    pub scale: Vector,
+    // In radians
+    pub start_angle: f32,
+    // In radians
+    pub end_angle: f32,
+}
+
+
 // f32_buffer format:  [Count, repeat_mode, (align 4), offset0..offsetN, (align 4), color0..colorN]
 fn push_color_stops(buffer: &mut Vec<f32>, extend_mode: ExtendMode, stops: &[GradientStop]) {
     let n = stops.len();
@@ -120,6 +132,8 @@ pub struct GradientRenderer {
     radial: ShaderPatternId,
     /// Fast path that supports only two gradient stops.
     radial_2: ShaderPatternId,
+
+    conic: ShaderPatternId,
 }
 
 impl GradientRenderer {
@@ -127,6 +141,7 @@ impl GradientRenderer {
         shaders.register_library("pattern::gradient", GRADIENT_LIB_SRC.into());
         shaders.register_library("pattern::linear_gradient", LINEAR_GRADIENT_LIB_SRC.into());
         shaders.register_library("pattern::radial_gradient", RADIAL_GRADIENT_LIB_SRC.into());
+        shaders.register_library("pattern::conic_gradient", CONIC_GRADIENT_LIB_SRC.into());
 
         let linear = shaders.register_pattern(PatternDescriptor {
             name: "gradients::linear".into(),
@@ -176,12 +191,23 @@ impl GradientRenderer {
             bindings: None,
         });
 
+        let conic = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::conic".into(),
+            source: CONIC_GRADIENT_SRC.into(),
+            varyings: vec![
+                Varying::float32x4("dir_start_scale").with_interpolation(true),
+                Varying::uint32x4("gradient_header").flat(),
+            ],
+            bindings: None,
+        });
+
         GradientRenderer {
             buffer: Vec::new(),
             linear,
             linear_2,
             radial,
             radial_2,
+            conic,
         }
     }
 
@@ -213,6 +239,26 @@ impl GradientRenderer {
         self.buffer.push(gradient.scale.y);
         self.buffer.push(gradient.start_radius);
         self.buffer.push(gradient.end_radius);
+        self.buffer.push(0.0);
+        self.buffer.push(0.0);
+
+        push_color_stops(&mut self.buffer, gradient.extend_mode, gradient.stops);
+
+        f32_buffer.push_slice(&self.buffer)
+    }
+
+    fn upload_conic_gradient(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &ConicGradientDescriptor) -> GpuBufferAddress {
+        let stops_len = gradient.stops.len() * 5 + 8;
+
+        self.buffer.clear();
+        self.buffer.reserve(stops_len + 8);
+
+        self.buffer.push(gradient.center.x);
+        self.buffer.push(gradient.center.y);
+        self.buffer.push(gradient.scale.x);
+        self.buffer.push(gradient.scale.y);
+        self.buffer.push(gradient.start_angle);
+        self.buffer.push(gradient.end_angle);
         self.buffer.push(0.0);
         self.buffer.push(0.0);
 
@@ -254,13 +300,27 @@ impl GradientRenderer {
             .with_opacity(is_opaque)
             .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
+
+    pub fn add_conic(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &ConicGradientDescriptor) -> BuiltPattern {
+        let is_opaque = gradient.stops.iter().all(|stop| stop.color.a >= 1.0);
+
+        let handle = self.upload_conic_gradient(f32_buffer, gradient);
+
+        let shader = self.conic;
+
+        BuiltPattern::new(shader, handle.to_u32())
+            .with_opacity(is_opaque)
+            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
+    }
 }
 
 const GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/gradient.wgsl");
 const LINEAR_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/linear.wgsl");
 const RADIAL_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/radial.wgsl");
+const CONIC_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/conic.wgsl");
 
 const LINEAR_GRADIENT_SRC: &'static str = include_str!("../shaders/linear.wgsl");
 const LINEAR_GRADIENT_2_SRC: &'static str = include_str!("../shaders/linear2.wgsl");
 const RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/radial.wgsl");
 const RADIAL_GRADIENT_2_SRC: &'static str = include_str!("../shaders/radial2.wgsl");
+const CONIC_GRADIENT_SRC: &'static str = include_str!("../shaders/conic.wgsl");

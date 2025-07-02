@@ -44,7 +44,7 @@ use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
 use pattern_texture::TextureRenderer;
-use pattern_gradients::{ExtendMode, GradientRenderer, GradientStop, LinearGradientDescriptor, RadialGradientDescriptor};
+use pattern_gradients::{ConicGradientDescriptor, ExtendMode, GradientRenderer, GradientStop, LinearGradientDescriptor, RadialGradientDescriptor};
 
 use futures::executor::block_on;
 use winit::application::ApplicationHandler;
@@ -986,21 +986,21 @@ fn paint_scene(
 
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
-        let gradient = patterns.gradients.add_linear(
-            &mut f32_buffer,
-            &LinearGradientDescriptor {
-                from: point(0.0, 750.0),
-                to: point(0.0, 800.0),
-                extend_mode: ExtendMode::Repeat,
-                stops: &[
-                    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-                    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-                    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-                    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-                    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
-                ]
-            },
-        );
+        //let gradient = patterns.gradients.add_linear(
+        //    &mut f32_buffer,
+        //    &LinearGradientDescriptor {
+        //        from: point(0.0, 750.0),
+        //        to: point(0.0, 800.0),
+        //        extend_mode: ExtendMode::Repeat,
+        //        stops: &[
+        //            GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+        //            GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+        //            GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+        //            GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+        //            GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+        //        ]
+        //    },
+        //);
         let gradient = patterns.gradients.add_radial(
             &mut f32_buffer,
             &RadialGradientDescriptor {
@@ -1018,6 +1018,24 @@ fn paint_scene(
                 scale: Vector::new(1.0, 0.5),
             }
         );
+        //use std::f32::consts::PI;
+        //let gradient = patterns.gradients.add_conic(
+        //    &mut f32_buffer,
+        //    &ConicGradientDescriptor {
+        //        stops: &[
+        //            GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+        //            GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+        //            GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+        //            GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+        //            GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+        //        ],
+        //        start_angle: PI,
+        //        end_angle: 2.0 * PI,
+        //        extend_mode: ExtendMode::Repeat,
+        //        center: point(250.0, 750.0),
+        //        scale: Vector::new(1.0, 1.0),
+        //    }
+        //);
 
         //for i in 0..5000 {
         //    let x = ((i * 14873) % (700 + i / 127)) as f32;

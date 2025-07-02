@@ -670,6 +670,10 @@ impl ShaderSources {
             include_str!("../../shaders/lib/render_task.wgsl").into(),
         );
         library.insert(
+            "trigonometry".into(),
+            include_str!("../../shaders/lib/trigonometry.wgsl").into(),
+        );
+        library.insert(
             "mask::circle".into(),
             include_str!("../../shaders/lib/mask/circle.wgsl").into(),
         );
