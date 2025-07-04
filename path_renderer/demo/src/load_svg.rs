@@ -32,6 +32,20 @@ pub struct Stroke {
     pub line_join: LineJoin,
 }
 
+fn build_gradient_stops(stops: &[usvg::Stop], output: &mut Vec<GradientStop>) {
+    for stop in stops {
+        output.push(GradientStop {
+            color: ColorF {
+                r: stop.color.red as f32 / 255.0,
+                g: stop.color.green as f32 / 255.0,
+                b: stop.color.blue as f32 / 255.0,
+                a: stop.opacity.get(),
+            },
+            offset: stop.offset.get(),
+        });
+    }
+}
+
 pub fn load_svg(
     filename: &str,
     scale_factor: f32,
@@ -63,17 +77,7 @@ pub fn load_svg(
                     }
                     usvg::Paint::LinearGradient(gradient) => {
                         let mut stops = Vec::new();
-                        for stop in &gradient.base.stops {
-                            stops.push(GradientStop {
-                                color: ColorF {
-                                    r: stop.color.red as f32 * 255.0,
-                                    g: stop.color.green as f32 * 255.0,
-                                    b: stop.color.blue as f32 * 255.0,
-                                    a: stop.opacity.get(),
-                                },
-                                offset: stop.offset.get(),
-                            });
-                        }
+                        build_gradient_stops(&gradient.base.stops, &mut stops);
                         SvgPattern::LinearGradient {
                             stops,
                             from: point(gradient.x1 as f32, gradient.y1 as f32),
@@ -90,17 +94,7 @@ pub fn load_svg(
                         }
                         usvg::Paint::LinearGradient(gradient) => {
                             let mut stops = Vec::new();
-                            for stop in &gradient.base.stops {
-                                stops.push(GradientStop {
-                                    color: ColorF {
-                                        r: stop.color.red as f32 * 255.0,
-                                        g: stop.color.green as f32 * 255.0,
-                                        b: stop.color.blue as f32 * 255.0,
-                                        a: stop.opacity.get(),
-                                    },
-                                    offset: stop.offset.get(),
-                                });
-                            }
+                            build_gradient_stops(&gradient.base.stops, &mut stops);
                             SvgPattern::LinearGradient {
                                 stops,
                                 from: point(gradient.x1 as f32, gradient.y1 as f32),
