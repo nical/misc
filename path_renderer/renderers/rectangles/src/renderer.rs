@@ -191,7 +191,7 @@ impl RectangleRenderer {
             let idx = shaders.prepare(RenderPipelineKey::new(
                 pipeline,
                 batch.pattern.shader,
-                batch.pattern.blend_mode.with_alpha(batch.edge_aa),
+                batch.pattern.blend_mode.with_alpha(!batch.opaque),
                 surface.draw_config(true, None),
             ));
             batch.pipeline_idx = Some(idx);

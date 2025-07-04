@@ -57,7 +57,7 @@ impl Geometries {
 }
 
 pub struct Rectangles {
-    pub(crate) geometryes: Geometries,
+    pub(crate) geometries: Geometries,
 }
 
 impl Rectangles {
@@ -100,7 +100,7 @@ impl Rectangles {
         });
 
         Rectangles {
-            geometryes: Geometries {
+            geometries: Geometries {
                 opaque,
                 alpha,
                 opaque_no_aa,
@@ -110,7 +110,7 @@ impl Rectangles {
     }
 
     pub fn new_renderer(&self, id: RendererId) -> RectangleRenderer {
-        RectangleRenderer::new(id, self.geometryes.clone())
+        RectangleRenderer::new(id, self.geometries.clone())
     }
 }
 
