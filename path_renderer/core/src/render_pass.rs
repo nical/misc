@@ -354,6 +354,7 @@ impl<'l> Command for RenderCommand<'l> {
                             wgpu::StoreOp::Discard
                         },
                     },
+                    depth_slice: None,
                 }))
             } else {
                 wgpu_attachments.push(None);

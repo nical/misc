@@ -835,7 +835,7 @@ impl Event {
     fn edge(tx: u16, ty: u16, edge: [u8; 4]) -> Self {
         Event {
             sort_key: 1 | ((tx as u32) << 1) | ((ty as u32) << 11),
-            payload: unsafe { std::mem::transmute(edge) },
+            payload: u32::from_ne_bytes(edge),
         }
     }
 

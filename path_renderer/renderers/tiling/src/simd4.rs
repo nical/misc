@@ -88,12 +88,12 @@ pub mod x86_64 {
 
     #[inline(always)]
     pub unsafe fn sign_bit(a: f32x4) -> f32x4 {
-        and(a, splat(std::mem::transmute(1u32 << 31)))
+        and(a, splat(f32::from_bits(1u32 << 31)))
     }
 
     #[inline(always)]
     pub unsafe fn signum(a: f32x4) -> f32x4 {
-        or(and(a, splat(std::mem::transmute(1u32 << 31))), splat(1.0))
+        or(and(a, splat(f32::from_bits(1u32 << 31))), splat(1.0))
     }
 
     #[inline(always)]

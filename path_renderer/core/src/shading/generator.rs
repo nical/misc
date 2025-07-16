@@ -262,6 +262,9 @@ fn generate_bind_group_shader_source(bgl: &BindGroupLayout, index: u32, source: 
             wgpu::BindingType::AccelerationStructure { .. } => {
                 unimplemented!();
             }
+            wgpu::BindingType::ExternalTexture => {
+                unimplemented!();
+            }
         }
 
         binding += 1;
