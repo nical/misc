@@ -107,3 +107,13 @@ fn evaluate_simple_gradient_2(
 
     return mix(color0, color1, factor);
 }
+
+// From https://www.shadertoy.com/view/sd2yDd
+fn dithering_noise(coords: vec2f) -> f32 {
+    return fract(52.9829189 * fract(dot(coords, vec2f(0.06711056, 0.00583715)))) - 0.5;
+}
+
+fn dither_gradient_offset(offset: f32, coords: vec2f) -> f32 {
+    let dither = dithering_noise(coords) * 0.05;
+    return smoothstep(0.0, 1.0, clamp(offset + dither, 0.0, 1.0));
+}

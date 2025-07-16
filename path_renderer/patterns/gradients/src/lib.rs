@@ -42,6 +42,7 @@ pub struct RadialGradientDescriptor<'l> {
     pub stops: &'l [GradientStop],
     pub extend_mode: ExtendMode,
     pub center: Point<f32>,
+    pub focal: Option<Point<f32>>,
     pub scale: Vector,
     pub start_radius: f32,
     pub end_radius: f32,
@@ -51,6 +52,7 @@ impl<'l> RadialGradientDescriptor<'l> {
     pub fn transformed<T: Transformation<f32>>(&self, tx: &T) -> Self {
         RadialGradientDescriptor {
             center: tx.transform_point(self.center),
+            focal: self.focal.map(|focal| tx.transform_point(focal)),
             scale: tx.transform_vector(self.scale),
             extend_mode: self.extend_mode,
             stops: self.stops,
@@ -129,9 +131,12 @@ pub struct GradientRenderer {
     linear_2: ShaderPatternId,
 
     /// Variant that supports a large number of gradient stops.
-    radial: ShaderPatternId,
+    css_radial: ShaderPatternId,
     /// Fast path that supports only two gradient stops.
-    radial_2: ShaderPatternId,
+    css_radial_2: ShaderPatternId,
+    /// Variant that supports a large number of gradient stops and
+    /// a focal point.
+    svg_radial: ShaderPatternId,
 
     conic: ShaderPatternId,
 }
@@ -168,9 +173,9 @@ impl GradientRenderer {
             bindings: None,
         });
 
-        let radial = shaders.register_pattern(PatternDescriptor {
+        let css_radial = shaders.register_pattern(PatternDescriptor {
             name: "gradients::radial".into(),
-            source: RADIAL_GRADIENT_SRC.into(),
+            source: CSS_RADIAL_GRADIENT_SRC.into(),
             varyings: vec![
                 Varying::float32x3("position_and_start").with_interpolation(true),
                 Varying::uint32x4("gradient_header").flat(),
@@ -178,15 +183,26 @@ impl GradientRenderer {
             bindings: None,
         });
 
-        let radial_2 = shaders.register_pattern(PatternDescriptor {
+        let css_radial_2 = shaders.register_pattern(PatternDescriptor {
             name: "gradients::radial2".into(),
-            source: RADIAL_GRADIENT_2_SRC.into(),
+            source: CSS_RADIAL_GRADIENT_2_SRC.into(),
             varyings: vec![
                 Varying::float32x3("position_and_start").with_interpolation(true),
                 Varying::float32x2("stop_offsets").flat(),
                 Varying::float32x4("color0").flat(),
                 Varying::float32x4("color1").flat(),
                 Varying::uint32("extend_mode").flat(),
+            ],
+            bindings: None,
+        });
+
+        let svg_radial = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::svg_radial".into(),
+            source: SVG_RADIAL_GRADIENT_SRC.into(),
+            varyings: vec![
+                Varying::float32x4("position_and_center").with_interpolation(true),
+                Varying::float32x2("start_end_radius").flat(),
+                Varying::uint32x4("gradient_header").flat(),
             ],
             bindings: None,
         });
@@ -205,8 +221,9 @@ impl GradientRenderer {
             buffer: Vec::new(),
             linear,
             linear_2,
-            radial,
-            radial_2,
+            css_radial,
+            css_radial_2,
+            svg_radial,
             conic,
         }
     }
@@ -235,12 +252,18 @@ impl GradientRenderer {
 
         self.buffer.push(gradient.center.x);
         self.buffer.push(gradient.center.y);
+        if let Some(focal) = gradient.focal {
+            self.buffer.push(focal.x);
+            self.buffer.push(focal.y);
+        } else {
+            self.buffer.push(gradient.center.x);
+            self.buffer.push(gradient.center.y);
+        }
+
         self.buffer.push(gradient.scale.x);
         self.buffer.push(gradient.scale.y);
         self.buffer.push(gradient.start_radius);
         self.buffer.push(gradient.end_radius);
-        self.buffer.push(0.0);
-        self.buffer.push(0.0);
 
         push_color_stops(&mut self.buffer, gradient.extend_mode, gradient.stops);
 
@@ -286,15 +309,21 @@ impl GradientRenderer {
     }
 
     pub fn add_radial(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &RadialGradientDescriptor) -> BuiltPattern {
-        let is_opaque = gradient.stops.iter().all(|stop| stop.color.a >= 1.0);
-
         let handle = self.upload_radial_gradient(f32_buffer, gradient);
 
-        let shader = if gradient.stops.len() == 2 {
-            self.radial_2
+        // The SVG radial gradient shader is quite a bit more expensive so
+        // use the simpler version when we can.
+        let shader = if gradient.focal.is_none() {
+            if gradient.stops.len() == 2 {
+                self.css_radial_2
+            } else {
+                self.css_radial
+            }
         } else {
-            self.radial
+            self.svg_radial
         };
+
+        let is_opaque = gradient.stops.iter().all(|stop| stop.color.a >= 1.0);
 
         BuiltPattern::new(shader, handle.to_u32())
             .with_opacity(is_opaque)
@@ -321,6 +350,7 @@ const CONIC_GRADIENT_LIB_SRC: &'static str = include_str!("../shaders/lib/conic.
 
 const LINEAR_GRADIENT_SRC: &'static str = include_str!("../shaders/linear.wgsl");
 const LINEAR_GRADIENT_2_SRC: &'static str = include_str!("../shaders/linear2.wgsl");
-const RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/radial.wgsl");
-const RADIAL_GRADIENT_2_SRC: &'static str = include_str!("../shaders/radial2.wgsl");
+const CSS_RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/css_radial.wgsl");
+const CSS_RADIAL_GRADIENT_2_SRC: &'static str = include_str!("../shaders/css_radial2.wgsl");
+const SVG_RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/svg_radial.wgsl");
 const CONIC_GRADIENT_SRC: &'static str = include_str!("../shaders/conic.wgsl");

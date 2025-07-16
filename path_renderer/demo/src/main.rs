@@ -1005,6 +1005,8 @@ fn paint_scene(
             &mut f32_buffer,
             &RadialGradientDescriptor {
                 stops: &[
+                    //GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.0 },
+                    //GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 1.0 },
                     GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
                     GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
                     GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
@@ -1014,8 +1016,10 @@ fn paint_scene(
                 start_radius: 10.0,
                 end_radius: 50.0,
                 extend_mode: ExtendMode::Repeat,
-                center: point(200.0, 700.0),
-                scale: Vector::new(1.0, 0.5),
+                center: point(295.0, 800.0),
+                //focal: Some(point(250.0, 800.0)),
+                focal: None,
+                scale: Vector::new(1.0, 1.0),
             }
         );
         //use std::f32::consts::PI;
@@ -1077,7 +1081,7 @@ fn paint_scene(
             &frame.transforms,
             &LocalRect {
                 min: point(310.5, 700.5),
-                max: point(410.5, 900.5),
+                max: point(510.5, 900.5),
             },
             Aa::LEFT | Aa::RIGHT | Aa::ALL,
             gradient,

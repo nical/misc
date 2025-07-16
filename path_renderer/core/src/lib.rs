@@ -16,6 +16,7 @@ pub mod instance;
 pub mod worker;
 pub mod shading;
 pub mod utils;
+pub mod color;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
