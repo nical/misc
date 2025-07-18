@@ -6,7 +6,7 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let dir_offset = read_linear_gradient(pattern_handle);
 
     let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 1);
-    let header = decode_gradient_header(pattern_handle + 1, gradient.data0);
+    let header = make_gradient_header(pattern_handle + 1, gradient.data0);
     let stops = gradient.data1.xy;
     return Pattern(
         vec4f(pattern_pos, stops),
@@ -26,11 +26,11 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
         pattern.dir_offset,
     );
 
-    let count = pattern.header.x;
+    let count = gradient_header_stop_count(pattern.header);
     if count <= 3 {
         // Count includes the sentinel stops so we have at most two "real"
         // color stops.
-        let extend_mode = u32(pattern.header.y);
+        let extend_mode = gradient_header_extend_mode(pattern.header);
         return evaluate_simple_gradient_2(
             pattern.position_stop_offsets.zw,
             pattern.color0,

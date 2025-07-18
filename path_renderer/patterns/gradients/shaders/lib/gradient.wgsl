@@ -3,29 +3,47 @@
 const GRADIENT_EXTEND_MODE_CLAMP: u32 = 0;
 const GRADIENT_EXTEND_MODE_REPEAT: u32 = 1;
 
+const GRADIENT_KIND_LINEAR: u32 = 0;
+const GRADIENT_KIND_CONIC: u32 = 1;
+const GRADIENT_KIND_CSS_RADIAL: u32 = 2;
+const GRADIENT_KIND_SVG_RADIAL: u32 = 3;
+
 // Fetch information about the gradient stops that is independent from
 // the pixel position (preferrably used in the vertex shader).
 fn read_gradient_header(base_address: u32) -> vec4u {
     let header = f32_gpu_buffer_fetch_1(base_address);
-    return decode_gradient_header(base_address, header);
+    return make_gradient_header(base_address, header);
 }
 
-fn decode_gradient_header(base_address: u32, payload: vec4f) -> vec4u {
+fn make_gradient_header(base_address: u32, payload: vec4f) -> vec4u {
+    let gradient_kind = u32(payload.z);
     let count = payload.x;
     let extend_mode = payload.y;
     let offsets_address = base_address + 1;
     let colors_address = offsets_address + u32(ceil(count * 0.25));
 
     return vec4u(
-        u32(count),
-        u32(extend_mode),
+        gradient_kind,
+        u32(count) | (u32(extend_mode) << 24),
         offsets_address,
         colors_address,
     );
 }
 
+fn gradient_header_kind(header: vec4u) -> u32 {
+    return header.x;
+}
+
+fn gradient_header_extend_mode(header: vec4u) -> u32 {
+    return header.y >> 24;
+}
+
+fn gradient_header_stop_count(header: vec4u) -> u32 {
+    return header.y & 0x0FFFFFF;
+}
+
 fn apply_extend_mode(offset: f32, extend_mode: u32) -> f32 {
-    if extend_mode == GRADIENT_EXTEND_MODE_REPEAT {
+    if (extend_mode) == GRADIENT_EXTEND_MODE_REPEAT {
         return fract(offset);
     }
 
@@ -33,8 +51,8 @@ fn apply_extend_mode(offset: f32, extend_mode: u32) -> f32 {
 }
 
 fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
-    let count = gradient_header.x;
-    let extend_mode = gradient_header.y;
+    let count = gradient_header_stop_count(gradient_header);
+    let extend_mode = gradient_header_extend_mode(gradient_header);
     var addr: u32 = gradient_header.z;
     let colors_base_address = gradient_header.w;
 
