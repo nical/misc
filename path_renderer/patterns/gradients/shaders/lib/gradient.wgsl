@@ -7,8 +7,12 @@ const GRADIENT_EXTEND_MODE_REPEAT: u32 = 1;
 // the pixel position (preferrably used in the vertex shader).
 fn read_gradient_header(base_address: u32) -> vec4u {
     let header = f32_gpu_buffer_fetch_1(base_address);
-    let count = header.x;
-    let extend_mode = header.y;
+    return decode_gradient_header(base_address, header);
+}
+
+fn decode_gradient_header(base_address: u32, payload: vec4f) -> vec4u {
+    let count = payload.x;
+    let extend_mode = payload.y;
     let offsets_address = base_address + 1;
     let colors_address = offsets_address + u32(ceil(count * 0.25));
 

@@ -415,6 +415,7 @@ impl App {
             msaa: MsaaMode::Auto,
             scene_idx: 0,
             debug_overlay: false,
+            debug_mode: 0,
         };
 
         Some(App {
@@ -525,6 +526,10 @@ impl App {
                     view.debug_overlay = !view.debug_overlay;
                     redraw = true;
                 }
+                KeyCode::KeyD => {
+                    view.debug_mode += 1;
+                    redraw = true;
+                }
                 _key => {}
             },
             _evt => {}
@@ -559,6 +564,8 @@ impl App {
             return;
         }
         self.view.render = false;
+        self.view.debug_mode = self.view.debug_mode % 4;
+        self.patterns.gradients.debug_mode = self.view.debug_mode;
 
         let wgpu_frame = match self.surface.get_current_texture() {
             Ok(texture) => texture,
@@ -1417,6 +1424,7 @@ pub struct Demo {
     pub msaa: MsaaMode,
     pub scene_idx: u32,
     pub debug_overlay: bool,
+    pub debug_mode: u32,
 }
 
 fn update_title(window: &Window, fill_renderer: usize, stroke_renderer: usize, msaa: MsaaMode) {
