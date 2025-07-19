@@ -4,7 +4,7 @@
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let dir_offset = read_linear_gradient(pattern_handle);
-    let header = read_gradient_header(pattern_handle + 1);
+    let header = read_gradient_header(pattern_handle + 2);
 
     return Pattern(pattern_pos, dir_offset, header);
 }

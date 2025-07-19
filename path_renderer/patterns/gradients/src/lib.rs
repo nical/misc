@@ -270,12 +270,18 @@ impl GradientRenderer {
         let stops_len = gradient.stops.len() * 5 + 8;
 
         self.buffer.clear();
-        self.buffer.reserve(stops_len + 4);
+        self.buffer.reserve(stops_len + 8);
 
         self.buffer.push(gradient.from.x);
         self.buffer.push(gradient.from.y);
         self.buffer.push(gradient.to.x);
         self.buffer.push(gradient.to.y);
+        // TODO: this is wasteful but for simplicty we use the same data
+        // layout as the other gradients (2x vec4 for the gradient data).
+        self.buffer.push(0.0);
+        self.buffer.push(0.0);
+        self.buffer.push(0.0);
+        self.buffer.push(0.0);
 
         push_color_stops(&mut self.buffer, GradientKind::Linear, gradient.extend_mode, gradient.stops);
 

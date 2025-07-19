@@ -5,8 +5,8 @@
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let dir_offset = read_linear_gradient(pattern_handle);
 
-    let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 1);
-    let header = make_gradient_header(pattern_handle + 1, gradient.data0);
+    let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 2);
+    let header = make_gradient_header(pattern_handle + 2, gradient.data0);
     let stops = gradient.data1.xy;
     return Pattern(
         vec4f(pattern_pos, stops),

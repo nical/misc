@@ -5,7 +5,7 @@
 #import pattern::radial_gradient
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
-    let header = read_gradient_header(pattern_handle + 1);
+    let header = read_gradient_header(pattern_handle + 2);
     var interpolated_data = vec4f(0.0);
     var flat_data = vec4f(0.0);
     switch gradient_header_kind(header) {

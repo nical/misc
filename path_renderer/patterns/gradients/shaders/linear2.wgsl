@@ -10,7 +10,7 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     // But this way the shader stays compatible with the format that
     // is used for the general case.
 
-    let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 1);
+    let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 2);
     let header = gradient.data0;
     let stops = gradient.data1.xy;
     return Pattern(

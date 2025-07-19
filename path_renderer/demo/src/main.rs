@@ -415,7 +415,7 @@ impl App {
             msaa: MsaaMode::Auto,
             scene_idx: 0,
             debug_overlay: false,
-            debug_mode: 0,
+            debug_mode: 4,
         };
 
         Some(App {
@@ -1034,24 +1034,24 @@ fn paint_scene(
                 scale: Vector::new(1.0, 1.0),
             }
         );
-        //use std::f32::consts::PI;
-        //let gradient = patterns.gradients.add_conic(
-        //    &mut f32_buffer,
-        //    &ConicGradientDescriptor {
-        //        stops: &[
-        //            GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-        //            GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-        //            GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-        //            GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-        //            GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
-        //        ],
-        //        start_angle: PI,
-        //        end_angle: 2.0 * PI,
-        //        extend_mode: ExtendMode::Repeat,
-        //        center: point(250.0, 750.0),
-        //        scale: Vector::new(1.0, 1.0),
-        //    }
-        //);
+        use std::f32::consts::PI;
+        let conic = patterns.gradients.add_conic(
+            &mut f32_buffer,
+            &ConicGradientDescriptor {
+                stops: &[
+                    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+                    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+                ],
+                start_angle: PI,
+                end_angle: 2.0 * PI,
+                extend_mode: ExtendMode::Repeat,
+                center: point(250.0, 750.0),
+                scale: Vector::new(1.0, 1.0),
+            }
+        );
 
         //for i in 0..5000 {
         //    let x = ((i * 14873) % (700 + i / 127)) as f32;
@@ -1085,7 +1085,7 @@ fn paint_scene(
                 max: point(300.0, 900.0),
             },
             Aa::ALL,
-            gradient,
+            conic,
             transform_handle,
         );
         renderers.rectangles.fill_rect(
