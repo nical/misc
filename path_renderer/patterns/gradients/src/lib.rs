@@ -152,6 +152,7 @@ pub struct GradientRenderer {
     conic: ShaderPatternId,
 
     unified: ShaderPatternId,
+    unified2: ShaderPatternId,
 }
 
 impl GradientRenderer {
@@ -201,7 +202,7 @@ impl GradientRenderer {
             name: "gradients::radial".into(),
             source: CSS_RADIAL_GRADIENT_SRC.into(),
             varyings: vec![
-                Varying::float32x3("position_and_start").with_interpolation(true),
+                Varying::float32x4("position_and_start").with_interpolation(true),
                 Varying::uint32x4("gradient_header").flat(),
             ],
             bindings: None,
@@ -211,7 +212,7 @@ impl GradientRenderer {
             name: "gradients::radial2".into(),
             source: CSS_RADIAL_GRADIENT_2_SRC.into(),
             varyings: vec![
-                Varying::float32x3("position_and_start").with_interpolation(true),
+                Varying::float32x4("position_and_start").with_interpolation(true),
                 Varying::float32x2("stop_offsets").flat(),
                 Varying::float32x4("color0").flat(),
                 Varying::float32x4("color1").flat(),
@@ -252,6 +253,20 @@ impl GradientRenderer {
             bindings: None,
         });
 
+        let unified2 = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::unified_with_fast_path".into(),
+            source: UNIFIED_GRADIENT_2_SRC.into(),
+            varyings: vec![
+                Varying::float32x4("interpolated_data").with_interpolation(true),
+                Varying::float32x4("flat_data").flat(),
+                Varying::float32x2("stop_offsets").flat(),
+                Varying::float32x4("color0").flat(),
+                Varying::float32x4("color1").flat(),
+                Varying::uint32x4("gradient_header").flat(),
+            ],
+            bindings: None,
+        });
+
         GradientRenderer {
             buffer: Vec::new(),
             linear,
@@ -262,6 +277,7 @@ impl GradientRenderer {
             svg_radial,
             conic,
             unified,
+            unified2,
             debug_mode: 0,
         }
     }
@@ -357,6 +373,9 @@ impl GradientRenderer {
         } else if self.debug_mode == 4 {
             println!("Forcing unified gradient shader");
             self.unified
+        } else if self.debug_mode == 5 {
+            println!("Forcing unified with fast path gradient shader");
+            self.unified2
         } else if gradient.stops.len() == 2 {
             self.linear_2
         } else {
@@ -377,6 +396,9 @@ impl GradientRenderer {
         let shader = if self.debug_mode == 4 && gradient.focal.is_none() {
             println!("Forcing unified gradient shader");
             self.unified
+        } else if self.debug_mode == 5 && gradient.focal.is_none(){
+            println!("Forcing unified with fast path gradient shader");
+            self.unified2
         } else if gradient.focal.is_none() {
             if gradient.stops.len() == 2 {
                 self.css_radial_2
@@ -402,6 +424,9 @@ impl GradientRenderer {
         let shader = if self.debug_mode == 4 {
             println!("Forcing unified gradient shader");
             self.unified
+        } else if self.debug_mode == 5 {
+            println!("Forcing unified with fast path gradient shader");
+            self.unified2
         } else  {
             self.conic
         };
@@ -425,3 +450,4 @@ const CSS_RADIAL_GRADIENT_2_SRC: &'static str = include_str!("../shaders/css_rad
 const SVG_RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/svg_radial.wgsl");
 const CONIC_GRADIENT_SRC: &'static str = include_str!("../shaders/conic.wgsl");
 const UNIFIED_GRADIENT_SRC: &'static str = include_str!("../shaders/css_unified.wgsl");
+const UNIFIED_GRADIENT_2_SRC: &'static str = include_str!("../shaders/css_unified2.wgsl");

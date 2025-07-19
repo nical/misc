@@ -564,7 +564,7 @@ impl App {
             return;
         }
         self.view.render = false;
-        self.view.debug_mode = self.view.debug_mode % 5;
+        self.view.debug_mode = self.view.debug_mode % 6;
         self.patterns.gradients.debug_mode = self.view.debug_mode;
 
         let wgpu_frame = match self.surface.get_current_texture() {
