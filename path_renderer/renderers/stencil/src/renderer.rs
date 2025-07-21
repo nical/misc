@@ -8,7 +8,7 @@ use tess::EncodedPrimitiveInfo;
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{units::SurfacePoint, wgpu};
+use core::{render_pass::{BuiltRenderPass, RenderCommandId}, units::SurfacePoint, wgpu};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
@@ -16,7 +16,7 @@ use core::{
 };
 use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect};
 use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
-use core::batching::{BatchId, BatchFlags, BatchList};
+use core::batching::{BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
 use core::render_pass::{RenderPassContext, RendererId, ZIndex};
 use core::render_task::RenderTaskInfo;
@@ -268,7 +268,7 @@ impl StencilAndCoverRenderer {
         );
     }
 
-    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
@@ -295,7 +295,7 @@ impl StencilAndCoverRenderer {
         self.cover_indices = Some(cover_idx_stream);
 
         let id = self.renderer_id;
-        for batch_id in ctx.pass
+        for batch_id in pass
             .batches()
             .iter()
             .filter(|batch| batch.renderer == id)
@@ -343,7 +343,7 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(stencil.vertices.pushed_items());
     }
 
-    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
+    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
@@ -369,7 +369,7 @@ impl StencilAndCoverRenderer {
         unsafe {
             self.batches.par_iter_mut(
                 &mut prep_ctx.workers.with_data(&mut worker_data),
-                prep_ctx.pass,
+                pass,
                 self.renderer_id,
                 &|workers, _batch, commands, surface, batch_info| {
                     let transforms = &prep_ctx.transforms;
@@ -734,18 +734,18 @@ fn generate_cover_geometry(
 }
 
 impl core::Renderer for StencilAndCoverRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         // TODO: measure and adjust the batch count threshold.
         if self.parallel && self.batches.batch_count() > 16 {
-            self.prepare_parallel(ctx);
+            self.prepare_parallel(ctx, pass);
         } else {
-            self.prepare_single_thread(ctx);
+            self.prepare_single_thread(ctx, pass);
         }
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        batches: &[RenderCommandId],
         surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,

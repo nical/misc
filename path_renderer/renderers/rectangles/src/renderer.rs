@@ -7,8 +7,8 @@ use core::{
     PrepareContext
 };
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
-use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
+use core::batching::{BatchFlags, BatchList};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId};
 use core::gpu::{GpuBufferAddress, StreamId};
 use core::utils::DrawHelper;
 
@@ -47,6 +47,7 @@ pub struct RectangleRenderer {
     batches: BatchList<Instance, Batch>,
     pipelines: crate::resources::Geometries,
     instances: Option<StreamId>,
+    renderer_id: RendererId,
 }
 
 impl RectangleRenderer {
@@ -58,6 +59,7 @@ impl RectangleRenderer {
             batches: BatchList::new(renderer_id),
             pipelines,
             instances: None,
+            renderer_id,
         }
     }
 
@@ -169,7 +171,7 @@ impl RectangleRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
@@ -180,7 +182,12 @@ impl RectangleRenderer {
         let mut instances = worker_data.instances.write(stream, 0);
         self.instances = Some(stream);
 
-        for (items, surface, batch) in self.batches.iter_mut() {
+        for batch_id in pass
+            .batches()
+            .iter()
+            .filter(|batch| batch.renderer == self.renderer_id) {
+
+            let (items, surface, batch) = &mut self.batches.get_mut(batch_id.index);
             const SIZE: u32 = std::mem::size_of::<Instance>() as u32;
             let start = instances.pushed_bytes() / SIZE;
             instances.push_slice(items);
@@ -200,13 +207,13 @@ impl RectangleRenderer {
 }
 
 impl core::Renderer for RectangleRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
+        self.prepare_impl(ctx, pass);
     }
 
     fn render<'pass, 'resources: 'pass, 'stats>(
         &self,
-        batches: &[BatchId],
+        batches: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'stats>,
         render_pass: &mut wgpu::RenderPass<'pass>,

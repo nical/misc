@@ -5,7 +5,7 @@ use std::{fmt, sync::{Arc, Mutex}, u16};
 use bitflags::bitflags;
 use smallvec::SmallVec;
 
-use crate::{instance::RenderStats, render_pass::RenderPasses, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
+use crate::{instance::RenderStats, render_pass::RenderPasses, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, PrepareContext, Renderer, SurfaceKind};
 
 use schedule::RenderGraph;
 pub use schedule::{GraphBindings, GraphError};
@@ -608,6 +608,7 @@ pub struct CommandContext<'l> {
 }
 
 pub trait Command: std::fmt::Debug {
+    fn prepare(&mut self, ctx: &mut PrepareContext, renderers: &mut[&mut dyn Renderer]);
     fn execute(&self, ctx: &mut CommandContext);
 }
 
@@ -623,6 +624,12 @@ impl<'l> CommandList<'l> {
 
     pub fn push(&mut self, cmd: Box<dyn Command + 'l>) {
         self.cmds.push(cmd)
+    }
+
+    pub fn prepare(&mut self, ctx: &mut PrepareContext, renderers: &mut[&mut dyn Renderer]) {
+        for cmd in &mut self.cmds {
+            cmd.prepare(ctx, renderers);
+        }
     }
 
     pub fn execute(&self, ctx: &mut CommandContext) {
@@ -676,7 +683,7 @@ impl FrameGraph {
         node
     }
 
-    pub fn schedule<'l>(&mut self, render_passes: &'l RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn schedule<'l>(&mut self, render_passes: &mut RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
         let bindings = inner.graph.schedule(render_passes, commands)?;

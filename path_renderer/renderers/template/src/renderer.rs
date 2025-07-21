@@ -7,7 +7,7 @@ use core::transform::{TransformId, Transforms};
 use core::shape::FilledPath;
 use core::units::LocalRect;
 use core::render_pass::{
-    BuiltRenderPass, RenderPassContext, RendererId, RenderPassConfig, ZIndex
+    BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex
 };
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
@@ -127,9 +127,7 @@ impl TemplateRenderer {
 }
 
 impl core::Renderer for TemplateRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        let pass = &ctx.pass;
-
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
@@ -170,7 +168,7 @@ impl core::Renderer for TemplateRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        batches: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,

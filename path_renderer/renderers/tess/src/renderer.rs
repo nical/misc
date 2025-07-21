@@ -1,10 +1,10 @@
 use core::{
-    bytemuck, path::Path, pattern::BuiltPattern, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
+    bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
-use core::batching::{BatchFlags, BatchId, BatchList};
+use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -262,12 +262,11 @@ impl MeshRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -489,13 +488,13 @@ impl MeshRenderer {
 }
 
 impl core::Renderer for MeshRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
+        self.prepare_impl(ctx, pass);
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        batches: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,

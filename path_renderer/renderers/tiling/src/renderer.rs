@@ -1,5 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -167,12 +167,11 @@ impl TileRenderer {
         self.no_opaque_batches = options.no_opaque_batches;
     }
 
-    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.batches.is_empty() {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -238,7 +237,7 @@ impl TileRenderer {
         self.batches = batches;
     }
 
-    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
+    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         struct WorkerData {
             tiler: Tiler,
             edges: GpuBuffer,
@@ -248,7 +247,7 @@ impl TileRenderer {
         let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
         let path_store = self.resources.paths.begin_frame(prep_ctx.staging_buffers.clone());
 
-        let size = prep_ctx.pass.surface_size();
+        let size = pass.surface_size();
         let num_workers = prep_ctx.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
         for _ in 0..num_workers {
@@ -265,7 +264,7 @@ impl TileRenderer {
         unsafe {
             self.batches.par_iter_mut(
                 &mut prep_ctx.workers.with_data(&mut worker_data),
-                prep_ctx.pass,
+                pass,
                 self.renderer_id,
                 &|ctx, _batch, commands, surface, info| {
                     let added_opaque_tiles: AtomicU32 = AtomicU32::new(0);
@@ -494,12 +493,20 @@ impl TileRenderer {
 }
 
 impl core::Renderer for TileRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
         if self.parallel {
-            self.prepare_parallel(ctx);
+            self.prepare_parallel(ctx, pass);
         } else {
-            self.prepare_single_thread(ctx);
+            self.prepare_single_thread(ctx, pass);
         }
+    }
+
+    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, _batch: BatchId) {
+        // TODO
+    }
+
+    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, batch: BatchId, commands: &mut core::render_pass::RenderCommands) {
+        commands.push(batch.into());
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {
@@ -508,7 +515,7 @@ impl core::Renderer for TileRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        cmds: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -529,8 +536,8 @@ impl core::Renderer for TileRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for batch_id in batches {
-            let (_, _, batch) = self.batches.get(batch_id.index);
+        for cmd in cmds {
+            let (_, _, batch) = self.batches.get(cmd.index);
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {

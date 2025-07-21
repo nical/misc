@@ -18,6 +18,9 @@ pub mod shading;
 pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
+use crate::batching::BatchId;
+use crate::instance::RenderStats;
+use crate::render_pass::{RenderCommandId, RenderCommands};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::{BuiltRenderPass, RenderPassContext};
@@ -294,10 +297,11 @@ pub type PrepareWorkerContext<'a> = worker::Context<'a, (PrepareWorkerData,)>;
 
 /// Parameters for the renderering stage.
 pub struct PrepareContext<'a> {
-    pub pass: &'a BuiltRenderPass,
+    //pub pass: &'a BuiltRenderPass,
     pub transforms: &'a Transforms,
     pub workers: PrepareWorkerContext<'a>,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
+    pub stats: &'a mut RenderStats
 }
 
 /// Parameters for the renderering stage.
@@ -333,13 +337,19 @@ impl RendererStats {
 }
 
 pub trait Renderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext);
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass);
+
+    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, _batch: BatchId) {}
+
+    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, batch: BatchId, commands: &mut RenderCommands) {
+        commands.push(batch.into());
+    }
 
     fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        _batches: &[batching::BatchId],
+        _batches: &[RenderCommandId],
         _pass_info: &render_pass::RenderPassConfig,
         _ctx: RenderContext<'resources, 'tmp>,
         _render_pass: &mut wgpu::RenderPass<'pass>,

@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
-use crate::render_pass::RenderPasses;
 use crate::transform::Transforms;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
@@ -80,11 +79,7 @@ impl Instance {
     pub fn render(
         &mut self,
         frame: Frame,
-        commands: CommandList,
-        // TODO: ideally we could remove this one, but we need some way
-        // for the prepare phase to iterate over the batches per render
-        // pass (to be able to do per-pass things like occlusion culling)
-        render_passes: &RenderPasses,
+        mut commands: CommandList,
         graph_bindings: &GraphBindings,
         renderers: &mut[&mut dyn Renderer],
         external_inputs: &[Option<&wgpu::BindGroup>],
@@ -93,7 +88,7 @@ impl Instance {
     ) -> RenderStats {
         let mut stats = self.prepare(
             frame,
-            render_passes,
+            &mut commands,
             graph_bindings,
             renderers,
             encoder
@@ -133,7 +128,7 @@ impl Instance {
     pub fn prepare(
         &mut self,
         frame: Frame,
-        render_passes: &RenderPasses,
+        graph_commands: &mut CommandList,
         graph_bindings: &GraphBindings,
         renderers: &mut[&mut dyn Renderer],
         encoder: &mut wgpu::CommandEncoder,
@@ -167,20 +162,15 @@ impl Instance {
             instances: frame.instances,
         });
 
-        for pass in render_passes.passes() {
-            let Some(pass) = pass else { continue; };
-            for (idx, renderer) in renderers.iter_mut().enumerate() {
-                let renderer_prepare_start = Instant::now();
-                let stats = &mut stats.renderers[idx];
-                renderer.prepare(&mut PrepareContext {
-                    pass,
-                    transforms: &frame.transforms,
-                    workers: self.workers.ctx_with(&mut worker_data[..]),
-                    staging_buffers: self.staging_buffers.clone(),
-                });
-                stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
-            }
-        }
+        let mut ctx = PrepareContext {
+            //pass,
+            transforms: &frame.transforms,
+            workers: self.workers.ctx_with(&mut worker_data[..]),
+            staging_buffers: self.staging_buffers.clone(),
+            stats: &mut stats,
+        };
+
+        graph_commands.prepare(&mut ctx, renderers);
 
         let mut f32_buffer_ops = Vec::with_capacity(worker_data.len());
         let mut u32_buffer_ops = Vec::with_capacity(worker_data.len());

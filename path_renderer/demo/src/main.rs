@@ -741,12 +741,11 @@ impl App {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         let mut commands = CommandList::new();
-        let bindings = graph.schedule(&render_nodes.passes, &mut commands).unwrap();
+        let bindings = graph.schedule(&mut render_nodes.passes, &mut commands).unwrap();
 
         let render_stats = self.instance.render(
             frame,
             commands,
-            &render_nodes.passes,
             &bindings,
             &mut [
                 &mut self.renderers.tiling as &mut dyn Renderer,

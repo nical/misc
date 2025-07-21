@@ -123,7 +123,7 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn schedule<'l>(&self, passes: &'l RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn schedule<'l>(&self, passes: &mut RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
         schedule_graph(self, passes, commands)
     }
 }
@@ -279,7 +279,7 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 
 pub fn schedule_graph<'l>(
     graph: &RenderGraph,
-    render_commands: &'l RenderPasses,
+    render_commands: &mut RenderPasses,
     commands: &mut CommandList<'l>,
 ) -> Result<GraphBindings, Box<GraphError>> {
     // TODO: partial schedule
