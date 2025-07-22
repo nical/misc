@@ -50,61 +50,7 @@ fn apply_extend_mode(offset: f32, extend_mode: u32) -> f32 {
     return clamp(offset, 0.0, 1.0);
 }
 
-fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
-    let count = gradient_header_stop_count(gradient_header);
-    let extend_mode = gradient_header_extend_mode(gradient_header);
-    var addr: u32 = gradient_header.z;
-    let colors_base_address = gradient_header.w;
-
-    var offset = apply_extend_mode(original_offset, extend_mode);
-
-    // Index of the first gradient stop that is after
-    // the current offset.
-    var index: u32 = 0;
-
-    var stop_offsets = f32_gpu_buffer_fetch_1(addr);
-    var prev_stop_offset = stop_offsets.x;
-    var stop_offset = stop_offsets.x;
-
-    while (index < count) {
-
-        stop_offset = stop_offsets.x;
-        if stop_offset > offset { break; }
-        index += 1;
-
-        prev_stop_offset = stop_offset;
-        stop_offset = stop_offsets.y;
-        if stop_offset > offset { break; }
-        index += 1;
-
-        prev_stop_offset = stop_offset;
-        stop_offset = stop_offsets.z;
-        if stop_offset > offset { break; }
-        index += 1;
-
-        prev_stop_offset = stop_offset;
-        stop_offset = stop_offsets.w;
-        if stop_offset > offset { break; }
-        index += 1;
-
-        addr += 1;
-        stop_offsets = f32_gpu_buffer_fetch_1(addr);
-    }
-
-    let color_pair_address = colors_base_address + max(1, index) - 1;
-    let color_pair = f32_gpu_buffer_fetch_2(color_pair_address);
-
-    var d = stop_offset - prev_stop_offset;
-    var factor = 0.0;
-    if d > 0.0 {
-        factor = clamp((offset - prev_stop_offset) / d, 0.0, 1.0);
-    }
-
-    //return vec4f(offset, offset, offset, 1.0);
-    return mix(color_pair.data0, color_pair.data1, factor);
-}
-
-fn evaluate_gradient_v2(gradient_header: vec4u, original_offset: f32, first_offsets: vec4f) -> vec4f {
+fn evaluate_gradient(gradient_header: vec4u, original_offset: f32, first_offsets: vec4f) -> vec4f {
     let count = gradient_header_stop_count(gradient_header);
     let extend_mode = gradient_header_extend_mode(gradient_header);
     var addr: u32 = gradient_header.z;

@@ -52,5 +52,6 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
         default: {}
     }
 
-    return evaluate_gradient(pattern.gradient_header, offset);
+    let first_stop_offsets = f32_gpu_buffer_fetch_1(pattern.gradient_header.z);
+    return evaluate_gradient(pattern.gradient_header, offset, first_stop_offsets);
 }

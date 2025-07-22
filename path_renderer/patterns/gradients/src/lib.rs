@@ -146,8 +146,9 @@ impl GradientRenderer {
             name: "gradients::linear".into(),
             source: LINEAR_GRADIENT_SLOW_FAST_SRC.into(),
             varyings: vec![
-                Varying::float32x4("position_stop_offsets").with_interpolation(true),
+                Varying::float32x2("position").with_interpolation(true),
                 Varying::float32x3("dir_offset").flat(),
+                Varying::float32x4("stop_offsets").flat(),
                 Varying::float32x4("color0").flat(),
                 Varying::float32x4("color1").flat(),
                 Varying::uint32x4("header").flat(),
@@ -253,9 +254,7 @@ impl GradientRenderer {
             );
         }
 
-        let sentinel = self.debug_mode != 5 || kind != GradientKind::Linear;
-
-        self.buffer.push(if sentinel { n + 1 } else { n } as f32);
+        self.buffer.push(n as f32);
         self.buffer.push(match extend_mode {
             ExtendMode::Clamp => 0.0,
             ExtendMode::Repeat => 1.0
@@ -267,9 +266,6 @@ impl GradientRenderer {
         for stop in stops {
             self.buffer.push(stop.offset);
         }
-        if sentinel {
-            self.buffer.push(f32::MAX);
-        }
         while self.buffer.len() % 4 != 0 {
             // padding
             self.buffer.push(0.0);
@@ -280,14 +276,6 @@ impl GradientRenderer {
             self.buffer.push(stop.color.g);
             self.buffer.push(stop.color.b);
             self.buffer.push(stop.color.a);
-        }
-
-        if sentinel {
-            let last = stops.last().unwrap();
-            self.buffer.push(last.color.r);
-            self.buffer.push(last.color.g);
-            self.buffer.push(last.color.b);
-            self.buffer.push(last.color.a);
         }
     }
 

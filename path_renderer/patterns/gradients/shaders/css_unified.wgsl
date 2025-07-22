@@ -82,5 +82,5 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
         );
     }
 
-    return evaluate_gradient_v2(pattern.gradient_header, offset, pattern.stop_offsets);
+    return evaluate_gradient(pattern.gradient_header, offset, pattern.stop_offsets);
 }

@@ -7,13 +7,10 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
 
     let gradient = f32_gpu_buffer_fetch_4(pattern_handle + 2);
     let header = make_gradient_header(pattern_handle + 2, gradient.data0);
-    let stops = gradient.data1.xy;
     return Pattern(
-        vec4f(pattern_pos, stops),
+        pattern_pos,
         dir_offset,
-        // If the gradient has two stops, these will contain the two colors.
-        // Otherwise they may contain a mix of offsets and colors. We could
-        // still use them in the fragment shader to avoid some gpu buffer reads.
+        gradient.data1,
         gradient.data2,
         gradient.data3,
         header,
@@ -22,17 +19,17 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
     var offset = compute_linear_gradient_offset(
-        pattern.position_stop_offsets.xy,
+        pattern.position,
         pattern.dir_offset,
     );
 
     let count = gradient_header_stop_count(pattern.header);
-    if count <= 3 {
+    if count <= 2 {
         // Count includes the sentinel stops so we have at most two "real"
         // color stops.
         let extend_mode = gradient_header_extend_mode(pattern.header);
         return evaluate_simple_gradient_2(
-            pattern.position_stop_offsets.zw,
+            pattern.stop_offsets.xy,
             pattern.color0,
             pattern.color1,
             offset,
@@ -40,5 +37,5 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
         );
     }
 
-    return evaluate_gradient(pattern.header, offset);
+    return evaluate_gradient(pattern.header, offset, pattern.stop_offsets);
 }
