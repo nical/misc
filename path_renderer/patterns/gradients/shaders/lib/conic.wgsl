@@ -3,10 +3,14 @@
 
 fn read_conic_gradient(position: vec2f, address: u32) -> vec4f {
     var gradient = f32_gpu_buffer_fetch_2(address);
-    let center = gradient.data0.xy;
-    let scale = gradient.data0.zw;
-    var start = gradient.data1.x * INV_2_PI;
-    let end = gradient.data1.y * INV_2_PI;
+    return decode_conic_gradient(position, gradient.data0, gradient.data1);
+}
+
+fn decode_conic_gradient(position: vec2f, data0: vec4f, data1: vec4f) -> vec4f {
+    let center = data0.xy;
+    let scale = data0.zw;
+    var start = data1.x * INV_2_PI;
+    let end = data1.y * INV_2_PI;
 
     let da = (end - start);
     var offset_scale = 0.0;

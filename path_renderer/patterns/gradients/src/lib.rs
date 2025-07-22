@@ -15,6 +15,7 @@ pub enum ExtendMode {
 }
 
 #[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GradientKind {
     Linear = 0,
     Conic = 1,
@@ -82,54 +83,6 @@ pub struct ConicGradientDescriptor<'l> {
 }
 
 
-// f32_buffer format:  [Count, repeat_mode, (align 4), offset0..offsetN, (align 4), color0..colorN]
-fn push_color_stops(buffer: &mut Vec<f32>, kind: GradientKind, extend_mode: ExtendMode, stops: &[GradientStop]) {
-    let n = stops.len();
-
-    if n == 0 {
-        return push_color_stops(
-            buffer,
-            kind,
-            ExtendMode::Clamp,
-            &[
-                GradientStop { color: ColorF { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, offset: 0.0, },
-            ],
-        );
-    }
-
-    buffer.push((n + 1) as f32);
-    buffer.push(match extend_mode {
-        ExtendMode::Clamp => 0.0,
-        ExtendMode::Repeat => 1.0
-    });
-    // padding
-    buffer.push((kind as u8) as f32);
-    buffer.push(0.0);
-
-    for stop in stops {
-        buffer.push(stop.offset);
-    }
-    buffer.push(f32::MAX);
-    while buffer.len() % 4 != 0 {
-        // padding
-        buffer.push(0.0);
-    }
-
-    for stop in stops {
-        buffer.push(stop.color.r);
-        buffer.push(stop.color.g);
-        buffer.push(stop.color.b);
-        buffer.push(stop.color.a);
-    }
-
-    let last = stops.last().unwrap();
-    buffer.push(last.color.r);
-    buffer.push(last.color.g);
-    buffer.push(last.color.b);
-    buffer.push(last.color.a);
-}
-
-
 #[derive(Clone, Debug)]
 pub struct GradientRenderer {
     buffer: Vec<f32>,
@@ -153,6 +106,7 @@ pub struct GradientRenderer {
 
     unified: ShaderPatternId,
     unified2: ShaderPatternId,
+    unified2v2: ShaderPatternId,
 }
 
 impl GradientRenderer {
@@ -267,6 +221,20 @@ impl GradientRenderer {
             bindings: None,
         });
 
+        let unified2v2 = shaders.register_pattern(PatternDescriptor {
+            name: "gradients::unified_with_fast_path_v2".into(),
+            source: UNIFIED_GRADIENT_2_V2_SRC.into(),
+            varyings: vec![
+                Varying::float32x4("interpolated_data").with_interpolation(true),
+                Varying::float32x4("flat_data").flat(),
+                Varying::float32x4("stop_offsets").flat(),
+                Varying::float32x4("color0").flat(),
+                Varying::float32x4("color1").flat(),
+                Varying::uint32x4("gradient_header").flat(),
+            ],
+            bindings: None,
+        });
+
         GradientRenderer {
             buffer: Vec::new(),
             linear,
@@ -278,9 +246,63 @@ impl GradientRenderer {
             conic,
             unified,
             unified2,
+            unified2v2,
             debug_mode: 0,
         }
     }
+
+    // f32_buffer format:  [Count, repeat_mode, (align 4), offset0..offsetN, (align 4), color0..colorN]
+    fn push_color_stops(&mut self, kind: GradientKind, extend_mode: ExtendMode, stops: &[GradientStop]) {
+        let n = stops.len();
+
+        if n == 0 {
+            return self.push_color_stops(
+                kind,
+                ExtendMode::Clamp,
+                &[
+                    GradientStop { color: ColorF { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, offset: 0.0, },
+                ],
+            );
+        }
+
+        let sentinel = self.debug_mode != 6 || kind != GradientKind::Linear;
+
+        self.buffer.push(if sentinel { n + 1 } else { n } as f32);
+        self.buffer.push(match extend_mode {
+            ExtendMode::Clamp => 0.0,
+            ExtendMode::Repeat => 1.0
+        });
+        self.buffer.push((kind as u8) as f32);
+        // padding
+        self.buffer.push(0.0);
+
+        for stop in stops {
+            self.buffer.push(stop.offset);
+        }
+        if sentinel {
+            self.buffer.push(f32::MAX);
+        }
+        while self.buffer.len() % 4 != 0 {
+            // padding
+            self.buffer.push(0.0);
+        }
+
+        for stop in stops {
+            self.buffer.push(stop.color.r);
+            self.buffer.push(stop.color.g);
+            self.buffer.push(stop.color.b);
+            self.buffer.push(stop.color.a);
+        }
+
+        if sentinel {
+            let last = stops.last().unwrap();
+            self.buffer.push(last.color.r);
+            self.buffer.push(last.color.g);
+            self.buffer.push(last.color.b);
+            self.buffer.push(last.color.a);
+        }
+    }
+
 
     fn upload_linear_gradient(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &LinearGradientDescriptor) -> GpuBufferAddress {
         let stops_len = gradient.stops.len() * 5 + 8;
@@ -299,7 +321,7 @@ impl GradientRenderer {
         self.buffer.push(0.0);
         self.buffer.push(0.0);
 
-        push_color_stops(&mut self.buffer, GradientKind::Linear, gradient.extend_mode, gradient.stops);
+        self.push_color_stops(GradientKind::Linear, gradient.extend_mode, gradient.stops);
 
         f32_buffer.push_slice(&self.buffer)
     }
@@ -330,7 +352,7 @@ impl GradientRenderer {
         } else {
             GradientKind::CssRadial
         };
-        push_color_stops(&mut self.buffer, kind, gradient.extend_mode, gradient.stops);
+        self.push_color_stops(kind, gradient.extend_mode, gradient.stops);
 
         f32_buffer.push_slice(&self.buffer)
     }
@@ -350,7 +372,7 @@ impl GradientRenderer {
         self.buffer.push(0.0);
         self.buffer.push(0.0);
 
-        push_color_stops(&mut self.buffer, GradientKind::Conic, gradient.extend_mode, gradient.stops);
+        self.push_color_stops(GradientKind::Conic, gradient.extend_mode, gradient.stops);
 
         f32_buffer.push_slice(&self.buffer)
     }
@@ -362,7 +384,7 @@ impl GradientRenderer {
         let handle = self.upload_linear_gradient(f32_buffer, gradient);
 
         let shader = if self.debug_mode == 1 {
-            println!("Using unified linear shader");
+            println!("Using linear shader (fast+slow)");
             self.linear_unified
         } else if self.debug_mode == 2 {
             println!("Using slow path shader");
@@ -376,6 +398,9 @@ impl GradientRenderer {
         } else if self.debug_mode == 5 {
             println!("Forcing unified with fast path gradient shader");
             self.unified2
+        } else if self.debug_mode == 6 {
+            println!("Forcing unified with fast path gradient shader v2");
+            self.unified2v2
         } else if gradient.stops.len() == 2 {
             self.linear_2
         } else {
@@ -451,3 +476,4 @@ const SVG_RADIAL_GRADIENT_SRC: &'static str = include_str!("../shaders/svg_radia
 const CONIC_GRADIENT_SRC: &'static str = include_str!("../shaders/conic.wgsl");
 const UNIFIED_GRADIENT_SRC: &'static str = include_str!("../shaders/css_unified.wgsl");
 const UNIFIED_GRADIENT_2_SRC: &'static str = include_str!("../shaders/css_unified2.wgsl");
+const UNIFIED_GRADIENT_2_V2_SRC: &'static str = include_str!("../shaders/css_unified2_v2.wgsl");

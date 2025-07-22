@@ -4,12 +4,16 @@
 
 fn read_css_radial_gradient(position: vec2f, address: u32) -> vec4f {
     var gradient = f32_gpu_buffer_fetch_2(address);
-    let center = gradient.data0.xy;
+    return decode_css_radial_gradient(position, gradient.data0, gradient.data1);
+}
+
+fn decode_css_radial_gradient(position: vec2f, data0: vec4f, data1: vec4f) -> vec4f {
+    let center = data0.xy;
     // focal parameter data0.zw is ignored in the css version.
 
-    let scale = gradient.data1.xy;
-    var start_radius = gradient.data1.z;
-    let end_radius = gradient.data1.w;
+    let scale = data1.xy;
+    var start_radius = data1.z;
+    let end_radius = data1.w;
 
     let dr = end_radius - start_radius;
     var radius_scale = 0.0;

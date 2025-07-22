@@ -58,8 +58,6 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
 
     var offset = apply_extend_mode(original_offset, extend_mode);
 
-    var end_addr: u32 = addr + count;
-
     // Index of the first gradient stop that is after
     // the current offset.
     var index: u32 = 0;
@@ -68,7 +66,7 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
     var prev_stop_offset = stop_offsets.x;
     var stop_offset = stop_offsets.x;
 
-    while (addr < end_addr) {
+    while (index < count) {
 
         stop_offset = stop_offsets.x;
         if stop_offset > offset { break; }
@@ -102,6 +100,78 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32) -> vec4f {
         factor = clamp((offset - prev_stop_offset) / d, 0.0, 1.0);
     }
 
+    //return vec4f(offset, offset, offset, 1.0);
+    return mix(color_pair.data0, color_pair.data1, factor);
+}
+
+fn evaluate_gradient_v2(gradient_header: vec4u, original_offset: f32, first_offsets: vec4f) -> vec4f {
+    let count = gradient_header_stop_count(gradient_header);
+    let extend_mode = gradient_header_extend_mode(gradient_header);
+    var addr: u32 = gradient_header.z;
+    let colors_base_address = gradient_header.w;
+
+    var offset = apply_extend_mode(original_offset, extend_mode);
+
+    // Index of the first gradient stop that is after
+    // the current offset.
+    var index: u32 = 0;
+
+    // We take advantage of the fact that the first 4 stop offsets were passed via
+    // varyings to avoid fetching them from the buffer.
+    var stop_offsets = first_offsets;
+    var prev_stop_offset = stop_offsets.x;
+    var stop_offset = stop_offsets.x;
+
+    loop {
+        stop_offset = stop_offsets.x;
+        if stop_offset > offset { break; }
+        index += 1;
+
+        prev_stop_offset = stop_offset;
+        stop_offset = stop_offsets.y;
+        if stop_offset > offset { break; }
+        index += 1;
+
+        prev_stop_offset = stop_offset;
+        stop_offset = stop_offsets.z;
+        if stop_offset > offset { break; }
+        index += 1;
+
+        prev_stop_offset = stop_offset;
+        stop_offset = stop_offsets.w;
+        if stop_offset > offset { break; }
+        index += 1;
+
+        addr += 1;
+        if index >= count {
+            // If we exit the loop through here, it means that there isn't a
+            // gradient stop after the current offset. In this case we must
+            // use the color of the last gradient stop. We do so by noticing
+            // that the index is greater or equal to the stop count and set
+            // the interpolation factor to 1.0.
+            break;
+        }
+
+        stop_offsets = f32_gpu_buffer_fetch_1(addr);
+    }
+
+    // Clamp the address to the valid range of gradient stops.
+    let color_pair_address = colors_base_address + min(max(1, index), count - 1) - 1;
+    let color_pair = f32_gpu_buffer_fetch_2(color_pair_address);
+
+    // If we are before the first gradient stop, stop_offset and prev_stop_offset
+    // will be equal, in which case the interpolaiton factor will remain zero.
+    var d = stop_offset - prev_stop_offset;
+    var factor = 0.0;
+    if index >= count {
+        // The current offset is after the last gradient stop.
+        factor = 1.0;
+    } else if d > 0.0 {
+        // We are between two gradient stops, compute the interpolation factor.
+        factor = clamp((offset - prev_stop_offset) / d, 0.0, 1.0);
+    }
+
+    //return vec4f(factor, factor, factor, 1.0);
     //return vec4f(offset, offset, offset, 1.0);
     return mix(color_pair.data0, color_pair.data1, factor);
 }

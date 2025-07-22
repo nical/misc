@@ -415,7 +415,7 @@ impl App {
             msaa: MsaaMode::Auto,
             scene_idx: 0,
             debug_overlay: false,
-            debug_mode: 4,
+            debug_mode: 5,
         };
 
         Some(App {
@@ -564,7 +564,7 @@ impl App {
             return;
         }
         self.view.render = false;
-        self.view.debug_mode = self.view.debug_mode % 6;
+        self.view.debug_mode = self.view.debug_mode % 7;
         self.patterns.gradients.debug_mode = self.view.debug_mode;
 
         let wgpu_frame = match self.surface.get_current_texture() {
@@ -1052,6 +1052,20 @@ fn paint_scene(
                 scale: Vector::new(1.0, 1.0),
             }
         );
+        let linear = patterns.gradients.add_linear(
+            &mut f32_buffer,
+            &LinearGradientDescriptor {
+                from: point(0.0, 700.0),
+                to: point(0.0, 900.0),
+                extend_mode: ExtendMode::Repeat,
+                stops: &[
+                    GradientStop { color: Color { r: 255, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.2 },
+                    GradientStop { color: Color { r: 0, g: 255, b: 0, a: 255, }.to_colorf(), offset: 0.4 },
+                    GradientStop { color: Color { r: 0, g: 0, b: 255, a: 255, }.to_colorf(), offset: 0.6 },
+                    //GradientStop { color: Color { r: 255, g: 0, b: 255, a: 255, }.to_colorf(), offset: 0.8 },
+                ]
+            },
+        );
 
         //for i in 0..5000 {
         //    let x = ((i * 14873) % (700 + i / 127)) as f32;
@@ -1085,7 +1099,7 @@ fn paint_scene(
                 max: point(300.0, 900.0),
             },
             Aa::ALL,
-            conic,
+            linear,
             transform_handle,
         );
         renderers.rectangles.fill_rect(
