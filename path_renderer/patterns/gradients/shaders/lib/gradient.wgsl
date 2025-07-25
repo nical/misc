@@ -69,6 +69,7 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32, first_offsets
     var stop_offset = stop_offsets.x;
 
     loop {
+        prev_stop_offset = stop_offset;
         stop_offset = stop_offsets.x;
         if stop_offset > offset { break; }
         index += 1;
