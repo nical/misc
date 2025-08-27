@@ -18,9 +18,9 @@ pub mod shading;
 pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
-use crate::batching::BatchId;
+use crate::batching::{BatchId, DynBatch, RendererId};
 use crate::instance::RenderStats;
-use crate::render_pass::{RenderCommandId, RenderCommands};
+use crate::render_pass::{DynCommand, RenderCommandId, RenderCommands, RenderPassSurface};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::{BuiltRenderPass, RenderPassContext};
@@ -29,6 +29,7 @@ pub use render_pass::{RenderPassConfig};
 use gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
 pub use lyon::path::math::{point, vector, Point, Vector};
 
+use std::any::Any;
 use std::sync::{Arc, Mutex};
 pub use bitflags;
 pub use bytemuck;
@@ -337,11 +338,11 @@ impl RendererStats {
 }
 
 pub trait Renderer {
-    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass);
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &mut BuiltRenderPass);
 
-    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, _batch: BatchId) {}
+    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _pass: &RenderPassSurface, batch: &mut DynBatch) {}
 
-    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, batch: BatchId, commands: &mut RenderCommands) {
+    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _pass: &RenderPassSurface, batch: DynBatch, commands: &mut RenderCommands) {
         commands.push(batch.into());
     }
 
@@ -349,7 +350,7 @@ pub trait Renderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        _batches: &[RenderCommandId],
+        _batches: &[DynCommand],
         _pass_info: &render_pass::RenderPassConfig,
         _ctx: RenderContext<'resources, 'tmp>,
         _render_pass: &mut wgpu::RenderPass<'pass>,

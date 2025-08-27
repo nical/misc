@@ -16,7 +16,7 @@ use core::{
 };
 use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect};
 use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
-use core::batching::{BatchFlags, BatchList};
+use core::batching::{BatchFlags};
 use core::shape::{Circle, FilledPath};
 use core::render_pass::{RenderPassContext, RendererId, ZIndex};
 use core::render_task::RenderTaskInfo;
@@ -154,7 +154,6 @@ pub struct StencilAndCoverRenderer {
     cover_indices: Option<StreamId>,
     draws: Vec<Draw>,
     parallel_draws: Vec<Vec<Draw>>,
-    batches: BatchList<Fill, BatchInfo>,
     cover_geometry: GeometryId,
     pub stats: Stats,
     pub tolerance: f32,
@@ -175,7 +174,6 @@ impl StencilAndCoverRenderer {
             cover_indices: None,
             draws: Vec::new(),
             parallel_draws: Vec::new(),
-            batches: BatchList::new(renderer_id),
             cover_geometry: shared.cover_geometry,
             stats: Stats {
                 stencil_batches: 0,
@@ -295,11 +293,12 @@ impl StencilAndCoverRenderer {
         self.cover_indices = Some(cover_idx_stream);
 
         let id = self.renderer_id;
-        for batch_id in pass
+        for batch in pass
             .batches()
             .iter()
-            .filter(|batch| batch.renderer == id)
+            .filter(|batch| batch.renderer_id() == id)
         {
+
             let (commands, surface, batch_info) = self.batches.get_mut(batch_id.index);
 
             let draws_start = self.draws.len();
@@ -307,7 +306,7 @@ impl StencilAndCoverRenderer {
             let stencil_idx_start = stencil.indices.pushed_bytes() / 4;
             let cover_idx_start = cover.indices.pushed_bytes() / 4;
 
-            for fill in commands.iter() {
+            for fill in batch.items.iter() {
                 Self::prepare_fill(transforms, fill, &mut stencil, &mut cover, &mut prim_buffer, self.tolerance);
             }
 

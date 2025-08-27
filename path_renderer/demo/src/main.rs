@@ -28,18 +28,23 @@ use lyon::geom::{Angle, Box2D};
 use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
-use rectangles::{Aa, RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
 use tiling::{AaMode, Occlusion, TileRenderer, Tiling, TilingOptions};
 use winit::dpi::PhysicalSize;
-use wpf::{Wpf, WpfMeshRenderer};
 use std::sync::Arc;
 use std::time::{Instant, Duration};
-use stencil::{StencilAndCoverRenderer, StencilAndCover};
-use tess::{MeshRenderer, Tessellation};
-use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 //use tiling::*;
+#[cfg(feature="rectangles")]
+use rectangles::{Aa, RectangleRenderer, Rectangles};
+#[cfg(feature="wpf")]
+use wpf::{Wpf, WpfMeshRenderer};
+#[cfg(feature="stencil")]
+use stencil::{StencilAndCoverRenderer, StencilAndCover};
+#[cfg(feature="tess")]
+use tess::{MeshRenderer, Tessellation};
+#[cfg(feature="msaa_stroke")]
+use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
 use pattern_color::SolidColorRenderer;
@@ -72,30 +77,43 @@ const NUM_SCENES: u32 = 2;
 
 struct Renderers {
     tiling: TileRenderer,
+    #[cfg(feature="stencil")]
     stencil: StencilAndCoverRenderer,
+    #[cfg(feature="tess")]
     meshes: MeshRenderer,
+    #[cfg(feature="wpf")]
     wpf: WpfMeshRenderer,
+    #[cfg(feature="rectangles")]
     rectangles: RectangleRenderer,
+    #[cfg(feature="msaa_stroke")]
     msaa_strokes: MsaaStrokeRenderer,
 }
 
 impl Renderers {
     fn begin_frame(&mut self) {
         self.tiling.begin_frame();
+        #[cfg(feature="stencil")]
         self.stencil.begin_frame();
+        #[cfg(feature="tess")]
         self.meshes.begin_frame();
+        #[cfg(feature="wpf")]
         self.wpf.begin_frame();
+        #[cfg(feature="rectangles")]
         self.rectangles.begin_frame();
+        #[cfg(feature="msaa_stroke")]
         self.msaa_strokes.begin_frame();
     }
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
-        [
-            &mut self.tiling as &mut dyn FillPath,
-            &mut self.stencil as &mut dyn FillPath,
-            &mut self.meshes as &mut dyn FillPath,
-            &mut self.wpf as &mut dyn FillPath,
-        ][idx]
+        match idx {
+            #[cfg(feature="stencil")]
+            1 => &mut self.stencil as &mut dyn FillPath,
+            #[cfg(feature="tess")]
+            2 => &mut self.meshes as &mut dyn FillPath,
+            #[cfg(feature="wpf")]
+            3 => &mut self.wpf as &mut dyn FillPath,
+            _ => &mut self.tiling as &mut dyn FillPath,
+        }
     }
 }
 
@@ -343,13 +361,18 @@ impl App {
             gpu: z_buffer.unwrap_or(false),
         };
 
+        #[cfg(feature="rectangles")]
         let rectangles = Rectangles::new(&device, &mut instance.shaders);
+        #[cfg(feature="tess")]
         let tessellation = Tessellation::new(&device, &mut instance.shaders);
         let tiling = Tiling::new(&device, &mut instance.shaders, &TilingOptions {
             antialiasing,
         });
+        #[cfg(feature="stencil")]
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &tessellation, &device, &mut instance.shaders);
+        #[cfg(feature="wpf")]
         let wpf = Wpf::new(&device, &mut instance.shaders);
+        #[cfg(feature="msaa_stroke")]
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
 
         let mut renderers = Renderers {
@@ -363,19 +386,30 @@ impl App {
                     no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
                 }
             ),
+            #[cfg(feature="stencil")]
             stencil: stencil_and_cover.new_renderer(1),
+            #[cfg(feature="tess")]
             meshes: tessellation.new_renderer(2),
+            #[cfg(feature="rectangles")]
             rectangles: rectangles.new_renderer(3),
+            #[cfg(feature="wpf")]
             wpf: wpf.new_renderer(4),
+            #[cfg(feature="msaa_stroke")]
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
         };
 
         renderers.tiling.tolerance = tolerance;
         renderers.tiling.parallel = parallel;
-        renderers.stencil.tolerance = tolerance;
-        renderers.stencil.parallel = parallel;
-        renderers.meshes.tolerance = tolerance;
-        renderers.msaa_strokes.tolerance = tolerance;
+        #[cfg(feature="stencil")] {
+            renderers.stencil.tolerance = tolerance;
+            renderers.stencil.parallel = parallel;
+        }
+        #[cfg(feature="tess")] {
+            renderers.meshes.tolerance = tolerance;
+        }
+        #[cfg(feature="msaa_stroke")] {
+            renderers.msaa_strokes.tolerance = tolerance;
+        }
 
         //renderers.tiling.tiler.draw.max_edges_per_gpu_tile = max_edges_per_gpu_tile;
 
@@ -749,10 +783,15 @@ impl App {
             &bindings,
             &mut [
                 &mut self.renderers.tiling as &mut dyn Renderer,
+                #[cfg(feature="stencil")]
                 &mut self.renderers.stencil,
+                #[cfg(feature="tess")]
                 &mut self.renderers.meshes,
+                #[cfg(feature="rectangles")]
                 &mut self.renderers.rectangles,
+                #[cfg(feature="wpf")]
                 &mut self.renderers.wpf,
+                #[cfg(feature="msaa_stroke")]
                 &mut self.renderers.msaa_strokes,
             ],
             &[],
@@ -957,6 +996,7 @@ fn paint_scene(
             };
 
             match stroke_renderer {
+                #[cfg(feature="msaa_stroke")]
                 crate::INSTANCED => {
                     renderers.msaa_strokes.stroke_path(&mut surface.ctx(), &frame.transforms, path.clone(), pattern, width);
                 }
@@ -1090,28 +1130,30 @@ fn paint_scene(
         //    );
         //}
 
-        renderers.rectangles.fill_rect(
-            &mut surface.ctx(),
-            &frame.transforms,
-            &LocalRect {
-                min: point(200.0, 700.0),
-                max: point(300.0, 900.0),
-            },
-            Aa::ALL,
-            linear,
-            transform_handle,
-        );
-        renderers.rectangles.fill_rect(
-            &mut surface.ctx(),
-            &frame.transforms,
-            &LocalRect {
-                min: point(310.5, 700.5),
-                max: point(510.5, 900.5),
-            },
-            Aa::LEFT | Aa::RIGHT | Aa::ALL,
-            gradient,
-            transform_handle,
-        );
+        #[cfg(feature="rectangles")] {
+            renderers.rectangles.fill_rect(
+                &mut surface.ctx(),
+                &frame.transforms,
+                &LocalRect {
+                    min: point(200.0, 700.0),
+                    max: point(300.0, 900.0),
+                },
+                Aa::ALL,
+                linear,
+                transform_handle,
+            );
+            renderers.rectangles.fill_rect(
+                &mut surface.ctx(),
+                &frame.transforms,
+                &LocalRect {
+                    min: point(310.5, 700.5),
+                    max: point(510.5, 900.5),
+                },
+                Aa::LEFT | Aa::RIGHT | Aa::ALL,
+                gradient,
+                transform_handle,
+            );
+        }
         frame.transforms.pop();
 
         //renderers.tiling.fill_circle(
@@ -1269,144 +1311,6 @@ fn paint_scene(
             offsetter.line_to(point(900.0, 800.0));
             offsetter.line_to(point(900.0, 700.0));
             offsetter.end(false);
-        }
-
-        //{
-        //    msaa_stroker.stroke_path(
-        //        ctx,
-        //        path_to_offset.clone(),
-        //        patterns.colors.add(Color { r: 100, g: 0, b: 0, a: 255 }),
-        //        10.0
-        //    );
-        //}
-
-        if false {
-            let offset_path = builder2.build();
-            renderers.tiling.fill_path(&mut surface.ctx(), &frame.transforms, offset_path.clone(), patterns.colors.add(Color::RED));
-
-            renderers.meshes.stroke_path(
-                &mut surface.ctx(),
-                &frame.transforms,
-                offset_path.clone(),
-                1.0,
-                patterns.colors.add(Color {
-                    r: 100,
-                    g: 0,
-                    b: 0,
-                    a: 255,
-                }),
-            );
-            renderers.meshes.stroke_path(
-                &mut surface.ctx(),
-                &frame.transforms,
-                path_to_offset.clone(),
-                1.0,
-                patterns.colors.add(Color::BLACK),
-            );
-
-            let mut b = Path::builder();
-            b.begin(point(500.0, 500.0));
-            b.line_to(point(600.0, 500.0));
-            b.line_to(point(650.0, 400.0));
-            b.line_to(point(700.0, 500.0));
-            b.line_to(point(800.0, 500.0));
-            b.line_to(point(650.0, 600.0));
-            b.end(true);
-
-            b.begin(point(110.0, 110.0));
-            b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-            b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-            b.end(false);
-            renderers.meshes.stroke_path(&mut surface.ctx(), &frame.transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
-
-            let green = patterns.colors.add(Color::GREEN);
-            let blue = patterns.colors.add(Color::BLUE);
-            let white = patterns.colors.add(Color::WHITE);
-            for evt in offset_path.as_slice() {
-                match evt {
-                    PathEvent::Begin { at } => {
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: at.cast_unit(),
-                                radius: 3.0,
-                                inverted: false,
-                            },
-                            green,
-                        );
-                    }
-                    PathEvent::Line { to, .. } => {
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: to.cast_unit(),
-                                radius: 3.0,
-                                inverted: false,
-                            },
-                            green,
-                        );
-                    }
-                    PathEvent::Quadratic { ctrl, to, .. } => {
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: ctrl.cast_unit(),
-                                radius: 4.0,
-                                inverted: false,
-                            },
-                            blue,
-                        );
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: to.cast_unit(),
-                                radius: 3.0,
-                                inverted: false,
-                            },
-                            white,
-                        );
-                    }
-                    PathEvent::Cubic {
-                        ctrl1, ctrl2, to, ..
-                    } => {
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: ctrl1.cast_unit(),
-                                radius: 4.0,
-                                inverted: false,
-                            },
-                            blue,
-                        );
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: ctrl2.cast_unit(),
-                                radius: 4.0,
-                                inverted: false,
-                            },
-                            blue,
-                        );
-                        renderers.meshes.fill_circle(
-                            &mut surface.ctx(),
-                            &frame.transforms,
-                            Circle {
-                                center: to.cast_unit(),
-                                radius: 2.0,
-                                inverted: false,
-                            },
-                            white,
-                        );
-                    }
-                    _ => {}
-                }
-            }
         }
     }
 

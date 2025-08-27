@@ -1,4 +1,4 @@
-use crate::batching::{BatchId, Batcher};
+use crate::batching::{BatchId, Batcher, DynBatch};
 use crate::graph::{Command, CommandContext, TaskId};
 use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
@@ -6,6 +6,7 @@ use crate::instance::{ms, RenderStats};
 use crate::path::FillRule;
 use crate::units::SurfaceIntSize;
 use crate::{BindingResolver, BindingsId, PrepareContext, RenderContext, Renderer};
+use std::any::Any;
 use std::ops::Range;
 use std::time::Instant;
 
@@ -199,29 +200,41 @@ impl RenderPassBuilder {
 
         BuiltRenderPass {
             batches,
-            config: self.config,
-            size: self.size,
+            surface: RenderPassSurface {
+                config: self.config,
+                size: self.size,
+            },
         }
     }
 }
 
+// TODO: The name is not great.
+// Could this be merged into RenderPassConfig?
+pub struct RenderPassSurface {
+    pub config: RenderPassConfig,
+    pub size: SurfaceIntSize,
+}
+
 pub struct BuiltRenderPass {
-    batches: Vec<BatchId>,
-    config: RenderPassConfig,
-    size: SurfaceIntSize,
+    batches: Vec<DynBatch>,
+    surface: RenderPassSurface,
 }
 
 impl BuiltRenderPass {
-    pub fn batches(&self) -> &[BatchId] {
+    pub fn batches(&self) -> &[DynBatch] {
         &self.batches
     }
 
+    pub fn batches_mut(&mut self) -> &mut [DynBatch] {
+        &mut self.batches
+    }
+
     pub fn config(&self) -> RenderPassConfig {
-        self.config
+        self.surface.config
     }
 
     pub fn surface_size(&self) -> SurfaceIntSize {
-        self.size
+        self.surface.size
     }
 
     pub fn is_empty(&self) -> bool {
@@ -276,27 +289,27 @@ impl Command for GraphRenderCommand {
         ctx: &mut PrepareContext,
         renderers: &mut[&mut dyn Renderer],
     ) {
-        let batches = self.built_pass.batches();
-
         for (idx, renderer) in renderers.iter_mut().enumerate() {
             let renderer_prepare_start = Instant::now();
-            renderer.prepare_pass(ctx, &self.built_pass);
+            renderer.prepare_pass(ctx, &mut self.built_pass);
             let stats = &mut ctx.stats.renderers[idx];
             stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
         }
 
-        for batch in batches.iter().rev() {
+        let batches = &mut self.built_pass.batches;
+
+        for batch in batches.iter_mut().rev() {
             let renderer_prepare_start = Instant::now();
-            let renderer_idx = batch.renderer as usize;
-            renderers[renderer_idx].prepare_batch_backward(ctx, &self.built_pass, *batch);
+            let renderer_idx = batch.renderer_id() as usize;
+            renderers[renderer_idx].prepare_batch_backward(ctx, &self.built_pass.surface, batch);
             let stats = &mut ctx.stats.renderers[renderer_idx];
             stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
         }
 
-        for batch in batches {
+        for batch in batches.drain(..) {
             let renderer_prepare_start = Instant::now();
-            let renderer_idx = batch.renderer as usize;
-            renderers[renderer_idx].prepare_batch_forward(ctx, &self.built_pass, *batch, &mut self.render_commands);
+            let renderer_idx = batch.renderer_id() as usize;
+            renderers[renderer_idx].prepare_batch_forward(ctx, &self.built_pass.surface, batch, &mut self.render_commands);
             let stats = &mut ctx.stats.renderers[renderer_idx];
             stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
         }
@@ -395,12 +408,42 @@ pub struct RenderPassInfo {
 }
 
 pub struct RenderCommands {
-    ordered: Vec<RenderCommandId>,
-    order_independent: Vec<RenderCommandId>,
-    pre_passes: Vec<RenderCommandId>,
+    ordered: Vec<DynCommand>,
+    order_independent: Vec<DynCommand>,
+    pre_passes: Vec<usize>,
     sub_passes: Vec<SubPass>,
     requested_pre_pass: Vec<bool>,
     current_pass_start: u16,
+}
+
+pub struct DynCommand {
+    renderer: RendererId,
+    request_pre_pass: bool,
+    data: Box<dyn Any>,
+}
+
+impl DynCommand {
+    pub fn renderer_id(&self) -> RendererId {
+        self.renderer
+    }
+
+    pub fn cast<T: 'static>(&self) -> &T {
+        self.data.downcast_ref::<T>().unwrap()
+    }
+
+    pub fn cast_mut<T: 'static>(&mut self) -> &mut T {
+        self.data.downcast_mut::<T>().unwrap()
+    }
+}
+
+impl From<DynBatch> for DynCommand {
+    fn from(batch: DynBatch) -> DynCommand {
+        DynCommand {
+            renderer: batch.renderer,
+            data: batch.data,
+            request_pre_pass: false,
+        }
+    }
 }
 
 impl RenderCommands {
@@ -415,16 +458,16 @@ impl RenderCommands {
         }
     }
 
-    pub fn push(&mut self, command: RenderCommandId) {
+    pub fn push(&mut self, command: DynCommand) {
         if command.request_pre_pass {
-            self.request_pre_pass(command);
+            self.request_pre_pass(command.renderer_id());
         }
         self.ordered.push(command);
     }
 
-    pub fn push_order_independent(&mut self, command: RenderCommandId) {
+    pub fn push_order_independent(&mut self, command: DynCommand) {
         if command.request_pre_pass {
-            self.request_pre_pass(command);
+            self.request_pre_pass(command.renderer_id());
         }
         self.order_independent.push(command)
     }
@@ -434,14 +477,16 @@ impl RenderCommands {
         self.finish_sub_pass();
     }
 
-    fn request_pre_pass(&mut self, command: RenderCommandId) {
-        let renderer = command.renderer as usize;
+    fn request_pre_pass(&mut self, renderer: RendererId) {
+        let renderer = renderer as usize;
         while self.requested_pre_pass.len() <= renderer {
             self.requested_pre_pass.push(false);
         }
         if self.requested_pre_pass[renderer] {
             self.finish_sub_pass();
-            self.pre_passes.push(command)
+            // TODO: implicitly assuming that we are about to push an
+            // ordered command. Need a different way to specify pre-passes.
+            self.pre_passes.push(self.ordered.len());
         }
 
         self.requested_pre_pass[renderer] = true;
@@ -482,7 +527,7 @@ impl RenderCommands {
 
     fn render_pre_pass(
         &self,
-        _pre_pass: &RenderCommandId,
+        _pre_pass: &usize,
         _ctx: &mut CommandContext,
     ) {
         // TODO
@@ -659,7 +704,7 @@ impl RenderCommands {
 
     pub fn render_commands<'pass, 'resources: 'pass>(
         &self,
-        commands: &[RenderCommandId],
+        commands: &[DynCommand],
         renderer_idx: usize,
         renderers: &[&dyn Renderer],
         render_pipelines: &'resources RenderPipelines,

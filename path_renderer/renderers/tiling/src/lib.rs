@@ -333,7 +333,6 @@ impl Tiling {
             no_opaque_batches: options.no_opaque_batches,
             back_to_front: options.occlusion.cpu || options.occlusion.gpu,
             tiler: crate::tiler::Tiler::new(),
-            batches: core::batching::BatchList::new(renderer_id),
             geometry: self.geometry,
             mask_instances: None,
             opaque_instances: None,

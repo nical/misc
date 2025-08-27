@@ -1,5 +1,5 @@
-use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::batching::{Batch, BatchFlags, DynBatch};
+use core::render_pass::{BuiltRenderPass, DynCommand, RenderPassConfig, RenderPassContext, RenderPassSurface, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -17,7 +17,7 @@ use crate::tiler::{EncodedTileInstance, Tiler, TilerOutput};
 use crate::{FillOptions, Occlusion, RendererOptions, TileGpuResources};
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU32, Ordering};
+//use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) struct BatchInfo {
     pattern: BuiltPattern,
@@ -64,7 +64,6 @@ pub struct TileRenderer {
     pub(crate) back_to_front: bool,
     pub(crate) tiler: Tiler,
 
-    pub(crate) batches: BatchList<Fill, BatchInfo>,
     pub(crate) geometry: GeometryId,
     pub(crate) mask_instances: Option<StreamId>,
     pub(crate) opaque_instances: Option<StreamId>,
@@ -78,7 +77,6 @@ pub struct TileRenderer {
 
 impl TileRenderer {
     pub fn begin_frame(&mut self) {
-        self.batches.clear();
         self.mask_instances = None;
         self.opaque_instances = None;
         self.path_transfer_ops.clear();
@@ -142,15 +140,15 @@ impl TileRenderer {
             pattern.is_opaque = false;
         }
 
-        self.batches.add(ctx, &pattern.batch_key(), &aabb, batch_flags,
+        ctx.batcher.add(self.renderer_id, &pattern.batch_key(), &aabb, batch_flags,
             &mut || BatchInfo {
                 pattern,
                 opaque_draw: None,
                 masked_draw: None,
                 blend_mode: pattern.blend_mode,
             },
-            &mut |mut batch, task| {
-                batch.push(Fill {
+            &mut |batch, task| {
+                batch.items.push(Fill {
                     shape: shape.clone(),
                     task: *task,
                     pattern,
@@ -167,10 +165,10 @@ impl TileRenderer {
         self.no_opaque_batches = options.no_opaque_batches;
     }
 
-    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
-        if self.batches.is_empty() {
-            return;
-        }
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, pass: &mut BuiltRenderPass) {
+        //if self.batches.is_empty() {
+        //    return;
+        //}
 
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
@@ -201,20 +199,21 @@ impl TileRenderer {
             tiles.occlusion.disable();
         }
 
+        let surface = pass.config();
+
         let id = self.renderer_id;
-        let mut batches = self.batches.take();
+        let batches = pass.batches_mut();
         if self.back_to_front {
-            for batch_id in pass
-                .batches()
-                .iter()
+            for batch in batches
+                .iter_mut()
                 .rev()
-                .filter(|batch| batch.renderer == id)
+                .filter(|batch| batch.renderer_id() == id)
             {
-                self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
+                self.prepare_batch(batch, transforms, &surface, &mut tiles, shaders);
             }
         } else {
-            for batch_id in pass.batches().iter().filter(|batch| batch.renderer == id) {
-                self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
+            for batch in batches.iter_mut().filter(|batch| batch.renderer_id() == id) {
+                self.prepare_batch(batch, transforms, &surface, &mut tiles, shaders);
             }
         }
 
@@ -233,8 +232,6 @@ impl TileRenderer {
 
         self.edge_transfer_ops = vec![edge_store.finish()];
         self.path_transfer_ops = vec![path_store.finish()];
-
-        self.batches = batches;
     }
 
     pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
@@ -243,7 +240,7 @@ impl TileRenderer {
             edges: GpuBuffer,
             paths: GpuBuffer,
         }
-
+/*
         let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
         let path_store = self.resources.paths.begin_frame(prep_ctx.staging_buffers.clone());
 
@@ -350,23 +347,25 @@ impl TileRenderer {
             self.edge_transfer_ops.push(worker.edges.finish());
             self.path_transfer_ops.push(worker.paths.finish());
         }
+        */
     }
 
     fn prepare_batch(
         &mut self,
-        batch_id: BatchId,
+        batch: &mut DynBatch,
         transforms: &Transforms,
+        surface: &RenderPassConfig,
         tiles: &mut TilerOutput,
         shaders: &mut PrepareRenderPipelines,
-        batches: &mut BatchList<Fill, BatchInfo>,
     ) {
-        let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
+        let batch = batch.cast_mut::<Fill, BatchInfo>();
+        //let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
         let opaque_tiles_start = tiles.opaque_tiles.pushed_items::<EncodedTileInstance>();
         let mask_tiles_start = tiles.mask_tiles.len() as u32;
 
         if self.back_to_front {
-            for fill in commands.iter().rev() {
+            for fill in batch.items.iter().rev() {
                 Self::prepare_fill(
                     &mut self.tiler,
                     tiles,
@@ -376,7 +375,7 @@ impl TileRenderer {
                 );
             }
         } else {
-            for fill in commands.iter() {
+            for fill in batch.items.iter() {
                 Self::prepare_fill(
                     &mut self.tiler,
                     tiles,
@@ -392,12 +391,12 @@ impl TileRenderer {
 
         let draw_config = surface.draw_config(true, None);
         if opaque_tiles_end > opaque_tiles_start {
-            info.opaque_draw = Some(Draw {
+            batch.info.opaque_draw = Some(Draw {
                 stream_id: None,
                 tiles: opaque_tiles_start..opaque_tiles_end,
                 pipeline: shaders.prepare(RenderPipelineKey::new(
                     self.geometry,
-                    info.pattern.shader,
+                    batch.info.pattern.shader,
                     BlendMode::None,
                     draw_config,
                 )),
@@ -411,13 +410,13 @@ impl TileRenderer {
                 // since we don't rely on the ordering of the instances within a path.
                 tiles.mask_tiles[mask_tiles_start as usize..mask_tiles_end as usize].reverse();
             }
-            info.masked_draw = Some(Draw {
+            batch.info.masked_draw = Some(Draw {
                 stream_id: None,
                 tiles: mask_tiles_start..mask_tiles_end,
                 pipeline: shaders.prepare(RenderPipelineKey::new(
                     self.geometry,
-                    info.pattern.shader,
-                    info.blend_mode.with_alpha(true),
+                    batch.info.pattern.shader,
+                    batch.info.blend_mode.with_alpha(true),
                     draw_config,
                 )),
             })
@@ -493,7 +492,7 @@ impl TileRenderer {
 }
 
 impl core::Renderer for TileRenderer {
-    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &BuiltRenderPass) {
+    fn prepare_pass(&mut self, ctx: &mut PrepareContext, pass: &mut BuiltRenderPass) {
         if self.parallel {
             self.prepare_parallel(ctx, pass);
         } else {
@@ -501,11 +500,11 @@ impl core::Renderer for TileRenderer {
         }
     }
 
-    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, _batch: BatchId) {
+    fn prepare_batch_backward(&mut self, _ctx: &mut PrepareContext, _surface: &RenderPassSurface, _batch: &mut DynBatch) {
         // TODO
     }
 
-    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _pass: &BuiltRenderPass, batch: BatchId, commands: &mut core::render_pass::RenderCommands) {
+    fn prepare_batch_forward(&mut self, _ctx: &mut PrepareContext, _surface: &RenderPassSurface, batch: DynBatch, commands: &mut core::render_pass::RenderCommands) {
         commands.push(batch.into());
     }
 
@@ -515,7 +514,7 @@ impl core::Renderer for TileRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        cmds: &[RenderCommandId],
+        cmds: &[DynCommand],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -537,7 +536,8 @@ impl core::Renderer for TileRenderer {
         let mut helper = DrawHelper::new();
 
         for cmd in cmds {
-            let (_, _, batch) = self.batches.get(cmd.index);
+            let batch = &cmd.cast::<Batch<Fill, BatchInfo>>().info;
+
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
             if let Some(opaque) = &batch.opaque_draw {
