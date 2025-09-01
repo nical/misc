@@ -996,6 +996,30 @@ fn paint_scene(
     if testing {
         let _tx2 = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
 
+        let mut many_stops = Vec::with_capacity(128);
+        let step = 0.8 / 128.0;
+        let mut offset = 0.1;
+        many_stops.push(GradientStop {
+            color: Color { r: 100, g: 10, b: 10, a: 255 }.to_colorf(),
+            offset,
+        });
+        for i in 0..63 {
+            many_stops.push(GradientStop {
+                color: Color { r: 20, g: 0, b: 0, a: 255 }.to_colorf(),
+                offset,
+            });
+            offset += step;
+            many_stops.push(GradientStop {
+                color: Color { r: 200, g: 200, b: 255, a: 255 }.to_colorf(),
+                offset,
+            });
+            offset += step;
+        }
+        many_stops.push(GradientStop {
+            color: Color { r: 10, g: 10, b: 100, a: 255 }.to_colorf(),
+            offset,
+        });
+
         frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         let transform_handle = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
         //let gradient = patterns.gradients.add_linear(
@@ -1016,17 +1040,18 @@ fn paint_scene(
         let gradient = patterns.gradients.add_radial(
             &mut f32_buffer,
             &RadialGradientDescriptor {
-                stops: &[
-                    //GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.0 },
-                    //GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 1.0 },
-                    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-                    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-                    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-                    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-                    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
-                ],
+                stops: &many_stops,
+                //stops: &[
+                //    //GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.0 },
+                //    //GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 1.0 },
+                //    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
+                //    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
+                //    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
+                //    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
+                //    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
+                //],
                 start_radius: 10.0,
-                end_radius: 50.0,
+                end_radius: 750.0,
                 extend_mode: ExtendMode::Repeat,
                 center: point(295.0, 800.0),
                 //focal: Some(point(250.0, 800.0)),
@@ -1107,7 +1132,7 @@ fn paint_scene(
             &frame.transforms,
             &LocalRect {
                 min: point(310.5, 700.5),
-                max: point(510.5, 900.5),
+                max: point(1510.5, 900.5),
             },
             Aa::LEFT | Aa::RIGHT | Aa::ALL,
             gradient,

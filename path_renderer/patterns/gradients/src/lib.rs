@@ -8,6 +8,9 @@ use core::gpu::{GpuBufferAddress, GpuBufferWriter};
 use core::pattern::BuiltPattern;
 use core::{ColorF, Vector};
 
+const PRESORTED_STOPS: bool = true;
+const PRESORTED_STOPS_THRESHOLD: usize = 16;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ExtendMode {
     Clamp,
@@ -270,15 +273,63 @@ impl GradientRenderer {
             self.buffer.push(stop.color.a);
         }
 
-        for stop in stops {
-            self.buffer.push(stop.offset);
-        }
-        while self.buffer.len() % 4 != 0 {
-            // padding
-            self.buffer.push(0.0);
+        if PRESORTED_STOPS && n > PRESORTED_STOPS_THRESHOLD {
+            self.push_pre_sorted_stop_offsets(stops);
+        } else {
+            for stop in stops {
+                self.buffer.push(stop.offset);
+            }
+            while self.buffer.len() % 4 != 0 {
+                // padding
+                self.buffer.push(0.0);
+            }
         }
     }
 
+    fn push_pre_sorted_stop_offsets(&mut self, stops: &[GradientStop]) {
+        let mut levels = 0;
+        let mut cap: usize = 4;
+        let count = stops.len();
+        while cap < count {
+            cap = (cap + 1) * 5 - 1;
+            levels += 1;
+        }
+
+        let mut level_indices = [0, 4, 24, 124, 744];
+        // The last level contains most of the indices but we know that we'll never
+        // need to store more than the initial count of indices in that level (less
+        // in fact, but that's a simple enough upper bound).
+        // Any stop offset index beyond that can be assumed to be after the last stop.
+        let size = (level_indices[levels] + count + 1) & !3;
+        assert!(size % 4 == 0);
+
+        let base_addr = self.buffer.len();
+        for i in 0..size {
+            // Push some value > 1.
+            self.buffer.push(1000.0 + i as f32);
+        }
+        // Padding.
+        while self.buffer.len() % 4 != 0 {
+            self.buffer.push(2.0);
+        }
+
+        let offsets = &mut self.buffer[base_addr..];
+
+        for idx in 0..count {
+            let mut l = 0;
+            let mut m = 5;
+            while (idx + 1) % m == 0 {
+                m *= 5;
+                l += 1;
+            }
+
+            let level = levels - l;
+            let out_idx = level_indices[level];
+
+            level_indices[level] += 1;
+            offsets[out_idx] = stops[idx].offset;
+        }
+    }
 
     fn upload_linear_gradient(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &LinearGradientDescriptor) -> GpuBufferAddress {
         let stops_len = gradient.stops.len() * 5 + 8;
