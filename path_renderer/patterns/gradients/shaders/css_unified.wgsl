@@ -8,7 +8,7 @@
 #import pattern::radial_gradient
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
-    let data = f32_gpu_buffer_fetch_4(pattern_handle);
+    let data = f32_gpu_buffer_fetch_3(pattern_handle);
     let header = make_gradient_header(pattern_handle + 2, data.data2);
 
     var interpolated_data = vec4f(0.0);
@@ -28,14 +28,20 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
         default: {}
     }
 
-    let offsets = data.data3;
     var color0 = vec4f(0.0);
     var color1 = vec4f(0.0);
     if gradient_header_stop_count(header) <= 2 {
-        let fast_path_colors = f32_gpu_buffer_fetch_2(pattern_handle + 4);
+        let colors_base_address = gradient_header_colors_address(header);
+        let fast_path_colors = f32_gpu_buffer_fetch_2(colors_base_address);
         color0 = fast_path_colors.data0;
         color1 = fast_path_colors.data1;
     }
+
+    // Fetch the first quadruplet of offsets in the vertex shader and
+    // pass it to the fragment shader via varyings to reduce the number
+    // of reads in the fragment shader.
+    let offsets_base_address = gradient_header_offsets_address(header);
+    let offsets = f32_gpu_buffer_fetch_1(offsets_base_address);
 
     return Pattern(
         interpolated_data,

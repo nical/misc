@@ -264,18 +264,18 @@ impl GradientRenderer {
         self.buffer.push(0.0);
 
         for stop in stops {
+            self.buffer.push(stop.color.r);
+            self.buffer.push(stop.color.g);
+            self.buffer.push(stop.color.b);
+            self.buffer.push(stop.color.a);
+        }
+
+        for stop in stops {
             self.buffer.push(stop.offset);
         }
         while self.buffer.len() % 4 != 0 {
             // padding
             self.buffer.push(0.0);
-        }
-
-        for stop in stops {
-            self.buffer.push(stop.color.r);
-            self.buffer.push(stop.color.g);
-            self.buffer.push(stop.color.b);
-            self.buffer.push(stop.color.a);
         }
     }
 

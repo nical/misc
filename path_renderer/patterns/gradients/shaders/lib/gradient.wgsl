@@ -17,14 +17,14 @@ fn read_gradient_header(base_address: u32) -> vec4u {
 
 fn make_gradient_header(base_address: u32, payload: vec4f) -> vec4u {
     let gradient_kind = u32(payload.z);
-    let count = payload.x;
+    let count = u32(payload.x);
     let extend_mode = payload.y;
-    let offsets_address = base_address + 1;
-    let colors_address = offsets_address + u32(ceil(count * 0.25));
+    let colors_address = base_address + 1;
+    let offsets_address = colors_address + count;
 
     return vec4u(
         gradient_kind,
-        u32(count) | (u32(extend_mode) << 24),
+        count | (u32(extend_mode) << 24),
         offsets_address,
         colors_address,
     );
@@ -40,6 +40,14 @@ fn gradient_header_extend_mode(header: vec4u) -> u32 {
 
 fn gradient_header_stop_count(header: vec4u) -> u32 {
     return header.y & 0x0FFFFFF;
+}
+
+fn gradient_header_offsets_address(header: vec4u) -> u32 {
+    return header.z;
+}
+
+fn gradient_header_colors_address(header: vec4u) -> u32 {
+    return header.w;
 }
 
 fn apply_extend_mode(offset: f32, extend_mode: u32) -> f32 {
