@@ -278,6 +278,7 @@ pub struct RenderContext<'a, 'b> {
     pub resources: &'a resources::GpuResources,
     pub bindings: &'a dyn BindingResolver,
     pub stats: &'b mut RendererStats,
+    pub gpu_profiler: &'a wgpu_profiler::GpuProfiler,
 }
 
 pub struct PrepareWorkerData {

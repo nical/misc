@@ -605,6 +605,7 @@ pub struct CommandContext<'l> {
     pub bindings: &'l dyn BindingResolver,
     pub render_pipelines: &'l RenderPipelines,
     pub stats: &'l mut RenderStats,
+    pub gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
 }
 
 pub trait Command: std::fmt::Debug {

@@ -236,6 +236,7 @@ impl BuiltRenderPass {
         bindings: &'resources dyn BindingResolver,
         render_pipelines: &'resources RenderPipelines,
         wgpu_pass: &mut wgpu::RenderPass<'pass>,
+        gpu_profiler: &'pass mut wgpu_profiler::GpuProfiler,
         stats: &mut RenderStats,
     ) {
         if self.batches.is_empty() {
@@ -266,6 +267,7 @@ impl BuiltRenderPass {
                     bindings,
                     resources,
                     stats: renderer_stats,
+                    gpu_profiler,
                 },
                 wgpu_pass
             );
@@ -407,6 +409,7 @@ impl<'l> Command for RenderCommand<'l> {
             ctx.bindings,
             ctx.render_pipelines,
             &mut wgpu_pass,
+            ctx.gpu_profiler,
             ctx.stats,
         );
     }

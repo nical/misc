@@ -775,6 +775,8 @@ impl core::Renderer for StencilAndCoverRenderer {
             for draw in &draws[batch.draws.clone()] {
                 match draw {
                     &Draw::Stencil { stream_id, ref indices } => {
+                        let query = ctx.gpu_profiler.begin_query("stencil", render_pass);
+
                         let idx_buffer = stencil_idx_buffer.or_else(||{
                             ctx.resources.common.indices.resolve_buffer_slice(stream_id)
                         }).unwrap();
@@ -787,6 +789,8 @@ impl core::Renderer for StencilAndCoverRenderer {
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                         ctx.stats.draw_calls += 1;
+
+                        ctx.gpu_profiler.end_query(render_pass, query);
                     }
                     &Draw::Cover {
                         stream_id,
@@ -794,6 +798,8 @@ impl core::Renderer for StencilAndCoverRenderer {
                         pattern_inputs,
                         pipeline_idx,
                     } => {
+                        let query = ctx.gpu_profiler.begin_query("cover", render_pass);
+
                         let idx_buffer = cover_idx_buffer.or_else(||{
                             ctx.resources.common.indices.resolve_buffer_slice(stream_id)
                         }).unwrap();
@@ -805,6 +811,8 @@ impl core::Renderer for StencilAndCoverRenderer {
                         render_pass.set_pipeline(pipeline);
                         render_pass.draw_indexed(indices.clone(), 0, 0..1);
                         ctx.stats.draw_calls += 1;
+
+                        ctx.gpu_profiler.end_query(render_pass, query);
                     }
                 }
             }

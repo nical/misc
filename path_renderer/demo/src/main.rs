@@ -194,6 +194,7 @@ impl App {
         let mut cpu_occlusion = None;
         let mut fill_renderer = 0;
         let mut print_shader = None;
+        let mut gpu_profiling_enabled = false;
         for arg in &args {
             if read_tolerance {
                 tolerance = arg.parse::<f32>().unwrap();
@@ -233,6 +234,7 @@ impl App {
             read_shader_name = arg == "--print-shader";
             read_occlusion = arg == "--occlusion";
             parallel |= arg == "--parallel";
+            gpu_profiling_enabled |= arg == "--gpu-profiling";
         }
 
         let scale_factor = 2.0;
@@ -267,11 +269,16 @@ impl App {
         if print_shader.is_none() {
             println!("{:#?}", adapter.get_info());
         }
+        let mut required_features = wgpu::Features::default();
+        if gpu_profiling_enabled {
+            required_features.features_wgpu |= wgpu::FeaturesWGPU::TIMESTAMP_QUERY_INSIDE_PASSES;
+            required_features.features_webgpu |= wgpu::FeaturesWebGPU::TIMESTAMP_QUERY;
+        }
         // create a device and a queue
         let (device, queue) = block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::default(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace,
@@ -309,7 +316,7 @@ impl App {
 
         //tiler_config.view_box = view_box;
 
-        let mut instance = Instance::new(&device, &queue, 0);
+        let mut instance = Instance::new(&device, &queue, 0, gpu_profiling_enabled);
 
         let patterns = Patterns {
             colors: SolidColorRenderer::register(&mut instance.shaders),

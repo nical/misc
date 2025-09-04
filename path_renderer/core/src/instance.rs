@@ -23,11 +23,13 @@ pub struct Instance {
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    pub gpu_profiler: wgpu_profiler::GpuProfiler,
+    pub gpu_profiling_enabled: bool,
     next_frame_index: u32,
 }
 
 impl Instance {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize, gpu_profiling_enabled: bool) -> Self {
         let staging_buffers = unsafe {
             Arc::new(Mutex::new(StagingBufferPool::new(1024 * 64, device.clone())))
         };
@@ -41,6 +43,12 @@ impl Instance {
 
         let workers = Workers::new(num_workers);
 
+        let gpu_profiler = wgpu_profiler::GpuProfiler::new(device, wgpu_profiler::GpuProfilerSettings {
+            enable_timer_queries: gpu_profiling_enabled,
+            enable_debug_groups: gpu_profiling_enabled,
+            max_num_pending_frames: 4,
+        }).unwrap();
+
         Instance {
             shaders,
             render_pipelines,
@@ -50,6 +58,8 @@ impl Instance {
             device: device.clone(),
             queue: queue.clone(),
             next_frame_index: 0,
+            gpu_profiler,
+            gpu_profiling_enabled,
         }
     }
 
@@ -121,9 +131,13 @@ impl Instance {
             resources: &self.resources,
             bindings: &bindings,
             render_pipelines: &self.render_pipelines,
+            gpu_profiler: &mut self.gpu_profiler,
             stats: &mut stats,
         });
 
+        if self.gpu_profiling_enabled {
+            self.gpu_profiler.resolve_queries(encoder);
+        }
 
         stats.render_time_ms = ms(Instant::now() - render_start);
 
@@ -283,6 +297,28 @@ impl Instance {
             let mut staging_buffers = self.staging_buffers.lock().unwrap();
             staging_buffers.triage_available_buffers();
             staging_buffers.recycle_active_buffers();
+        }
+        if self.gpu_profiling_enabled {
+            match self.gpu_profiler.end_frame() {
+                Ok(_) => {
+                    let timestamp_period = self.queue.get_timestamp_period();
+                    let results = self.gpu_profiler.process_finished_frame(timestamp_period);
+
+                    if let Some(queries) = &results {
+                        println!("-------- GPU timestamp queries --------");
+                        for query in queries {
+                            if let Some(time) = &query.time {
+                                println!("{}: {:.4}ms", query.label, (time.end - time.start) * 1000.0);
+                            } else {
+                                println!("{}: --", query.label);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Gpu profiler error: {e:?}");
+                }
+            }
         }
     }
 }

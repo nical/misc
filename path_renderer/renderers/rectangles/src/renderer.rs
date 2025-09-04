@@ -1,5 +1,5 @@
 use crate::{resources::Instance, InstanceFlags};
-use core::wgpu;
+use core::{render_pass, wgpu};
 use core::{
     pattern::BuiltPattern,
     transform::Transforms,
@@ -233,9 +233,13 @@ impl core::Renderer for RectangleRenderer {
 
             helper.resolve_and_bind(1, batch.pattern.bindings, ctx.bindings, render_pass);
 
+            let query = ctx.gpu_profiler.begin_query("rectangle batch", render_pass);
+
             render_pass.set_pipeline(pipeline);
             render_pass.draw_indexed(0..6, 0, batch.instances.clone());
             ctx.stats.draw_calls += 1;
+
+            ctx.gpu_profiler.end_query(render_pass, query);
         }
     }
 }

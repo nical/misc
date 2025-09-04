@@ -537,6 +537,9 @@ impl core::Renderer for TileRenderer {
                 let opaque_buffer = opaque_buffer.or_else(&|| {
                     common_resources.instances.resolve_buffer_slice(opaque.stream_id)
                 });
+
+                let query = ctx.gpu_profiler.begin_query("opaque tiles", render_pass);
+
                 render_pass.set_vertex_buffer(0, opaque_buffer.unwrap());
 
                 let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
@@ -545,12 +548,17 @@ impl core::Renderer for TileRenderer {
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
                 ctx.stats.draw_calls += 1;
+
+                ctx.gpu_profiler.end_query(render_pass, query);
             }
 
             if let Some(masked) = &batch.masked_draw {
                 let mask_buffer = mask_buffer.or_else(&|| {
                     common_resources.instances.resolve_buffer_slice(masked.stream_id)
                 });
+
+                let query = ctx.gpu_profiler.begin_query("masked tiles", render_pass);
+
                 render_pass.set_vertex_buffer(0, mask_buffer.unwrap());
 
                 let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();
@@ -559,6 +567,8 @@ impl core::Renderer for TileRenderer {
                 render_pass.set_pipeline(pipeline);
                 render_pass.draw_indexed(0..6, 0, instances);
                 ctx.stats.draw_calls += 1;
+
+                ctx.gpu_profiler.end_query(render_pass, query);
             }
         }
     }
