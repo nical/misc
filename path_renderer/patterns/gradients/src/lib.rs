@@ -286,56 +286,132 @@ impl GradientRenderer {
         }
     }
 
+    fn offsets_storage_size(&self, stops: &[GradientStop]) -> usize {
+        let count = stops.len();
+        if !PRESORTED_STOPS || count <= PRESORTED_STOPS_THRESHOLD {
+            return count;
+        }
+
+        let mut num_blocks_for_level = 1;
+        let mut cap: usize = 4;
+        while cap < count {
+            num_blocks_for_level *= 5;
+            cap += num_blocks_for_level * 4;
+        }
+
+        // Fix the capacity up to account for the fact that we don't
+        // store the entirety of the last level;
+        let num_blocks_for_last_level = num_blocks_for_level.min(count / 5 + 1);
+        cap += (num_blocks_for_last_level - num_blocks_for_level) * 4;
+
+        return cap;
+    }
+
+    // Push stop offsets in rearranged order so that the search can be carried
+    // out as an implicit tree traversal.
+    //
+    // The structure of the tree is:
+    //  - Each level is plit into 5 partitions.
+    //  - The root level has one node (4 offsets -> 5 partitions).
+    //  - Each level has 5 more nodes than the previous one.
+    //  - Levels are arranged one by one starting from the root
+    //
+    // ```ascii
+    // level : indices
+    // ------:---------
+    //   0   :                                                              24      ...
+    //   1   :          4         9            14             19             |      ...
+    //   2   :  0,1,2,3,|,5,6,7,8,|10,11,12,13,| ,15,16,17,18,| ,20,21,22,23,| ,25, ...
+    // ```
+    //
+    // In the example above:
+    // - The first (root) contains a single block containing the stop offsets from
+    //   indices [24, 49, 74, 99].
+    // - The second level contains blocks of offsets from indices [4, 9, 14, 19],
+    //   [29, 34, 39, 44], etc.
+    // - The third (leaf) level contains blocks from indices [0,1,2,3], [5,6,7,8],
+    //   [15, 16, 17, 18], etc.
+    //
+    // Placeholder offsets (1.0) are used when a level has more capacity than the
+    // input number of stops.
+    //
+    // Conceptually, blocks [0,1,2,3] and [5,6,7,8] are the first two childrent of
+    // the node [4,9,14,19], separated by the offset from index 4.
+    // Links are not explicitly represented via pointers or indices. Instead the
+    // position in the buffer is sufficient to represent the level and index of the
+    // stop (at the expense of having to store extra padding to round up each tree
+    // level to its power-of-5-aligned size).
+    //
+    // This scheme is meant to make the traversal efficient loading offsets in
+    // blocks of 4. The shader can converge to the leaf in very few loads.
     fn push_pre_sorted_stop_offsets(&mut self, stops: &[GradientStop]) {
-        let mut levels = 0;
+        let mut num_levels = 1;
         let mut cap: usize = 4;
         let count = stops.len();
         while cap < count {
             cap = (cap + 1) * 5 - 1;
-            levels += 1;
+            num_levels += 1;
         }
 
-        let mut level_indices = [0, 4, 24, 124, 744];
-        // The last level contains most of the indices but we know that we'll never
-        // need to store more than the initial count of indices in that level (less
-        // in fact, but that's a simple enough upper bound).
-        // Any stop offset index beyond that can be assumed to be after the last stop.
-        let size = (level_indices[levels] + count + 1) & !3;
-        assert!(size % 4 == 0);
-
-        let base_addr = self.buffer.len();
-        for i in 0..size {
-            // Push some value > 1.
-            self.buffer.push(1000.0 + i as f32);
-        }
-        // Padding.
-        while self.buffer.len() % 4 != 0 {
-            self.buffer.push(2.0);
+        let mut index_stride = 5;
+        let mut next_index_stride = 1;
+        while index_stride < count {
+            index_stride *= 5;
+            next_index_stride *= 5;
         }
 
-        let offsets = &mut self.buffer[base_addr..];
+        // Number of 4-offsets blocks for the current level.
+        // The root has 1, then each level has 5 more than the previous one.
+        let mut num_blocks_for_level = 1;
 
-        for idx in 0..count {
-            let mut l = 0;
-            let mut m = 5;
-            while (idx + 1) % m == 0 {
-                m *= 5;
-                l += 1;
+        // Go over each level, starting from the root.
+        for level in 0..num_levels {
+            // This scheme rounds up the number of offsets to store for each
+            // level to the next power of 5, which can represent a lot of wasted
+            // space, especially for the last levels. We need each level to start
+            // at a specific power-of-5-aligned offset so we can't get around the
+            // wasted space for all levels except the last one (which has the most
+            // waste).
+            let is_last_level = level == num_levels - 1;
+            let num_blocks = if is_last_level {
+                // A reasonable upper bound for the number of blocks needed in
+                // the last level.
+                num_blocks_for_level.min(count / 5 + 1)
+            } else {
+                num_blocks_for_level
+            };
+
+            for block_idx in 0..num_blocks {
+                for i in 0..4 {
+                    // index of the stop in the input stop buffer.                    let linear_idx = block_idx * index_stride
+                    let linear_idx = block_idx * index_stride
+                        + i * next_index_stride
+                        + next_index_stride - 1;
+
+                    let offset = if linear_idx < stops.len() {
+                        stops[linear_idx].offset
+                    } else {
+                        // Use a placeholder value for indices that
+                        // are out of the range of the input buffer.
+                        // these are padding values needed to round
+                        // eahc level next to the netx power of 5.
+                        1.0
+                    };
+                    self.buffer.push(offset);
+                }
             }
 
-            let level = levels - l;
-            let out_idx = level_indices[level];
-
-            level_indices[level] += 1;
-            offsets[out_idx] = stops[idx].offset;
+            index_stride = next_index_stride;
+            next_index_stride /= 5;
+            num_blocks_for_level *= 5;
         }
     }
 
     fn upload_linear_gradient(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &LinearGradientDescriptor) -> GpuBufferAddress {
-        let stops_len = gradient.stops.len() * 5 + 8;
-
         self.buffer.clear();
-        self.buffer.reserve(stops_len + 8);
+        let colors_storage = gradient.stops.len() * 4;
+        let offsets_storage = self.offsets_storage_size(&gradient.stops);
+        self.buffer.reserve(12 + colors_storage + offsets_storage);
 
         self.buffer.push(gradient.from.x);
         self.buffer.push(gradient.from.y);
