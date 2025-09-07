@@ -6,7 +6,7 @@ use crate::render_pass::RenderPasses;
 use crate::transform::Transforms;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
-use crate::graph::{Allocation, CommandContext, CommandList, GraphBindings};
+use crate::graph::{Allocation, PassRenderContext, PassList, GraphBindings};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
 
@@ -90,7 +90,7 @@ impl Instance {
     pub fn render(
         &mut self,
         frame: Frame,
-        commands: CommandList,
+        commands: PassList,
         // TODO: ideally we could remove this one, but we need some way
         // for the prepare phase to iterate over the batches per render
         // pass (to be able to do per-pass things like occlusion culling)
@@ -125,7 +125,7 @@ impl Instance {
             std::mem::transmute(renderers)
         };
 
-        commands.execute(&mut CommandContext {
+        commands.execute(&mut PassRenderContext {
             encoder,
             renderers: const_renderers,
             resources: &self.resources,

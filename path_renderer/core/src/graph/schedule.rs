@@ -2,9 +2,10 @@ use std::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
-use crate::render_pass::{AttathchmentFlags, RenderPasses};
+use crate::graph::GraphRenderPass;
+use crate::render_pass::{AttathchmentFlags, ColorAttachment, RenderPassIo, RenderPasses};
 use crate::{BindingsId, BindingsNamespace};
-use super::{Allocation, BufferKind, CommandList, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
+use super::{Allocation, BufferKind, PassList, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
 use super::ResourceFlags;
 
 #[derive(Copy, Clone, Debug)]
@@ -123,7 +124,7 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn schedule<'l>(&self, passes: &'l RenderPasses, commands: &mut CommandList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn schedule<'l>(&self, passes: &'l RenderPasses, commands: &mut PassList<'l>) -> Result<GraphBindings, Box<GraphError>> {
         schedule_graph(self, passes, commands)
     }
 }
@@ -279,8 +280,8 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 
 pub fn schedule_graph<'l>(
     graph: &RenderGraph,
-    render_commands: &'l RenderPasses,
-    commands: &mut CommandList<'l>,
+    render_passes: &'l RenderPasses,
+    commands: &mut PassList<'l>,
 ) -> Result<GraphBindings, Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
@@ -458,7 +459,7 @@ pub fn schedule_graph<'l>(
 
         match node.kind {
             NodeKind::Render => {
-                let mut color = [(None, None, AttathchmentFlags { load: false, store: false,}); 3];
+                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttathchmentFlags { load: false, store: false,}}; 3];
                 let mut attachments_iter = node.resources.color_attachments();
                 for i in 0..3 {
                     let non_msaa = attachments_iter.next();
@@ -470,24 +471,24 @@ pub fn schedule_graph<'l>(
 
                     if node.msaa {
                         let res = &virtual_resources[msaa_idx];
-                        color[i] = (
-                            Some(BindingsId::graph(non_msaa_idx as u16)),
-                            Some(BindingsId::graph(msaa_idx as u16)),
-                            AttathchmentFlags {
+                        color[i] = ColorAttachment {
+                            non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
+                            msaa: Some(BindingsId::graph(msaa_idx as u16)),
+                            flags: AttathchmentFlags {
                                 load: res.load,
                                 store: res.store,
                             }
-                        )
+                        }
                     } else {
                         let res = &virtual_resources[non_msaa_idx];
-                        color[i] = (
-                            Some(BindingsId::graph(non_msaa_idx as u16)),
-                            None,
-                            AttathchmentFlags {
+                        color[i] = ColorAttachment {
+                            non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
+                            msaa: None,
+                            flags: AttathchmentFlags {
                                 load: res.load,
                                 store: res.store,
                             }
-                        )
+                        }
                     }
                 }
 
@@ -495,12 +496,17 @@ pub fn schedule_graph<'l>(
                     BindingsId::graph(idx)
                 });
 
+                let io = RenderPassIo {
+                    label: node.label,
+                    color_attachments: color,
+                    depth_stencil_attachment: depth_stencil,
+                };
+
                 commands.push(
-                    render_commands.create_command(
-                        node.label,
+                    GraphRenderPass::new(
+                        &render_passes,
+                        io,
                         graph.tasks[node_id.index()].0 as u32,
-                        &color,
-                        depth_stencil
                     ),
                 )
             }
@@ -647,7 +653,7 @@ fn test_nested() {
     topological_sort(&graph, &mut sorted).unwrap();
 
     let mut render_passes = RenderPasses::new();
-    let mut commands = CommandList::new();
+    let mut commands = PassList::new();
 
     let bindings = graph.schedule(&mut render_passes, &mut commands).unwrap();
 

@@ -1,5 +1,5 @@
 use crate::{resources::Instance, InstanceFlags};
-use core::{render_pass, wgpu};
+use core::wgpu;
 use core::{
     pattern::BuiltPattern,
     transform::Transforms,

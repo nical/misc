@@ -4,7 +4,7 @@ use core::graph::FrameGraph;
 use core::gpu::gpu_buffer;
 use core::instance::{Instance, Frame};
 use core::pattern::BuiltPattern;
-use core::graph::{Allocation, ColorAttachment, CommandList, GraphBindings, Resource};
+use core::graph::{Allocation, ColorAttachment, PassList, GraphBindings, Resource};
 use core::render_pass::RenderPasses;
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
 use core::{FillPath, Renderer, Vector};
@@ -747,7 +747,7 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut commands = CommandList::new();
+        let mut commands = PassList::new();
         let bindings = graph.schedule(&render_nodes.passes, &mut commands).unwrap();
 
         let render_stats = self.instance.render(
