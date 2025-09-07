@@ -2,8 +2,7 @@ use std::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
-use crate::graph::render_nodes::RenderNodes;
-use crate::graph::PassId;
+use crate::graph::{GraphSystem, PassId};
 use crate::render_pass::{AttathchmentFlags, ColorAttachment, RenderPassIo};
 use crate::{BindingsId, BindingsNamespace};
 use super::{Allocation, BufferKind, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
@@ -125,8 +124,8 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn schedule(&self, render_nodes: &mut RenderNodes, commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
-        schedule_graph(self, render_nodes, commands)
+    pub fn schedule(&self, systems: &mut [&mut dyn GraphSystem], commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
+        schedule_graph(self, systems, commands)
     }
 }
 
@@ -281,7 +280,7 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 
 pub fn schedule_graph(
     graph: &RenderGraph,
-    render_nodes: &mut RenderNodes,
+    systems: &mut [&mut dyn GraphSystem],
     commands: &mut Vec<PassId>,
 ) -> Result<GraphBindings, Box<GraphError>> {
     // TODO: partial schedule
@@ -503,14 +502,16 @@ pub fn schedule_graph(
                     depth_stencil_attachment: depth_stencil,
                 };
 
+                let system_id = 0; // TODO
                 let pass_index = graph.tasks[node_id.index()].0;
 
                 let pass_id = PassId {
-                    system: 0, // TODO,
+                    system: system_id,
                     index: pass_index as u16,
                 };
 
-                render_nodes.set_render_pass_io(pass_id, io);
+                systems[system_id as usize].set_pass_io(pass_id, io);
+
                 commands.push(pass_id);
             }
             _ => {
@@ -655,10 +656,14 @@ fn test_nested() {
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted).unwrap();
 
-    let mut render_nodes = RenderNodes::new();
-    let mut commands = Vec::new();
+    let mut render_nodes = super::render_nodes::RenderNodes::new();
+    let systems: &mut[&mut dyn GraphSystem] = &mut [
+        &mut render_nodes,
+    ];
 
-    let bindings = graph.schedule(&mut render_nodes, &mut commands).unwrap();
+    let mut passes = Vec::new();
+
+    let bindings = graph.schedule(systems, &mut passes).unwrap();
 
     println!("sorted: {:?}", sorted);
     println!("allocations: {:?}", bindings.temporary_resources);

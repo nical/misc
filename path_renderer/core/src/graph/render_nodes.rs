@@ -1,11 +1,8 @@
-use std::time::Instant;
-
 use crate::render_pass::{AttathchmentFlags, BuiltRenderPass, RenderPassBuilder, RenderPassContext, RenderPassIo};
 use crate::render_task::{FrameAtlasAllocator, RenderTaskData, RenderTaskHandle, RenderTaskInfo};
 use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
-use crate::{Renderer, RendererStats};
 use crate::{gpu::GpuBufferWriter, RenderPassConfig, SurfaceKind};
-use crate::graph::{ColorAttachment, Dependency, GraphSystem, NodeDescriptor, NodeKind, PassId, PassRenderContext, PrepareContext, Resource, Slot, TaskId};
+use crate::graph::{ColorAttachment, Dependency, GraphSystem, NodeDescriptor, NodeKind, PassId, PassRenderContext, Resource, Slot, TaskId};
 use crate::graph::{FrameGraph, Node, NodeDependency};
 
 // TODO: Should this be in graph/mod.rs?
@@ -253,7 +250,13 @@ impl RenderNodes {
         self.built_render_passes[index] = pass;
     }
 
-    pub fn set_render_pass_io(&mut self, pass: PassId, io: RenderPassIo) {
+    pub fn passes(&self) -> &[BuiltRenderPass] {
+        &self.built_render_passes
+    }
+}
+
+impl GraphSystem for RenderNodes {
+    fn set_pass_io(&mut self, pass: PassId, io: RenderPassIo) {
         let index = pass.index as usize;
         while self.io.len() <= index {
             self.io.push(RenderPassIo {
@@ -272,31 +275,6 @@ impl RenderNodes {
         self.io[index] = io;
     }
 
-    pub fn passes(&self) -> &[BuiltRenderPass] {
-        &self.built_render_passes
-    }
-
-    pub fn prepare(
-        &self,
-        ctx: &mut PrepareContext,
-        renderers: &mut[&mut dyn Renderer],
-        stats: &mut [RendererStats],
-    ) {
-        pub fn ms(duration: std::time::Duration) -> f32 {
-            (duration.as_micros() as f64 / 1000.0) as f32
-        }
-
-        let mut start = Instant::now();
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            renderer.prepare(ctx, &self.built_render_passes);
-            let end = Instant::now();
-            stats[idx].prepare_time += ms(end - start);
-            start = end;
-        }
-    }
-}
-
-impl GraphSystem for RenderNodes {
     fn render(&self, ctx: &mut PassRenderContext, pass_id: PassId) {
         let pass = &self.built_render_passes[pass_id.index as usize];
         let io = &self.io[pass_id.index as usize];

@@ -5,7 +5,11 @@ use std::{fmt, sync::{Arc, Mutex}, u16};
 use bitflags::bitflags;
 use smallvec::SmallVec;
 
-use crate::{graph::render_nodes::RenderNodes, instance::RenderStats, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, PrepareContext, Renderer, SurfaceKind};
+use crate::units::SurfaceIntSize;
+use crate::render_pass::RenderPassIo;
+use crate::resources::GpuResources;
+use crate::shading::RenderPipelines;
+use crate::{BindingResolver, Renderer, RendererStats, SurfaceKind};
 
 use schedule::RenderGraph;
 pub use schedule::{GraphBindings, GraphError};
@@ -604,16 +608,15 @@ pub struct PassRenderContext<'l> {
     pub resources: &'l GpuResources,
     pub bindings: &'l dyn BindingResolver,
     pub render_pipelines: &'l RenderPipelines,
-    pub stats: &'l mut RenderStats,
+    pub stats: &'l mut [RendererStats],
     pub gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
 }
 
+// TODO: Not a great name. PassBuilder/PassRenderer?
+// This is an abstraction for a (render/compute/transfer) pass.
 pub trait GraphSystem {
-    fn render(&self, ctx: &mut PassRenderContext, pass: PassId);
-}
-
-pub trait GraphPass: std::fmt::Debug {
-    fn execute(&self, ctx: &mut PassRenderContext);
+    fn set_pass_io(&mut self, pass_id: PassId, io: RenderPassIo);
+    fn render(&self, ctx: &mut PassRenderContext, pass_id: PassId);
 }
 
 pub type GraphSystemId = u16;
@@ -668,10 +671,10 @@ impl FrameGraph {
         node
     }
 
-    pub fn schedule(&mut self, render_nodes: &mut RenderNodes, commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn schedule(&mut self, systems: &mut [&mut dyn GraphSystem], commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
-        let bindings = inner.graph.schedule(render_nodes, commands)?;
+        let bindings = inner.graph.schedule(systems, commands)?;
 
         Ok(bindings)
     }

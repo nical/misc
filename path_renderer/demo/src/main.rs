@@ -1,8 +1,8 @@
 #![allow(unused)]
 
-use core::graph::FrameGraph;
+use core::graph::{FrameGraph, GraphSystem};
 use core::gpu::gpu_buffer;
-use core::instance::{Instance, Frame};
+use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, ColorAttachment, GraphBindings, Resource};
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
@@ -746,26 +746,60 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut commands = Vec::new();
-        let graph_bindings = graph.schedule(&mut render_nodes, &mut commands).unwrap();
+        let mut passes = Vec::new();
+        let systems = &mut [
+            &mut render_nodes as &mut dyn GraphSystem,
+        ];
+        let graph_bindings = graph.schedule(systems, &mut passes).unwrap();
 
-        let render_stats = self.instance.render(
-            frame,
-            &commands,
-            &render_nodes,
-            &graph_bindings,
-            &mut [
-                &mut self.renderers.tiling as &mut dyn Renderer,
-                &mut self.renderers.stencil,
-                &mut self.renderers.meshes,
-                &mut self.renderers.rectangles,
-                &mut self.renderers.wpf,
-                &mut self.renderers.msaa_strokes,
-            ],
+        let mut renderers = &mut [
+            &mut self.renderers.tiling as &mut dyn Renderer,
+            &mut self.renderers.stencil,
+            &mut self.renderers.meshes,
+            &mut self.renderers.rectangles,
+            &mut self.renderers.wpf,
+            &mut self.renderers.msaa_strokes,
+        ];
+
+        let mut stats = RenderStats::new(renderers.len());
+
+        let mut prepare_phase = self.instance.render_frame(frame, &graph_bindings, &mut encoder);
+
+        let mut ctx = prepare_phase.ctx();
+        let mut start = Instant::now();
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            renderer.prepare(&mut ctx, &render_nodes.passes());
+            let end = Instant::now();
+            stats.renderers[idx].prepare_time += ms(end - start);
+            start = end;
+        }
+
+        let mut upload_phase = prepare_phase.next(&mut stats);
+
+        let mut ctx = upload_phase.ctx();
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            let renderer_upload_start = Instant::now();
+            stats.uploads += renderer.upload(&mut ctx);
+            let stats = &mut stats.renderers[idx];
+            stats.upload_time = ms(Instant::now() - renderer_upload_start);
+        }
+
+        let external_attachments = &[Some(&frame_view)];
+        let mut render_phase = upload_phase.next(
+            &mut stats,
             &[],
-            &[Some(&frame_view)],
-            &mut encoder,
+            external_attachments,
         );
+
+        let mut ctx = render_phase.ctx(renderers);
+        let systems = &mut [
+            &mut render_nodes as &mut dyn GraphSystem,
+        ];
+        for pass in &passes {
+            systems[pass.system as usize].render(&mut ctx, *pass)
+        }
+
+        render_phase.finish();
 
         if self.view.debug_overlay {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -803,19 +837,19 @@ impl App {
         }
 
         let rec_t = ms(record_time);
-        let fbt = render_stats.prepare_time_ms;
-        let rt = render_stats.upload_time_ms + render_stats.render_time_ms;
+        let fbt = stats.prepare_time_ms;
+        let rt = stats.upload_time_ms + stats.render_time_ms;
         let pt = ms(present_time);
         self.counters.set(self.renderer_counters.batching(), rec_t);
         self.counters.set(self.renderer_counters.prepare(), fbt);
         self.counters.set(self.renderer_counters.render(), rt);
         self.counters.set(self.renderer_counters.present(), pt);
         self.counters.set(self.renderer_counters.cpu_total(), rec_t + fbt + rt);
-        self.counters.set(self.renderer_counters.render_passes(), render_stats.render_passes as f32);
-        self.counters.set(self.renderer_counters.draw_calls(), render_stats.draw_calls as f32);
-        self.counters.set(self.renderer_counters.uploads(), render_stats.uploads.bytes as f32 / 1000.0);
-        self.counters.set(self.renderer_counters.copy_ops(), render_stats.uploads.copy_ops as f32);
-        self.counters.set(self.renderer_counters.staging_buffers(), render_stats.staging_buffers as f32);
+        self.counters.set(self.renderer_counters.render_passes(), stats.render_passes as f32);
+        self.counters.set(self.renderer_counters.draw_calls(), stats.draw_calls as f32);
+        self.counters.set(self.renderer_counters.uploads(), stats.uploads.bytes as f32 / 1000.0);
+        self.counters.set(self.renderer_counters.copy_ops(), stats.uploads.copy_ops as f32);
+        self.counters.set(self.renderer_counters.staging_buffers(), stats.staging_buffers as f32);
 
         let wgpu_counters = self.device.get_internal_counters();
         debug_overlay::update_wgpu_internal_counters(&mut self.counters, self.wgpu_counters, &wgpu_counters);

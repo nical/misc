@@ -2,14 +2,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
-use crate::graph::render_nodes::RenderNodes;
 use crate::transform::Transforms;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
-use crate::graph::{Allocation, GraphBindings, PassId, PassRenderContext};
+use crate::graph::{Allocation, GraphBindings, PassRenderContext};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
-use crate::graph::GraphSystem;
 
 pub fn ms(duration: Duration) -> f32 {
     (duration.as_micros() as f64 / 1000.0) as f32
@@ -86,93 +84,12 @@ impl Instance {
         )
     }
 
-    // TODO: reduce the number of arguments
-    pub fn render(
-        &mut self,
-        frame: Frame,
-        commands: &[PassId],
-        // TODO: ideally we could remove this one, but we need some way
-        // for the prepare phase to iterate over the batches per render
-        // pass (to be able to do per-pass things like occlusion culling)
-        render_nodes: &RenderNodes,
-        graph_bindings: &GraphBindings,
-        renderers: &mut[&mut dyn Renderer],
-        external_inputs: &[Option<&wgpu::BindGroup>],
-        external_attachments: &[Option<&wgpu::TextureView>],
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> RenderStats {
-
-        let mut prep = self.prepare_phase(frame, graph_bindings, encoder);
-
-        let (mut ctx, stats) = prep.ctx();
-        render_nodes.prepare(&mut ctx, renderers, &mut stats.renderers);
-
-        let mut upload = prep.next();
-        let (mut ctx, stats) = upload.ctx();
-
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            let renderer_upload_start = Instant::now();
-            stats.uploads += renderer.upload(&mut ctx);
-            let stats = &mut stats.renderers[idx];
-            stats.upload_time = ms(Instant::now() - renderer_upload_start);
-        }
-
-        let render = upload.next();
-
-        // TODO
-
-        let mut stats = render.next();
-
-        let render_start = Instant::now();
-
-        self.resources.begin_rendering(encoder);
-
-        let bindings = Bindings {
-            graph: &graph_bindings,
-            external_inputs,
-            external_attachments,
-            resources: &self.resources.graph.resources(),
-        };
-
-        // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
-        let const_renderers: &[&dyn Renderer] = unsafe {
-            std::mem::transmute(renderers)
-        };
-
-        let mut ctx = PassRenderContext {
-            encoder,
-            renderers: const_renderers,
-            resources: &self.resources,
-            bindings: &bindings,
-            render_pipelines: &self.render_pipelines,
-            gpu_profiler: &mut self.gpu_profiler,
-            stats: &mut stats,
-        };
-
-        for pass in commands {
-            render_nodes.render(&mut ctx, *pass)
-        }
-
-        if self.gpu_profiling_enabled {
-            self.gpu_profiler.resolve_queries(encoder);
-        }
-
-        stats.render_time_ms = ms(Instant::now() - render_start);
-
-        stats
-    }
-
-    fn prepare_phase<'l>(
+    pub fn render_frame<'l>(
         &'l mut self,
         frame: Frame,
         graph_bindings: &'l GraphBindings,
         encoder: &'l mut wgpu::CommandEncoder
     ) -> PreparePhase<'l> {
-        let mut stats = RenderStats::default();
-
-        let num_renderers = 8; // TODO
-        stats.renderers = vec![RendererStats::default(); num_renderers];
-
         // TODO: does this need to be a separate step from upload?
         self.resources.begin_frame();
 
@@ -206,7 +123,6 @@ impl Instance {
             encoder,
             graph_bindings,
             prepare_start_time,
-            stats,
         }
     }
 
@@ -279,7 +195,7 @@ impl Frame {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct RenderStats {
     pub renderers: Vec<RendererStats>,
     pub render_passes: u32,
@@ -290,6 +206,22 @@ pub struct RenderStats {
     pub uploads: UploadStats,
     pub staging_buffers: u32,
     pub stagin_buffer_chunks: u32,
+}
+
+impl RenderStats {
+    pub fn new(num_renderers: usize) -> Self {
+        RenderStats {
+            renderers: vec![RendererStats::default(); num_renderers],
+            render_passes: 0,
+            draw_calls: 0,
+            prepare_time_ms: 0.0,
+            upload_time_ms: 0.0,
+            render_time_ms: 0.0,
+            uploads: UploadStats { bytes: 0, copy_ops: 0 },
+            staging_buffers: 0,
+            stagin_buffer_chunks: 0
+        }
+    }
 }
 
 pub struct Bindings<'l> {
@@ -348,22 +280,18 @@ pub struct PreparePhase<'l> {
     encoder: &'l mut wgpu::CommandEncoder,
     graph_bindings: &'l GraphBindings,
     prepare_start_time: Instant,
-    stats: RenderStats,
 }
 
 impl<'l> PreparePhase<'l> {
-    pub fn ctx(&mut self) -> (PrepareContext, &mut RenderStats) {
-        (
-            PrepareContext {
-                transforms: &self.transforms,
-                workers: self.instance.workers.ctx_with(&mut self.worker_data[..]),
-                staging_buffers: self.instance.staging_buffers.clone(),
-            },
-            &mut self.stats,
-        )
+    pub fn ctx(&mut self) -> PrepareContext {
+        PrepareContext {
+            transforms: &self.transforms,
+            workers: self.instance.workers.ctx_with(&mut self.worker_data[..]),
+            staging_buffers: self.instance.staging_buffers.clone(),
+        }
     }
 
-    pub fn next(mut self) -> UploadPhase<'l> {
+    pub fn next(self, stats: &mut RenderStats) -> UploadPhase<'l> {
         let mut f32_buffer_ops = Vec::with_capacity(self.worker_data.len());
         let mut u32_buffer_ops = Vec::with_capacity(self.worker_data.len());
         let mut vtx_ops = Vec::with_capacity(self.worker_data.len());
@@ -434,16 +362,15 @@ impl<'l> PreparePhase<'l> {
                 &self.instance.device,
                 self.encoder,
             );
-            self.stats.staging_buffers = staging_buffers.active_staging_buffer_count();
+            stats.staging_buffers = staging_buffers.active_staging_buffer_count();
         }
 
-        self.stats.prepare_time_ms = ms(upload_start - self.prepare_start_time);
+        stats.prepare_time_ms = ms(upload_start - self.prepare_start_time);
 
         UploadPhase {
             instance: self.instance,
             encoder: self.encoder,
             graph_bindings: self.graph_bindings,
-            stats: self.stats,
             upload_start_time: upload_start,
         }
     }
@@ -453,37 +380,51 @@ pub struct UploadPhase<'l> {
     instance: &'l mut Instance,
     encoder: &'l mut wgpu::CommandEncoder,
     graph_bindings: &'l GraphBindings,
-    stats: RenderStats,
     upload_start_time: Instant,
 }
 
 impl<'l> UploadPhase<'l> {
-    pub fn ctx(&mut self) -> (UploadContext, &mut RenderStats) {
-        (
-            UploadContext {
-                resources: &mut self.instance.resources,
-                shaders: &self.instance.shaders,
-                wgpu: WgpuContext {
-                    device: &self.instance.device,
-                    queue: &self.instance.queue,
-                    encoder: self.encoder,
-                },
+    pub fn ctx(&mut self) -> UploadContext {
+        UploadContext {
+            resources: &mut self.instance.resources,
+            shaders: &self.instance.shaders,
+            wgpu: WgpuContext {
+                device: &self.instance.device,
+                queue: &self.instance.queue,
+                encoder: self.encoder,
             },
-            &mut self.stats,
-        )
+        }
     }
 
-    pub fn next(mut self) -> RenderPhase<'l> {
+    pub fn next(
+        self,
+        stats: &'l mut RenderStats,
+        external_inputs: &'l [Option<&'l wgpu::BindGroup>],
+        external_attachments: &'l [Option<&'l wgpu::TextureView>],
+    ) -> RenderPhase<'l> {
 
-        self.stats.draw_calls = self.stats.renderers.iter().map(|s| s.draw_calls).sum();
+        stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
 
         let render_start_time = Instant::now();
-        self.stats.upload_time_ms = ms(render_start_time - self.upload_start_time);
+        stats.upload_time_ms = ms(render_start_time - self.upload_start_time);
+
+        self.instance.resources.begin_rendering(self.encoder);
+
+        let bindings = Bindings {
+            graph: self.graph_bindings,
+            external_inputs,
+            external_attachments,
+            resources: self.instance.resources.graph.resources()
+        };
 
         RenderPhase {
-            instance: self.instance,
+            render_pipelines: &self.instance.render_pipelines,
+            gpu_resources: &self.instance.resources,
+            gpu_profiler: &mut self.instance.gpu_profiler,
+            gpu_profiling_enabled: self.instance.gpu_profiling_enabled,
             encoder: self.encoder,
-            stats: self.stats,
+            bindings,
+            stats,
             render_start_time,
         }
     }
@@ -491,14 +432,41 @@ impl<'l> UploadPhase<'l> {
 
 // TODO
 pub struct RenderPhase<'l> {
-    instance: &'l mut Instance,
+    render_pipelines: &'l RenderPipelines,
+    gpu_resources: &'l GpuResources,
+    gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
+    gpu_profiling_enabled: bool,
     encoder: &'l mut wgpu::CommandEncoder,
-    stats: RenderStats,
+    bindings: Bindings<'l>,
+    stats: &'l mut RenderStats,
     render_start_time: Instant,
 }
 
 impl<'l> RenderPhase<'l> {
-    pub fn next(self) -> RenderStats {
-        self.stats
+    pub fn finish(self) {
+        if self.gpu_profiling_enabled {
+            self.gpu_profiler.resolve_queries(self.encoder);
+        }
+
+        self.stats.render_time_ms = ms(Instant::now() - self.render_start_time);
+    }
+
+    // TODO: maybe add a context that does not have the renderers so that
+    // it's completely taken care of by RenderNodes.
+    pub fn ctx(&mut self, renderers: &mut[&mut dyn Renderer]) -> PassRenderContext {
+        // Cast `&mut [&mut dyn Renderer]` into `&[&dyn Renderer]`
+        let const_renderers: &[&dyn Renderer] = unsafe {
+            std::mem::transmute(renderers)
+        };
+
+        PassRenderContext {
+            encoder: self.encoder,
+            renderers: const_renderers,
+            resources: &self.gpu_resources,
+            bindings: &self.bindings,
+            render_pipelines: &self.render_pipelines,
+            gpu_profiler: &mut self.gpu_profiler,
+            stats: &mut self.stats.renderers,
+        }
     }
 }
