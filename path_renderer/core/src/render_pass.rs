@@ -227,6 +227,14 @@ pub struct BuiltRenderPass {
 }
 
 impl BuiltRenderPass {
+    fn empty() -> Self {
+        BuiltRenderPass {
+            batches: Vec::new(),
+            config: RenderPassConfig::default(),
+            size: SurfaceIntSize::new(0, 0),
+        }
+    }
+
     pub fn batches(&self) -> &[BatchId] {
         &self.batches
     }
@@ -412,7 +420,7 @@ pub struct AttathchmentFlags {
 }
 
 pub struct RenderPasses {
-    built_render_passes: Vec<Option<BuiltRenderPass>>,
+    built_render_passes: Vec<BuiltRenderPass>,
     next_id: u64,
 }
 
@@ -438,12 +446,12 @@ impl RenderPasses {
             self.built_render_passes.reserve(n);
         }
         while self.built_render_passes.len() <= index {
-            self.built_render_passes.push(None);
+            self.built_render_passes.push(BuiltRenderPass::empty());
         }
-        self.built_render_passes[index] = Some(pass);
+        self.built_render_passes[index] = pass;
     }
 
-    pub(crate) fn passes(&self) -> &[Option<BuiltRenderPass>] {
+    pub(crate) fn passes(&self) -> &[BuiltRenderPass] {
         &self.built_render_passes
     }
 }

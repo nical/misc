@@ -182,7 +182,6 @@ impl Instance {
         });
 
         for pass in render_passes.passes() {
-            let Some(pass) = pass else { continue; };
             for (idx, renderer) in renderers.iter_mut().enumerate() {
                 let renderer_prepare_start = Instant::now();
                 let stats = &mut stats.renderers[idx];

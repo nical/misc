@@ -665,7 +665,7 @@ impl<'l> std::fmt::Debug for GraphRenderPass<'l> {
 
 impl<'l> GraphPass for GraphRenderPass<'l> {
     fn execute(&self, ctx: &mut PassRenderContext) {
-        let built_pass = &self.commands.passes()[self.pass_index as usize].as_ref().unwrap();
+        let built_pass = &self.commands.passes()[self.pass_index as usize];
         built_pass.render(&self.io, ctx);
     }
 }
