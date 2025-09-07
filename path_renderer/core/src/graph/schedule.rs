@@ -2,10 +2,11 @@ use std::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
-use crate::graph::GraphRenderPass;
-use crate::render_pass::{AttathchmentFlags, ColorAttachment, RenderPassIo, RenderPasses};
+use crate::graph::render_nodes::RenderNodes;
+use crate::graph::PassId;
+use crate::render_pass::{AttathchmentFlags, ColorAttachment, RenderPassIo};
 use crate::{BindingsId, BindingsNamespace};
-use super::{Allocation, BufferKind, PassList, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
+use super::{Allocation, BufferKind, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
 use super::ResourceFlags;
 
 #[derive(Copy, Clone, Debug)]
@@ -124,8 +125,8 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn schedule<'l>(&self, passes: &'l RenderPasses, commands: &mut PassList<'l>) -> Result<GraphBindings, Box<GraphError>> {
-        schedule_graph(self, passes, commands)
+    pub fn schedule(&self, render_nodes: &mut RenderNodes, commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
+        schedule_graph(self, render_nodes, commands)
     }
 }
 
@@ -278,10 +279,10 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
     Ok(())
 }
 
-pub fn schedule_graph<'l>(
+pub fn schedule_graph(
     graph: &RenderGraph,
-    render_passes: &'l RenderPasses,
-    commands: &mut PassList<'l>,
+    render_nodes: &mut RenderNodes,
+    commands: &mut Vec<PassId>,
 ) -> Result<GraphBindings, Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
@@ -502,13 +503,15 @@ pub fn schedule_graph<'l>(
                     depth_stencil_attachment: depth_stencil,
                 };
 
-                commands.push(
-                    GraphRenderPass::new(
-                        &render_passes,
-                        io,
-                        graph.tasks[node_id.index()].0 as u32,
-                    ),
-                )
+                let pass_index = graph.tasks[node_id.index()].0;
+
+                let pass_id = PassId {
+                    system: 0, // TODO,
+                    index: pass_index as u16,
+                };
+
+                render_nodes.set_render_pass_io(pass_id, io);
+                commands.push(pass_id);
             }
             _ => {
                 todo!()
@@ -652,10 +655,10 @@ fn test_nested() {
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted).unwrap();
 
-    let mut render_passes = RenderPasses::new();
-    let mut commands = PassList::new();
+    let mut render_nodes = RenderNodes::new();
+    let mut commands = Vec::new();
 
-    let bindings = graph.schedule(&mut render_passes, &mut commands).unwrap();
+    let bindings = graph.schedule(&mut render_nodes, &mut commands).unwrap();
 
     println!("sorted: {:?}", sorted);
     println!("allocations: {:?}", bindings.temporary_resources);

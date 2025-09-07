@@ -127,14 +127,14 @@ impl TemplateRenderer {
 }
 
 impl core::Renderer for TemplateRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for pass in ctx.passes {
+        for pass in passes {
             for batch_id in pass
                 .batches()
                 .iter()

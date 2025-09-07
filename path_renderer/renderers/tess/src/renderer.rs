@@ -1,5 +1,5 @@
 use core::{
-    bytemuck, path::Path, pattern::BuiltPattern, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
+    bytemuck, path::Path, pattern::BuiltPattern, render_pass::BuiltRenderPass, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
@@ -262,7 +262,7 @@ impl MeshRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -282,7 +282,7 @@ impl MeshRenderer {
         let id = self.renderer_id;
         let mut batches = self.batches.take();
 
-        for pass in ctx.passes {
+        for pass in passes {
             for batch_id in pass
                 .batches()
                 .iter()
@@ -491,8 +491,8 @@ impl MeshRenderer {
 }
 
 impl core::Renderer for MeshRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
+        self.prepare_impl(ctx, passes);
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(

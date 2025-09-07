@@ -1,8 +1,11 @@
-use crate::render_pass::{RenderPassBuilder, RenderPassContext, RenderPasses};
+use std::time::Instant;
+
+use crate::render_pass::{AttathchmentFlags, BuiltRenderPass, RenderPassBuilder, RenderPassContext, RenderPassIo};
 use crate::render_task::{FrameAtlasAllocator, RenderTaskData, RenderTaskHandle, RenderTaskInfo};
 use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
+use crate::{Renderer, RendererStats};
 use crate::{gpu::GpuBufferWriter, RenderPassConfig, SurfaceKind};
-use crate::graph::{ColorAttachment, Dependency, NodeDescriptor, NodeKind, Resource, Slot, TaskId};
+use crate::graph::{ColorAttachment, Dependency, GraphSystem, NodeDescriptor, NodeKind, PassId, PassRenderContext, PrepareContext, Resource, Slot, TaskId};
 use crate::graph::{FrameGraph, Node, NodeDependency};
 
 // TODO: Should this be in graph/mod.rs?
@@ -95,7 +98,7 @@ impl RenderNode {
         // TODO: instead of doing a non-trivial amount of work while the lock is held,
         // it may be better to enqueue everything and do the work before RenderGraph::schedule.
         let built = self.pass.end();
-        render_nodes.passes.add_built_render_pass(self.node.task_id(), built);
+        render_nodes.add_built_render_pass(self.node.task_id(), built);
 
         let mut guard = self.node.graph.lock().unwrap();
         // TODO
@@ -167,20 +170,22 @@ impl AtlasRenderNode {
 }
 
 pub struct RenderNodes {
-    pub passes: RenderPasses,
-    pub graph: FrameGraph,
+    built_render_passes: Vec<BuiltRenderPass>,
+    next_id: u64,
+    io: Vec<RenderPassIo>,
 }
 
 impl RenderNodes {
-    pub fn new(graph: &FrameGraph) -> Self {
+    pub fn new() -> Self {
         RenderNodes {
-            passes: RenderPasses::new(),
-            graph: graph.new_ref(),
+            built_render_passes: Vec::with_capacity(128),
+            next_id: 0,
+            io: Vec::new(),
         }
     }
 
-    pub fn add_node(&mut self, f32_buffer: &mut GpuBufferWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
-        let task_id = self.passes.next_render_pass_id();
+    pub fn add_node(&mut self, graph: &FrameGraph, f32_buffer: &mut GpuBufferWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
+        let task_id = self.next_render_pass_id();
         let descriptor = descriptor.to_node_descriptor(task_id);
 
         let (depth, stencil) = descriptor
@@ -226,6 +231,75 @@ impl RenderNodes {
             },
         );
 
-        RenderNode::new(pass, self.graph.add_node(&descriptor, task_id))
+        RenderNode::new(pass, graph.add_node(&descriptor, task_id))
+    }
+
+    fn next_render_pass_id(&mut self) -> TaskId {
+        let id = TaskId(self.next_id);
+        self.next_id += 1;
+
+        id
+    }
+
+    fn add_built_render_pass(&mut self, id: TaskId, pass: BuiltRenderPass) {
+        let index = id.0 as usize;
+        if self.built_render_passes.len() <= index {
+            let n = index + 1 - self.built_render_passes.len();
+            self.built_render_passes.reserve(n);
+        }
+        while self.built_render_passes.len() <= index {
+            self.built_render_passes.push(BuiltRenderPass::empty());
+        }
+        self.built_render_passes[index] = pass;
+    }
+
+    pub fn set_render_pass_io(&mut self, pass: PassId, io: RenderPassIo) {
+        let index = pass.index as usize;
+        while self.io.len() <= index {
+            self.io.push(RenderPassIo {
+                label: None,
+                color_attachments: [
+                    crate::render_pass::ColorAttachment {
+                        non_msaa: None,
+                        msaa: None,
+                        flags: AttathchmentFlags { load: false, store: false,}
+                    };
+                    3
+                ],
+                depth_stencil_attachment: None,
+            });
+        }
+        self.io[index] = io;
+    }
+
+    pub fn passes(&self) -> &[BuiltRenderPass] {
+        &self.built_render_passes
+    }
+
+    pub fn prepare(
+        &self,
+        ctx: &mut PrepareContext,
+        renderers: &mut[&mut dyn Renderer],
+        stats: &mut [RendererStats],
+    ) {
+        pub fn ms(duration: std::time::Duration) -> f32 {
+            (duration.as_micros() as f64 / 1000.0) as f32
+        }
+
+        let mut start = Instant::now();
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            renderer.prepare(ctx, &self.built_render_passes);
+            let end = Instant::now();
+            stats[idx].prepare_time += ms(end - start);
+            start = end;
+        }
+    }
+}
+
+impl GraphSystem for RenderNodes {
+    fn render(&self, ctx: &mut PassRenderContext, pass_id: PassId) {
+        let pass = &self.built_render_passes[pass_id.index as usize];
+        let io = &self.io[pass_id.index as usize];
+        pass.render(io, ctx);
     }
 }

@@ -8,7 +8,7 @@ use tess::EncodedPrimitiveInfo;
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{units::SurfacePoint, wgpu};
+use core::{render_pass::BuiltRenderPass, units::SurfacePoint, wgpu};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
@@ -268,7 +268,7 @@ impl StencilAndCoverRenderer {
         );
     }
 
-    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -294,7 +294,7 @@ impl StencilAndCoverRenderer {
         self.stencil_indices = Some(stencil_idx_stream);
         self.cover_indices = Some(cover_idx_stream);
 
-        for pass in ctx.passes {
+        for pass in passes {
             let id = self.renderer_id;
             for batch_id in pass
                 .batches()
@@ -345,7 +345,7 @@ impl StencilAndCoverRenderer {
         self.stats.vertices = self.stats.vertices.max(stencil.vertices.pushed_items());
     }
 
-    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
+    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -368,7 +368,7 @@ impl StencilAndCoverRenderer {
             });
         }
 
-        for pass in prep_ctx.passes {
+        for pass in passes {
             unsafe {
                 self.batches.par_iter_mut(
                     &mut prep_ctx.workers.with_data(&mut worker_data),
@@ -738,12 +738,12 @@ fn generate_cover_geometry(
 }
 
 impl core::Renderer for StencilAndCoverRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         // TODO: measure and adjust the batch count threshold.
         if self.parallel && self.batches.batch_count() > 16 {
-            self.prepare_parallel(ctx);
+            self.prepare_parallel(ctx, passes);
         } else {
-            self.prepare_single_thread(ctx);
+            self.prepare_single_thread(ctx, passes);
         }
     }
 

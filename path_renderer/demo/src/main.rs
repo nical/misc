@@ -4,8 +4,7 @@ use core::graph::FrameGraph;
 use core::gpu::gpu_buffer;
 use core::instance::{Instance, Frame};
 use core::pattern::BuiltPattern;
-use core::graph::{Allocation, ColorAttachment, PassList, GraphBindings, Resource};
-use core::render_pass::RenderPasses;
+use core::graph::{Allocation, ColorAttachment, GraphBindings, Resource};
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
 use core::{FillPath, Renderer, Vector};
 use core::shading::BlendMode;
@@ -602,7 +601,7 @@ impl App {
 
         let mut frame = self.instance.begin_frame();
         let mut graph = FrameGraph::new();
-        let mut render_nodes = RenderNodes::new(&graph);
+        let mut render_nodes = RenderNodes::new();
 
         self.renderers.begin_frame();
 
@@ -702,7 +701,7 @@ impl App {
         }
 
         let mut f32_buffer = frame.f32_buffer.write();
-        let mut main_surface = render_nodes.add_node(&mut f32_buffer, descriptor);
+        let mut main_surface = render_nodes.add_node(&graph, &mut f32_buffer, descriptor);
         std::mem::drop(f32_buffer);
         graph.add_root(&main_surface);
 
@@ -747,14 +746,14 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut commands = PassList::new();
-        let bindings = graph.schedule(&render_nodes.passes, &mut commands).unwrap();
+        let mut commands = Vec::new();
+        let graph_bindings = graph.schedule(&mut render_nodes, &mut commands).unwrap();
 
         let render_stats = self.instance.render(
             frame,
-            commands,
-            &render_nodes.passes,
-            &bindings,
+            &commands,
+            &render_nodes,
+            &graph_bindings,
             &mut [
                 &mut self.renderers.tiling as &mut dyn Renderer,
                 &mut self.renderers.stencil,
@@ -814,8 +813,8 @@ impl App {
         self.counters.set(self.renderer_counters.cpu_total(), rec_t + fbt + rt);
         self.counters.set(self.renderer_counters.render_passes(), render_stats.render_passes as f32);
         self.counters.set(self.renderer_counters.draw_calls(), render_stats.draw_calls as f32);
-        self.counters.set(self.renderer_counters.uploads(), render_stats.uploads_kb);
-        self.counters.set(self.renderer_counters.copy_ops(), render_stats.copy_ops as f32);
+        self.counters.set(self.renderer_counters.uploads(), render_stats.uploads.bytes as f32 / 1000.0);
+        self.counters.set(self.renderer_counters.copy_ops(), render_stats.uploads.copy_ops as f32);
         self.counters.set(self.renderer_counters.staging_buffers(), render_stats.staging_buffers as f32);
 
         let wgpu_counters = self.device.get_internal_counters();

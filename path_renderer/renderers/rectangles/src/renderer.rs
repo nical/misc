@@ -8,7 +8,7 @@ use core::{
 };
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig};
+use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId};
 use core::gpu::{GpuBufferAddress, StreamId};
 use core::utils::DrawHelper;
 
@@ -168,8 +168,10 @@ impl RectangleRenderer {
             }
         );
     }
+}
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+impl core::Renderer for RectangleRenderer {
+    fn prepare(&mut self, ctx: &mut PrepareContext, _passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -196,12 +198,6 @@ impl RectangleRenderer {
             ));
             batch.pipeline_idx = Some(idx);
         }
-    }
-}
-
-impl core::Renderer for RectangleRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
     }
 
     fn render<'pass, 'resources: 'pass, 'stats>(

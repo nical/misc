@@ -5,7 +5,7 @@ use std::{fmt, sync::{Arc, Mutex}, u16};
 use bitflags::bitflags;
 use smallvec::SmallVec;
 
-use crate::{instance::RenderStats, render_pass::{RenderPassIo, RenderPasses}, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, Renderer, SurfaceKind};
+use crate::{graph::render_nodes::RenderNodes, instance::RenderStats, resources::GpuResources, shading::RenderPipelines, units::SurfaceIntSize, BindingResolver, PrepareContext, Renderer, SurfaceKind};
 
 use schedule::RenderGraph;
 pub use schedule::{GraphBindings, GraphError};
@@ -608,68 +608,21 @@ pub struct PassRenderContext<'l> {
     pub gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
 }
 
+pub trait GraphSystem {
+    fn render(&self, ctx: &mut PassRenderContext, pass: PassId);
+}
+
 pub trait GraphPass: std::fmt::Debug {
     fn execute(&self, ctx: &mut PassRenderContext);
 }
 
-#[derive(Debug)]
-pub struct PassList<'l> {
-    cmds: Vec<Box<dyn GraphPass + 'l>>,
+pub type GraphSystemId = u16;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PassId {
+    pub system: u16,
+    pub index: u16,
 }
-
-impl<'l> PassList<'l> {
-    pub fn new() -> Self {
-        PassList { cmds: Vec::with_capacity(128) }
-    }
-
-    pub fn push(&mut self, cmd: Box<dyn GraphPass + 'l>) {
-        self.cmds.push(cmd)
-    }
-
-    pub fn execute(&self, ctx: &mut PassRenderContext) {
-        for cmd in &self.cmds {
-            cmd.execute(ctx);
-        }
-    }
-}
-
-pub struct GraphRenderPass<'l> {
-    commands: &'l RenderPasses,
-    pass_index: u32,
-    io: RenderPassIo,
-}
-
-impl<'l> GraphRenderPass<'l> {
-    pub fn new(
-        render_passes: &'l RenderPasses,
-        io: RenderPassIo,
-        pass_index: u32,
-    ) -> Box<dyn GraphPass + 'l> {
-        Box::new(GraphRenderPass {
-            commands: render_passes,
-            pass_index,
-            io
-        })
-    }
-}
-
-impl<'l> std::fmt::Debug for GraphRenderPass<'l> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(label) = self.io.label {
-            write!(f, "RenderCommand({})", label)
-        } else {
-            write!(f, "RenderCommand")
-        }
-    }
-}
-
-impl<'l> GraphPass for GraphRenderPass<'l> {
-    fn execute(&self, ctx: &mut PassRenderContext) {
-        let built_pass = &self.commands.passes()[self.pass_index as usize];
-        built_pass.render(&self.io, ctx);
-    }
-}
-
 
 // TODO: Do we need both RenderGraph and FrameGraph?
 
@@ -715,10 +668,10 @@ impl FrameGraph {
         node
     }
 
-    pub fn schedule<'l>(&mut self, render_passes: &'l RenderPasses, commands: &mut PassList<'l>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn schedule(&mut self, render_nodes: &mut RenderNodes, commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
-        let bindings = inner.graph.schedule(render_passes, commands)?;
+        let bindings = inner.graph.schedule(render_nodes, commands)?;
 
         Ok(bindings)
     }

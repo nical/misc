@@ -1,7 +1,7 @@
 use core::{
     bytemuck, gpu::{
         storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
-    }, pattern::BuiltPattern, render_task::RenderTaskHandle, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, render_pass::BuiltRenderPass, render_task::RenderTaskHandle, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use core::transform::{TransformId, Transforms};
 use core::batching::{BatchFlags, BatchId, BatchList};
@@ -190,7 +190,7 @@ impl MsaaStrokeRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -205,7 +205,7 @@ impl MsaaStrokeRenderer {
         let id = self.renderer_id;
         let mut batches = self.batches.take();
 
-        for pass in ctx.passes {
+        for pass in passes {
             for batch_id in pass
                 .batches()
                 .iter()
@@ -334,8 +334,8 @@ impl MsaaStrokeRenderer {
 }
 
 impl core::Renderer for MsaaStrokeRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
+        self.prepare_impl(ctx, passes);
     }
 
     fn upload(&mut self, ctx: &mut UploadContext) -> UploadStats {

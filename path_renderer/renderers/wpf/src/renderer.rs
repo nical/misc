@@ -1,7 +1,7 @@
 use core::render_task::RenderTaskHandle;
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::gpu::GpuBufferWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -159,7 +159,7 @@ impl WpfMeshRenderer {
         );
     }
 
-    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_impl(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -172,7 +172,7 @@ impl WpfMeshRenderer {
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for pass in ctx.passes {
+        for pass in passes {
             for batch_id in pass
                 .batches()
                 .iter()
@@ -311,8 +311,8 @@ impl core::FillPath for WpfMeshRenderer {
 }
 
 impl core::Renderer for WpfMeshRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
-        self.prepare_impl(ctx);
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
+        self.prepare_impl(ctx, passes);
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(

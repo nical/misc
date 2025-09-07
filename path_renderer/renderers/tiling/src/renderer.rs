@@ -1,5 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -167,7 +167,7 @@ impl TileRenderer {
         self.no_opaque_batches = options.no_opaque_batches;
     }
 
-    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext) {
+    pub fn prepare_single_thread(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;
         }
@@ -191,7 +191,7 @@ impl TileRenderer {
 
         let mut batches = self.batches.take();
 
-        for pass in ctx.passes {
+        for pass in passes {
             if self.occlusion.gpu {
                 debug_assert!(pass.config().depth);
             }
@@ -240,7 +240,7 @@ impl TileRenderer {
         self.batches = batches;
     }
 
-    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext) {
+    pub fn prepare_parallel(&mut self, prep_ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         struct WorkerData {
             tiler: Tiler,
             edges: GpuBuffer,
@@ -260,7 +260,7 @@ impl TileRenderer {
             });
         }
 
-        for pass in prep_ctx.passes {
+        for pass in passes {
             let size = pass.surface_size();
             for wd in &mut worker_data {
                 wd.tiler.begin_target(SurfaceIntRect::from_size(size));
@@ -499,11 +499,11 @@ impl TileRenderer {
 }
 
 impl core::Renderer for TileRenderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext) {
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.parallel {
-            self.prepare_parallel(ctx);
+            self.prepare_parallel(ctx, passes);
         } else {
-            self.prepare_single_thread(ctx);
+            self.prepare_single_thread(ctx, passes);
         }
     }
 

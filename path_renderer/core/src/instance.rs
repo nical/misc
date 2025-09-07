@@ -2,14 +2,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
-use crate::render_pass::RenderPasses;
+use crate::graph::render_nodes::RenderNodes;
 use crate::transform::Transforms;
 use crate::worker::Workers;
 use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
-use crate::graph::{Allocation, PassRenderContext, PassList, GraphBindings};
+use crate::graph::{Allocation, GraphBindings, PassId, PassRenderContext};
 use crate::resources::{GpuResource, GpuResources};
 use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
-
+use crate::graph::GraphSystem;
 
 pub fn ms(duration: Duration) -> f32 {
     (duration.as_micros() as f64 / 1000.0) as f32
@@ -90,24 +90,38 @@ impl Instance {
     pub fn render(
         &mut self,
         frame: Frame,
-        commands: PassList,
+        commands: &[PassId],
         // TODO: ideally we could remove this one, but we need some way
         // for the prepare phase to iterate over the batches per render
         // pass (to be able to do per-pass things like occlusion culling)
-        render_passes: &RenderPasses,
+        render_nodes: &RenderNodes,
         graph_bindings: &GraphBindings,
         renderers: &mut[&mut dyn Renderer],
         external_inputs: &[Option<&wgpu::BindGroup>],
         external_attachments: &[Option<&wgpu::TextureView>],
         encoder: &mut wgpu::CommandEncoder,
     ) -> RenderStats {
-        let mut stats = self.prepare(
-            frame,
-            render_passes,
-            graph_bindings,
-            renderers,
-            encoder
-        );
+
+        let mut prep = self.prepare_phase(frame, graph_bindings, encoder);
+
+        let (mut ctx, stats) = prep.ctx();
+        render_nodes.prepare(&mut ctx, renderers, &mut stats.renderers);
+
+        let mut upload = prep.next();
+        let (mut ctx, stats) = upload.ctx();
+
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            let renderer_upload_start = Instant::now();
+            stats.uploads += renderer.upload(&mut ctx);
+            let stats = &mut stats.renderers[idx];
+            stats.upload_time = ms(Instant::now() - renderer_upload_start);
+        }
+
+        let render = upload.next();
+
+        // TODO
+
+        let mut stats = render.next();
 
         let render_start = Instant::now();
 
@@ -125,7 +139,7 @@ impl Instance {
             std::mem::transmute(renderers)
         };
 
-        commands.execute(&mut PassRenderContext {
+        let mut ctx = PassRenderContext {
             encoder,
             renderers: const_renderers,
             resources: &self.resources,
@@ -133,7 +147,11 @@ impl Instance {
             render_pipelines: &self.render_pipelines,
             gpu_profiler: &mut self.gpu_profiler,
             stats: &mut stats,
-        });
+        };
+
+        for pass in commands {
+            render_nodes.render(&mut ctx, *pass)
+        }
 
         if self.gpu_profiling_enabled {
             self.gpu_profiler.resolve_queries(encoder);
@@ -144,21 +162,21 @@ impl Instance {
         stats
     }
 
-    pub fn prepare(
-        &mut self,
+    fn prepare_phase<'l>(
+        &'l mut self,
         frame: Frame,
-        render_passes: &RenderPasses,
-        graph_bindings: &GraphBindings,
-        renderers: &mut[&mut dyn Renderer],
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> RenderStats {
+        graph_bindings: &'l GraphBindings,
+        encoder: &'l mut wgpu::CommandEncoder
+    ) -> PreparePhase<'l> {
         let mut stats = RenderStats::default();
-        stats.renderers = vec![RendererStats::default(); renderers.len()];
+
+        let num_renderers = 8; // TODO
+        stats.renderers = vec![RendererStats::default(); num_renderers];
 
         // TODO: does this need to be a separate step from upload?
         self.resources.begin_frame();
 
-        let prepare_start = Instant::now();
+        let prepare_start_time = Instant::now();
 
         let num_workers = self.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
@@ -181,112 +199,15 @@ impl Instance {
             instances: frame.instances,
         });
 
-        let mut ctx = PrepareContext {
-            passes: render_passes.passes(),
-            transforms: &frame.transforms,
-            workers: self.workers.ctx_with(&mut worker_data[..]),
-            staging_buffers: self.staging_buffers.clone(),
-        };
-
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            let renderer_prepare_start = Instant::now();
-            let stats = &mut stats.renderers[idx];
-            renderer.prepare(&mut ctx);
-            stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
+        PreparePhase {
+            instance: self,
+            transforms: frame.transforms,
+            worker_data,
+            encoder,
+            graph_bindings,
+            prepare_start_time,
+            stats,
         }
-
-        let mut f32_buffer_ops = Vec::with_capacity(worker_data.len());
-        let mut u32_buffer_ops = Vec::with_capacity(worker_data.len());
-        let mut vtx_ops = Vec::with_capacity(worker_data.len());
-        let mut idx_ops = Vec::with_capacity(worker_data.len());
-        let mut inst_ops = Vec::with_capacity(worker_data.len());
-        let mut pipeline_changes = Vec::with_capacity(worker_data.len());
-        for mut wd in worker_data {
-            f32_buffer_ops.push(wd.f32_buffer.finish());
-            u32_buffer_ops.push(wd.u32_buffer.finish());
-            vtx_ops.push(wd.vertices.finish());
-            idx_ops.push(wd.indices.finish());
-            inst_ops.push(wd.instances.finish());
-            pipeline_changes.push(wd.pipelines.finish());
-        }
-
-        let device = &self.device;
-        let queue = &self.queue;
-
-        self.render_pipelines.build(
-            &pipeline_changes[..],
-            &mut RenderPipelineBuilder(device, &mut self.shaders),
-        );
-
-        let upload_start = Instant::now();
-
-        unsafe {
-            let mut staging_buffers = self.staging_buffers.lock().unwrap();
-            staging_buffers.unmap_active_buffers();
-        }
-
-        self.resources.upload(
-            device,
-            queue,
-            &self.shaders,
-            &graph_bindings.temporary_resources,
-        );
-
-        let mut upload_stats = UploadStats::default();
-        {
-            let staging_buffers = self.staging_buffers.lock().unwrap();
-            upload_stats += self.resources.common.f32_buffer.upload(
-                &f32_buffer_ops,
-                &staging_buffers,
-                &self.device,
-                encoder,
-            );
-            upload_stats += self.resources.common.u32_buffer.upload(
-                &u32_buffer_ops,
-                &staging_buffers,
-                &self.device,
-                encoder,
-            );
-            upload_stats += self.resources.common.vertices.upload(
-                &vtx_ops,
-                &staging_buffers,
-                &self.device,
-                encoder,
-            );
-            upload_stats += self.resources.common.indices.upload(
-                &idx_ops,
-                &staging_buffers,
-                &self.device,
-                encoder,
-            );
-            upload_stats += self.resources.common.instances.upload(
-                &inst_ops,
-                &staging_buffers,
-                &self.device,
-                encoder,
-            );
-            stats.staging_buffers = staging_buffers.active_staging_buffer_count();
-        }
-
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            let renderer_upload_start = Instant::now();
-            let stats = &mut stats.renderers[idx];
-            upload_stats += renderer.upload(&mut UploadContext {
-                resources: &mut self.resources,
-                shaders: &self.shaders,
-                wgpu: WgpuContext { device, queue, encoder },
-            });
-            stats.upload_time = ms(Instant::now() - renderer_upload_start);
-        }
-
-        let upload_end = Instant::now();
-
-        stats.prepare_time_ms = ms(upload_start - prepare_start);
-        stats.upload_time_ms = ms(upload_end - upload_start);
-        stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
-        stats.uploads_kb = upload_stats.bytes as f32 / 1000.0;
-        stats.copy_ops = upload_stats.copy_ops;
-        stats
     }
 
     /// Should be called after submitting the frame.
@@ -366,13 +287,12 @@ pub struct RenderStats {
     pub prepare_time_ms: f32,
     pub upload_time_ms: f32,
     pub render_time_ms: f32,
-    pub uploads_kb: f32,
-    pub copy_ops: u32,
+    pub uploads: UploadStats,
     pub staging_buffers: u32,
     pub stagin_buffer_chunks: u32,
 }
 
-struct Bindings<'l> {
+pub struct Bindings<'l> {
     graph: &'l GraphBindings,
     external_inputs: &'l[Option<&'l wgpu::BindGroup>],
     external_attachments: &'l[Option<&'l wgpu::TextureView>],
@@ -418,5 +338,167 @@ impl<'l> BindingResolver for Bindings<'l> {
             }
             _ => None
         }
+    }
+}
+
+pub struct PreparePhase<'l> {
+    instance: &'l mut Instance,
+    transforms: Transforms,
+    worker_data: Vec<PrepareWorkerData>,
+    encoder: &'l mut wgpu::CommandEncoder,
+    graph_bindings: &'l GraphBindings,
+    prepare_start_time: Instant,
+    stats: RenderStats,
+}
+
+impl<'l> PreparePhase<'l> {
+    pub fn ctx(&mut self) -> (PrepareContext, &mut RenderStats) {
+        (
+            PrepareContext {
+                transforms: &self.transforms,
+                workers: self.instance.workers.ctx_with(&mut self.worker_data[..]),
+                staging_buffers: self.instance.staging_buffers.clone(),
+            },
+            &mut self.stats,
+        )
+    }
+
+    pub fn next(mut self) -> UploadPhase<'l> {
+        let mut f32_buffer_ops = Vec::with_capacity(self.worker_data.len());
+        let mut u32_buffer_ops = Vec::with_capacity(self.worker_data.len());
+        let mut vtx_ops = Vec::with_capacity(self.worker_data.len());
+        let mut idx_ops = Vec::with_capacity(self.worker_data.len());
+        let mut inst_ops = Vec::with_capacity(self.worker_data.len());
+        let mut pipeline_changes = Vec::with_capacity(self.worker_data.len());
+        for mut wd in self.worker_data {
+            f32_buffer_ops.push(wd.f32_buffer.finish());
+            u32_buffer_ops.push(wd.u32_buffer.finish());
+            vtx_ops.push(wd.vertices.finish());
+            idx_ops.push(wd.indices.finish());
+            inst_ops.push(wd.instances.finish());
+            pipeline_changes.push(wd.pipelines.finish());
+        }
+
+        let device = &self.instance.device;
+        let queue = &self.instance.queue;
+
+        self.instance.render_pipelines.build(
+            &pipeline_changes[..],
+            &mut RenderPipelineBuilder(device, &mut self.instance.shaders),
+        );
+
+        let upload_start = Instant::now();
+
+        unsafe {
+            let mut staging_buffers = self.instance.staging_buffers.lock().unwrap();
+            staging_buffers.unmap_active_buffers();
+        }
+
+        self.instance.resources.upload(
+            device,
+            queue,
+            &self.instance.shaders,
+            &self.graph_bindings.temporary_resources,
+        );
+
+        let mut upload_stats = UploadStats::default();
+        {
+            let staging_buffers = self.instance.staging_buffers.lock().unwrap();
+            upload_stats += self.instance.resources.common.f32_buffer.upload(
+                &f32_buffer_ops,
+                &staging_buffers,
+                &self.instance.device,
+                self.encoder,
+            );
+            upload_stats += self.instance.resources.common.u32_buffer.upload(
+                &u32_buffer_ops,
+                &staging_buffers,
+                &self.instance.device,
+                self.encoder,
+            );
+            upload_stats += self.instance.resources.common.vertices.upload(
+                &vtx_ops,
+                &staging_buffers,
+                &self.instance.device,
+                self.encoder,
+            );
+            upload_stats += self.instance.resources.common.indices.upload(
+                &idx_ops,
+                &staging_buffers,
+                &self.instance.device,
+                self.encoder,
+            );
+            upload_stats += self.instance.resources.common.instances.upload(
+                &inst_ops,
+                &staging_buffers,
+                &self.instance.device,
+                self.encoder,
+            );
+            self.stats.staging_buffers = staging_buffers.active_staging_buffer_count();
+        }
+
+        self.stats.prepare_time_ms = ms(upload_start - self.prepare_start_time);
+
+        UploadPhase {
+            instance: self.instance,
+            encoder: self.encoder,
+            graph_bindings: self.graph_bindings,
+            stats: self.stats,
+            upload_start_time: upload_start,
+        }
+    }
+}
+
+pub struct UploadPhase<'l> {
+    instance: &'l mut Instance,
+    encoder: &'l mut wgpu::CommandEncoder,
+    graph_bindings: &'l GraphBindings,
+    stats: RenderStats,
+    upload_start_time: Instant,
+}
+
+impl<'l> UploadPhase<'l> {
+    pub fn ctx(&mut self) -> (UploadContext, &mut RenderStats) {
+        (
+            UploadContext {
+                resources: &mut self.instance.resources,
+                shaders: &self.instance.shaders,
+                wgpu: WgpuContext {
+                    device: &self.instance.device,
+                    queue: &self.instance.queue,
+                    encoder: self.encoder,
+                },
+            },
+            &mut self.stats,
+        )
+    }
+
+    pub fn next(mut self) -> RenderPhase<'l> {
+
+        self.stats.draw_calls = self.stats.renderers.iter().map(|s| s.draw_calls).sum();
+
+        let render_start_time = Instant::now();
+        self.stats.upload_time_ms = ms(render_start_time - self.upload_start_time);
+
+        RenderPhase {
+            instance: self.instance,
+            encoder: self.encoder,
+            stats: self.stats,
+            render_start_time,
+        }
+    }
+}
+
+// TODO
+pub struct RenderPhase<'l> {
+    instance: &'l mut Instance,
+    encoder: &'l mut wgpu::CommandEncoder,
+    stats: RenderStats,
+    render_start_time: Instant,
+}
+
+impl<'l> RenderPhase<'l> {
+    pub fn next(self) -> RenderStats {
+        self.stats
     }
 }

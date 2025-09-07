@@ -1,5 +1,5 @@
 use crate::batching::{BatchId, Batcher};
-use crate::graph::{PassRenderContext, TaskId};
+use crate::graph::PassRenderContext;
 use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::instance::RenderStats;
@@ -227,7 +227,7 @@ pub struct BuiltRenderPass {
 }
 
 impl BuiltRenderPass {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         BuiltRenderPass {
             batches: Vec::new(),
             config: RenderPassConfig::default(),
@@ -417,41 +417,4 @@ fn surface_draw_config() {
 pub struct AttathchmentFlags {
     pub load: bool,
     pub store: bool,
-}
-
-pub struct RenderPasses {
-    built_render_passes: Vec<BuiltRenderPass>,
-    next_id: u64,
-}
-
-impl RenderPasses {
-    pub fn new() -> Self {
-        RenderPasses {
-            built_render_passes: Vec::with_capacity(128),
-            next_id: 0,
-        }
-    }
-
-    pub(crate) fn next_render_pass_id(&mut self) -> TaskId {
-        let id = TaskId(self.next_id);
-        self.next_id += 1;
-
-        id
-    }
-
-    pub(crate) fn add_built_render_pass(&mut self, id: TaskId, pass: BuiltRenderPass) {
-        let index = id.0 as usize;
-        if self.built_render_passes.len() <= index {
-            let n = index + 1 - self.built_render_passes.len();
-            self.built_render_passes.reserve(n);
-        }
-        while self.built_render_passes.len() <= index {
-            self.built_render_passes.push(BuiltRenderPass::empty());
-        }
-        self.built_render_passes[index] = pass;
-    }
-
-    pub(crate) fn passes(&self) -> &[BuiltRenderPass] {
-        &self.built_render_passes
-    }
 }

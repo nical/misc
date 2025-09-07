@@ -295,7 +295,6 @@ pub type PrepareWorkerContext<'a> = worker::Context<'a, (PrepareWorkerData,)>;
 
 /// Parameters for the renderering stage.
 pub struct PrepareContext<'a> {
-    pub passes: &'a [BuiltRenderPass],
     pub transforms: &'a Transforms,
     pub workers: PrepareWorkerContext<'a>,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
@@ -334,7 +333,7 @@ impl RendererStats {
 }
 
 pub trait Renderer {
-    fn prepare(&mut self, ctx: &mut PrepareContext);
+    fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]);
 
     fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }
 
