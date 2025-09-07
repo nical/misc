@@ -267,7 +267,6 @@ impl MeshRenderer {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -282,25 +281,68 @@ impl MeshRenderer {
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in pass
-            .batches()
-            .iter()
-            .filter(|batch| batch.renderer == id)
-        {
-            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
-            let draw_start = self.draws.len() as u32;
-            let mut key = commands
-                .first()
-                .as_ref()
-                .unwrap()
-                .pattern
-                .shader_and_bindings();
+        for pass in ctx.passes {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .filter(|batch| batch.renderer == id)
+            {
+                let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
-            // Opaque pass.
-            let mut geom_start = indices.pushed_bytes() / 4;
-            if surface.depth {
-                for fill in commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
+                let draw_start = self.draws.len() as u32;
+                let mut key = commands
+                    .first()
+                    .as_ref()
+                    .unwrap()
+                    .pattern
+                    .shader_and_bindings();
+
+                // Opaque pass.
+                let mut geom_start = indices.pushed_bytes() / 4;
+                if surface.depth {
+                    for fill in commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
+                        if key != fill.pattern.shader_and_bindings() {
+                            let end = indices.pushed_bytes() / 4;
+                            if end > geom_start {
+                                self.draws.push(Draw {
+                                    indices: geom_start..end,
+                                    pattern_inputs: key.1,
+                                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                                        self.geometry,
+                                        key.0,
+                                        info.blend_mode,
+                                        surface.draw_config(true, None),
+                                    )),
+                                });
+                            }
+                            geom_start = end;
+                            key = fill.pattern.shader_and_bindings();
+                        }
+                        self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
+                    }
+                }
+
+                let end = indices.pushed_bytes() / 4;
+                if end > geom_start {
+                    self.draws.push(Draw {
+                        indices: geom_start..end,
+                        pattern_inputs: key.1,
+                        pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                            self.geometry,
+                            key.0,
+                            info.blend_mode,
+                            surface.draw_config(true, None),
+                        )),
+                    });
+                }
+                geom_start = end;
+
+                // Blended pass.
+                for fill in commands
+                    .iter()
+                    .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
+                {
                     if key != fill.pattern.shader_and_bindings() {
                         let end = indices.pushed_bytes() / 4;
                         if end > geom_start {
@@ -320,64 +362,24 @@ impl MeshRenderer {
                     }
                     self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
                 }
-            }
 
-            let end = indices.pushed_bytes() / 4;
-            if end > geom_start {
-                self.draws.push(Draw {
-                    indices: geom_start..end,
-                    pattern_inputs: key.1,
-                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.geometry,
-                        key.0,
-                        info.blend_mode,
-                        surface.draw_config(true, None),
-                    )),
-                });
-            }
-            geom_start = end;
-
-            // Blended pass.
-            for fill in commands
-                .iter()
-                .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
-            {
-                if key != fill.pattern.shader_and_bindings() {
-                    let end = indices.pushed_bytes() / 4;
-                    if end > geom_start {
-                        self.draws.push(Draw {
-                            indices: geom_start..end,
-                            pattern_inputs: key.1,
-                            pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.geometry,
-                                key.0,
-                                info.blend_mode,
-                                surface.draw_config(true, None),
-                            )),
-                        });
-                    }
-                    geom_start = end;
-                    key = fill.pattern.shader_and_bindings();
+                let end = indices.pushed_bytes() / 4;
+                if end > geom_start {
+                    self.draws.push(Draw {
+                        indices: geom_start..end,
+                        pattern_inputs: key.1,
+                        pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                            self.geometry,
+                            key.0,
+                            info.blend_mode,
+                            surface.draw_config(true, None),
+                        )),
+                    });
                 }
-                self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
-            }
 
-            let end = indices.pushed_bytes() / 4;
-            if end > geom_start {
-                self.draws.push(Draw {
-                    indices: geom_start..end,
-                    pattern_inputs: key.1,
-                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.geometry,
-                        key.0,
-                        info.blend_mode,
-                        surface.draw_config(true, None),
-                    )),
-                });
+                let draws = draw_start..self.draws.len() as u32;
+                info.draws = draws;
             }
-
-            let draws = draw_start..self.draws.len() as u32;
-            info.draws = draws;
         }
 
         self.batches = batches;

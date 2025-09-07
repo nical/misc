@@ -172,7 +172,6 @@ impl TileRenderer {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -180,10 +179,6 @@ impl TileRenderer {
 
         let mut edge_store = self.resources.edges.begin_frame(ctx.staging_buffers.clone());
         let mut path_store = self.resources.paths.begin_frame(ctx.staging_buffers.clone());
-
-        if self.occlusion.gpu {
-            debug_assert!(pass.config().depth);
-        }
 
         let opaque_stream = instances.next_stream_id();
         let mut tiles = TilerOutput {
@@ -194,40 +189,47 @@ impl TileRenderer {
             occlusion: OcclusionBuffer::disabled(),
         };
 
-        let size = pass.surface_size();
-        self.tiler.begin_target(SurfaceIntRect::from_size(size));
-        if self.occlusion.cpu {
-            tiles.occlusion.init(size.width as u32, size.height as u32);
-        } else {
-            tiles.occlusion.disable();
-        }
-
-        let id = self.renderer_id;
         let mut batches = self.batches.take();
-        if self.back_to_front {
-            for batch_id in pass
-                .batches()
-                .iter()
-                .rev()
-                .filter(|batch| batch.renderer == id)
-            {
-                self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
-            }
-        } else {
-            for batch_id in pass.batches().iter().filter(|batch| batch.renderer == id) {
-                self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
-            }
-        }
 
-        if tiles.mask_tiles.len() > 0 {
-            let masked_stream = instances.next_stream_id();
-            let mut mask_tile_writer = instances.write(masked_stream, 0);
-            mask_tile_writer.push_slice(&tiles.mask_tiles);
-            self.mask_instances = Some(masked_stream);
-        }
+        for pass in ctx.passes {
+            if self.occlusion.gpu {
+                debug_assert!(pass.config().depth);
+            }
 
-        if tiles.opaque_tiles.pushed_bytes() > 0 {
-            self.opaque_instances = Some(opaque_stream);
+            let size = pass.surface_size();
+            self.tiler.begin_target(SurfaceIntRect::from_size(size));
+            if self.occlusion.cpu {
+                tiles.occlusion.init(size.width as u32, size.height as u32);
+            } else {
+                tiles.occlusion.disable();
+            }
+
+            let id = self.renderer_id;
+            if self.back_to_front {
+                for batch_id in pass
+                    .batches()
+                    .iter()
+                    .rev()
+                    .filter(|batch| batch.renderer == id)
+                {
+                    self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
+                }
+            } else {
+                for batch_id in pass.batches().iter().filter(|batch| batch.renderer == id) {
+                    self.prepare_batch(*batch_id, transforms, &mut tiles, shaders, &mut batches);
+                }
+            }
+
+            if tiles.mask_tiles.len() > 0 {
+                let masked_stream = instances.next_stream_id();
+                let mut mask_tile_writer = instances.write(masked_stream, 0);
+                mask_tile_writer.push_slice(&tiles.mask_tiles);
+                self.mask_instances = Some(masked_stream);
+            }
+
+            if tiles.opaque_tiles.pushed_bytes() > 0 {
+                self.opaque_instances = Some(opaque_stream);
+            }
         }
 
         std::mem::drop(tiles);
@@ -248,102 +250,105 @@ impl TileRenderer {
         let edge_store = self.resources.edges.begin_frame(prep_ctx.staging_buffers.clone());
         let path_store = self.resources.paths.begin_frame(prep_ctx.staging_buffers.clone());
 
-        let size = prep_ctx.pass.surface_size();
         let num_workers = prep_ctx.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
         for _ in 0..num_workers {
-            let mut tiler = Tiler::new();
-            tiler.begin_target(SurfaceIntRect::from_size(size));
-
             worker_data.push(WorkerData {
-                tiler,
+                tiler: Tiler::new(),
                 edges: edge_store.clone(),
                 paths: path_store.clone(),
             });
         }
 
-        unsafe {
-            self.batches.par_iter_mut(
-                &mut prep_ctx.workers.with_data(&mut worker_data),
-                prep_ctx.pass,
-                self.renderer_id,
-                &|ctx, _batch, commands, surface, info| {
-                    let added_opaque_tiles: AtomicU32 = AtomicU32::new(0);
-                    let added_mask_tiles: AtomicU32 = AtomicU32::new(0);
-                    let opaque_stream = ctx.data().0.instances.next_stream_id();
-                    let masked_stream = ctx.data().0.instances.next_stream_id();
+        for pass in prep_ctx.passes {
+            let size = pass.surface_size();
+            for wd in &mut worker_data {
+                wd.tiler.begin_target(SurfaceIntRect::from_size(size));
+            }
 
-                    ctx.slice_for_each(&commands, &|ctx, fills, fill_idx| {
-                        let (worker_data, tiler_data) = ctx.data();
+            unsafe {
+                self.batches.par_iter_mut(
+                    &mut prep_ctx.workers.with_data(&mut worker_data),
+                    pass,
+                    self.renderer_id,
+                    &|ctx, _batch, commands, surface, info| {
+                        let added_opaque_tiles: AtomicU32 = AtomicU32::new(0);
+                        let added_mask_tiles: AtomicU32 = AtomicU32::new(0);
+                        let opaque_stream = ctx.data().0.instances.next_stream_id();
+                        let masked_stream = ctx.data().0.instances.next_stream_id();
 
-                        let opaque_tiles = worker_data.instances.write(opaque_stream, fill_idx);
-                        let mut tiles = TilerOutput {
-                            opaque_tiles,
-                            mask_tiles: Vec::new(),
-                            paths: tiler_data.paths.write(),
-                            edges: tiler_data.edges.write(),
-                            occlusion: OcclusionBuffer::disabled(),
-                        };
+                        ctx.slice_for_each(&commands, &|ctx, fills, fill_idx| {
+                            let (worker_data, tiler_data) = ctx.data();
 
-                        let sort_key = fills[0].z_index;
+                            let opaque_tiles = worker_data.instances.write(opaque_stream, fill_idx);
+                            let mut tiles = TilerOutput {
+                                opaque_tiles,
+                                mask_tiles: Vec::new(),
+                                paths: tiler_data.paths.write(),
+                                edges: tiler_data.edges.write(),
+                                occlusion: OcclusionBuffer::disabled(),
+                            };
 
-                        for fill in fills {
-                            Self::prepare_fill(
-                                &mut tiler_data.tiler,
-                                &mut tiles,
-                                fill,
-                                prep_ctx.transforms,
-                                self.tolerance,
-                            );
-                        }
-                        let opaque_tiles_count = tiles.opaque_tiles.pushed_items::<EncodedTileInstance>();
-                        let mask_tiles_count = tiles.mask_tiles.len() as u32;
+                            let sort_key = fills[0].z_index;
 
-                        if opaque_tiles_count > 0 {
-                            added_opaque_tiles.fetch_add(opaque_tiles_count, Ordering::Relaxed);
-                        }
-                        if mask_tiles_count > 0 {
-                            added_mask_tiles.fetch_add(mask_tiles_count, Ordering::Relaxed);
-                            // TODO: if processing front-to-back, reverse the instances.
-                            let mut mask_tiles = worker_data.instances.write(masked_stream, sort_key);
-                            mask_tiles.push_slice(&tiles.mask_tiles);
-                        }
-                    });
+                            for fill in fills {
+                                Self::prepare_fill(
+                                    &mut tiler_data.tiler,
+                                    &mut tiles,
+                                    fill,
+                                    prep_ctx.transforms,
+                                    self.tolerance,
+                                );
+                            }
+                            let opaque_tiles_count = tiles.opaque_tiles.pushed_items::<EncodedTileInstance>();
+                            let mask_tiles_count = tiles.mask_tiles.len() as u32;
 
-                    let draw_config = surface.draw_config(true, None);
-
-                    let (core_data, _tiler_data) = ctx.data();
-
-                    let opaque_tile_count = added_opaque_tiles.load(Ordering::Relaxed);
-                    if opaque_tile_count > 0 {
-                        info.opaque_draw = Some(Draw {
-                            stream_id: Some(opaque_stream),
-                            tiles: 0..opaque_tile_count,
-                            pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
-                                self.geometry,
-                                info.pattern.shader,
-                                BlendMode::None,
-                                draw_config,
-                            )),
+                            if opaque_tiles_count > 0 {
+                                added_opaque_tiles.fetch_add(opaque_tiles_count, Ordering::Relaxed);
+                            }
+                            if mask_tiles_count > 0 {
+                                added_mask_tiles.fetch_add(mask_tiles_count, Ordering::Relaxed);
+                                // TODO: if processing front-to-back, reverse the instances.
+                                let mut mask_tiles = worker_data.instances.write(masked_stream, sort_key);
+                                mask_tiles.push_slice(&tiles.mask_tiles);
+                            }
                         });
-                    }
 
-                    let mask_tile_count = added_mask_tiles.load(Ordering::Relaxed);
-                    if mask_tile_count > 0 {
-                        info.masked_draw = Some(Draw {
-                            stream_id: Some(masked_stream),
-                            tiles: 0..mask_tile_count,
-                            pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
-                                self.geometry,
-                                info.pattern.shader,
-                                info.blend_mode.with_alpha(true),
-                                draw_config,
-                            )),
-                        });
-                    }
-                },
-            );
-        } // unsafe
+                        let draw_config = surface.draw_config(true, None);
+
+                        let (core_data, _tiler_data) = ctx.data();
+
+                        let opaque_tile_count = added_opaque_tiles.load(Ordering::Relaxed);
+                        if opaque_tile_count > 0 {
+                            info.opaque_draw = Some(Draw {
+                                stream_id: Some(opaque_stream),
+                                tiles: 0..opaque_tile_count,
+                                pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
+                                    self.geometry,
+                                    info.pattern.shader,
+                                    BlendMode::None,
+                                    draw_config,
+                                )),
+                            });
+                        }
+
+                        let mask_tile_count = added_mask_tiles.load(Ordering::Relaxed);
+                        if mask_tile_count > 0 {
+                            info.masked_draw = Some(Draw {
+                                stream_id: Some(masked_stream),
+                                tiles: 0..mask_tile_count,
+                                pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
+                                    self.geometry,
+                                    info.pattern.shader,
+                                    info.blend_mode.with_alpha(true),
+                                    draw_config,
+                                )),
+                            });
+                        }
+                    },
+                );
+            } // unsafe
+        }
 
         self.edge_transfer_ops.clear();
         self.path_transfer_ops.clear();

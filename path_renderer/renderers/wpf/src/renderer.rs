@@ -164,70 +164,70 @@ impl WpfMeshRenderer {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
         let mut vertices = worker_data.vertices.write_items::<Vertex>();
         let mut prim_buffer = worker_data.u32_buffer.write_items::<EncodedPrimitiveInfo>();
 
-        let surface_size = pass.surface_size();
-
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in pass
-            .batches()
-            .iter()
-            .filter(|batch| batch.renderer == id)
-        {
-            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
+        for pass in ctx.passes {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .filter(|batch| batch.renderer == id)
+            {
+                let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
+                let surface_size = pass.surface_size();
 
-            let draw_start = self.draws.len() as u32;
-            let mut key = commands
-                .first()
-                .as_ref()
-                .unwrap()
-                .pattern
-                .shader_and_bindings();
+                let draw_start = self.draws.len() as u32;
+                let mut key = commands
+                    .first()
+                    .as_ref()
+                    .unwrap()
+                    .pattern
+                    .shader_and_bindings();
 
-            let mut geom_start = vertices.pushed_items();
-            for fill in commands.iter() {
-                if key != fill.pattern.shader_and_bindings() {
-                    let end = vertices.pushed_items();
-                    if end > geom_start {
-                        self.draws.push(Draw {
-                            vertices: geom_start..end,
-                            pattern_inputs: key.1,
-                            pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.geometry,
-                                key.0,
-                                info.blend_mode,
-                                surface.draw_config(false, None),
-                            )),
-                        });
+                let mut geom_start = vertices.pushed_items();
+                for fill in commands.iter() {
+                    if key != fill.pattern.shader_and_bindings() {
+                        let end = vertices.pushed_items();
+                        if end > geom_start {
+                            self.draws.push(Draw {
+                                vertices: geom_start..end,
+                                pattern_inputs: key.1,
+                                pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                                    self.geometry,
+                                    key.0,
+                                    info.blend_mode,
+                                    surface.draw_config(false, None),
+                                )),
+                            });
+                        }
+                        geom_start = end;
+                        key = fill.pattern.shader_and_bindings();
                     }
-                    geom_start = end;
-                    key = fill.pattern.shader_and_bindings();
+                    self.prepare_fill(fill, surface_size, transforms, &mut vertices, &mut prim_buffer);
                 }
-                self.prepare_fill(fill, surface_size, transforms, &mut vertices, &mut prim_buffer);
-            }
 
-            let end = vertices.pushed_items();
-            if end > geom_start {
-                self.draws.push(Draw {
-                    vertices: geom_start..end,
-                    pattern_inputs: key.1,
-                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.geometry,
-                        key.0,
-                        info.blend_mode,
-                        surface.draw_config(false, None),
-                    )),
-                });
-            }
+                let end = vertices.pushed_items();
+                if end > geom_start {
+                    self.draws.push(Draw {
+                        vertices: geom_start..end,
+                        pattern_inputs: key.1,
+                        pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                            self.geometry,
+                            key.0,
+                            info.blend_mode,
+                            surface.draw_config(false, None),
+                        )),
+                    });
+                }
 
-            let draws = draw_start..self.draws.len() as u32;
-            info.draws = draws;
+                let draws = draw_start..self.draws.len() as u32;
+                info.draws = draws;
+            }
         }
 
         self.batches = batches;

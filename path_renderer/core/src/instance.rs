@@ -181,18 +181,18 @@ impl Instance {
             instances: frame.instances,
         });
 
-        for pass in render_passes.passes() {
-            for (idx, renderer) in renderers.iter_mut().enumerate() {
-                let renderer_prepare_start = Instant::now();
-                let stats = &mut stats.renderers[idx];
-                renderer.prepare(&mut PrepareContext {
-                    pass,
-                    transforms: &frame.transforms,
-                    workers: self.workers.ctx_with(&mut worker_data[..]),
-                    staging_buffers: self.staging_buffers.clone(),
-                });
-                stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
-            }
+        let mut ctx = PrepareContext {
+            passes: render_passes.passes(),
+            transforms: &frame.transforms,
+            workers: self.workers.ctx_with(&mut worker_data[..]),
+            staging_buffers: self.staging_buffers.clone(),
+        };
+
+        for (idx, renderer) in renderers.iter_mut().enumerate() {
+            let renderer_prepare_start = Instant::now();
+            let stats = &mut stats.renderers[idx];
+            renderer.prepare(&mut ctx);
+            stats.prepare_time += ms(Instant::now() - renderer_prepare_start);
         }
 
         let mut f32_buffer_ops = Vec::with_capacity(worker_data.len());

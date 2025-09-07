@@ -128,41 +128,41 @@ impl TemplateRenderer {
 
 impl core::Renderer for TemplateRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext) {
-        let pass = &ctx.pass;
-
         if self.batches.is_empty() {
             return;
         }
 
         let id = self.renderer_id;
         let mut batches = self.batches.take();
-        for batch_id in pass
-            .batches()
-            .iter()
-            .filter(|batch| batch.renderer == id)
-        {
-            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
+        for pass in ctx.passes {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .filter(|batch| batch.renderer == id)
+            {
+                let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
-            let draw_start = self.draws.len() as u32;
-            let key = commands
-                .first()
-                .as_ref()
-                .unwrap()
-                .pattern
-                .shader_and_bindings();
+                let draw_start = self.draws.len() as u32;
+                let key = commands
+                    .first()
+                    .as_ref()
+                    .unwrap()
+                    .pattern
+                    .shader_and_bindings();
 
-            for fill in commands.iter() {
-                if key != fill.pattern.shader_and_bindings() {
-                    // self.draws.push(...)
+                for fill in commands.iter() {
+                    if key != fill.pattern.shader_and_bindings() {
+                        // self.draws.push(...)
+                    }
+
+                    self.prepare_fill(fill, &ctx.transforms);
                 }
 
-                self.prepare_fill(fill, &ctx.transforms);
+                // if commands to flush...
+
+                let draws = draw_start..self.draws.len() as u32;
+                info.draws = draws;
             }
-
-            // if commands to flush...
-
-            let draws = draw_start..self.draws.len() as u32;
-            info.draws = draws;
         }
 
         self.batches = batches;

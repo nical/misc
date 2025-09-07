@@ -195,7 +195,6 @@ impl MsaaStrokeRenderer {
             return;
         }
 
-        let pass = &ctx.pass;
         let transforms = &ctx.transforms;
         let worker_data = &mut ctx.workers.data();
         let shaders = &mut worker_data.pipelines;
@@ -206,64 +205,66 @@ impl MsaaStrokeRenderer {
         let id = self.renderer_id;
         let mut batches = self.batches.take();
 
-        for batch_id in pass
-            .batches()
-            .iter()
-            .filter(|batch| batch.renderer == id)
-        {
-            let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
+        for pass in ctx.passes {
+            for batch_id in pass
+                .batches()
+                .iter()
+                .filter(|batch| batch.renderer == id)
+            {
+                let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
-            let draw_start = self.draws.len() as u32;
-            let mut key = commands
-                .first()
-                .as_ref()
-                .unwrap()
-                .pattern
-                .shader_and_bindings();
+                let draw_start = self.draws.len() as u32;
+                let mut key = commands
+                    .first()
+                    .as_ref()
+                    .unwrap()
+                    .pattern
+                    .shader_and_bindings();
 
-            let mut geom_start = instances.pushed_items::<CurveInstance>();
+                let mut geom_start = instances.pushed_items::<CurveInstance>();
 
-            let mut max_segments_per_instance = 1;
-            for stroke in commands.iter() {
-                if key != stroke.pattern.shader_and_bindings() {
-                    let end = instances.pushed_items::<CurveInstance>();
-                    if end > geom_start {
-                        self.draws.push(Draw {
-                            segment_count: max_segments_per_instance,
-                            instances: geom_start..end,
-                            pattern_inputs: key.1,
-                            pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                self.geometry,
-                                key.0,
-                                info.blend_mode,
-                                surface.draw_config(true, None),
-                            )),
-                        });
+                let mut max_segments_per_instance = 1;
+                for stroke in commands.iter() {
+                    if key != stroke.pattern.shader_and_bindings() {
+                        let end = instances.pushed_items::<CurveInstance>();
+                        if end > geom_start {
+                            self.draws.push(Draw {
+                                segment_count: max_segments_per_instance,
+                                instances: geom_start..end,
+                                pattern_inputs: key.1,
+                                pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                                    self.geometry,
+                                    key.0,
+                                    info.blend_mode,
+                                    surface.draw_config(true, None),
+                                )),
+                            });
+                        }
+                        geom_start = end;
+                        key = stroke.pattern.shader_and_bindings();
+                        max_segments_per_instance = 1;
                     }
-                    geom_start = end;
-                    key = stroke.pattern.shader_and_bindings();
-                    max_segments_per_instance = 1;
+                    self.prepare_stroke(stroke, transforms, &mut max_segments_per_instance, &mut instances);
                 }
-                self.prepare_stroke(stroke, transforms, &mut max_segments_per_instance, &mut instances);
-            }
 
-            let end = instances.pushed_items::<CurveInstance>();
-            if end > geom_start {
-                self.draws.push(Draw {
-                    segment_count: max_segments_per_instance, // TODO
-                    instances: geom_start..end,
-                    pattern_inputs: key.1,
-                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                        self.geometry,
-                        key.0,
-                        info.blend_mode,
-                        surface.draw_config(true, None),
-                    )),
-                });
-            }
+                let end = instances.pushed_items::<CurveInstance>();
+                if end > geom_start {
+                    self.draws.push(Draw {
+                        segment_count: max_segments_per_instance, // TODO
+                        instances: geom_start..end,
+                        pattern_inputs: key.1,
+                        pipeline_idx: shaders.prepare(RenderPipelineKey::new(
+                            self.geometry,
+                            key.0,
+                            info.blend_mode,
+                            surface.draw_config(true, None),
+                        )),
+                    });
+                }
 
-            let draws = draw_start..self.draws.len() as u32;
-            info.draws = draws;
+                let draws = draw_start..self.draws.len() as u32;
+                info.draws = draws;
+            }
         }
 
         self.batches = batches;

@@ -295,7 +295,7 @@ pub type PrepareWorkerContext<'a> = worker::Context<'a, (PrepareWorkerData,)>;
 
 /// Parameters for the renderering stage.
 pub struct PrepareContext<'a> {
-    pub pass: &'a BuiltRenderPass,
+    pub passes: &'a [BuiltRenderPass],
     pub transforms: &'a Transforms,
     pub workers: PrepareWorkerContext<'a>,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
