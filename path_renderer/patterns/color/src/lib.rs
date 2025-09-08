@@ -1,6 +1,6 @@
 #![allow(exported_private_dependencies)]
 
-use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
+use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
 use core::{pattern::BuiltPattern, Color};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +32,6 @@ impl SolidColorRenderer {
         BuiltPattern::new(self.shader, color.to_u32())
             .with_opacity(opaque)
             .with_horizontal_stretching(true)
-            .with_blend_mode(if opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 

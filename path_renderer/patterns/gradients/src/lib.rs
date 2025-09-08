@@ -3,7 +3,7 @@
 use core::geom::traits::Transformation;
 use core::geom::Point;
 
-use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying, BlendMode};
+use core::shading::{PatternDescriptor, ShaderPatternId, Shaders, Varying};
 use core::gpu::{GpuBufferAddress, GpuBufferWriter};
 use core::pattern::BuiltPattern;
 use core::{ColorF, Vector};
@@ -510,7 +510,6 @@ impl GradientRenderer {
         BuiltPattern::new(shader, handle.to_u32())
             .with_opacity(is_opaque)
             .with_horizontal_stretching(can_stretch_horizontally)
-            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 
     pub fn add_radial(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &RadialGradientDescriptor) -> BuiltPattern {
@@ -538,7 +537,6 @@ impl GradientRenderer {
 
         BuiltPattern::new(shader, handle.to_u32())
             .with_opacity(is_opaque)
-            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 
     pub fn add_conic(&mut self, f32_buffer: &mut GpuBufferWriter, gradient: &ConicGradientDescriptor) -> BuiltPattern {
@@ -558,7 +556,6 @@ impl GradientRenderer {
 
         BuiltPattern::new(shader, handle.to_u32())
             .with_opacity(is_opaque)
-            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 

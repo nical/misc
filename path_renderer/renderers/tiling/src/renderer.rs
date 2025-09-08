@@ -130,7 +130,7 @@ impl TileRenderer {
         let batch_flags = if self.back_to_front || self.no_opaque_batches {
             BatchFlags::empty()
         } else {
-            // Each shape has potententially a draw call for the masked tiles and
+            // Each shape has potentially a draw call for the masked tiles and
             // one for the opaque interriors, so letting them overlap would break
             // ordering.
             // TODO: make it a single draw call instead to avoid the negative

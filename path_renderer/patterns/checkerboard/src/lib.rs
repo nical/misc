@@ -4,7 +4,7 @@ use core::geom::euclid::vec2;
 use core::geom::traits::Transformation;
 use core::Point;
 
-use core::shading::{Shaders, PatternDescriptor, ShaderPatternId, Varying, BlendMode};
+use core::shading::{Shaders, PatternDescriptor, ShaderPatternId, Varying};
 use core::gpu::{GpuBufferWriter};
 use core::Color;
 
@@ -71,7 +71,6 @@ impl CheckerboardRenderer {
         BuiltPattern::new(self.shader, handle.to_u32())
             .with_opacity(is_opaque)
             .prerender_by_default()
-            .with_blend_mode(if is_opaque { BlendMode::None } else { BlendMode::PremultipliedAlpha })
     }
 }
 
