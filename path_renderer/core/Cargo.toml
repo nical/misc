@@ -21,9 +21,11 @@ rayon = "1.10.0"
 # wgpu-profiler = "0.25.0"
 wgpu-profiler = { git = "https://github.com/nical/wgpu-profiler", branch="wgpu-28" }
 lru = "0.16.2"
+allocator-api2 = "0.3.0"
 
 [profile.release]
 debug=true
 
 [features]
 tracy_profiling = ["profiling/profile-with-tracy"]
+poison_frame_memory = []

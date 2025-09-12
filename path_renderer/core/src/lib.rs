@@ -19,9 +19,10 @@ pub mod shading;
 pub mod utils;
 pub mod transfer;
 pub mod nine_patch;
+pub mod allocator;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
-use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
+use crate::{allocator::frame::FrameAllocators, batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::BuiltRenderPass;
@@ -319,22 +320,24 @@ pub struct RenderContext<'a, 'b> {
     pub gpu_profiler: &'a wgpu_profiler::GpuProfiler,
 }
 
-pub struct PrepareWorkerData {
+pub struct PrepareWorkerData<'a> {
     pub pipelines: PrepareRenderPipelines,
     pub f32_buffer: GpuBuffer,
     pub u32_buffer: GpuBuffer,
     pub vertices: GpuBuffer,
     pub indices: GpuStreams,
     pub instances: GpuStreams,
-    // allocator
+    pub allocators: &'a FrameAllocators,
 }
 
-pub type PrepareWorkerContext<'a> = worker::Context<'a, (PrepareWorkerData,)>;
+unsafe impl<'a> Send for PrepareWorkerData<'a> {}
+
+pub type PrepareWorkerContext<'a, 'b> = worker::Context<'a, (PrepareWorkerData<'b>,)>;
 
 /// Parameters for the renderering stage.
-pub struct PrepareContext<'a> {
+pub struct PrepareContext<'a, 'b> {
     pub transforms: &'a Transforms,
-    pub workers: PrepareWorkerContext<'a>,
+    pub workers: PrepareWorkerContext<'a, 'b>,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
 }
 

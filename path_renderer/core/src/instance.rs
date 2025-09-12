@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::allocator::chunk::ChunkPool;
+use crate::allocator::frame::FrameAllocators;
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
 use crate::transfer::{Transfer, Transfers};
 use crate::render_pass::{BuiltRenderPass, PassRenderContext};
@@ -25,6 +27,7 @@ pub struct Instance {
     pub queue: wgpu::Queue,
     pub gpu_profiler: wgpu_profiler::GpuProfiler,
     pub gpu_profiling_enabled: bool,
+    chunks: ChunkPool,
     next_frame_index: u32,
     next_bindings_namespace: BindingsNamespace,
 }
@@ -50,6 +53,8 @@ impl Instance {
             max_num_pending_frames: 4,
         }).unwrap();
 
+        let chunks = ChunkPool::new();
+
         Instance {
             shaders,
             render_pipelines,
@@ -63,13 +68,21 @@ impl Instance {
             next_bindings_namespace: BindingsNamespace(0),
             gpu_profiler,
             gpu_profiling_enabled,
+            chunks,
         }
     }
 
     pub fn begin_frame(&mut self) -> Frame {
         let num_namespaces = self.next_bindings_namespace.0 as usize;
+
         let index = self.next_frame_index;
         self.next_frame_index += 1;
+
+        let num_workers = self.workers.num_workers();
+        let mut allocators = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            allocators.push(FrameAllocators::new(self.chunks.clone()));
+        }
 
         Frame {
             f32_buffer: self.resources.common.f32_buffer.begin_frame(
@@ -90,6 +103,7 @@ impl Instance {
             transforms: Transforms::new(),
             passes: Passes::new(),
             resources: FrameResources::new(num_namespaces),
+            allocators,
             index,
         }
     }
@@ -108,7 +122,7 @@ impl Instance {
 
         let num_workers = self.workers.num_workers();
         let mut worker_data = Vec::with_capacity(num_workers);
-        for _ in 0..(num_workers - 1) {
+        for i in 0..(num_workers - 1) {
             worker_data.push(PrepareWorkerData {
                 pipelines: self.render_pipelines.prepare(),
                 f32_buffer: frame.f32_buffer.clone(),
@@ -116,6 +130,7 @@ impl Instance {
                 vertices: frame.vertices.clone(),
                 indices: frame.indices.clone(),
                 instances: frame.instances.clone(),
+                allocators: &frame.allocators[i],
             });
         }
         worker_data.push(PrepareWorkerData {
@@ -125,6 +140,7 @@ impl Instance {
             vertices: frame.vertices,
             indices: frame.indices,
             instances: frame.instances,
+            allocators: &frame.allocators[num_workers - 1],
         });
 
         let mut ctx = PrepareContext {
@@ -333,8 +349,7 @@ pub struct Frame {
     pub transforms: Transforms,
     pub passes: Passes,
     pub resources: FrameResources,
-
-    // pub allocator: FrameAllocator, // TODO
+    allocators: Vec<FrameAllocators>,
     index: u32,
 }
 
