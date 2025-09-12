@@ -1,10 +1,10 @@
 use core::{
-    bytemuck, path::Path, pattern::BuiltPattern, render_pass::BuiltRenderPass, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
+    bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
-use core::batching::{BatchFlags, BatchId, BatchList};
+use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -497,7 +497,7 @@ impl core::Renderer for MeshRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -516,7 +516,7 @@ impl core::Renderer for MeshRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();

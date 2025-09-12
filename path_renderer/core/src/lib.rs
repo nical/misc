@@ -1,3 +1,5 @@
+#![allow(mismatched_lifetime_syntaxes)]
+
 pub extern crate wgpu;
 
 pub mod render_pass;
@@ -18,6 +20,7 @@ pub mod shading;
 pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
+use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::{BuiltRenderPass, RenderPassContext};
@@ -337,14 +340,18 @@ pub trait Renderer {
 
     fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }
 
+    // TODO: does this need &mut self?
+    fn add_render_commands(&self, batch: BatchId, commands: &mut RenderCommands) {
+        commands.push(batch.into());
+    }
+
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        _batches: &[batching::BatchId],
-        _pass_info: &render_pass::RenderPassConfig,
-        _ctx: RenderContext<'resources, 'tmp>,
-        _render_pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-    }
+        batches: &[RenderCommandId],
+        pass_info: &render_pass::RenderPassConfig,
+        ctx: RenderContext<'resources, 'tmp>,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+    );
 }
 
 pub trait FillPath {

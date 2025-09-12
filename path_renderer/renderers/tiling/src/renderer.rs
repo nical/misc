@@ -1,5 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -513,7 +513,7 @@ impl core::Renderer for TileRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -534,7 +534,7 @@ impl core::Renderer for TileRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch) = self.batches.get(batch_id.index);
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 

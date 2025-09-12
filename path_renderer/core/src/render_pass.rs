@@ -1,3 +1,5 @@
+use wgpu_profiler::GpuProfiler;
+
 use crate::batching::{BatchId, Batcher};
 use crate::graph::PassRenderContext;
 use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
@@ -255,9 +257,174 @@ impl BuiltRenderPass {
         io: &RenderPassIo,
         ctx: &mut PassRenderContext
     ) {
+        let mut commands = RenderCommands::new();
+        for batch in &self.batches {
+            let renderer_prepare_start = Instant::now();
+            let renderer_idx = batch.renderer as usize;
+            ctx.renderers[renderer_idx].add_render_commands(*batch, &mut commands);
+            let stats = &mut ctx.stats[renderer_idx];
+            stats.prepare_time += crate::instance::ms(Instant::now() - renderer_prepare_start);
+        }
+
+        commands.end_render_pass();
+
+        commands.render_pass(ctx, io, &self.config());
+    }
+}
+
+#[test]
+fn surface_draw_config() {
+    for msaa in [true, false] {
+        for depth in [DepthMode::Enabled, DepthMode::Ignore, DepthMode::None] {
+            for stencil in [StencilMode::EvenOdd, StencilMode::NonZero, StencilMode::Ignore, StencilMode::None] {
+                for kind in [SurfaceKind::Color, SurfaceKind::Alpha] {
+                    let kind = [kind, SurfaceKind::None, SurfaceKind::None];
+                    let surface = SurfaceDrawConfig { msaa, depth, stencil, attachments: kind};
+                    assert_eq!(SurfaceDrawConfig::from_hash(surface.hash()), surface);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AttathchmentFlags {
+    pub load: bool,
+    pub store: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderCommandId {
+    pub renderer: RendererId,
+    pub request_pre_pass: bool,
+    pub index: u32,
+}
+
+impl From<BatchId> for RenderCommandId {
+    fn from(batch: BatchId) -> Self {
+        RenderCommandId {
+            renderer: batch.renderer,
+            request_pre_pass: false,
+            index: batch.index,
+        }
+    }
+}
+
+struct SubPass {
+    ordered: Range<usize>,
+    order_independent: Range<usize>,
+    pre_passes: Range<usize>,
+}
+
+pub struct RenderCommands {
+    ordered: Vec<RenderCommandId>,
+    order_independent: Vec<RenderCommandId>,
+    pre_passes: Vec<RenderCommandId>,
+    sub_passes: Vec<SubPass>,
+    requested_pre_pass: Vec<bool>,
+    current_pass_start: u16,
+}
+
+impl RenderCommands {
+    pub fn new() -> Self {
+        RenderCommands {
+            ordered: Vec::with_capacity(256),
+            order_independent: Vec::with_capacity(64),
+            sub_passes: Vec::new(),
+            pre_passes: Vec::new(),
+            requested_pre_pass: Vec::new(),
+            current_pass_start: 0,
+        }
+    }
+
+    pub fn push(&mut self, command: RenderCommandId) {
+        if command.request_pre_pass {
+            self.request_pre_pass(command);
+        }
+        self.ordered.push(command);
+    }
+
+    pub fn push_order_independent(&mut self, command: RenderCommandId) {
+        if command.request_pre_pass {
+            self.request_pre_pass(command);
+        }
+        self.order_independent.push(command)
+    }
+
+    pub fn end_render_pass(&mut self) {
+        self.current_pass_start = self.sub_passes.len() as u16;
+        self.finish_sub_pass();
+    }
+
+    fn request_pre_pass(&mut self, command: RenderCommandId) {
+        let renderer = command.renderer as usize;
+        while self.requested_pre_pass.len() <= renderer {
+            self.requested_pre_pass.push(false);
+        }
+        if self.requested_pre_pass[renderer] {
+            self.finish_sub_pass();
+            self.pre_passes.push(command)
+        }
+
+        self.requested_pre_pass[renderer] = true;
+    }
+
+    fn finish_sub_pass(&mut self) {
+        let (o_start, oi_start, pp_start) = self.sub_passes.last()
+            .map(|sp| (sp.ordered.end, sp.order_independent.end, sp.pre_passes.end))
+            .unwrap_or((0, 0, 0));
+        let o_end = self.ordered.len();
+        let oi_end = self.order_independent.len();
+        let pp_end = self.pre_passes.len();
+
+        let sub_pass = SubPass {
+            ordered: o_start..o_end,
+            order_independent: oi_start..oi_end,
+            pre_passes: pp_start..pp_end,
+        };
+
+        if sub_pass.ordered.is_empty()
+            && sub_pass.order_independent.is_empty()
+            && sub_pass.pre_passes.is_empty() {
+            return;
+        }
+
+        self.sub_passes.push(sub_pass);
+    }
+
+    pub fn render_pass(
+        &self,
+        ctx: &mut PassRenderContext,
+        io: &RenderPassIo,
+        config: &RenderPassConfig,
+    ) {
+        for sub_pass in &self.sub_passes {
+            self.render_sub_pass(ctx, sub_pass, io, config);
+        }
+    }
+
+    fn render_pre_pass(
+        &self,
+        _pre_pass: &RenderCommandId,
+        _ctx: &mut PassRenderContext,
+    ) {
+        // TODO
+    }
+
+    fn render_sub_pass(
+        &self,
+        ctx: &mut PassRenderContext,
+        sub_pass: &SubPass,
+        io: &RenderPassIo,
+        config: &RenderPassConfig,
+    ) {
+        for pre_pass in &self.pre_passes[sub_pass.pre_passes.clone()] {
+            self.render_pre_pass(pre_pass, ctx);
+        }
+
         let mut wgpu_attachments = Vec::new();
 
-        let msaa = self.config().msaa();
+        let msaa = config.msaa();
         for attachment in &io.color_attachments {
             let view;
             let resolve_target;
@@ -303,7 +470,7 @@ impl BuiltRenderPass {
             let view = ctx.bindings.resolve_attachment(id).unwrap();
             wgpu::RenderPassDepthStencilAttachment {
                 view,
-                depth_ops: if self.config.depth {
+                depth_ops: if config.depth {
                     Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
@@ -311,7 +478,7 @@ impl BuiltRenderPass {
                 } else {
                     None
                 },
-                stencil_ops: if self.config.stencil {
+                stencil_ops: if config.stencil {
                     Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(128),
                         store: wgpu::StoreOp::Discard,
@@ -332,88 +499,121 @@ impl BuiltRenderPass {
 
         let mut wgpu_pass = ctx.encoder.begin_render_pass(&pass_descriptor);
 
-        self.render_in_pass(
-            ctx.renderers,
-            ctx.resources,
-            ctx.bindings,
-            ctx.render_pipelines,
-            &mut wgpu_pass,
-            ctx.gpu_profiler,
-            ctx.stats,
-        );
-    }
-
-    pub fn render_in_pass<'pass, 'resources: 'pass>(
-        &self,
-        renderers: &[&'resources dyn Renderer],
-        resources: &'resources GpuResources,
-        bindings: &'resources dyn BindingResolver,
-        render_pipelines: &'resources RenderPipelines,
-        wgpu_pass: &mut wgpu::RenderPass<'pass>,
-        gpu_profiler: &'pass mut wgpu_profiler::GpuProfiler,
-        stats: &mut [RendererStats],
-    ) {
-        if self.batches.is_empty() {
-            return;
-        }
-
-        let base_bind_group = resources.common.get_base_bindgroup();
+        let base_bind_group = ctx.resources.common.get_base_bindgroup();
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
-        // Traverse batches, grouping consecutive items with the same renderer.
-        let mut start = 0;
-        let mut end = 0;
-        let mut renderer = self.batches[0].renderer;
-        while start < self.batches.len() {
-            let done = end >= self.batches.len();
-            if !done && renderer == self.batches[end].renderer {
-                end += 1;
-                continue;
+        let mut prev_renderer = None;
+        let mut end_idx = sub_pass.order_independent.end;
+        for (idx, command) in self.order_independent[sub_pass.order_independent.clone()].iter().enumerate().rev() {
+            if Some(command.renderer) != prev_renderer && prev_renderer.is_some() {
+                let commands = &self.order_independent[idx..end_idx];
+                let renderer_idx = prev_renderer.unwrap() as usize;
+                self.render_commands(
+                    commands,
+                    renderer_idx,
+                    ctx.renderers,
+                    ctx.render_pipelines,
+                    ctx.resources,
+                    ctx.bindings,
+                    ctx.stats,
+                    config,
+                    ctx.gpu_profiler,
+                    &mut wgpu_pass,
+                );
+                end_idx = idx;
             }
 
-            let start_time = Instant::now();
-            let renderer_stats = &mut stats[renderer as usize];
-            renderers[renderer as usize].render(
-                &self.batches[start..end],
-                &self.config,
-                RenderContext {
-                    render_pipelines,
-                    bindings,
-                    resources,
-                    stats: renderer_stats,
-                    gpu_profiler,
-                },
-                wgpu_pass
+            prev_renderer = Some(command.renderer);
+        }
+
+        if end_idx != sub_pass.order_independent.start {
+            let commands = &self.order_independent[sub_pass.order_independent.start..end_idx];
+            let renderer_idx = prev_renderer.unwrap() as usize;
+            self.render_commands(
+                commands,
+                renderer_idx,
+                ctx.renderers,
+                ctx.render_pipelines,
+                ctx.resources,
+                ctx.bindings,
+                ctx.stats,
+                config,
+                ctx.gpu_profiler,
+                &mut wgpu_pass,
             );
-            let time = crate::instance::ms(Instant::now() - start_time);
-            renderer_stats.render_time += time;
+        }
 
-            if done {
-                break;
+        let mut prev_renderer = None;
+        let mut start_idx = sub_pass.ordered.start;
+        for (idx, command) in self.ordered[sub_pass.ordered.clone()].iter().enumerate() {
+            if Some(command.renderer) != prev_renderer && prev_renderer.is_some() {
+                let commands = &self.ordered[start_idx..idx];
+                let renderer_idx = prev_renderer.unwrap() as usize;
+                self.render_commands(
+                    commands,
+                    renderer_idx,
+                    ctx.renderers,
+                    ctx.render_pipelines,
+                    ctx.resources,
+                    ctx.bindings,
+                    ctx.stats,
+                    config,
+                    ctx.gpu_profiler,
+                    &mut wgpu_pass,
+                );
+                start_idx = idx;
             }
-            start = end;
-            renderer = self.batches[start].renderer;
+
+            prev_renderer = Some(command.renderer);
+        }
+
+        if start_idx != sub_pass.ordered.end {
+            let commands = &self.ordered[start_idx..sub_pass.ordered.end];
+            let renderer_idx = prev_renderer.unwrap() as usize;
+            self.render_commands(
+                commands,
+                renderer_idx,
+                ctx.renderers,
+                ctx.render_pipelines,
+                ctx.resources,
+                ctx.bindings,
+                ctx.stats,
+                config,
+                ctx.gpu_profiler,
+                &mut wgpu_pass,
+            );
         }
     }
-}
 
-#[test]
-fn surface_draw_config() {
-    for msaa in [true, false] {
-        for depth in [DepthMode::Enabled, DepthMode::Ignore, DepthMode::None] {
-            for stencil in [StencilMode::EvenOdd, StencilMode::NonZero, StencilMode::Ignore, StencilMode::None] {
-                for kind in [SurfaceKind::Color, SurfaceKind::Alpha] {
-                    let kind = [kind, SurfaceKind::None, SurfaceKind::None];
-                    let surface = SurfaceDrawConfig { msaa, depth, stencil, attachments: kind};
-                    assert_eq!(SurfaceDrawConfig::from_hash(surface.hash()), surface);
-                }
-            }
-        }
+    pub fn render_commands<'pass, 'resources: 'pass>(
+        &self,
+        commands: &[RenderCommandId],
+        renderer_idx: usize,
+        renderers: &[&dyn Renderer],
+        render_pipelines: &'resources RenderPipelines,
+        resources: &'resources crate::resources::GpuResources,
+        bindings: &'resources dyn BindingResolver,
+        stats: &mut [RendererStats],
+        config: &RenderPassConfig,
+        gpu_profiler: &'resources GpuProfiler,
+        wgpu_pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        let start_time = std::time::Instant::now();
+        let stats = &mut stats[renderer_idx];
+        renderers[renderer_idx].render(
+            commands,
+            config,
+            RenderContext {
+                render_pipelines,
+                bindings,
+                resources,
+                stats,
+                gpu_profiler,
+            },
+            wgpu_pass
+        );
+
+        let time = crate::instance::ms(std::time::Instant::now() - start_time);
+        stats.render_time += time;
     }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AttathchmentFlags {
-    pub load: bool,
-    pub store: bool,
 }

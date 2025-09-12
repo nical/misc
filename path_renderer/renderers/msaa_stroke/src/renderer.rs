@@ -1,10 +1,10 @@
 use core::{
     bytemuck, gpu::{
         storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
-    }, pattern::BuiltPattern, render_pass::BuiltRenderPass, render_task::RenderTaskHandle, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    }, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
 };
 use core::transform::{TransformId, Transforms};
-use core::batching::{BatchFlags, BatchId, BatchList};
+use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
 use core::shading::{Shaders, GeometryId, BindGroupLayoutId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -344,7 +344,7 @@ impl core::Renderer for MsaaStrokeRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -363,7 +363,7 @@ impl core::Renderer for MsaaStrokeRenderer {
         render_pass.set_vertex_buffer(0, instance_buf);
 
         let mut helper = DrawHelper::new();
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();

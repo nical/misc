@@ -8,7 +8,7 @@ use tess::EncodedPrimitiveInfo;
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{render_pass::BuiltRenderPass, units::SurfacePoint, wgpu};
+use core::{render_pass::{BuiltRenderPass, RenderCommandId}, units::SurfacePoint, wgpu};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
@@ -16,7 +16,7 @@ use core::{
 };
 use core::units::{point, LocalRect, LocalToSurfaceTransform, Point, SurfaceRect};
 use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex, RenderPipelineKey};
-use core::batching::{BatchId, BatchFlags, BatchList};
+use core::batching::{BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
 use core::render_pass::{RenderPassContext, RendererId, ZIndex};
 use core::render_task::RenderTaskInfo;
@@ -749,7 +749,7 @@ impl core::Renderer for StencilAndCoverRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -767,7 +767,7 @@ impl core::Renderer for StencilAndCoverRenderer {
             ctx.resources.common.vertices.as_buffer().unwrap().slice(..)
         );
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch) = self.batches.get(batch_id.index);
 
             let draws = if let Some(worker_idx) = batch.worker_index {

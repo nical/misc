@@ -7,7 +7,7 @@ use core::transform::{TransformId, Transforms};
 use core::shape::FilledPath;
 use core::units::LocalRect;
 use core::render_pass::{
-    BuiltRenderPass, RenderPassContext, RendererId, RenderPassConfig, ZIndex
+    BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex
 };
 use core::batching::{BatchFlags, BatchId, BatchList};
 use core::shading::{PrepareRenderPipelines, RenderPipelineIndex};
@@ -170,14 +170,14 @@ impl core::Renderer for TemplateRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let mut helper = DrawHelper::new();
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch_info) = self.batches.get(batch_id.index);
 
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {

@@ -7,8 +7,8 @@ use core::{
     PrepareContext
 };
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
-use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId};
+use core::batching::{BatchFlags, BatchList};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId};
 use core::gpu::{GpuBufferAddress, StreamId};
 use core::utils::DrawHelper;
 
@@ -202,7 +202,7 @@ impl core::Renderer for RectangleRenderer {
 
     fn render<'pass, 'resources: 'pass, 'stats>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'stats>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -219,7 +219,7 @@ impl core::Renderer for RectangleRenderer {
 
         render_pass.set_vertex_buffer(0, instance_buffer);
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch) = self.batches.get(batch_id.index);
 
             let pipeline = ctx

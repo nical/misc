@@ -1,7 +1,7 @@
 use core::render_task::RenderTaskHandle;
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
-use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{BuiltRenderPass, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::batching::{BatchFlags, BatchList};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::gpu::GpuBufferWriter;
 use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
 use core::utils::{DrawHelper, usize_range};
@@ -317,7 +317,7 @@ impl core::Renderer for WpfMeshRenderer {
 
     fn render<'pass, 'resources: 'pass, 'tmp>(
         &self,
-        batches: &[BatchId],
+        commands: &[RenderCommandId],
         _surface_info: &RenderPassConfig,
         ctx: core::RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -329,7 +329,7 @@ impl core::Renderer for WpfMeshRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for batch_id in batches {
+        for batch_id in commands {
             let (_, _, batch_info) = self.batches.get(batch_id.index);
             for draw in &self.draws[usize_range(batch_info.draws.clone())] {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
