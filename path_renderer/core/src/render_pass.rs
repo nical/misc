@@ -5,7 +5,6 @@ use crate::graph::PassRenderContext;
 use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::path::FillRule;
-use crate::resources::GpuResources;
 use crate::units::SurfaceIntSize;
 use crate::{BindingResolver, BindingsId, RenderContext, Renderer, RendererStats};
 use std::ops::Range;
@@ -255,20 +254,21 @@ impl BuiltRenderPass {
     pub fn render(
         &self,
         io: &RenderPassIo,
-        ctx: &mut PassRenderContext
+        ctx: &mut PassRenderContext,
+        renderers: &[&mut dyn Renderer],
     ) {
         let mut commands = RenderCommands::new();
         for batch in &self.batches {
             let renderer_prepare_start = Instant::now();
             let renderer_idx = batch.renderer as usize;
-            ctx.renderers[renderer_idx].add_render_commands(*batch, &mut commands);
+            renderers[renderer_idx].add_render_commands(*batch, &mut commands);
             let stats = &mut ctx.stats[renderer_idx];
             stats.prepare_time += crate::instance::ms(Instant::now() - renderer_prepare_start);
         }
 
         commands.end_render_pass();
 
-        commands.render_pass(ctx, io, &self.config());
+        commands.render_pass(ctx, renderers, io, &self.config());
     }
 }
 
@@ -395,11 +395,12 @@ impl RenderCommands {
     pub fn render_pass(
         &self,
         ctx: &mut PassRenderContext,
+        renderers: &[&mut dyn Renderer],
         io: &RenderPassIo,
         config: &RenderPassConfig,
     ) {
         for sub_pass in &self.sub_passes {
-            self.render_sub_pass(ctx, sub_pass, io, config);
+            self.render_sub_pass(ctx, renderers, sub_pass, io, config);
         }
     }
 
@@ -414,6 +415,7 @@ impl RenderCommands {
     fn render_sub_pass(
         &self,
         ctx: &mut PassRenderContext,
+        renderers: &[&mut dyn Renderer],
         sub_pass: &SubPass,
         io: &RenderPassIo,
         config: &RenderPassConfig,
@@ -511,7 +513,7 @@ impl RenderCommands {
                 self.render_commands(
                     commands,
                     renderer_idx,
-                    ctx.renderers,
+                    renderers,
                     ctx.render_pipelines,
                     ctx.resources,
                     ctx.bindings,
@@ -532,7 +534,7 @@ impl RenderCommands {
             self.render_commands(
                 commands,
                 renderer_idx,
-                ctx.renderers,
+                renderers,
                 ctx.render_pipelines,
                 ctx.resources,
                 ctx.bindings,
@@ -552,7 +554,7 @@ impl RenderCommands {
                 self.render_commands(
                     commands,
                     renderer_idx,
-                    ctx.renderers,
+                    renderers,
                     ctx.render_pipelines,
                     ctx.resources,
                     ctx.bindings,
@@ -573,7 +575,7 @@ impl RenderCommands {
             self.render_commands(
                 commands,
                 renderer_idx,
-                ctx.renderers,
+                renderers,
                 ctx.render_pipelines,
                 ctx.resources,
                 ctx.bindings,
@@ -589,7 +591,7 @@ impl RenderCommands {
         &self,
         commands: &[RenderCommandId],
         renderer_idx: usize,
-        renderers: &[&dyn Renderer],
+        renderers: &[&mut dyn Renderer],
         render_pipelines: &'resources RenderPipelines,
         resources: &'resources crate::resources::GpuResources,
         bindings: &'resources dyn BindingResolver,

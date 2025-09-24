@@ -296,6 +296,9 @@ pub mod offset {
     ) where
         F: FnMut(&QuadraticBezierSegment<S>),
     {
+        debug_assert!(curve.from.is_finite());
+        debug_assert!(curve.ctrl.is_finite());
+        debug_assert!(curve.to.is_finite());
         let mut range = S::ZERO..S::ONE;
         let end = range.end;
 
@@ -314,6 +317,11 @@ pub mod offset {
             let n1 = normal(v1);
             let n = normal((v0 + v1).normalize());
             let inv_len = n.dot(n1);
+            if !inv_len.is_finite() {
+                // This can be caused by tiny input curves that (almost)
+                // a point, causing v0 and other quantities to become NaN.
+                break;
+            }
             let ctrl_offset = if inv_len != S::ZERO {
                 dist / inv_len
             } else {
@@ -322,6 +330,9 @@ pub mod offset {
             let ctrl = sub_curve.ctrl + n * ctrl_offset;
 
             let to = sub_curve.to + n1 * dist;
+            debug_assert!(from.is_finite());
+            debug_assert!(ctrl.is_finite());
+            debug_assert!(to.is_finite());
             let offset_curve = QuadraticBezierSegment { from, ctrl, to };
 
             // Evaluate the error.

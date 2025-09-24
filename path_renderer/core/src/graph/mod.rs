@@ -9,7 +9,7 @@ use crate::units::SurfaceIntSize;
 use crate::render_pass::RenderPassIo;
 use crate::resources::GpuResources;
 use crate::shading::RenderPipelines;
-use crate::{BindingResolver, Renderer, RendererStats, SurfaceKind};
+use crate::{BindingResolver, RendererStats, SurfaceKind};
 
 use schedule::RenderGraph;
 pub use schedule::{GraphBindings, GraphError};
@@ -604,7 +604,6 @@ bitflags! {
 
 pub struct PassRenderContext<'l> {
     pub encoder: &'l mut wgpu::CommandEncoder,
-    pub renderers: &'l [&'l dyn Renderer],
     pub resources: &'l GpuResources,
     pub bindings: &'l dyn BindingResolver,
     pub render_pipelines: &'l RenderPipelines,
@@ -616,7 +615,6 @@ pub struct PassRenderContext<'l> {
 // This is an abstraction for a (render/compute/transfer) pass.
 pub trait GraphSystem {
     fn set_pass_io(&mut self, pass_id: PassId, io: RenderPassIo);
-    fn render(&self, ctx: &mut PassRenderContext, pass_id: PassId);
 }
 
 pub type GraphSystemId = u16;

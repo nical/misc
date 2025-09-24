@@ -1,6 +1,7 @@
 use crate::render_pass::{AttathchmentFlags, BuiltRenderPass, RenderPassBuilder, RenderPassContext, RenderPassIo};
 use crate::render_task::{FrameAtlasAllocator, RenderTaskData, RenderTaskHandle, RenderTaskInfo};
 use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
+use crate::Renderer;
 use crate::{gpu::GpuBufferWriter, RenderPassConfig, SurfaceKind};
 use crate::graph::{ColorAttachment, Dependency, GraphSystem, NodeDescriptor, NodeKind, PassId, PassRenderContext, Resource, Slot, TaskId};
 use crate::graph::{FrameGraph, Node, NodeDependency};
@@ -253,6 +254,17 @@ impl RenderNodes {
     pub fn passes(&self) -> &[BuiltRenderPass] {
         &self.built_render_passes
     }
+
+    pub fn render(
+        &self,
+        ctx: &mut PassRenderContext,
+        renderers: &[&mut dyn Renderer],
+        pass_id: PassId
+    ) {
+        let pass = &self.built_render_passes[pass_id.index as usize];
+        let io = &self.io[pass_id.index as usize];
+        pass.render(io, ctx, renderers);
+    }
 }
 
 impl GraphSystem for RenderNodes {
@@ -273,11 +285,5 @@ impl GraphSystem for RenderNodes {
             });
         }
         self.io[index] = io;
-    }
-
-    fn render(&self, ctx: &mut PassRenderContext, pass_id: PassId) {
-        let pass = &self.built_render_passes[pass_id.index as usize];
-        let io = &self.io[pass_id.index as usize];
-        pass.render(io, ctx);
     }
 }

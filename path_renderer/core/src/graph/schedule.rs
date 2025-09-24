@@ -34,14 +34,6 @@ impl RenderGraph {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.nodes.clear();
-        self.resources.clear();
-        self.tasks.clear();
-        self.roots.clear();
-        self.next_virtual_resource = 0;
-    }
-
     pub fn add_node(&mut self, desc: &NodeDescriptor) -> NodeId {
         let id = NodeId::from_index(self.nodes.len());
 

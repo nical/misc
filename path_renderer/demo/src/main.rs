@@ -600,8 +600,6 @@ impl App {
         };
 
         let mut frame = self.instance.begin_frame();
-        let mut graph = FrameGraph::new();
-        let mut render_nodes = RenderNodes::new();
 
         self.renderers.begin_frame();
 
@@ -701,9 +699,9 @@ impl App {
         }
 
         let mut f32_buffer = frame.f32_buffer.write();
-        let mut main_surface = render_nodes.add_node(&graph, &mut f32_buffer, descriptor);
+        let mut main_surface = frame.render_nodes.add_node(&frame.graph, &mut f32_buffer, descriptor);
         std::mem::drop(f32_buffer);
-        graph.add_root(&main_surface);
+        frame.graph.add_root(&main_surface);
 
         let tx = self.view.pan[0].round();
         let ty = self.view.pan[1].round();
@@ -729,7 +727,7 @@ impl App {
             &transform,
         );
 
-        main_surface.finish(&mut render_nodes);
+        main_surface.finish(&mut frame.render_nodes);
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
@@ -746,12 +744,6 @@ impl App {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut passes = Vec::new();
-        let systems = &mut [
-            &mut render_nodes as &mut dyn GraphSystem,
-        ];
-        let graph_bindings = graph.schedule(systems, &mut passes).unwrap();
-
         let mut renderers = &mut [
             &mut self.renderers.tiling as &mut dyn Renderer,
             &mut self.renderers.stencil,
@@ -763,63 +755,14 @@ impl App {
 
         let mut stats = RenderStats::new(renderers.len());
 
-        let mut prepare_phase = self.instance.render_frame(frame, &graph_bindings, &mut encoder);
-
-        let mut ctx = prepare_phase.ctx();
-        let mut start = Instant::now();
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            renderer.prepare(&mut ctx, &render_nodes.passes());
-            let end = Instant::now();
-            stats.renderers[idx].prepare_time += ms(end - start);
-            start = end;
-        }
-
-        let mut upload_phase = prepare_phase.next(&mut stats);
-
-        let mut ctx = upload_phase.ctx();
-        for (idx, renderer) in renderers.iter_mut().enumerate() {
-            let renderer_upload_start = Instant::now();
-            stats.uploads += renderer.upload(&mut ctx);
-            let stats = &mut stats.renderers[idx];
-            stats.upload_time = ms(Instant::now() - renderer_upload_start);
-        }
-
-        let external_attachments = &[Some(&frame_view)];
-        let mut render_phase = upload_phase.next(
-            &mut stats,
+        let external_attachments = [Some(&frame_view)];
+        self.instance.render_frame(
+            frame,
             &[],
-            external_attachments,
+            &external_attachments,
+            &mut encoder,
+            renderers
         );
-
-        let mut ctx = render_phase.ctx(renderers);
-        let systems = &mut [
-            &mut render_nodes as &mut dyn GraphSystem,
-        ];
-        for pass in &passes {
-            systems[pass.system as usize].render(&mut ctx, *pass)
-        }
-
-        render_phase.finish();
-
-        if self.view.debug_overlay {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Debug overlay"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            self.stats_renderer.render(&mut render_pass);
-        }
 
         let present_start = Instant::now();
 
