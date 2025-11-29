@@ -20,7 +20,7 @@ pub mod shading;
 pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
-use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
+use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}, transform::Transform};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::{BuiltRenderPass, RenderPassContext};
@@ -355,5 +355,5 @@ pub trait Renderer {
 }
 
 pub trait FillPath {
-    fn fill_path(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, path: shape::FilledPath, pattern: BuiltPattern);
+    fn fill_path(&mut self, ctx: &mut RenderPassContext, transform: &Transform, path: shape::FilledPath, pattern: BuiltPattern);
 }

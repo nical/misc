@@ -8,7 +8,7 @@ use tess::EncodedPrimitiveInfo;
 
 use crate::resources::StencilAndCoverResources;
 
-use core::{render_pass::{BuiltRenderPass, RenderCommandId}, units::SurfacePoint, wgpu};
+use core::{render_pass::{BuiltRenderPass, RenderCommandId}, transform::Transform, units::SurfacePoint, wgpu};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::{
     PrepareContext, BindingsId, StencilMode, RenderPassConfig,
@@ -205,26 +205,25 @@ impl StencilAndCoverRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path.into()), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, rect: &LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(ctx, transforms, Shape::Rect(*rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transform: &Transform, rect: &LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transform, Shape::Rect(*rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transform: &Transform, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transform, Shape::Circle(circle), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transform: &Transform, shape: Shape, pattern: BuiltPattern) {
         debug_assert!(self.supports_surface(ctx.config));
 
-        let aabb = transforms
-            .get_current()
+        let aabb = transform
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
@@ -261,7 +260,7 @@ impl StencilAndCoverRenderer {
                     shape: shape.clone(),
                     task: *view,
                     pattern,
-                    transform: transforms.current_id(),
+                    transform: transform.id(),
                     z_index,
                 });
             }
@@ -834,10 +833,10 @@ impl core::FillPath for StencilAndCoverRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
     }
 }

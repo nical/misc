@@ -1,7 +1,7 @@
 use core::{
-    bytemuck, gpu::{
-        storage_buffer::{StorageBuffer, StorageKind}, GpuStreamWriter, StreamId, UploadStats
-    }, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::FilledPath, units::LocalRect, wgpu, BindingsId, Point, PrepareContext, UploadContext
+    BindingsId, Point, PrepareContext, UploadContext, bytemuck, gpu::{
+        GpuStreamWriter, StreamId, UploadStats, storage_buffer::{StorageBuffer, StorageKind}
+    }, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::FilledPath, transform::Transform, units::LocalRect, wgpu
 };
 use core::transform::{TransformId, Transforms};
 use core::batching::{BatchFlags, BatchList};
@@ -140,12 +140,12 @@ impl MsaaStrokeRenderer {
     pub fn stroke_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: P,
         pattern: BuiltPattern,
         width: f32,
     ) {
-        self.stroke_shape(ctx, transforms, Shape::Path(path.into(), width), pattern);
+        self.stroke_shape(ctx, transform, Shape::Path(path.into(), width), pattern);
     }
 
 //    pub fn stroke_rect(&mut self, ctx: &mut Context, rect: LocalRect, pattern: BuiltPattern) {
@@ -156,12 +156,11 @@ impl MsaaStrokeRenderer {
 //        self.stroke_shape(ctx, Shape::Circle(circle), pattern);
 //    }
 
-    fn stroke_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        let transform = transforms.current_id();
+    fn stroke_shape(&mut self, ctx: &mut RenderPassContext, transform: &Transform, shape: Shape, pattern: BuiltPattern) {
+        let transform_id = transform.id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = transforms
-            .get_current()
+        let aabb = transform
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
@@ -182,7 +181,7 @@ impl MsaaStrokeRenderer {
                 batch.push(Stroke {
                     shape: shape.clone(),
                     pattern,
-                    transform,
+                    transform: transform_id,
                     z_index,
                     render_task: task.handle,
                 });

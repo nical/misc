@@ -1,5 +1,5 @@
 use core::{
-    bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, wgpu, BindingsId, PrepareContext
+    BindingsId, PrepareContext, bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, transform::Transform, wgpu
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
@@ -191,48 +191,47 @@ impl MeshRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path.into()), pattern);
     }
 
     pub fn stroke_path(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: Path,
         width: f32,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::StrokePath(path, width), pattern);
+        self.fill_shape(ctx, transform, Shape::StrokePath(path, width), pattern);
     }
 
-    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, rect: LocalRect, pattern: BuiltPattern) {
-        self.fill_shape(ctx, transforms, Shape::Rect(rect), pattern);
+    pub fn fill_rect(&mut self, ctx: &mut RenderPassContext, transform: &Transform, rect: LocalRect, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transform, Shape::Rect(rect), pattern);
     }
 
-    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, circle: Circle, pattern: BuiltPattern) {
-        self.fill_shape(ctx, transforms, Shape::Circle(circle), pattern);
+    pub fn fill_circle(&mut self, ctx: &mut RenderPassContext, transform: &Transform, circle: Circle, pattern: BuiltPattern) {
+        self.fill_shape(ctx, transform, Shape::Circle(circle), pattern);
     }
 
     pub fn fill_mesh(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         mesh: Arc<TessellatedMesh>,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Mesh(mesh), pattern);
+        self.fill_shape(ctx, transform, Shape::Mesh(mesh), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        let transform = transforms.current_id();
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transform: &Transform, shape: Shape, pattern: BuiltPattern) {
+        let transform_id = transform.id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = transforms
-            .get_current()
+        let aabb = transform
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
@@ -254,7 +253,7 @@ impl MeshRenderer {
                 batch.push(Fill {
                     shape: shape.clone(),
                     pattern,
-                    transform,
+                    transform: transform_id,
                     z_index,
                     render_task: task.handle,
                 });
@@ -535,10 +534,10 @@ impl core::FillPath for MeshRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
     }
 }

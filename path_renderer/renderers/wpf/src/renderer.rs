@@ -8,7 +8,7 @@ use core::utils::{DrawHelper, usize_range};
 
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
-use core::transform::{TransformId, Transforms};
+use core::transform::{Transform, TransformId, Transforms};
 use core::units::{LocalRect, SurfaceIntSize};
 
 use lyon_path::{FillRule, traits::PathIterator};
@@ -122,19 +122,18 @@ impl WpfMeshRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path.into()), pattern);
     }
 
-    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transforms: &Transforms, shape: Shape, pattern: BuiltPattern) {
-        let transform = transforms.current_id();
+    fn fill_shape(&mut self, ctx: &mut RenderPassContext, transform: &Transform, shape: Shape, pattern: BuiltPattern) {
+        let transform_id = transform.id();
         let z_index = ctx.z_indices.push();
 
-        let aabb = transforms
-            .get_current()
+        let aabb = transform
             .matrix()
             .outer_transformed_box(&shape.aabb());
 
@@ -152,7 +151,7 @@ impl WpfMeshRenderer {
                     shape: shape.clone(),
                     render_task: task.handle,
                     pattern,
-                    transform,
+                    transform: transform_id,
                     z_index,
                 });
             }
@@ -302,11 +301,11 @@ impl core::FillPath for WpfMeshRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
     }
 }
 

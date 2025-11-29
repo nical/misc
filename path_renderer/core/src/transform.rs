@@ -5,7 +5,7 @@ use crate::{
     gpu::{GpuBufferAddress, GpuBufferWriter},
     units::{
         point, vector, LocalPoint, LocalSpace, LocalToSurfaceTransform, LocalTransform,
-        SurfacePoint, SurfaceSpace, SurfaceVector, Vector,
+        SurfacePoint, SurfaceVector, Vector,
     },
 };
 
@@ -108,7 +108,7 @@ impl ScaleOffset {
 #[derive(Copy, Clone, Debug)]
 pub struct Transform {
     transform: LocalToSurfaceTransform,
-    parent: TransformId,
+    id: TransformId,
     flags: TransformFlags,
     gpu_handle: GpuBufferAddress,
 }
@@ -131,11 +131,32 @@ impl Transform {
     pub fn matrix(&self) -> &LocalToSurfaceTransform {
         &self.transform
     }
+
+    pub fn id(&self) -> TransformId {
+        self.id
+    }
+
+    pub fn get_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuBufferAddress {
+        if self.gpu_handle != GpuBufferAddress::INVALID {
+            return self.gpu_handle;
+        }
+
+        let axis_aligned = if self.flags.contains(TransformFlags::AXIS_ALIGNED) {
+            1.0
+        } else {
+            0.0
+        };
+        let t = &self.transform;
+
+        let handle = f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
+
+        self.gpu_handle = handle;
+
+        handle
+    }
 }
 
 pub struct Transforms {
-    current: Transform,
-    current_id: TransformId,
     transforms: Vec<Transform>,
 }
 
@@ -143,60 +164,17 @@ impl Transforms {
     pub fn new() -> Self {
         let root = Transform {
             transform: LocalToSurfaceTransform::identity(),
-            parent: TransformId::NONE,
+            id: TransformId(0),
             flags: TransformFlags::AXIS_ALIGNED,
             gpu_handle: GpuBufferAddress::INVALID,
         };
 
         Transforms {
-            current_id: TransformId::ROOT,
             transforms: vec![root],
-            current: root,
         }
     }
 
-    pub fn push(&mut self, transform: &LocalTransform) {
-        let mut flags = TransformFlags::empty();
-        let is_scale_offset =
-            is_scale_offset(transform) && self.current.flags.contains(TransformFlags::AXIS_ALIGNED);
-        if is_scale_offset {
-            flags |= TransformFlags::AXIS_ALIGNED;
-        }
-
-        let id = TransformId::from_index(self.transforms.len());
-        if self.current_id == TransformId::ROOT {
-            self.current = Transform {
-                transform: transform.with_destination::<SurfaceSpace>(),
-                parent: TransformId::ROOT,
-                flags,
-                gpu_handle: GpuBufferAddress::INVALID,
-            };
-        } else {
-            let transform = if is_scale_offset {
-                ScaleOffset::from_matrix(&transform)
-                    .then(&ScaleOffset::from_matrix(
-                        &self.transforms[self.current_id.index()]
-                            .transform
-                            .with_destination::<LocalSpace>(),
-                    ))
-                    .to_matrix()
-            } else {
-                transform.then(&self.transforms[self.current_id.index()].transform)
-            };
-
-            self.current = Transform {
-                transform,
-                parent: self.current_id,
-                flags: TransformFlags::empty(),
-                gpu_handle: GpuBufferAddress::INVALID,
-            };
-        }
-
-        self.current_id = id;
-        self.transforms.push(self.current);
-    }
-
-    pub fn set(&mut self, transform: &LocalToSurfaceTransform) {
+    pub fn add(&mut self, transform: &LocalToSurfaceTransform) -> TransformId {
         let mut flags = TransformFlags::empty();
         let is_scale_offset = is_scale_offset(transform);
         if is_scale_offset {
@@ -204,60 +182,30 @@ impl Transforms {
         }
 
         let id = TransformId::from_index(self.transforms.len());
-        self.current = Transform {
+
+        self.transforms.push(Transform {
+            id,
             transform: *transform,
-            parent: self.current_id,
             flags,
             gpu_handle: GpuBufferAddress::INVALID,
-        };
+        });
 
-        self.current_id = id;
-        self.transforms.push(self.current);
+        id
     }
 
-    pub fn pop(&mut self) {
-        assert!(self.current_id != TransformId::ROOT);
-        self.current_id = self.transforms[self.current_id.index()]
-            .parent
-            .or(TransformId::ROOT);
-        self.current = self.transforms[self.current_id.index()];
-    }
+    pub fn root(&self) -> &Transform { &self.transforms[0] }
 
-    pub fn get_current_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuBufferAddress {
-        if self.current.gpu_handle != GpuBufferAddress::INVALID {
-            return self.current.gpu_handle;
-        }
-
-        let axis_aligned = if self.current.flags.contains(TransformFlags::AXIS_ALIGNED) {
-            1.0
-        } else {
-            0.0
-        };
-        let t = &self.current.transform;
-
-        let handle = f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
-
-        self.current.gpu_handle = handle;
-        self.transforms[self.current_id.index()].gpu_handle = handle;
-
-        handle
-    }
-
-    pub fn current_id(&self) -> TransformId {
-        self.current_id
-    }
+    pub fn root_id(&self) -> TransformId { TransformId(0) }
 
     pub fn get(&self, id: TransformId) -> &Transform {
         &self.transforms[id.index()]
     }
 
-    pub fn get_current(&self) -> &Transform {
-        &self.current
+    pub fn get_mut(&mut self, id: TransformId) -> &mut Transform {
+        &mut self.transforms[id.index()]
     }
 
     pub fn clear(&mut self) {
-        self.current = self.transforms[0];
-        self.current_id = TransformId::ROOT;
         self.transforms.shrink_to(1);
     }
 }

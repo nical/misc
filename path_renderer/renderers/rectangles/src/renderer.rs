@@ -1,8 +1,8 @@
 use crate::{resources::Instance, InstanceFlags};
+use core::transform::Transform;
 use core::wgpu;
 use core::{
     pattern::BuiltPattern,
-    transform::Transforms,
     units::LocalRect,
     PrepareContext
 };
@@ -77,7 +77,7 @@ impl RectangleRenderer {
     pub fn fill_rect(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         local_rect: &LocalRect,
         mut aa: Aa,
         pattern: BuiltPattern,
@@ -85,8 +85,7 @@ impl RectangleRenderer {
         transform_handle: GpuBufferAddress,
     ) {
         let z_index = ctx.z_indices.push();
-        let aabb = transforms
-            .get_current()
+        let aabb = transform
             .matrix()
             .outer_transformed_box(&local_rect.cast_unit());
 

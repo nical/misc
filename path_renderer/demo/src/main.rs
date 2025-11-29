@@ -6,6 +6,7 @@ use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, ColorAttachment, GraphBindings, Resource};
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
+use core::transform::TransformId;
 use core::{FillPath, Renderer, Vector};
 use core::shading::BlendMode;
 use core::path::Path;
@@ -13,7 +14,7 @@ use core::resources::GpuResource;
 use core::shape::*;
 use core::stroke::*;
 use core::units::{
-    point, vector, LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize
+    LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize, SurfaceSpace, point, vector
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
@@ -709,7 +710,10 @@ impl App {
         let transform = LocalTransform::translation(tx, ty)
             .then_translate(-vector(hw, hh))
             .then_scale(self.view.zoom, self.view.zoom)
-            .then_translate(vector(hw, hh));
+            .then_translate(vector(hw, hh))
+            .with_destination::<SurfaceSpace>();
+
+        let transform = frame.transforms.add(&transform);
 
         let test_stuff = self.view.scene_idx == 0;
 
@@ -723,7 +727,7 @@ impl App {
             &mut self.instance,
             &mut self.renderers,
             &mut self.patterns,
-            &transform,
+            transform,
         );
 
         main_surface.finish(&mut frame.render_nodes);
@@ -847,7 +851,7 @@ fn paint_scene(
     _instance: &mut Instance,
     renderers: &mut Renderers,
     patterns: &mut Patterns,
-    transform: &LocalTransform,
+    view_transform: TransformId,
 ) {
     let mut f32_buffer = frame.f32_buffer.write();
     if testing {
@@ -862,18 +866,17 @@ fn paint_scene(
                     GradientStop { color: Color { r: 50, g: 0, b: 50, a: 255 }.to_colorf(), offset: 1.0 },
                 ],
             }
-            .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+            .transformed(&frame.transforms.root().matrix().to_untyped()),
         );
 
-        renderers.tiling.fill_surface(&mut surface.ctx(), &frame.transforms, gradient);
+        renderers.tiling.fill_surface(&mut surface.ctx(), &frame.transforms.root(), gradient);
     }
-
-    frame.transforms.push(transform);
 
     // Doing a minimal amount of work to de-duplicate patterns avoids
     // uploading 50k patterns in paris-30k.svg.
     let mut color_cache: Cache<Color, BuiltPattern, 4> = Cache::new();
 
+    let transform = frame.transforms.get(view_transform);
     for (path, fill, stroke) in paths {
         if let Some(fill) = fill {
             let pattern = match fill {
@@ -892,16 +895,16 @@ fn paint_scene(
                         from: *from,
                         to: *to
                     }
-                    .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                    .transformed(&transform.matrix().to_untyped()),
                 ),
             };
 
             let path = FilledPath::new(path.clone());
-            renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), &frame.transforms, path, pattern);
+            renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), transform, path, pattern);
         }
 
         if let Some(stroke) = stroke {
-            let scale = transform.m11;
+            let scale = transform.matrix().m11;
             // We adjust the stroke width so that is is at least one pixel
             // once projected. To compensate for that, gradually fade out
             // smaller strokes using opacity.
@@ -953,14 +956,14 @@ fn paint_scene(
                             from: *from,
                             to: *to
                         }
-                        .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                        .transformed(&transform.matrix().to_untyped()),
                     )
                 }
             };
 
             match stroke_renderer {
                 crate::INSTANCED => {
-                    renderers.msaa_strokes.stroke_path(&mut surface.ctx(), &frame.transforms, path.clone(), pattern, width);
+                    renderers.msaa_strokes.stroke_path(&mut surface.ctx(), transform, path.clone(), pattern, width);
                 }
                 crate::STROKE_TO_FILL => {
                     let w = width * 0.5;
@@ -985,7 +988,7 @@ fn paint_scene(
                     }
                     let stroked_path = stroked_path.build();
                     let path = FilledPath::new(Arc::new(stroked_path));
-                    renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), &frame.transforms, path, pattern);
+                    renderers.fill(fill_renderer).fill_path(&mut surface.ctx(), transform, path, pattern);
                 }
                 _ => {
                     unimplemented!();
@@ -995,7 +998,8 @@ fn paint_scene(
     }
 
     if testing {
-        let _tx2 = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
+        let _tx2 = frame.transforms.get_mut(frame.transforms.root_id());
+        let transform_handle = _tx2.get_gpu_handle(&mut f32_buffer);
 
         let mut many_stops = Vec::with_capacity(128);
         let step = 0.8 / 128.0;
@@ -1021,8 +1025,9 @@ fn paint_scene(
             offset,
         });
 
-        frame.transforms.set(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let transform_handle = frame.transforms.get_current_gpu_handle(&mut f32_buffer);
+        let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+        let rotated = frame.transforms.get_mut(rotated);
+        let transform_handle = rotated.get_gpu_handle(&mut f32_buffer);
         //let gradient = patterns.gradients.add_linear(
         //    &mut f32_buffer,
         //    &LinearGradientDescriptor {
@@ -1119,7 +1124,7 @@ fn paint_scene(
 
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),
-            &frame.transforms,
+            frame.transforms.get(view_transform),
             &LocalRect {
                 min: point(200.0, 700.0),
                 max: point(300.0, 900.0),
@@ -1130,7 +1135,7 @@ fn paint_scene(
         );
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),
-            &frame.transforms,
+            frame.transforms.get(view_transform),
             &LocalRect {
                 min: point(310.5, 700.5),
                 max: point(1510.5, 900.5),
@@ -1139,7 +1144,6 @@ fn paint_scene(
             gradient,
             transform_handle,
         );
-        frame.transforms.pop();
 
         //renderers.tiling.fill_circle(
         //    ctx,
@@ -1177,7 +1181,7 @@ fn paint_scene(
         let fill: FilledPath = builder.build().into();
         renderers.fill(fill_renderer).fill_path(
             &mut surface.ctx(),
-            &frame.transforms,
+            frame.transforms.root(),
             fill,//.inverted(),
             patterns.checkerboards.add(
                 &mut f32_buffer,
@@ -1192,11 +1196,9 @@ fn paint_scene(
                     scale: 25.0,
                     offset: point(0.0, 0.0),
                 }
-                .transformed(&frame.transforms.get_current().matrix().to_untyped()),
+                .transformed(&frame.transforms.root().matrix().to_untyped()),
             ).with_blend_mode(BlendMode::Screen),
         );
-
-        frame.transforms.pop();
 
         //let black = patterns.colors.add(Color::BLACK);
         //renderers.tiling.fill_rect(
@@ -1245,7 +1247,7 @@ fn paint_scene(
 
         let mut builder2 = core::path::Path::builder();
         {
-            let o = transform.m31 * 0.1;
+            let o = frame.transforms.get(view_transform).matrix().m31 * 0.1;
             let mut stroker = StrokeToFillBuilder::new(
                 &mut builder2,
                 &StrokeOptions {
@@ -1266,10 +1268,11 @@ fn paint_scene(
         }
 
         if false {
+            let o = frame.transforms.get(view_transform).matrix().m31 * 0.1;
             let mut offsetter = OffsetBuilder::new(
                 &mut builder2,
                 &OffsetOptions {
-                    offset: transform.m31 * 0.1,
+                    offset: o,
                     join: LineJoin::Round,
                     miter_limit: 0.5,
                     tolerance: 0.25,
@@ -1308,12 +1311,13 @@ fn paint_scene(
         //}
 
         if false {
+            let transform = frame.transforms.get(view_transform);
             let offset_path = builder2.build();
-            renderers.tiling.fill_path(&mut surface.ctx(), &frame.transforms, offset_path.clone(), patterns.colors.add(Color::RED));
+            renderers.tiling.fill_path(&mut surface.ctx(), transform, offset_path.clone(), patterns.colors.add(Color::RED));
 
             renderers.meshes.stroke_path(
                 &mut surface.ctx(),
-                &frame.transforms,
+                transform,
                 offset_path.clone(),
                 1.0,
                 patterns.colors.add(Color {
@@ -1325,7 +1329,7 @@ fn paint_scene(
             );
             renderers.meshes.stroke_path(
                 &mut surface.ctx(),
-                &frame.transforms,
+                transform,
                 path_to_offset.clone(),
                 1.0,
                 patterns.colors.add(Color::BLACK),
@@ -1344,7 +1348,7 @@ fn paint_scene(
             b.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
             b.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
             b.end(false);
-            renderers.meshes.stroke_path(&mut surface.ctx(), &frame.transforms, b.build(), 1.0, patterns.colors.add(Color::BLACK));
+            renderers.meshes.stroke_path(&mut surface.ctx(), transform, b.build(), 1.0, patterns.colors.add(Color::BLACK));
 
             let green = patterns.colors.add(Color::GREEN);
             let blue = patterns.colors.add(Color::BLUE);
@@ -1354,7 +1358,7 @@ fn paint_scene(
                     PathEvent::Begin { at } => {
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: at.cast_unit(),
                                 radius: 3.0,
@@ -1366,7 +1370,7 @@ fn paint_scene(
                     PathEvent::Line { to, .. } => {
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1378,7 +1382,7 @@ fn paint_scene(
                     PathEvent::Quadratic { ctrl, to, .. } => {
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: ctrl.cast_unit(),
                                 radius: 4.0,
@@ -1388,7 +1392,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 3.0,
@@ -1402,7 +1406,7 @@ fn paint_scene(
                     } => {
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: ctrl1.cast_unit(),
                                 radius: 4.0,
@@ -1412,7 +1416,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: ctrl2.cast_unit(),
                                 radius: 4.0,
@@ -1422,7 +1426,7 @@ fn paint_scene(
                         );
                         renderers.meshes.fill_circle(
                             &mut surface.ctx(),
-                            &frame.transforms,
+                            transform,
                             Circle {
                                 center: to.cast_unit(),
                                 radius: 2.0,
@@ -1436,9 +1440,6 @@ fn paint_scene(
             }
         }
     }
-
-    frame.transforms.push(&LocalTransform::translation(10.0, 1.0));
-    frame.transforms.pop();
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

@@ -7,7 +7,7 @@ use core::gpu::{GpuBuffer, StreamId, TransferOps, UploadStats};
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
 use core::render_task::RenderTaskInfo;
-use core::transform::{TransformId, Transforms};
+use core::transform::{Transform, TransformId, Transforms};
 use core::units::{point, LocalRect, SurfaceIntRect, SurfaceRect};
 use core::{wgpu, PrepareContext, UploadContext};
 use core::utils::DrawHelper;
@@ -88,35 +88,34 @@ impl TileRenderer {
     pub fn fill_path<P: Into<FilledPath>>(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: P,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path.into()), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path.into()), pattern);
     }
 
     pub fn fill_surface(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Surface, pattern);
+        self.fill_shape(ctx, transform, Shape::Surface, pattern);
     }
 
     fn fill_shape(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         shape: Shape,
         mut pattern: BuiltPattern,
     ) {
-        let transform = transforms.current_id();
+        let transform_id = transform.id();
         let z_index = ctx.z_indices.push();
 
         let aabb = if let Some(aabb) = shape.aabb() {
-            transforms
-                .get_current()
+            transform
                 .matrix()
                 .outer_transformed_box(&aabb)
         } else {
@@ -154,7 +153,7 @@ impl TileRenderer {
                     shape: shape.clone(),
                     task: *task,
                     pattern,
-                    transform,
+                    transform: transform_id,
                     z_index,
                 });
             }
@@ -583,10 +582,10 @@ impl core::FillPath for TileRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,
-        transforms: &Transforms,
+        transform: &Transform,
         path: FilledPath,
         pattern: BuiltPattern,
     ) {
-        self.fill_shape(ctx, transforms, Shape::Path(path), pattern);
+        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
     }
 }
