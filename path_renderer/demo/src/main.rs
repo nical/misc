@@ -764,6 +764,25 @@ impl App {
             renderers
         );
 
+        if self.view.debug_overlay {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Debug overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.stats_renderer.render(&mut render_pass);
+        }
+
         let present_start = Instant::now();
 
         self.queue.submit(Some(encoder.finish()));
