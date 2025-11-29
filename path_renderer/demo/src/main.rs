@@ -570,8 +570,7 @@ impl App {
             return;
         }
         self.view.render = false;
-        self.view.debug_mode = self.view.debug_mode % 7;
-        self.patterns.gradients.debug_mode = self.view.debug_mode;
+        //self.view.debug_mode = self.view.debug_mode % 7;
 
         let wgpu_frame = match self.surface.get_current_texture() {
             Ok(texture) => texture,
@@ -1465,6 +1464,7 @@ pub struct Demo {
     pub msaa: MsaaMode,
     pub scene_idx: u32,
     pub debug_overlay: bool,
+    #[allow(unused)]
     pub debug_mode: u32,
 }
 

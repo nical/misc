@@ -87,9 +87,7 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
             offset,
             extend_mode,
         );
-    } else if GRADIENT_PRESORTED_STOPS && count > GRADIENT_PRESORTED_STOPS_THRESHOLD {
-        return evaluate_gradient_presorted_stops(pattern.gradient_header, offset, pattern.stop_offsets);
     } else {
-        return evaluate_gradient(pattern.gradient_header, offset, pattern.stop_offsets);
+        return evaluate_gradient_presorted_stops(pattern.gradient_header, offset, pattern.stop_offsets);
     }
 }
