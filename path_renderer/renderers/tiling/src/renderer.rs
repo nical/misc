@@ -590,15 +590,3 @@ impl core::Renderer for TileRenderer {
         }
     }
 }
-
-impl core::FillPath for TileRenderer {
-    fn fill_path(
-        &mut self,
-        ctx: &mut RenderPassContext,
-        transform: &Transform,
-        path: FilledPath,
-        pattern: BuiltPattern,
-    ) {
-        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
-    }
-}

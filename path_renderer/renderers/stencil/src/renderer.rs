@@ -828,15 +828,3 @@ fn skip_edge(rect: &SurfaceRect, from: Point, to: Point) -> bool {
         | ((from.y > rect.max.y) & (to.y > rect.max.y))
     //(from.x < rect.min.x && to.x < rect.min.x) || (from.y < rect.min.y && to.y < rect.min.y)
 }
-
-impl core::FillPath for StencilAndCoverRenderer {
-    fn fill_path(
-        &mut self,
-        ctx: &mut RenderPassContext,
-        transform: &Transform,
-        path: FilledPath,
-        pattern: BuiltPattern,
-    ) {
-        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
-    }
-}

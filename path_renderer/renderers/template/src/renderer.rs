@@ -190,15 +190,3 @@ impl core::Renderer for TemplateRenderer {
         }
     }
 }
-
-impl core::FillPath for TemplateRenderer {
-    fn fill_path(
-        &mut self,
-        ctx: &mut RenderPassContext,
-        transform: &Transform,
-        path: FilledPath,
-        pattern: BuiltPattern,
-    ) {
-        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
-    }
-}

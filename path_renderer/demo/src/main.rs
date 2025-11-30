@@ -6,8 +6,9 @@ use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
 use core::graph::{Allocation, ColorAttachment, GraphBindings, Resource};
 use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
-use core::transform::TransformId;
-use core::{FillPath, Renderer, Vector};
+use core::render_pass::RenderPassContext;
+use core::transform::{Transform, TransformId};
+use core::{Renderer, Vector};
 use core::shading::BlendMode;
 use core::path::Path;
 use core::resources::GpuResource;
@@ -1654,4 +1655,56 @@ fn simple_cache() {
     assert_eq!(*cache.get(5u32, || panic!()), 5);
     assert_eq!(*cache.get(2u32, || panic!()), 2);
     assert_eq!(*cache.get(3u32, || panic!()), 3);
+}
+
+pub trait FillPath {
+    fn fill_path(&mut self, ctx: &mut RenderPassContext, transform: &Transform, path: FilledPath, pattern: BuiltPattern);
+}
+
+impl FillPath for TileRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, path, pattern);
+    }
+}
+
+impl FillPath for StencilAndCoverRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, path, pattern);
+    }
+}
+
+impl FillPath for MeshRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, path, pattern);
+    }
+}
+
+impl FillPath for WpfMeshRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, path, pattern);
+    }
 }

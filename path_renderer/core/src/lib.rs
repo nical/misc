@@ -20,10 +20,10 @@ pub mod shading;
 pub mod utils;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
-use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}, transform::Transform};
+use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
-use render_pass::{BuiltRenderPass, RenderPassContext};
+use render_pass::BuiltRenderPass;
 pub use render_pass::{RenderPassConfig};
 
 use gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
@@ -33,7 +33,6 @@ use std::sync::{Arc, Mutex};
 pub use bitflags;
 pub use bytemuck;
 pub use lyon::geom;
-use pattern::BuiltPattern;
 use resources::GpuResources;
 use transform::Transforms;
 
@@ -356,8 +355,4 @@ pub trait Renderer {
         ctx: RenderContext<'resources, 'tmp>,
         render_pass: &mut wgpu::RenderPass<'pass>,
     );
-}
-
-pub trait FillPath {
-    fn fill_path(&mut self, ctx: &mut RenderPassContext, transform: &Transform, path: shape::FilledPath, pattern: BuiltPattern);
 }

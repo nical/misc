@@ -297,18 +297,6 @@ impl WpfMeshRenderer {
     }
 }
 
-impl core::FillPath for WpfMeshRenderer {
-    fn fill_path(
-        &mut self,
-        ctx: &mut RenderPassContext,
-        transform: &Transform,
-        path: FilledPath,
-        pattern: BuiltPattern,
-    ) {
-        self.fill_shape(ctx, transform, Shape::Path(path), pattern);
-    }
-}
-
 impl core::Renderer for WpfMeshRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         self.prepare_impl(ctx, passes);
