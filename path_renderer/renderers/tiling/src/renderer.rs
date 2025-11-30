@@ -316,7 +316,7 @@ impl TileRenderer {
                                 pipeline: core_data.pipelines.prepare(RenderPipelineKey::new(
                                     self.geometry,
                                     info.pattern.shader,
-                                    BlendMode::None,
+                                    BlendMode::Overwrite,
                                     draw_config,
                                 )),
                             });
@@ -394,7 +394,7 @@ impl TileRenderer {
                 pipeline: shaders.prepare(RenderPipelineKey::new(
                     self.geometry,
                     info.pattern.shader,
-                    BlendMode::None,
+                    BlendMode::Overwrite,
                     draw_config,
                 )),
             })

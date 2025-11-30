@@ -48,7 +48,7 @@ impl BuiltPattern {
 
     #[inline]
     pub fn with_blend_mode(mut self, mode: BlendMode) -> Self {
-        self.is_opaque &= mode == BlendMode::None;
+        self.is_opaque &= mode == BlendMode::Overwrite;
         self.blend_mode = mode;
         self
     }

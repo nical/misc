@@ -443,7 +443,7 @@ impl Shaders {
                     }
                 };
                 let depth_write_enabled =
-                    surface.depth == DepthMode::Enabled && blend_mode == BlendMode::None;
+                    surface.depth == DepthMode::Enabled && blend_mode == BlendMode::Overwrite;
                 let depth_compare = if surface.depth == DepthMode::Enabled {
                     wgpu::CompareFunction::Greater
                 } else {
@@ -539,7 +539,7 @@ struct ModuleKey {
 
 fn blend_state(blend_mode: BlendMode) -> Option<wgpu::BlendState> {
     match blend_mode {
-        BlendMode::None => None,
+        BlendMode::Overwrite => None,
         BlendMode::PremultipliedAlpha => Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         BlendMode::Add => Some(wgpu::BlendState {
             color: wgpu::BlendComponent {

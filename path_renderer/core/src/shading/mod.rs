@@ -12,7 +12,7 @@ use std::borrow::Cow;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BlendMode {
     /// Overwrite the destination.
-    None,
+    Overwrite,
     /// The default blend mode for alpha blending.
     PremultipliedAlpha,
     Add,
@@ -30,8 +30,8 @@ pub enum BlendMode {
 impl BlendMode {
     pub fn with_alpha(self, alpha: bool) -> Self {
         match (self, alpha) {
-            (BlendMode::None, true) => BlendMode::PremultipliedAlpha,
-            (BlendMode::PremultipliedAlpha, false) => BlendMode::None,
+            (BlendMode::Overwrite, true) => BlendMode::PremultipliedAlpha,
+            (BlendMode::PremultipliedAlpha, false) => BlendMode::Overwrite,
             (mode, _) => mode,
         }
     }
