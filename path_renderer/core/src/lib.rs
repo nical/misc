@@ -342,7 +342,11 @@ pub trait Renderer {
 
     // TODO: does this need &mut self?
     fn add_render_commands(&self, batch: BatchId, commands: &mut RenderCommands) {
-        commands.push(batch.into());
+        if batch.order_independent {
+            commands.push_order_independent(batch.into());
+        } else {
+            commands.push(batch.into());
+        }
     }
 
     fn render<'pass, 'resources: 'pass, 'tmp>(

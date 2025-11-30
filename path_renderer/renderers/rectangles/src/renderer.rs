@@ -220,7 +220,6 @@ impl core::Renderer for RectangleRenderer {
 
         for batch_id in commands {
             let (_, _, batch) = self.batches.get(batch_id.index);
-
             let pipeline = ctx
                 .render_pipelines
                 .get(batch.pipeline_idx.unwrap())

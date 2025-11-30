@@ -1,5 +1,5 @@
 use core::batching::{BatchFlags, BatchId, BatchList};
-use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
+use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderCommands, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
 use core::shading::{
     GeometryId, BlendMode, PrepareRenderPipelines, RenderPipelineIndex, RenderPipelineKey,
 };
@@ -126,16 +126,7 @@ impl TileRenderer {
             }
         };
 
-        let batch_flags = if self.back_to_front || self.no_opaque_batches {
-            BatchFlags::empty()
-        } else {
-            // Each shape has potentially a draw call for the masked tiles and
-            // one for the opaque interriors, so letting them overlap would break
-            // ordering.
-            // TODO: make it a single draw call instead to avoid the negative
-            // impact on batching.
-            BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE
-        };
+        let batch_flags = BatchFlags::empty();
 
         if self.no_opaque_batches {
             pattern.is_opaque = false;
@@ -497,12 +488,30 @@ impl TileRenderer {
     }
 }
 
+const CMD_FLAGS_OPAQUE: u8 = 1;
+const CMD_FLAGS_MASKED: u8 = 2;
+
 impl core::Renderer for TileRenderer {
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.parallel {
             self.prepare_parallel(ctx, passes);
         } else {
             self.prepare_single_thread(ctx, passes);
+        }
+    }
+
+    fn add_render_commands(&self, batch_id: BatchId, commands: &mut RenderCommands) {
+        let mut cmd: RenderCommandId = batch_id.into();
+        if self.occlusion.gpu {
+            let mut opaque_cmd = cmd;
+            let mut masked_cmd = cmd;
+            opaque_cmd.flags = CMD_FLAGS_OPAQUE;
+            masked_cmd.flags = CMD_FLAGS_MASKED;
+            commands.push_order_independent(opaque_cmd);
+            commands.push(masked_cmd);
+        } else {
+            cmd.flags = CMD_FLAGS_OPAQUE | CMD_FLAGS_MASKED;
+            commands.push(cmd);
         }
     }
 
@@ -520,7 +529,7 @@ impl core::Renderer for TileRenderer {
         let common_resources = &ctx.resources.common;
 
         // TODO: previous version was grouping the mask and opaque instances
-        // in a single instance range which made avoided the need to re-bind.
+        // in a single instance range which avoided the need to re-bind.
         let opaque_buffer = common_resources.instances.resolve_buffer_slice(self.opaque_instances);
         let mask_buffer = common_resources.instances.resolve_buffer_slice(self.mask_instances);
 
@@ -533,46 +542,50 @@ impl core::Renderer for TileRenderer {
 
         let mut helper = DrawHelper::new();
 
-        for batch_id in commands {
-            let (_, _, batch) = self.batches.get(batch_id.index);
+        for cmd in commands {
+            let (_, _, batch) = self.batches.get(cmd.index);
             helper.resolve_and_bind(2, batch.pattern.bindings, ctx.bindings, render_pass);
 
-            if let Some(opaque) = &batch.opaque_draw {
-                let opaque_buffer = opaque_buffer.or_else(&|| {
-                    common_resources.instances.resolve_buffer_slice(opaque.stream_id)
-                });
+            if (cmd.flags & CMD_FLAGS_OPAQUE) != 0 {
+                if let Some(opaque) = &batch.opaque_draw {
+                    let opaque_buffer = opaque_buffer.or_else(&|| {
+                        common_resources.instances.resolve_buffer_slice(opaque.stream_id)
+                    });
 
-                let query = ctx.gpu_profiler.begin_query("opaque tiles", render_pass);
+                    let query = ctx.gpu_profiler.begin_query("opaque tiles", render_pass);
 
-                render_pass.set_vertex_buffer(0, opaque_buffer.unwrap());
+                    render_pass.set_vertex_buffer(0, opaque_buffer.unwrap());
 
-                let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
-                let instances = opaque.tiles.clone();
+                    let pipeline = ctx.render_pipelines.get(opaque.pipeline).unwrap();
+                    let instances = opaque.tiles.clone();
 
-                render_pass.set_pipeline(pipeline);
-                render_pass.draw_indexed(0..6, 0, instances);
-                ctx.stats.draw_calls += 1;
+                    render_pass.set_pipeline(pipeline);
+                    render_pass.draw_indexed(0..6, 0, instances);
+                    ctx.stats.draw_calls += 1;
 
-                ctx.gpu_profiler.end_query(render_pass, query);
+                    ctx.gpu_profiler.end_query(render_pass, query);
+                }
             }
 
-            if let Some(masked) = &batch.masked_draw {
-                let mask_buffer = mask_buffer.or_else(&|| {
-                    common_resources.instances.resolve_buffer_slice(masked.stream_id)
-                });
+            if (cmd.flags & CMD_FLAGS_MASKED) != 0 {
+                if let Some(masked) = &batch.masked_draw {
+                    let mask_buffer = mask_buffer.or_else(&|| {
+                        common_resources.instances.resolve_buffer_slice(masked.stream_id)
+                    });
 
-                let query = ctx.gpu_profiler.begin_query("masked tiles", render_pass);
+                    let query = ctx.gpu_profiler.begin_query("masked tiles", render_pass);
 
-                render_pass.set_vertex_buffer(0, mask_buffer.unwrap());
+                    render_pass.set_vertex_buffer(0, mask_buffer.unwrap());
 
-                let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();
-                let instances = masked.tiles.clone();
+                    let pipeline = ctx.render_pipelines.get(masked.pipeline).unwrap();
+                    let instances = masked.tiles.clone();
 
-                render_pass.set_pipeline(pipeline);
-                render_pass.draw_indexed(0..6, 0, instances);
-                ctx.stats.draw_calls += 1;
+                    render_pass.set_pipeline(pipeline);
+                    render_pass.draw_indexed(0..6, 0, instances);
+                    ctx.stats.draw_calls += 1;
 
-                ctx.gpu_profiler.end_query(render_pass, query);
+                    ctx.gpu_profiler.end_query(render_pass, query);
+                }
             }
         }
     }

@@ -297,6 +297,12 @@ pub struct AttathchmentFlags {
 pub struct RenderCommandId {
     pub renderer: RendererId,
     pub request_pre_pass: bool,
+    /// Spare bits that can be used by the renderer.
+    pub flags: u8,
+    /// Interpreted by the renderer.
+    ///
+    /// If Renderer::add_render_commands is not implemented manually,
+    /// defaults to the batch index.
     pub index: u32,
 }
 
@@ -305,6 +311,7 @@ impl From<BatchId> for RenderCommandId {
         RenderCommandId {
             renderer: batch.renderer,
             request_pre_pass: false,
+            flags: 0,
             index: batch.index,
         }
     }
@@ -387,6 +394,14 @@ impl RenderCommands {
             && sub_pass.order_independent.is_empty()
             && sub_pass.pre_passes.is_empty() {
             return;
+        }
+
+        if !sub_pass.order_independent.is_empty() {
+            // Process order-independent batches front-to-back. This is
+            // done under the assumption that we are using the depth buffer
+            // to ensure order-independence, and therefore rendering font
+            // to back minimizes the number of pixels that will be shaded.
+            self.order_independent[sub_pass.order_independent.clone()].reverse();
         }
 
         self.sub_passes.push(sub_pass);
@@ -505,10 +520,10 @@ impl RenderCommands {
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
         let mut prev_renderer = None;
-        let mut end_idx = sub_pass.order_independent.end;
-        for (idx, command) in self.order_independent[sub_pass.order_independent.clone()].iter().enumerate().rev() {
+        let mut start_idx = sub_pass.ordered.start;
+        for (idx, command) in self.order_independent[sub_pass.order_independent.clone()].iter().enumerate() {
             if Some(command.renderer) != prev_renderer && prev_renderer.is_some() {
-                let commands = &self.order_independent[idx..end_idx];
+                let commands = &self.order_independent[start_idx..idx];
                 let renderer_idx = prev_renderer.unwrap() as usize;
                 self.render_commands(
                     commands,
@@ -522,14 +537,14 @@ impl RenderCommands {
                     ctx.gpu_profiler,
                     &mut wgpu_pass,
                 );
-                end_idx = idx;
+                start_idx = idx;
             }
 
             prev_renderer = Some(command.renderer);
         }
 
-        if end_idx != sub_pass.order_independent.start {
-            let commands = &self.order_independent[sub_pass.order_independent.start..end_idx];
+        if start_idx != sub_pass.order_independent.end {
+            let commands = &self.order_independent[start_idx..sub_pass.order_independent.end];
             let renderer_idx = prev_renderer.unwrap() as usize;
             self.render_commands(
                 commands,

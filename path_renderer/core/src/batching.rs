@@ -19,6 +19,7 @@ pub struct BatchId {
     pub renderer: RendererId,
     pub index: BatchIndex,
     pub surface: SurfaceIndex,
+    pub order_independent: bool,
 }
 
 bitflags! {
@@ -129,6 +130,7 @@ impl OrderedBatcher {
             renderer,
             index: batch_index,
             surface: self.pass_idx,
+            order_independent: false,
         });
     }
 
@@ -208,8 +210,6 @@ impl OrderedBatcher {
 
         selected
     }
-
-    pub fn finish(&mut self) {}
 }
 
 struct OrderIndependentBatch {
@@ -266,6 +266,7 @@ impl OrderIndependentBatcher {
             renderer,
             index,
             surface: self.pass_idx,
+            order_independent: true,
         });
     }
 
@@ -280,19 +281,6 @@ impl OrderIndependentBatcher {
         self.batches.clear();
         self.splits.clear();
         self.pass_idx = 0;
-    }
-
-    pub fn finish(&mut self) {
-        // Reverse the batches to increase the likelihood of opaque primitives
-        // being rendered in front-to-back order.
-        // Don't reorder batches across split points, though.
-        let mut start = 0;
-        for split in &self.splits {
-            self.batches[start..*split].reverse();
-            start = *split;
-        }
-        let end = self.batches.len();
-        self.batches[start..end].reverse();
     }
 
     pub fn batches(&self) -> &[BatchId] {
@@ -402,9 +390,6 @@ impl Batcher {
 
     pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
         self.flush_batches(batches);
-
-        self.ordered.finish();
-        self.order_independent.finish();
     }
 
     pub fn new() -> Self {
@@ -432,7 +417,6 @@ impl Batcher {
         let count = self.order_independent.batches.len() + self.ordered.batches.len();
         batches.reserve(count);
 
-        self.order_independent.batches.reverse();
         batches.extend_from_slice(&self.order_independent.batches);
         self.order_independent.batches.clear();
 
