@@ -756,10 +756,8 @@ impl App {
             &mut self.renderers.msaa_strokes,
         ];
 
-        let mut stats = RenderStats::new(renderers.len());
-
         let external_attachments = [Some(&frame_view)];
-        self.instance.render_frame(
+        let stats = self.instance.render_frame(
             frame,
             &[],
             &external_attachments,

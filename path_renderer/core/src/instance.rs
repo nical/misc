@@ -165,6 +165,7 @@ impl Instance {
         );
 
         let upload_start = Instant::now();
+        stats.prepare_time_ms = ms(upload_start - prepare_start_time);
 
         unsafe {
             let mut staging_buffers = self.staging_buffers.lock().unwrap();
@@ -231,10 +232,6 @@ impl Instance {
             stats.upload_time = ms(Instant::now() - renderer_upload_start);
         }
 
-        stats.upload_time_ms = ms(upload_start - prepare_start_time);
-
-        stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
-
         let render_start_time = Instant::now();
         stats.upload_time_ms = ms(render_start_time - upload_start);
 
@@ -270,6 +267,9 @@ impl Instance {
         if self.gpu_profiling_enabled {
             self.gpu_profiler.resolve_queries(encoder);
         }
+
+        stats.render_passes = passes.len() as u32;
+        stats.draw_calls = stats.renderers.iter().map(|s| s.draw_calls).sum();
 
         stats.render_time_ms = ms(Instant::now() - render_start_time);
 

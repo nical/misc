@@ -182,6 +182,9 @@ impl core::Renderer for RectangleRenderer {
         self.instances = Some(stream);
 
         for (items, surface, batch) in self.batches.iter_mut() {
+            if batch.opaque && surface.depth {
+                items.reverse();
+            }
             const SIZE: u32 = std::mem::size_of::<Instance>() as u32;
             let start = instances.pushed_bytes() / SIZE;
             instances.push_slice(items);
