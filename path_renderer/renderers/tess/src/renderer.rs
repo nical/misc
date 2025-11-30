@@ -6,8 +6,8 @@ use core::units::{point, LocalPoint, LocalRect};
 use core::gpu::{GpuBufferWriter, GpuStreamWriter, StreamId};
 use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{RenderPassContext, RendererId, RenderPassConfig, ZIndex};
-use core::shading::{GeometryId, BlendMode, RenderPipelineIndex, RenderPipelineKey};
-use core::utils::{DrawHelper, usize_range};
+use core::shading::{GeometryId, RenderPipelineIndex, RenderPipelineKey};
+use core::utils::DrawHelper;
 
 use lyon::{
     geom::euclid::vec2,
@@ -29,8 +29,8 @@ pub struct TessellatedMesh {
 }
 
 struct BatchInfo {
-    draws: Range<u32>,
-    blend_mode: BlendMode,
+    pattern: BuiltPattern,
+    draw: Option<Draw>,
 }
 
 #[derive(Clone)]
@@ -156,7 +156,6 @@ pub struct MeshRenderer {
     pub tolerance: f32,
 
     batches: BatchList<Fill, BatchInfo>,
-    draws: Vec<Draw>,
     indices: Option<StreamId>,
     geometry: GeometryId,
 }
@@ -171,7 +170,6 @@ impl MeshRenderer {
             tessellator: FillTessellator::new(),
             tolerance: 0.25,
 
-            draws: Vec::new(),
             batches: BatchList::new(renderer_id),
             indices: None,
             geometry,
@@ -183,7 +181,6 @@ impl MeshRenderer {
     }
 
     pub fn begin_frame(&mut self) {
-        self.draws.clear();
         self.batches.clear();
         self.indices = None;
     }
@@ -246,8 +243,8 @@ impl MeshRenderer {
             &aabb,
             batch_flags,
             &mut || BatchInfo {
-                draws: 0..0,
-                blend_mode: pattern.blend_mode,
+                pattern,
+                draw: None,
             },
             &mut |mut batch, task| {
                 batch.push(Fill {
@@ -289,95 +286,33 @@ impl MeshRenderer {
             {
                 let (commands, surface, info) = &mut batches.get_mut(batch_id.index);
 
-                let draw_start = self.draws.len() as u32;
-                let mut key = commands
-                    .first()
-                    .as_ref()
-                    .unwrap()
-                    .pattern
-                    .shader_and_bindings();
-
-                // Opaque pass.
-                let mut geom_start = indices.pushed_bytes() / 4;
-                if surface.depth {
-                    for fill in commands.iter().rev().filter(|fill| fill.pattern.is_opaque) {
-                        if key != fill.pattern.shader_and_bindings() {
-                            let end = indices.pushed_bytes() / 4;
-                            if end > geom_start {
-                                self.draws.push(Draw {
-                                    indices: geom_start..end,
-                                    pattern_inputs: key.1,
-                                    pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                        self.geometry,
-                                        key.0,
-                                        info.blend_mode,
-                                        surface.draw_config(true, None),
-                                    )),
-                                });
-                            }
-                            geom_start = end;
-                            key = fill.pattern.shader_and_bindings();
-                        }
+                let geom_start = indices.pushed_bytes() / 4;
+                let opaque_pass = surface.depth && info.pattern.is_opaque;
+                if opaque_pass {
+                    // Opaque pass.
+                    for fill in commands.iter().rev() {
+                        self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
+                    }
+                } else {
+                    // Blended pass.
+                    for fill in commands.iter() {
                         self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
                     }
                 }
 
                 let end = indices.pushed_bytes() / 4;
                 if end > geom_start {
-                    self.draws.push(Draw {
+                    info.draw = Some(Draw {
                         indices: geom_start..end,
-                        pattern_inputs: key.1,
+                        pattern_inputs: info.pattern.bindings,
                         pipeline_idx: shaders.prepare(RenderPipelineKey::new(
                             self.geometry,
-                            key.0,
-                            info.blend_mode,
+                            info.pattern.shader,
+                            info.pattern.blend_mode.with_alpha(!info.pattern.is_opaque),
                             surface.draw_config(true, None),
                         )),
                     });
                 }
-                geom_start = end;
-
-                // Blended pass.
-                for fill in commands
-                    .iter()
-                    .filter(|fill| !surface.depth || !fill.pattern.is_opaque)
-                {
-                    if key != fill.pattern.shader_and_bindings() {
-                        let end = indices.pushed_bytes() / 4;
-                        if end > geom_start {
-                            self.draws.push(Draw {
-                                indices: geom_start..end,
-                                pattern_inputs: key.1,
-                                pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                                    self.geometry,
-                                    key.0,
-                                    info.blend_mode,
-                                    surface.draw_config(true, None),
-                                )),
-                            });
-                        }
-                        geom_start = end;
-                        key = fill.pattern.shader_and_bindings();
-                    }
-                    self.prepare_fill(fill, transforms, &mut vertices, &mut indices, &mut prim_buffer);
-                }
-
-                let end = indices.pushed_bytes() / 4;
-                if end > geom_start {
-                    self.draws.push(Draw {
-                        indices: geom_start..end,
-                        pattern_inputs: key.1,
-                        pipeline_idx: shaders.prepare(RenderPipelineKey::new(
-                            self.geometry,
-                            key.0,
-                            info.blend_mode,
-                            surface.draw_config(true, None),
-                        )),
-                    });
-                }
-
-                let draws = draw_start..self.draws.len() as u32;
-                info.draws = draws;
             }
         }
 
@@ -517,7 +452,7 @@ impl core::Renderer for MeshRenderer {
 
         for batch_id in commands {
             let (_, _, batch_info) = self.batches.get(batch_id.index);
-            for draw in &self.draws[usize_range(batch_info.draws.clone())] {
+            if let Some(draw) = &batch_info.draw {
                 let pipeline = ctx.render_pipelines.get(draw.pipeline_idx).unwrap();
 
                 helper.resolve_and_bind(1, draw.pattern_inputs, ctx.bindings, render_pass);
