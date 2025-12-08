@@ -93,16 +93,13 @@ impl Instance {
         encoder: &mut wgpu::CommandEncoder,
         renderers: &mut [&mut dyn Renderer],
     ) -> RenderStats {
-        let mut stats = RenderStats::new(16); // TODO
+        let mut stats = RenderStats::new(renderers.len());
 
         let mut passes = Vec::new();
         let systems = &mut [
             &mut frame.render_nodes as &mut dyn GraphSystem,
         ];
         let graph_bindings = frame.graph.schedule(systems, &mut passes).unwrap();
-
-        // TODO: does this need to be a separate step from upload?
-        self.resources.begin_frame();
 
         let prepare_start_time = Instant::now();
 

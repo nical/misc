@@ -23,11 +23,6 @@ impl GpuResources {
         }
     }
 
-    pub fn begin_frame(&mut self) {
-        self.common.begin_frame();
-        self.graph.begin_frame();
-    }
-
     pub fn upload(&mut self,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
@@ -134,8 +129,6 @@ impl CommonGpuResources {
         }
     }
 
-    fn begin_frame(&mut self) {}
-
     fn upload(&mut self, device: &wgpu::Device, shaders: &Shaders) {
         if self.f32_buffer_epoch != self.f32_buffer.epoch() || self.u32_buffer_epoch != self.u32_buffer.epoch() {
             self.f32_buffer_epoch = self.f32_buffer.epoch();
@@ -194,10 +187,6 @@ impl RenderGraphResources {
             pool: Vec::new(),
             resources: Vec::new(),
         }
-    }
-
-    pub fn begin_frame(&mut self) {
-
     }
 
     pub fn upload(
