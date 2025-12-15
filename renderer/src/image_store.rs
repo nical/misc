@@ -295,7 +295,7 @@ impl SharedTextureCache {
                     textures.allocate(
                         request.size.cast_unit(),
                         texture_alloc_cb,
-                    )                    
+                    )
                 }
             };
 
@@ -319,7 +319,7 @@ impl SharedTextureCache {
                 });
             }
         }
- 
+
         let mut requested_updates = std::mem::take(&mut self.requested_updates);
         for request in requested_updates.drain(..) {
             let item = self.lru.get_mut(&request.id).unwrap();
@@ -334,7 +334,7 @@ impl SharedTextureCache {
                     data,
                     size: request.size,
                     dest: item.rectangle.min,
-                });        
+                });
             }
         }
 
@@ -474,10 +474,10 @@ impl StandaloneTextureCache {
                     data,
                     size: request.size,
                     dest: point2(0, 0),
-                });        
+                });
             }
         }
-    
+
         self.current_frame += 1;
     }
 }

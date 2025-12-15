@@ -18,6 +18,8 @@ pub mod instance;
 pub mod worker;
 pub mod shading;
 pub mod utils;
+pub mod texture_cache;
+pub mod image_store;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
 use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
