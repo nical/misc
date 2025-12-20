@@ -373,7 +373,7 @@ impl Shaders {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &layouts[..],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })
         });
 
@@ -521,7 +521,7 @@ impl Shaders {
             }),
             primitive: geometry.primitive,
             depth_stencil,
-            multiview: None,
+            multiview_mask: None,
             multisample,
             cache: None,
         };

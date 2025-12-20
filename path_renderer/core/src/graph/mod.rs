@@ -423,6 +423,7 @@ pub struct ColorAttachment {
     pub kind: TextureKind,
     pub non_msaa: Resource,
     pub msaa: Resource,
+    pub clear: bool,
 }
 
 impl ColorAttachment {
@@ -431,6 +432,7 @@ impl ColorAttachment {
             kind: TextureKind::color(),
             non_msaa: Resource::Auto,
             msaa: Resource::Auto,
+            clear: false,
         }
     }
 
@@ -439,6 +441,7 @@ impl ColorAttachment {
             kind: TextureKind::alpha(),
             non_msaa: Resource::Auto,
             msaa: Resource::Auto,
+            clear: false,
         }
     }
 
@@ -464,6 +467,12 @@ impl ColorAttachment {
         } else {
             self.non_msaa = Resource::External(index);
         }
+
+        self
+    }
+
+    pub const fn cleared(mut self, clear: bool) -> Self {
+        self.clear = clear;
 
         self
     }

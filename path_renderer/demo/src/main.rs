@@ -279,6 +279,7 @@ impl App {
         let (device, queue) = block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 required_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -687,11 +688,18 @@ impl App {
 
         let record_start = Instant::now();
 
+        let test_stuff = self.view.scene_idx == 0;
+
         let depth = self.z_buffer.unwrap_or(self.view.fill_renderer != TILING);
         let stencil = self.view.fill_renderer == STENCIL;
         let msaa = if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default };
+        let clear = !test_stuff;
 
-        let attachments = [ColorAttachment::color().with_external(0, false)];
+        let attachments = [
+            ColorAttachment::color()
+                .with_external(0, false)
+                .cleared(clear)
+        ];
         let mut descriptor = RenderNodeDescriptor::new(size)
             .msaa(msaa)
             .attachments(&attachments);
@@ -715,8 +723,6 @@ impl App {
             .with_destination::<SurfaceSpace>();
 
         let transform = frame.transforms.add(&transform);
-
-        let test_stuff = self.view.scene_idx == 0;
 
         paint_scene(
             &self.paths,
@@ -781,6 +787,7 @@ impl App {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             self.stats_renderer.render(&mut render_pass);
         }

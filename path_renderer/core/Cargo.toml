@@ -7,7 +7,7 @@ workspace = ".."
 
 [dependencies]
 lyon = { version = "1.0.0" }
-wgpu = { version = "26" }
+wgpu = { version = "28.0.0" }
 etagere = { version = "0.2.13" }
 guillotiere = { version = "0.6.2" }
 futures = "0.3.5"
@@ -17,7 +17,9 @@ profiling = "1.0.4"
 bitflags = "2.3.3"
 smallvec = "1.11.2"
 rayon = "1.10.0"
-wgpu-profiler = "0.24.0"
+# Temporarily disabled due to wgpu 28 incompatibility - needs version compatible with wgpu 28
+# wgpu-profiler = "0.25.0"
+wgpu-profiler = { git = "https://github.com/nical/wgpu-profiler", branch="wgpu-28" }
 lru = "0.16.2"
 
 [profile.release]

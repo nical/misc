@@ -42,16 +42,24 @@ impl RenderGraph {
             let kind = attachment.kind.with_attachment();
             let msaa_kind = kind.with_msaa(true);
             let mut flags = ResourceFlags::empty();
+            // If msaa is used, this is a resolve target. Only allocate
+            // these if they are used.
             flags.set(ResourceFlags::LAZY, desc.msaa);
+            flags.set(ResourceFlags::CLEAR, attachment.clear && !desc.msaa);
+            if let Resource::Dependency(..) = attachment.non_msaa {
+                flags.set(ResourceFlags::LOAD, !attachment.clear);
+            }
             self.resources.push(NodeResource {
                 kind: kind.as_resource(),
                 resource: attachment.non_msaa,
-                // If msaa is used, this is a resolve target. Only allocate
-                // these if they are used.
                 flags,
             });
             let mut flags = ResourceFlags::empty();
             flags.set(ResourceFlags::LAZY, !desc.msaa);
+            flags.set(ResourceFlags::CLEAR, attachment.clear);
+            if let Resource::Dependency(..) = attachment.msaa {
+                flags.set(ResourceFlags::LOAD, !attachment.clear);
+            }
             self.resources.push(NodeResource {
                 kind: msaa_kind.as_resource(),
                 resource: attachment.msaa,
@@ -291,6 +299,7 @@ pub fn schedule_graph(
         resolved_index: Option<ResourceIndex>,
         store: bool,
         reusable: bool,
+        clear: bool,
         load: bool,
     }
 
@@ -300,6 +309,7 @@ pub fn schedule_graph(
             reusable: false,
             resolved_index: None,
             kind: BufferKind::storage().as_resource(),
+            clear: false,
             store: false,
             load: false,
         };
@@ -328,6 +338,7 @@ pub fn schedule_graph(
                         // Only make the physical resource available again if we
                         // know that no new reference can be added to it.
                         store: false,
+                        clear: resource.flags.contains(ResourceFlags::CLEAR),
                         load: resource.flags.contains(ResourceFlags::LOAD),
                     }
                 }
@@ -341,6 +352,7 @@ pub fn schedule_graph(
                             allocation: Allocation::External,
                         }),
                         store: false,
+                        clear: resource.flags.contains(ResourceFlags::CLEAR),
                         load: resource.flags.contains(ResourceFlags::LOAD),
                     }
                 }
@@ -366,7 +378,8 @@ pub fn schedule_graph(
                         kind: resource.kind,
                         resolved_index: dep_vres.resolved_index,
                         store: false,
-                        load: !resource.flags.contains(ResourceFlags::CLEAR),
+                        clear: resource.flags.contains(ResourceFlags::CLEAR),
+                        load: resource.flags.contains(ResourceFlags::LOAD),
                     }
                 }
             };
@@ -451,7 +464,7 @@ pub fn schedule_graph(
 
         match node.kind {
             NodeKind::Render => {
-                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttathchmentFlags { load: false, store: false,}}; 3];
+                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttathchmentFlags { clear: false, load: false, store: false,}}; 3];
                 let mut attachments_iter = node.resources.color_attachments();
                 for i in 0..3 {
                     let non_msaa = attachments_iter.next();
@@ -467,6 +480,7 @@ pub fn schedule_graph(
                             non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
                             msaa: Some(BindingsId::graph(msaa_idx as u16)),
                             flags: AttathchmentFlags {
+                                clear: res.clear,
                                 load: res.load,
                                 store: res.store,
                             }
@@ -477,6 +491,7 @@ pub fn schedule_graph(
                             non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
                             msaa: None,
                             flags: AttathchmentFlags {
+                                clear: res.clear,
                                 load: res.load,
                                 store: res.store,
                             }
@@ -583,6 +598,7 @@ fn test_nested() {
         kind: TextureKind::color(),
         non_msaa: Resource::External(0),
         msaa: Resource::Auto,
+        clear: true,
     };
     let color = ColorAttachment::color();
 

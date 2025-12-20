@@ -81,7 +81,7 @@ impl StencilAndCover {
             bind_group_layouts: &[&shaders
                 .get_bind_group_layout(shaders.common_bind_group_layouts.target_and_gpu_buffer)
                 .handle],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let targets = &[Some(wgpu::ColorTargetState {
@@ -128,7 +128,7 @@ impl StencilAndCover {
                 bias: wgpu::DepthBiasState::default(),
                 format: shaders.defaults.depth_stencil_format().unwrap(),
             }),
-            multiview: None,
+            multiview_mask: None,
             multisample: wgpu::MultisampleState::default(),
             cache: None,
         };

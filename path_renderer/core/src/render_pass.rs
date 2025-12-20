@@ -290,6 +290,7 @@ fn surface_draw_config() {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AttathchmentFlags {
     pub load: bool,
+    pub clear: bool,
     pub store: bool,
 }
 
@@ -460,8 +461,12 @@ impl RenderCommands {
                     ops: wgpu::Operations {
                         load: if attachment.flags.load {
                             wgpu::LoadOp::Load
-                        } else {
+                        } else if attachment.flags.clear {
                             wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::DontCare(unsafe {
+                                wgpu::LoadOpDontCare::enabled()
+                            })
                         },
                         store: if attachment.flags.store {
                             wgpu::StoreOp::Store
@@ -512,6 +517,7 @@ impl RenderCommands {
             depth_stencil_attachment,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         };
 
         let mut wgpu_pass = ctx.encoder.begin_render_pass(&pass_descriptor);

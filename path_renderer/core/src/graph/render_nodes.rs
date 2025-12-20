@@ -277,7 +277,7 @@ impl GraphSystem for RenderNodes {
                     crate::render_pass::ColorAttachment {
                         non_msaa: None,
                         msaa: None,
-                        flags: AttathchmentFlags { load: false, store: false,}
+                        flags: AttathchmentFlags { clear: false, load: false, store: false,}
                     };
                     3
                 ],

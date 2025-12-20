@@ -5,4 +5,4 @@ edition = "2021"
 workspace = ".."
 
 [dependencies]
-naga = { version = "25.0", features = ["wgsl-in"] }
+naga = { version = "28.0", features = ["wgsl-in"] }
