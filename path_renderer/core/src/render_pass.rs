@@ -1,8 +1,8 @@
 use wgpu_profiler::GpuProfiler;
 
 use crate::batching::{BatchId, Batcher};
-use crate::graph::PassRenderContext;
 use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
+use crate::resources::GpuResources;
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::path::FillRule;
 use crate::units::SurfaceIntSize;
@@ -202,6 +202,7 @@ impl RenderPassBuilder {
             batches,
             config: self.config,
             size: self.size,
+            io: RenderPassIo::default(),
         }
     }
 }
@@ -213,17 +214,37 @@ pub struct RenderPassIo {
     pub depth_stencil_attachment: Option<BindingsId>,
 }
 
+impl Default for RenderPassIo {
+    fn default() -> Self {
+        let attachment = ColorAttachment {
+            msaa: None,
+            non_msaa: None,
+            flags: AttachmentFlags {
+                load: false,
+                clear: false,
+                store: false,
+            }
+        };
+        RenderPassIo {
+            label: None,
+            color_attachments: [attachment, attachment, attachment],
+            depth_stencil_attachment: None,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct ColorAttachment {
     pub non_msaa: Option<BindingsId>,
     pub msaa: Option<BindingsId>,
-    pub flags: AttathchmentFlags,
+    pub flags: AttachmentFlags,
 }
 
 pub struct BuiltRenderPass {
     batches: Vec<BatchId>,
     config: RenderPassConfig,
     size: SurfaceIntSize,
+    io: RenderPassIo,
 }
 
 impl BuiltRenderPass {
@@ -232,6 +253,7 @@ impl BuiltRenderPass {
             batches: Vec::new(),
             config: RenderPassConfig::default(),
             size: SurfaceIntSize::new(0, 0),
+            io: RenderPassIo::default(),
         }
     }
 
@@ -253,7 +275,6 @@ impl BuiltRenderPass {
 
     pub fn render(
         &self,
-        io: &RenderPassIo,
         ctx: &mut PassRenderContext,
         renderers: &[&mut dyn Renderer],
     ) {
@@ -268,7 +289,28 @@ impl BuiltRenderPass {
 
         commands.end_render_pass();
 
-        commands.render_pass(ctx, renderers, io, &self.config());
+        commands.render_pass(ctx, renderers, &self.io, &self.config());
+    }
+
+    pub fn set_label(&mut self, label: &'static str) {
+        self.io.label = Some(label);
+    }
+
+    pub fn set_color_attachments(&mut self, attachments: &[ColorAttachment]) {
+        debug_assert!(attachments.len() <= 3);
+        for (idx, attachment) in attachments.iter().enumerate() {
+            self.io.color_attachments[idx] = *attachment;
+        }
+    }
+
+    pub fn set_depth_stencil_attachment(&mut self, attachment: Option<BindingsId>) {
+        self.io.depth_stencil_attachment = attachment;
+    }
+}
+
+impl Default for BuiltRenderPass {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -288,7 +330,7 @@ fn surface_draw_config() {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AttathchmentFlags {
+pub struct AttachmentFlags {
     pub load: bool,
     pub clear: bool,
     pub store: bool,
@@ -639,4 +681,12 @@ impl RenderCommands {
         let time = crate::instance::ms(std::time::Instant::now() - start_time);
         stats.render_time += time;
     }
+}
+pub struct PassRenderContext<'l> {
+    pub encoder: &'l mut wgpu::CommandEncoder,
+    pub resources: &'l GpuResources,
+    pub bindings: &'l dyn BindingResolver,
+    pub render_pipelines: &'l RenderPipelines,
+    pub stats: &'l mut [RendererStats],
+    pub gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
 }

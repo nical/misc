@@ -1,12 +1,14 @@
-use std::{fmt, ops::Range};
+use std::ops::Range;
 
 use smallvec::SmallVec;
 
-use crate::graph::{GraphSystem, PassId};
-use crate::render_pass::{AttathchmentFlags, ColorAttachment, RenderPassIo};
-use crate::{BindingsId, BindingsNamespace};
-use super::{Allocation, BufferKind, Dependency, NodeDescriptor, NodeId, NodeKind, Resource, ResourceKind, Slot, TaskId, TempResourceKey, TextureKind};
+use crate::instance::Passes;
+use crate::render_pass::{AttachmentFlags, BuiltRenderPass, ColorAttachment};
+use crate::resources::{Allocation, BufferKind, ResourceIndex, ResourceKey, ResourceKind, TextureKind};
+use crate::BindingsId;
+use super::{Dependency, NodeDescriptor, NodeId, NodeKind, Resource, Slot};
 use super::ResourceFlags;
+
 
 #[derive(Copy, Clone, Debug)]
 struct NodeResource {
@@ -18,9 +20,10 @@ struct NodeResource {
 pub struct RenderGraph {
     nodes: Vec<Node>,
     resources: Vec<NodeResource>,
-    tasks: Vec<TaskId>,
     roots: Vec<Dependency>,
     next_virtual_resource: u16,
+
+    built_render_passes: Vec<BuiltRenderPass>,
 }
 
 impl RenderGraph {
@@ -28,9 +31,9 @@ impl RenderGraph {
         RenderGraph {
             nodes: Vec::new(),
             resources: Vec::new(),
-            tasks: Vec::new(),
             roots: Vec::new(),
             next_virtual_resource: 0,
+            built_render_passes: Vec::new(),
         }
     }
 
@@ -79,7 +82,6 @@ impl RenderGraph {
 
         let resources_end = self.resources.len();
 
-        self.tasks.push(desc.task.expect("NodeDescriptor needs a task."));
         self.nodes.push(Node {
             kind: desc.kind,
             resources: NodeResources {
@@ -89,7 +91,7 @@ impl RenderGraph {
                 depth_stencil: ds_resource,
             },
             msaa: desc.msaa,
-            size: desc.size.map(|s| s.to_u32().to_tuple()).unwrap_or((0, 0)),
+            size: desc.size.map(|s| (s.width as u16, s.height as u16)).unwrap_or((0, 0)),
             dependecies: SmallVec::from_slice(desc.reads),
             readable: true,
             label: desc.label,
@@ -100,14 +102,18 @@ impl RenderGraph {
         id
     }
 
-    pub fn add_dependency(&mut self, node: NodeId, dep: Dependency) {
-        debug_assert!(self.nodes[dep.node.index()].readable);
-        self.nodes[node.index()].dependecies.push(dep);
-    }
-
     #[inline]
     pub(crate) fn add_dependencies(&mut self, node: NodeId, deps: &[Dependency]) {
         self.nodes[node.index()].dependecies.extend_from_slice(deps);
+    }
+
+    pub(crate) fn add_built_render_pass(&mut self, node: NodeId, pass: BuiltRenderPass) {
+        let index = node.0 as usize;
+        while self.built_render_passes.len() <= index {
+            self.built_render_passes.push(BuiltRenderPass::empty());
+        }
+
+        self.built_render_passes[index] = pass;
     }
 
     pub fn add_root(&mut self, root: Dependency) {
@@ -124,8 +130,8 @@ impl RenderGraph {
         BindingsId::graph(idx as u16)
     }
 
-    pub fn schedule(&self, systems: &mut [&mut dyn GraphSystem], commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
-        schedule_graph(self, systems, commands)
+    pub fn schedule(&mut self, passes: &mut Passes) -> Result<(), Box<GraphError>> {
+        schedule_graph(self, passes)
     }
 }
 
@@ -139,7 +145,7 @@ struct Node {
     // Size is also render-specific but a bit annoying to
     // move out of Node because the graph uses it to determine
     // the size of allocations for attachments.
-    size: (u32, u32),
+    size: (u16, u16),
     // This is not really used at the moment.
     readable: bool,
 }
@@ -178,46 +184,10 @@ impl NodeResources {
     }
 }
 
-// TODO: turn this into something less graph-specific, so that other
-// things can use it.
-#[derive(Debug, Default)]
-pub struct GraphBindings {
-    pub temporary_resources: Vec<TempResourceKey>,
-    pub resources: Vec<Option<NodeResourceInfo>>,
-}
-
-impl GraphBindings {
-    pub fn resolve_binding(&self, binding: BindingsId) -> Option<ResourceIndex> {
-        debug_assert!(binding.namespace() == BindingsNamespace::RenderGraph);
-        self.resources[binding.index()].as_ref().map(|res| res.resolved_index)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum GraphError {
     DependencyCycle(NodeId),
-    InvalidTextureSize { label: Option<&'static str>, expected: (u32, u32), got: (u32, u32) },
-}
-
-#[derive(Debug)]
-pub struct NodeResourceInfo {
-    pub kind: ResourceKind,
-    pub resolved_index: ResourceIndex,
-    /// True if any render node reads from it.
-    pub load: bool,
-    pub store: bool,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ResourceIndex {
-    pub allocation: Allocation,
-    pub index: u16,
-}
-
-impl fmt::Debug for ResourceIndex {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}({:?})", self.allocation, self.index)
-    }
+    InvalidTextureSize { label: Option<&'static str>, expected: (u16, u16), got: (u16, u16) },
 }
 
 fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(), Box<GraphError>> {
@@ -279,19 +249,15 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 }
 
 pub fn schedule_graph(
-    graph: &RenderGraph,
-    systems: &mut [&mut dyn GraphSystem],
-    commands: &mut Vec<PassId>,
-) -> Result<GraphBindings, Box<GraphError>> {
+    graph: &mut RenderGraph,
+    passes: &mut Passes,
+) -> Result<(), Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
 
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted)?;
 
-    // TODO: lot of overlap with NodeResourceInfo. Could be split into
-    // the vector of Option<NodeResourceInfo> that is eventually returned
-    // and the remaining members in a side array.
     #[derive(Clone)]
     struct VirtualResource {
         refs: u16,
@@ -315,11 +281,6 @@ pub fn schedule_graph(
         };
         graph.resources.len()
     ];
-
-    let mut temp_resources = TemporaryResources {
-        available: Vec::with_capacity(16),
-        resources: Vec::with_capacity(16),
-    };
 
     // First pass allocates virtual resources and counts the number of times they
     // are used.
@@ -411,7 +372,7 @@ pub fn schedule_graph(
             match res.resource {
                 Resource::Auto => {
                     let virt_res = &mut virtual_resources[idx];
-                    let resource = temp_resources.get(TempResourceKey {
+                    let resource = passes.resources.get(ResourceKey {
                         kind: res.kind,
                         size: node.size,
                     });
@@ -442,7 +403,7 @@ pub fn schedule_graph(
             let vres = &virtual_resources[idx];
             if let Some(id) = vres.resolved_index {
                 if vres.reusable && vres.refs == 0 {
-                    temp_resources.recycle(TempResourceKey { kind: vres.kind, size: node.size }, id.index);
+                    passes.resources.recycle(ResourceKey { kind: vres.kind, size: node.size }, id.index);
                 }
             }
         }
@@ -457,14 +418,14 @@ pub fn schedule_graph(
             vres.refs -= 1;
             if let Some(id) = vres.resolved_index {
                 if vres.reusable && vres.refs == 0{
-                    temp_resources.recycle(TempResourceKey { kind: vres.kind, size: node.size }, id.index);
+                    passes.resources.recycle(ResourceKey { kind: vres.kind, size: node.size }, id.index);
                 }
             }
         }
 
         match node.kind {
             NodeKind::Render => {
-                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttathchmentFlags { clear: false, load: false, store: false,}}; 3];
+                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttachmentFlags { clear: false, load: false, store: false,}}; 3];
                 let mut attachments_iter = node.resources.color_attachments();
                 for i in 0..3 {
                     let non_msaa = attachments_iter.next();
@@ -479,7 +440,7 @@ pub fn schedule_graph(
                         color[i] = ColorAttachment {
                             non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
                             msaa: Some(BindingsId::graph(msaa_idx as u16)),
-                            flags: AttathchmentFlags {
+                            flags: AttachmentFlags {
                                 clear: res.clear,
                                 load: res.load,
                                 store: res.store,
@@ -490,7 +451,7 @@ pub fn schedule_graph(
                         color[i] = ColorAttachment {
                             non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
                             msaa: None,
-                            flags: AttathchmentFlags {
+                            flags: AttachmentFlags {
                                 clear: res.clear,
                                 load: res.load,
                                 store: res.store,
@@ -503,23 +464,23 @@ pub fn schedule_graph(
                     BindingsId::graph(idx)
                 });
 
-                let io = RenderPassIo {
-                    label: node.label,
-                    color_attachments: color,
-                    depth_stencil_attachment: depth_stencil,
-                };
+                // TODO: We only consider the case where we don't have built
+                // render passes for testing purposes.
+                let mut built_pass = BuiltRenderPass::default();
+                if graph.built_render_passes.len() > 0 {
+                    std::mem::swap(
+                        &mut built_pass,
+                        &mut graph.built_render_passes[node_id.index()],
+                    );
+                }
 
-                let system_id = 0; // TODO
-                let pass_index = graph.tasks[node_id.index()].0;
+                if let Some(label) = node.label {
+                    built_pass.set_label(label)
+                }
+                built_pass.set_color_attachments(&color);
+                built_pass.set_depth_stencil_attachment(depth_stencil);
 
-                let pass_id = PassId {
-                    system: system_id,
-                    index: pass_index as u16,
-                };
-
-                systems[system_id as usize].set_pass_io(pass_id, io);
-
-                commands.push(pass_id);
+                passes.push_render_pass(built_pass);
             }
             _ => {
                 todo!()
@@ -527,69 +488,22 @@ pub fn schedule_graph(
         }
     }
 
-    let mut resources = Vec::with_capacity(virtual_resources.len());
-    for res in &virtual_resources {
-        resources.push(res.resolved_index.map(|id| NodeResourceInfo {
-            kind: res.kind,
-            resolved_index: id,
-            load: res.load,
-            store: res.store,
-        }));
+    for (idx, res) in virtual_resources.iter().enumerate() {
+        passes.set_binding(idx, res.resolved_index);
     }
 
-    Ok(GraphBindings {
-        temporary_resources: temp_resources.resources,
-        resources,
-    })
-}
-
-struct TemporaryResources {
-    available: Vec<(TempResourceKey, Vec<u16>)>,
-    resources: Vec<TempResourceKey>,
-}
-
-impl TemporaryResources {
-    fn get(&mut self, descriptor: TempResourceKey) -> u16 {
-        let mut resource = None;
-        for (desc, resources) in &mut self.available {
-            if *desc == descriptor {
-                resource = resources.pop();
-                break;
-            }
-        }
-
-        resource.unwrap_or_else(|| {
-            let res = self.resources.len() as u16;
-            self.resources.push(descriptor);
-            res
-        })
-    }
-
-    pub fn recycle(&mut self, descriptor: TempResourceKey, index: u16) {
-        let mut pool_idx = self.available.len();
-        for (idx, (desc, _)) in self.available.iter().enumerate() {
-            if *desc == descriptor {
-                pool_idx = idx;
-                break;
-            }
-        }
-        if pool_idx == self.available.len() {
-            self.available.push((descriptor, Vec::with_capacity(8)));
-        }
-
-        self.available[pool_idx].1.push(index);
-    }
+    Ok(())
 }
 
 #[test]
 fn test_nested() {
-    use super::{NodeDescriptor, TaskId, ColorAttachment, TextureKind};
+    use super::{NodeDescriptor, ColorAttachment, TextureKind};
     use crate::units::SurfaceIntSize;
 
     let mut graph = RenderGraph::new();
 
-    fn task(id: u64) -> NodeDescriptor<'static> {
-        NodeDescriptor::new().task(TaskId(id))
+    fn node() -> NodeDescriptor<'static> {
+        NodeDescriptor::new()
     }
 
     let window_size = SurfaceIntSize::new(1920, 1200);
@@ -620,24 +534,24 @@ fn test_nested() {
     //  tmp0  n1     n3         n9
     //          \     \          \
     //  main     n0----n2---------n10
-    let n0 = graph.add_node(&task(0).size(window_size).attachments(&[main]).depth_stencil(Resource::Auto, true, false).label("main"));
-    let n1 = graph.add_node(&task(1).size(atlas_size).attachments(&[color]).label("atlas"));
-    let n2 = graph.add_node(&task(2).size(window_size).attachments(&[main.with_dependency(n0.color(0))]).depth_stencil(Resource::Auto, true, false).label("main"));
-    let n3 = graph.add_node(&task(3).size(atlas_size).attachments(&[color]).label("atlas"));
-    let n4 = graph.add_node(&task(4).size(atlas_size).attachments(&[color]));
-    let n5 = graph.add_node(&task(5).size(atlas_size).attachments(&[color]));
-    let n6 = graph.add_node(&task(6).size(atlas_size).attachments(&[color]));
-    let n7 = graph.add_node(&task(7).size(atlas_size).attachments(&[color.with_dependency(n6.color(0))]));
-    let n8 = graph.add_node(&task(8).size(atlas_size).attachments(&[color]));
+    let n0 = graph.add_node(&node().size(window_size).attachments(&[main]).depth_stencil(Resource::Auto, true, false).label("main"));
+    let n1 = graph.add_node(&node().size(atlas_size).attachments(&[color]).label("atlas"));
+    let n2 = graph.add_node(&node().size(window_size).attachments(&[main.with_dependency(n0.color(0))]).depth_stencil(Resource::Auto, true, false).label("main"));
+    let n3 = graph.add_node(&node().size(atlas_size).attachments(&[color]).label("atlas"));
+    let n4 = graph.add_node(&node().size(atlas_size).attachments(&[color]));
+    let n5 = graph.add_node(&node().size(atlas_size).attachments(&[color]));
+    let n6 = graph.add_node(&node().size(atlas_size).attachments(&[color]));
+    let n7 = graph.add_node(&node().size(atlas_size).attachments(&[color.with_dependency(n6.color(0))]));
+    let n8 = graph.add_node(&node().size(atlas_size).attachments(&[color]));
     let n9 = graph.add_node(
-        &task(9)
+        &node()
             .size(atlas_size)
             .attachments(&[color])
             .read(&[n7.color(0)])
             .label("atlas")
     );
     let n10 = graph.add_node(
-        &task(10)
+        &node()
             .size(window_size)
             .attachments(&[color.with_dependency(n2.color(0))])
             .depth_stencil(Resource::Auto, true, false)
@@ -646,35 +560,30 @@ fn test_nested() {
     );
 
     let n11 = graph.add_node(
-        &task(11)
+        &node()
             .size(atlas_size)
             .attachments(&[color])
             .read(&[n9.color(0)])
     );
 
-    graph.add_dependency(n0, n1.color(0));
-    graph.add_dependency(n2, n3.color(0));
-    graph.add_dependency(n3, n4.color(0));
-    graph.add_dependency(n7, n5.color(0));
-    graph.add_dependency(n6, n8.color(0));
-    graph.add_dependency(n10, n9.color(0));
+    graph.add_dependencies(n0, &[n1.color(0)]);
+    graph.add_dependencies(n2, &[n3.color(0)]);
+    graph.add_dependencies(n3, &[n4.color(0)]);
+    graph.add_dependencies(n7, &[n5.color(0)]);
+    graph.add_dependencies(n6, &[n8.color(0)]);
+    graph.add_dependencies(n10, &[n9.color(0)]);
 
     graph.add_root(n10.color(0));
 
     let mut sorted = Vec::new();
     topological_sort(&graph, &mut sorted).unwrap();
 
-    let mut render_nodes = super::render_nodes::RenderNodes::new();
-    let systems: &mut[&mut dyn GraphSystem] = &mut [
-        &mut render_nodes,
-    ];
+    let mut passes = Passes::new();
 
-    let mut passes = Vec::new();
-
-    let bindings = graph.schedule(systems, &mut passes).unwrap();
+    let _ = graph.schedule(&mut passes).unwrap();
 
     println!("sorted: {:?}", sorted);
-    println!("allocations: {:?}", bindings.temporary_resources);
+    println!("allocations: {:?}", passes.resources.descriptors());
 
     // n11 should get culled out since it is not reachable from the root.
     assert!(!sorted.contains(&n11));

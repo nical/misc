@@ -1,17 +1,16 @@
 #![allow(unused)]
 
-use core::graph::{FrameGraph, GraphSystem};
+use core::graph::FrameGraph;
 use core::gpu::gpu_buffer;
 use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
-use core::graph::{Allocation, ColorAttachment, GraphBindings, Resource};
-use core::graph::render_nodes::{RenderNodes, RenderNode, RenderNodeDescriptor};
+use core::graph::{ColorAttachment, Resource, RenderNode, RenderNodeDescriptor};
 use core::render_pass::RenderPassContext;
 use core::transform::{Transform, TransformId};
 use core::{Renderer, Vector};
 use core::shading::BlendMode;
 use core::path::Path;
-use core::resources::GpuResource;
+use core::resources::{Allocation, GpuResource};
 use core::shape::*;
 use core::stroke::*;
 use core::units::{
@@ -602,6 +601,7 @@ impl App {
         };
 
         let mut frame = self.instance.begin_frame();
+        let mut graph = FrameGraph::new(&frame);
 
         self.renderers.begin_frame();
 
@@ -708,9 +708,9 @@ impl App {
         }
 
         let mut f32_buffer = frame.f32_buffer.write();
-        let mut main_surface = frame.render_nodes.add_node(&frame.graph, &mut f32_buffer, descriptor);
+        let mut main_surface = graph.add_render_node(&mut f32_buffer, descriptor);
         std::mem::drop(f32_buffer);
-        frame.graph.add_root(&main_surface);
+        graph.add_root(&main_surface);
 
         let tx = self.view.pan[0].round();
         let ty = self.view.pan[1].round();
@@ -737,7 +737,7 @@ impl App {
             transform,
         );
 
-        main_surface.finish(&mut frame.render_nodes);
+        main_surface.finish();
 
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
@@ -762,6 +762,8 @@ impl App {
             &mut self.renderers.wpf,
             &mut self.renderers.msaa_strokes,
         ];
+
+        graph.schedule(&mut frame.passes).unwrap();
 
         let external_attachments = [Some(&frame_view)];
         let stats = self.instance.render_frame(

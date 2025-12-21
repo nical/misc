@@ -1,18 +1,21 @@
 mod schedule;
-pub mod render_nodes;
+mod render_node;
 
 use std::{fmt, sync::{Arc, Mutex}, u16};
 use bitflags::bitflags;
 use smallvec::SmallVec;
 
-use crate::units::SurfaceIntSize;
-use crate::render_pass::RenderPassIo;
-use crate::resources::GpuResources;
-use crate::shading::RenderPipelines;
-use crate::{BindingResolver, RendererStats, SurfaceKind};
+use crate::{BindingsId, RenderPassConfig, SurfaceKind, resources::TextureKind};
+use crate::gpu::GpuBufferWriter;
+use crate::instance::{Frame, Passes};
+use crate::render_pass::RenderPassBuilder;
+use crate::render_task::{RenderTaskData, RenderTaskHandle, RenderTaskInfo};
+use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
+
+pub use crate::graph::render_node::*;
 
 use schedule::RenderGraph;
-pub use schedule::{GraphBindings, GraphError};
+pub use schedule::GraphError;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u16);
@@ -88,335 +91,10 @@ impl fmt::Debug for Dependency {
     }
 }
 
-/// TODO: find another name for this.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TaskId(pub u64);
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Allocation {
-    /// Allocated by the render graph.
-    Temporary,
-    /// Allocated outside of the render graph.
-    External,
-    // TODO: a Retained variant for resources that are explicitly created/destroyed
-    // outisde of the render graph but still managed by the gpu resource pool.
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TextureKind(u16);
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BufferKind(u16);
-
-impl TextureKind {
-    const ALPHA: u16 = 1;
-    const DEPTH_STENCIL: u16 = 2;
-
-    const MSAA: u16 = 1 << 3;
-    const HDR: u16 = 1 << 4;
-    const COPY_SRC: u16 = 1 << 5;
-    const COPY_DST: u16 = 1 << 6;
-    const BINDING: u16 = 1 << 7;
-    const ATTACHMENT: u16 = 1 << 8;
-
-    pub const fn color() -> Self {
-        TextureKind(0)
-    }
-
-    pub const fn color_attachment() -> Self {
-        Self::color().with_attachment()
-    }
-
-    pub const fn alpha_attachment() -> Self {
-        Self::alpha().with_attachment()
-    }
-
-    pub const fn color_binding() -> Self {
-        Self::color().with_binding()
-    }
-
-    pub const fn alpha_binding() -> Self {
-        Self::alpha().with_binding()
-    }
-
-
-    pub const fn alpha() -> Self {
-        TextureKind(Self::ALPHA)
-    }
-
-    pub const fn depth_stencil() -> Self {
-        TextureKind(Self::DEPTH_STENCIL)
-    }
-
-    pub const fn with_hdr(self) -> Self {
-        TextureKind(self.0 | Self::HDR)
-    }
-
-    pub const fn with_attachment(self) -> Self {
-        TextureKind(self.0 | Self::ATTACHMENT)
-    }
-
-    pub const fn with_binding(self) -> Self {
-        TextureKind(self.0 | Self::BINDING)
-    }
-
-    pub const fn with_msaa(self, msaa: bool) -> Self {
-        if msaa {
-            TextureKind(self.0 | Self::MSAA)
-        } else {
-            TextureKind(self.0 & !Self::MSAA)
-        }
-    }
-
-    pub const fn with_copy_src(self) -> Self {
-        TextureKind(self.0 | Self::COPY_SRC)
-    }
-
-    pub const fn with_copy_dst(self) -> Self {
-        TextureKind(self.0 | Self::COPY_DST)
-    }
-
-    pub fn from_surface_kind(kind: SurfaceKind) -> Self {
-        match kind {
-            SurfaceKind::Color => Self::color(),
-            SurfaceKind::Alpha => Self::alpha(),
-            SurfaceKind::HdrColor => Self::color().with_hdr(),
-            SurfaceKind::HdrAlpha => Self::alpha().with_hdr(),
-            SurfaceKind::None => unimplemented!(),
-        }
-    }
-
-    pub const fn as_resource(self) -> ResourceKind {
-        ResourceKind(self.0)
-    }
-
-    pub const fn is_color(self) -> bool {
-        self.0 & (Self::ALPHA | Self::DEPTH_STENCIL)  == 0
-    }
-
-    pub const fn is_alpha(self) -> bool {
-        self.0 & Self::ALPHA != 0
-    }
-
-    pub const fn is_depth_stencil(self) -> bool {
-        self.0 & Self::DEPTH_STENCIL != 0
-    }
-
-    pub const fn is_hdr(self) -> bool {
-        self.0 & Self::HDR != 0
-    }
-
-    pub const fn is_attachment(self) -> bool {
-        self.0 & Self::ATTACHMENT != 0
-    }
-
-    pub const fn is_binding(self) -> bool {
-        self.0 & Self::BINDING != 0
-    }
-
-    pub const fn is_msaa(self) -> bool {
-        self.0 & Self::MSAA != 0
-    }
-
-    pub const fn is_copy_src(self) -> bool {
-        self.0 & Self::COPY_SRC != 0
-    }
-
-    pub const fn is_copy_dst(self) -> bool {
-        self.0 & Self::COPY_DST != 0
-    }
-
-    pub const fn is_compatible_width(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    pub fn as_key(&self, w: u16, h: u16) -> ResourceKey {
-        let w = texture_size_class(w);
-        let h = texture_size_class(h);
-        ResourceKey(self.0 | (w << 12) | (h << 9))
-    }
-}
-
-impl fmt::Debug for TextureKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Texture(")?;
-        if self.is_color() {
-            write!(f, "color")?;
-        }
-        if self.is_alpha() {
-            write!(f, "alpha")?;
-        }
-        if self.is_depth_stencil() {
-            write!(f, "depth-stencil")?;
-        }
-        if self.is_hdr() {
-            write!(f, "|hdr")?;
-        }
-        if self.is_msaa() {
-            write!(f, "|msaa")?;
-        }
-        if self.is_attachment() {
-            write!(f, "|attachment")?;
-        }
-        if self.is_binding() {
-            write!(f, "|binding")?;
-        }
-        if self.is_copy_src() {
-            write!(f, "|copy-src")?;
-        }
-        if self.is_copy_dst() {
-            write!(f, "|copy-dst")?;
-        }
-
-        write!(f, ")")
-    }
-}
-
-fn texture_size_class(size: u16) -> u16 {
-    // Must fit in 3 bits (up to 7 buckets).
-    match size {
-        0..1025 => 1,
-        1025..2049 => 2,
-        2049..4097 => 3,
-        4097..8193 => 4,
-        8193..16385 => 5,
-        _ => panic!("Invalid texture size")
-    }
-}
-fn texture_size_from_class(class: u16) -> u16 {
-    match class {
-        1 => 1024,
-        2 => 2048,
-        3 => 4096,
-        4 => 8192,
-        _ => 16384,
-    }
-}
-
-
-impl BufferKind {
-    const BUFFER: u16 = 1 << 15;
-
-    const UNIFORM: u16 = 1 << 0;
-
-    const COPY_SRC: u16 = 1 << 1;
-    const COPY_DST: u16 = 1 << 2;
-
-    pub fn as_resource(self) -> ResourceKind {
-        ResourceKind(self.0)
-    }
-
-    pub fn storage() -> Self {
-        BufferKind(Self::BUFFER)
-    }
-
-    pub fn uniform() -> Self {
-        BufferKind(Self::BUFFER | Self::UNIFORM)
-    }
-
-    pub fn staging() -> Self {
-        BufferKind(Self::BUFFER | Self::COPY_SRC | Self::COPY_DST)
-    }
-
-    pub const fn with_copy_src(self) -> Self {
-        BufferKind(self.0 | Self::COPY_SRC)
-    }
-
-    pub const fn with_copy_dst(self) -> Self {
-        BufferKind(self.0 | Self::COPY_DST)
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ResourceKind(u16);
-
-impl ResourceKind {
-    pub fn is_texture(self) -> bool {
-        self.0 & BufferKind::BUFFER == 0
-    }
-
-    pub fn is_buffer(self) -> bool {
-        self.0 & BufferKind::BUFFER != 0
-    }
-
-    pub fn as_texture(&self) -> Option<TextureKind> {
-        if self.is_texture() {
-            Some(TextureKind(self.0))
-        } else {
-            None
-        }
-    }
-
-    pub fn as_buffer(&self) -> Option<BufferKind> {
-        if self.is_buffer() {
-            Some(BufferKind(self.0))
-        } else {
-            None
-        }
-    }
-}
-
-impl fmt::Debug for ResourceKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(tex) = self.as_texture() {
-            return tex.fmt(f);
-        }
-        if let Some(buf) = self.as_buffer() {
-            return buf.fmt(f);
-        }
-
-        write!(f, "<InvalidBufferKind>")
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ResourceKey(u16);
-
-impl ResourceKey {
-    pub fn is_texture(self) -> bool {
-        self.0 & BufferKind::BUFFER == 0
-    }
-
-    pub fn is_buffer(self) -> bool {
-        self.0 & BufferKind::BUFFER != 0
-    }
-
-    pub fn as_texture(&self) -> Option<(TextureKind, u16, u16)> {
-        if !self.is_texture() {
-            return None;
-        }
-
-        let kind = self.0 & 0b111111111;
-        let w = self.0 >> 12 & 0b111;
-        let h = self.0 >> 9 & 0b111;
-        Some((
-            TextureKind(kind),
-            texture_size_from_class(w),
-            texture_size_from_class(h),
-        ))
-    }
-}
-
-impl fmt::Debug for ResourceKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some((kind, w, h)) = self.as_texture() {
-            return write!(f, "#{kind:?}({w},{h})");
-        }
-        let buf = BufferKind(self.0); // TODO: buffer size classes
-        write!(f, "#{buf:?}(..)")
-    }
-}
-
 // The virtual/physical resource distinction is similar to virtual and physical
 // registers: Every output port of a node is its own virtual resource, to which
 // is assigned a physical resource when scheduling the graph. Physical resources
 // are used by as many nodes as possible to minimize memory usage.
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct TempResourceKey {
-    pub kind: ResourceKind,
-    pub size: (u32, u32),
-}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ColorAttachment {
@@ -505,7 +183,6 @@ pub enum NodeKind {
 pub struct NodeDescriptor<'l> {
     pub kind: NodeKind,
     pub label: Option<&'static str>,
-    pub task: Option<TaskId>,
     pub reads: &'l[Dependency],
     pub attachments: &'l[ColorAttachment],
     pub depth_stencil: Option<(Resource, bool, bool)>,
@@ -519,7 +196,6 @@ impl NodeDescriptor<'static> {
         NodeDescriptor {
             kind: NodeKind::Render, // TODO
             label: None,
-            task: None,
             reads: &[],
             attachments: &[],
             depth_stencil: None,
@@ -553,13 +229,6 @@ impl<'l> NodeDescriptor<'l> {
     pub fn depth_stencil(self, attachment: Resource, depth: bool, stencil: bool) -> Self {
         NodeDescriptor {
             depth_stencil: Some((attachment, depth, stencil)),
-            .. self
-        }
-    }
-
-    pub fn task(self, task: TaskId) -> Self {
-        NodeDescriptor {
-            task: Some(task),
             .. self
         }
     }
@@ -611,47 +280,20 @@ bitflags! {
     }
 }
 
-pub struct PassRenderContext<'l> {
-    pub encoder: &'l mut wgpu::CommandEncoder,
-    pub resources: &'l GpuResources,
-    pub bindings: &'l dyn BindingResolver,
-    pub render_pipelines: &'l RenderPipelines,
-    pub stats: &'l mut [RendererStats],
-    pub gpu_profiler: &'l mut wgpu_profiler::GpuProfiler,
-}
-
-// TODO: Not a great name. PassBuilder/PassRenderer?
-// This is an abstraction for a (render/compute/transfer) pass.
-pub trait GraphSystem {
-    fn set_pass_io(&mut self, pass_id: PassId, io: RenderPassIo);
-}
-
 pub type GraphSystemId = u16;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PassId {
-    pub system: u16,
-    pub index: u16,
-}
 
 // TODO: Do we need both RenderGraph and FrameGraph?
 
-type FrameGraphRef = Arc<Mutex<FrameGraphInner>>;
+type FrameGraphRef = Arc<Mutex<RenderGraph>>;
 
 pub struct FrameGraph {
     pub(crate) inner: FrameGraphRef,
 }
 
-pub(crate) struct FrameGraphInner {
-    pub graph: RenderGraph,
-}
-
 impl FrameGraph {
-    pub fn new() -> Self {
+    pub fn new(_frame: &Frame) -> Self {
         FrameGraph {
-            inner: Arc::new(Mutex::new(FrameGraphInner {
-                graph: RenderGraph::new(),
-            })),
+            inner: Arc::new(Mutex::new(RenderGraph::new())),
         }
     }
 
@@ -662,15 +304,14 @@ impl FrameGraph {
     // TODO: mark root as a flag in the node instead to avoid accessing/locking
     // the graph.
     pub fn add_root<'l>(&mut self, root: impl Into<NodeDependency<'l>>) {
-        self.inner.lock().unwrap().graph.add_root(root.into().as_graph_dependency());
+        self.inner.lock().unwrap().add_root(root.into().as_graph_dependency());
     }
 
-    pub fn add_node(&self, descriptor: &NodeDescriptor, task_id: TaskId) -> Node {
+    pub fn add_node(&self, descriptor: &NodeDescriptor) -> Node {
         let mut guard = self.inner.lock().unwrap();
 
         let node = Node {
-            id: guard.graph.add_node(&descriptor),
-            task: task_id,
+            id: guard.add_node(&descriptor),
             graph: self.inner.clone(),
             dependencies: SmallVec::new(),
         };
@@ -678,27 +319,70 @@ impl FrameGraph {
         node
     }
 
-    pub fn schedule(&mut self, systems: &mut [&mut dyn GraphSystem], commands: &mut Vec<PassId>) -> Result<GraphBindings, Box<GraphError>> {
+    pub fn add_render_node(&mut self, f32_buffer: &mut GpuBufferWriter, descriptor: RenderNodeDescriptor) -> RenderNode {
+        let descriptor = descriptor.to_node_descriptor();
+
+        let (depth, stencil) = descriptor
+            .depth_stencil
+            .map(|ds| (ds.1, ds.2))
+            .unwrap_or((false, false));
+        let mut pass = RenderPassBuilder::new();
+
+        let mut kind = [
+            SurfaceKind::None,
+            SurfaceKind::None,
+            SurfaceKind::None,
+        ];
+        for (idx, attachment) in descriptor.attachments.iter().enumerate() {
+            if attachment.kind.is_color() {
+                kind[idx] = SurfaceKind::Color;
+            } else if attachment.kind.is_alpha() {
+                kind[idx] = SurfaceKind::Alpha;
+            }
+        }
+
+        let size = descriptor.size.unwrap().to_f32();
+        let render_task = RenderTaskHandle(f32_buffer.push(RenderTaskData {
+            rect: SurfaceRect::from_size(size),
+            content_offset: SurfaceVector::zero(),
+            rcp_target_width: 1.0 / size.width,
+            rcp_target_height: 1.0 / size.height,
+        }));
+
+        let task_info = RenderTaskInfo {
+            bounds: SurfaceIntRect::from_size(descriptor.size.unwrap()),
+            offset: SurfaceVector::zero(),
+            handle: render_task,
+        };
+
+        pass.begin(
+            &task_info,
+            RenderPassConfig {
+                depth,
+                stencil,
+                msaa: descriptor.msaa,
+                attachments: kind,
+            },
+        );
+
+        RenderNode::new(pass, self.add_node(&descriptor))
+    }
+
+    pub fn schedule(&mut self, passes: &mut Passes) -> Result<(), Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
-        let bindings = inner.graph.schedule(systems, commands)?;
 
-        Ok(bindings)
+        inner.schedule(passes)
     }
 }
 
 pub struct Node {
     id: NodeId,
-    task: TaskId,
     pub(crate) graph: FrameGraphRef,
     pub(crate) dependencies: SmallVec<[Dependency; 4]>,
 }
 
 impl Node {
-    pub fn task_id(&self) -> TaskId {
-        self.task
-    }
-
     pub fn node_id(&self) -> NodeId {
         self.id
     }
@@ -716,6 +400,10 @@ impl<'l> NodeDependency<'l> {
             slot: self.slot,
         }
     }
+
+    pub fn get_binding(&self) -> BindingsId {
+        self.node.graph.lock().unwrap().get_binding(self.as_graph_dependency())
+    }
 }
 
 impl Node {
@@ -727,6 +415,6 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        self.graph.lock().unwrap().graph.finish_node(self.id);
+        self.graph.lock().unwrap().finish_node(self.id);
     }
 }
