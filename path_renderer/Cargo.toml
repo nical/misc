@@ -2,6 +2,7 @@
 members = [
     "core",
     "render_graph",
+    "resource_cache",
     "renderers/tess",
     "renderers/stencil",
     "renderers/tiling",
@@ -15,7 +16,7 @@ members = [
     "patterns/texture",
     "document",
     "demo"
-, "render_graph"]
+, "render_graph", "resource_cache"]
 
 
 resolver = "2"

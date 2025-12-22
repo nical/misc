@@ -497,7 +497,7 @@ pub fn schedule_graph(
 #[test]
 fn test_nested() {
     use super::{NodeDescriptor, ColorAttachment, TextureKind};
-    use crate::units::SurfaceIntSize;
+    use core::units::SurfaceIntSize;
 
     let mut graph = RenderGraph::new();
 

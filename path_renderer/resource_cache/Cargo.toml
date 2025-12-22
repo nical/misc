@@ -1,0 +1,9 @@
+[package]
+name = "resource_cache"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+etagere = { version = "0.2.13" }
+lru = "0.16.2"

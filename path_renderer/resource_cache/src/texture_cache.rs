@@ -3,8 +3,8 @@ use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use etagere::{AllocId, AllocatorOptions, AtlasAllocator};
 use lru::LruCache;
 
-use crate::{image_store::ImageDescriptor, units::{SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize}};
-
+use core::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize};
+use crate::{Eviction, ImageData, ImageDescriptor};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TextureId(u32);
@@ -14,19 +14,6 @@ pub struct TextureCacheItemId(u32);
 
 pub type Epoch = u64;
 pub type Generation = u32;
-
-#[derive(Clone)]
-pub enum ImageData {
-    Buffer(Arc<Vec<u8>>),
-    External(u64),
-    Render,
-}
-
-impl ImageData {
-    pub fn new_buffer(data: Vec<u8>) -> Self {
-        ImageData::Buffer(Arc::new(data))
-    }
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pressure {
@@ -40,7 +27,6 @@ pub enum TextureKind {
     Alpha,
     HdrColor,
     HdrAlpha,
-    Glyphs,
 }
 
 impl TextureKind {
@@ -57,13 +43,6 @@ pub enum ImageFormat {
     Rgba8,
     Alpha8,
     // TODO
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Eviction {
-    Auto,
-    Eager,
-    Manual,
 }
 
 pub struct TextureCacheItem {
@@ -367,7 +346,6 @@ pub struct TextureCaches {
     pub alpha: TextureCache,
     pub hdr_color: TextureCache,
     pub hdr_alpha: TextureCache,
-    pub glyphs: TextureCache,
     // TODO: standalone textures
 }
 
@@ -378,7 +356,6 @@ impl TextureCaches {
             TextureKind::Alpha => { 1 }
             TextureKind::HdrColor => { 2 }
             TextureKind::HdrAlpha => { 3 }
-            TextureKind::Glyphs => { 4 }
             // TODO: Standalone textures
         }
     }
@@ -388,7 +365,6 @@ impl TextureCaches {
         self.alpha.maintain(updates);
         self.hdr_color.maintain(updates);
         self.hdr_alpha.maintain(updates);
-        self.glyphs.maintain(updates);
     }
 }
 
@@ -400,7 +376,6 @@ impl std::ops::Index<usize> for TextureCaches {
             &self.alpha,
             &self.hdr_color,
             &self.hdr_alpha,
-            &self.glyphs,
         ][idx]
     }
 }
@@ -412,7 +387,6 @@ impl std::ops::IndexMut<usize> for TextureCaches {
             &mut self.alpha,
             &mut self.hdr_color,
             &mut self.hdr_alpha,
-            &mut self.glyphs,
         ][idx]
     }
 }

@@ -149,6 +149,17 @@ impl<Key, Payload> Registry<Key, Payload> {
         None
     }
 
+    pub fn look_up_mut(&mut self, key: Key) -> Option<&mut Payload>
+    where
+        Key: Hash + Eq,
+    {
+        if let Some(index) = self.built.get(&key) {
+            return self.items[index.index()].as_mut();
+        }
+
+        None
+    }
+
     pub fn build(&mut self, changes: &[Changelist<Key>], builder: &mut dyn Build<Key, Payload>)
     where
         Key: Copy + Hash + Eq,
@@ -169,6 +180,41 @@ impl<Key, Payload> Registry<Key, Payload> {
                 built.insert(*key, *index);
             }
         }
+    }
+
+    pub fn register(&mut self, key: Key, payload: Payload) -> Index<Key>
+    where
+        Key: Hash + Eq + Clone
+    {
+        let index = {
+            let shared = &mut *self.shared.lock().unwrap();
+            let next_id = &mut shared.next_id;
+            let elements = &mut shared.items;
+            *elements.entry(key.clone()).or_insert_with(move || {
+                let idx = Index(*next_id, PhantomData);
+                *next_id += 1;
+                idx
+            })
+        };
+
+        let built = Arc::get_mut(&mut self.built).unwrap();
+        built.insert(key, index);
+
+        self.items[index.index()] = Some(payload);
+
+        index
+    }
+
+    pub fn unregister(&mut self, key: Key) -> Option<Payload>
+    where
+        Key: Hash + Eq
+    {
+        let built = Arc::get_mut(&mut self.built).unwrap();
+        if let Some(index) = built.remove(&key) {
+            return self.items[index.index()].take();
+        }
+
+        None
     }
 }
 
