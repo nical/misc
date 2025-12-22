@@ -11,7 +11,6 @@ pub mod pattern;
 pub mod render_task;
 pub mod resources;
 pub mod shape;
-pub mod stroke;
 pub mod transform;
 pub mod instance;
 pub mod worker;

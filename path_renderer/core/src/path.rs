@@ -3,9 +3,10 @@ use lyon::path::builder::WithSvg;
 use lyon::path::iterator::NoAttributes;
 use lyon::path::path::{Iter, Reversed};
 use lyon::path::traits::Build;
-use lyon::path::PathSlice;
+pub use lyon::path::{builder, PathSlice, Attributes, EndpointId, PathEvent, NO_ATTRIBUTES};
+pub use lyon::path::{path::Builder as BuilderInner, Path as PathInner}; // TODO
 use lyon::path::{
-    builder::PathBuilder, path::Builder as BuilderInner, Attributes, EndpointId, Path as PathInner,
+    builder::PathBuilder,
 };
 
 pub use lyon::path::FillRule;

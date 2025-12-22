@@ -10,7 +10,6 @@ use core::shading::BlendMode;
 use core::path::Path;
 use core::resources::{Allocation, GpuResource};
 use core::shape::*;
-use core::stroke::*;
 use core::units::{
     LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize, SurfaceSpace, point, vector
 };
@@ -18,6 +17,7 @@ use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
 use core::{BindingsId, BindingsNamespace};
 use render_graph::{FrameGraph, ColorAttachment, Resource, RenderNode, RenderNodeDescriptor};
+use stroke::*;
 use std::collections::VecDeque;
 use std::mem::MaybeUninit;
 use std::u32;

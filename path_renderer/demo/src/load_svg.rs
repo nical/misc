@@ -1,4 +1,4 @@
-use core::stroke::{LineCap, LineJoin};
+use stroke::{LineCap, LineJoin};
 use std::sync::Arc;
 
 use core::path::Path;

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "core",
+    "stroke",
     "render_graph",
     "resource_cache",
     "renderers/tess",
@@ -16,7 +17,7 @@ members = [
     "patterns/texture",
     "document",
     "demo"
-, "render_graph", "resource_cache"]
+, "render_graph", "resource_cache", "stroke"]
 
 
 resolver = "2"

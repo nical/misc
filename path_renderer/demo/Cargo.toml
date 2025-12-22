@@ -11,7 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 core = { path = "../core" }
+stroke = { path = "../stroke" }
 render_graph = { path = "../render_graph" }
+resource_cache = { path = "../resource_cache" }
 
 tess = { path = "../renderers/tess" }
 tiling = { path = "../renderers/tiling" }

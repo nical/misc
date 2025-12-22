@@ -1,18 +1,13 @@
 // TODO: this doesn't belong in the core crate.
 
-use lyon::{
-    geom::{
-        arrayvec::ArrayVec,
-        utils::{cubic_polynomial_roots, tangent},
-        CubicBezierSegment, Line, LineSegment, QuadraticBezierSegment,
-    },
-    path::{builder::PathBuilder, Attributes, EndpointId, PathEvent, NO_ATTRIBUTES},
+use core::geom::{
+    arrayvec::ArrayVec,
+    utils::{cubic_polynomial_roots, tangent},
+    CubicBezierSegment, Line, LineSegment, QuadraticBezierSegment,
 };
+use core::units::{Point, Vector};
+use core::path::{builder::PathBuilder, Path, Attributes, EndpointId, PathEvent, NO_ATTRIBUTES};
 
-use crate::{
-    path::Path,
-    units::{Point, Vector},
-};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LineCap {
@@ -64,7 +59,7 @@ impl StrokeOptions {
         StrokeOptions {
             tolerance,
             offsets: (0.5, -0.5),
-            miter_limit: lyon::tessellation::StrokeOptions::DEFAULT_MITER_LIMIT,
+            miter_limit: 4.0,
             line_join: LineJoin::Miter,
             start_cap: LineCap::Square,
             end_cap: LineCap::Square,
@@ -244,8 +239,8 @@ fn normal(v: Vector) -> Vector {
 }
 
 pub mod offset {
-    use lyon::geom::euclid;
-    use lyon::geom::{point, vector, QuadraticBezierSegment, Scalar, Vector};
+    use core::geom::euclid;
+    use core::geom::{point, vector, QuadraticBezierSegment, Scalar, Vector};
 
     pub fn for_each_offset<S: Scalar, F>(
         curve: &QuadraticBezierSegment<S>,
@@ -1179,7 +1174,7 @@ fn get_cap_fn(cap: LineCap) -> CapBuilder {
 pub struct StrokeToFillBuilder<'l> {
     offsetter: OffsetBuilder<'l>,
     offsets: (f32, f32),
-    opposite: lyon::path::path::Builder,
+    opposite: core::path::BuilderInner,
     start_cap: CapBuilder,
     end_cap: CapBuilder,
     add_empty_caps: bool,
@@ -1206,7 +1201,7 @@ impl<'l> StrokeToFillBuilder<'l> {
             offsets: (offset0, offset1),
             start_cap: get_cap_fn(options.start_cap),
             end_cap: get_cap_fn(options.end_cap),
-            opposite: lyon::path::Path::builder(),
+            opposite: core::path::PathInner::builder(),
             add_empty_caps: options.add_empty_caps,
         }
     }
