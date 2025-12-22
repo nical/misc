@@ -1,10 +1,8 @@
 #![allow(unused)]
 
-use core::graph::FrameGraph;
 use core::gpu::gpu_buffer;
 use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
-use core::graph::{ColorAttachment, Resource, RenderNode, RenderNodeDescriptor};
 use core::render_pass::RenderPassContext;
 use core::transform::{Transform, TransformId};
 use core::{Renderer, Vector};
@@ -19,6 +17,7 @@ use core::units::{
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
 use core::{BindingsId, BindingsNamespace};
+use render_graph::{FrameGraph, ColorAttachment, Resource, RenderNode, RenderNodeDescriptor};
 use std::collections::VecDeque;
 use std::mem::MaybeUninit;
 use std::u32;

@@ -1,18 +1,20 @@
+#![allow(mismatched_lifetime_syntaxes)]
+
 mod schedule;
 mod render_node;
 
 use std::{fmt, sync::{Arc, Mutex}, u16};
-use bitflags::bitflags;
-use smallvec::SmallVec;
+use core::bitflags::bitflags;
+use core::smallvec::SmallVec;
 
-use crate::{BindingsId, RenderPassConfig, SurfaceKind, resources::TextureKind};
-use crate::gpu::GpuBufferWriter;
-use crate::instance::{Frame, Passes};
-use crate::render_pass::RenderPassBuilder;
-use crate::render_task::{RenderTaskData, RenderTaskHandle, RenderTaskInfo};
-use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
+use core::{BindingsId, RenderPassConfig, SurfaceKind, resources::TextureKind};
+use core::gpu::GpuBufferWriter;
+use core::instance::{Frame, Passes};
+use core::render_pass::RenderPassBuilder;
+use core::render_task::{RenderTaskData, RenderTaskHandle, RenderTaskInfo};
+use core::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 
-pub use crate::graph::render_node::*;
+pub use crate::render_node::*;
 
 use schedule::RenderGraph;
 pub use schedule::GraphError;
@@ -394,8 +396,8 @@ pub struct NodeDependency<'l> {
 }
 
 impl<'l> NodeDependency<'l> {
-    pub(crate) fn as_graph_dependency(&self) -> crate::graph::Dependency {
-        crate::graph::Dependency {
+    pub(crate) fn as_graph_dependency(&self) -> crate::Dependency {
+        crate::Dependency {
             node: self.node.id,
             slot: self.slot,
         }

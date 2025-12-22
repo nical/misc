@@ -1,13 +1,12 @@
 use std::ops::Range;
 
-use smallvec::SmallVec;
-
-use crate::instance::Passes;
-use crate::render_pass::{AttachmentFlags, BuiltRenderPass, ColorAttachment};
-use crate::resources::{Allocation, BufferKind, ResourceIndex, ResourceKey, ResourceKind, TextureKind};
-use crate::BindingsId;
-use super::{Dependency, NodeDescriptor, NodeId, NodeKind, Resource, Slot};
-use super::ResourceFlags;
+use core::smallvec::SmallVec;
+use core::instance::Passes;
+use core::render_pass::{AttachmentFlags, BuiltRenderPass, ColorAttachment};
+use core::resources::{Allocation, BufferKind, ResourceIndex, ResourceKey, ResourceKind, TextureKind};
+use core::BindingsId;
+use crate::{Dependency, NodeDescriptor, NodeId, NodeKind, Resource, Slot};
+use crate::ResourceFlags;
 
 
 #[derive(Copy, Clone, Debug)]

@@ -13,7 +13,6 @@ pub mod resources;
 pub mod shape;
 pub mod stroke;
 pub mod transform;
-pub mod graph;
 pub mod instance;
 pub mod worker;
 pub mod shading;
@@ -33,6 +32,7 @@ pub use lyon::path::math::{point, vector, Point, Vector};
 
 use std::sync::{Arc, Mutex};
 pub use bitflags;
+pub use smallvec;
 pub use bytemuck;
 pub use lyon::geom;
 use resources::GpuResources;
@@ -231,7 +231,7 @@ impl BindingsId {
     }
 
     #[inline]
-    pub(crate) const fn graph(idx: u16) -> Self {
+    pub const fn graph(idx: u16) -> Self {
         BindingsId::new(BindingsNamespace::RenderGraph, idx)
     }
 

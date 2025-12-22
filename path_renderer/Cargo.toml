@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "core",
+    "render_graph",
     "renderers/tess",
     "renderers/stencil",
     "renderers/tiling",
@@ -14,7 +15,7 @@ members = [
     "patterns/texture",
     "document",
     "demo"
-]
+, "render_graph"]
 
 
 resolver = "2"

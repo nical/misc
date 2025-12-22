@@ -1,9 +1,9 @@
-use crate::render_pass::{RenderPassBuilder, RenderPassContext};
-use crate::render_task::{FrameAtlasAllocator};
-use crate::units::{SurfaceIntRect, SurfaceIntSize};
-use crate::{gpu::GpuBufferWriter};
-use crate::graph::{ColorAttachment, Dependency, NodeDescriptor, NodeKind, Resource, Slot};
-use crate::graph::{Node, NodeDependency};
+use crate::{ColorAttachment, Dependency, NodeDescriptor, NodeKind, Resource, Slot};
+use crate::{Node, NodeDependency};
+use core::render_pass::{RenderPassBuilder, RenderPassContext};
+use core::render_task::{FrameAtlasAllocator};
+use core::units::{SurfaceIntRect, SurfaceIntSize};
+use core::{gpu::GpuBufferWriter};
 
 pub struct RenderNodeDescriptor<'l> {
     pub label: Option<&'static str>,

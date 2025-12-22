@@ -384,7 +384,7 @@ impl Batcher {
         //self.view.bounds = r;
     }
 
-    pub(crate) fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
+    pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
         self.view_port = render_task.bounds.to_f32();
     }
 

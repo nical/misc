@@ -158,12 +158,13 @@ pub struct RenderPassContext<'l> {
     pub render_task: RenderTaskHandle,
 }
 
-pub(crate) struct RenderPassBuilder {
+// TODO: Should this move into render_graph?
+pub struct RenderPassBuilder {
     z_indices: ZIndices,
     config: RenderPassConfig,
     pub(crate) size: SurfaceIntSize,
     render_task: RenderTaskHandle,
-    pub(crate) batcher: Batcher,
+    pub batcher: Batcher,
 }
 
 impl RenderPassBuilder {
@@ -248,7 +249,7 @@ pub struct BuiltRenderPass {
 }
 
 impl BuiltRenderPass {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         BuiltRenderPass {
             batches: Vec::new(),
             config: RenderPassConfig::default(),

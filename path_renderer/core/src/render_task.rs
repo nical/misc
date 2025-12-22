@@ -3,7 +3,7 @@ use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RenderTaskHandle(pub(crate) GpuBufferAddress);
+pub struct RenderTaskHandle(pub GpuBufferAddress);
 
 impl RenderTaskHandle {
     pub const INVALID: Self = RenderTaskHandle(GpuBufferAddress::INVALID);
