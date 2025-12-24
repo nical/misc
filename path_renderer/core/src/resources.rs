@@ -8,9 +8,9 @@ use wgpu::util::DeviceExt;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Allocation {
-    /// Allocated by the render graph.
+    /// Part of the internally managed resource pool.
     Temporary,
-    /// Allocated outside of the render graph.
+    /// Allocated externally.
     External,
     // TODO: a Retained variant for resources that are explicitly created/destroyed
     // outisde of the render graph but still managed by the gpu resource pool.
@@ -237,7 +237,7 @@ impl ResourceKind {
         self.0 & BufferKind::BUFFER != 0
     }
 
-    pub fn as_texture(&self) -> Option<TextureKind> {
+    pub fn as_texture(self) -> Option<TextureKind> {
         if self.is_texture() {
             Some(TextureKind(self.0))
         } else {
@@ -245,13 +245,23 @@ impl ResourceKind {
         }
     }
 
-    pub fn as_buffer(&self) -> Option<BufferKind> {
+    pub fn as_buffer(self) -> Option<BufferKind> {
         if self.is_buffer() {
             Some(BufferKind(self.0))
         } else {
             None
         }
     }
+
+    pub fn with_binding(self) -> Self {
+        if let Some(tex) = self.as_texture() {
+            tex.with_binding().as_resource()
+        } else {
+            // Binding capability is implicit for buffers.
+            self
+        }
+    }
+
 }
 
 impl fmt::Debug for ResourceKind {
@@ -277,7 +287,7 @@ pub struct ResourceKey {
 
 pub struct GpuResources {
     pub common: CommonGpuResources,
-    pub graph: RenderGraphResources,
+    pub temp: TemporaryResources,
 }
 
 impl GpuResources {
@@ -286,11 +296,11 @@ impl GpuResources {
         staging_buffers: StagingBufferPoolRef,
     ) -> Self {
         let common = CommonGpuResources::new(device, staging_buffers);
-        let graph = RenderGraphResources::new();
+        let temp = TemporaryResources::new();
 
         GpuResources {
             common,
-            graph,
+            temp,
         }
     }
 
@@ -301,7 +311,7 @@ impl GpuResources {
         allocations: &[ResourceKey],
     ) {
         self.common.upload(device, shaders);
-        self.graph.upload(device, shaders, allocations);
+        self.temp.upload(device, shaders, allocations);
     }
 
     pub fn begin_rendering(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -310,7 +320,7 @@ impl GpuResources {
 
     pub fn end_frame(&mut self) {
         self.common.end_frame();
-        self.graph.end_frame();
+        self.temp.end_frame();
     }
 }
 
@@ -440,21 +450,23 @@ impl CommonGpuResources {
     }
 }
 
+#[derive(Debug)]
 pub struct GpuResource {
     pub key: ResourceKey,
     pub as_input: Option<wgpu::BindGroup>,
     pub as_attachment: Option<wgpu::TextureView>,
 }
 
-// TODO: the name isn't great.
-pub struct RenderGraphResources {
+/// Temporary buffers and textures containing data that is not
+/// persisted across frames.
+pub struct TemporaryResources {
     pool: Vec<GpuResource>,
     resources: Vec<GpuResource>,
 }
 
-impl RenderGraphResources {
+impl TemporaryResources {
     pub fn new() -> Self {
-        RenderGraphResources {
+        TemporaryResources {
             pool: Vec::new(),
             resources: Vec::new(),
         }

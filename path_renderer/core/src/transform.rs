@@ -195,6 +195,8 @@ impl Transforms {
 
     pub fn root(&self) -> &Transform { &self.transforms[0] }
 
+    pub fn root_mut(&mut self) -> &mut Transform { &mut self.transforms[0] }
+
     pub fn root_id(&self) -> TransformId { TransformId(0) }
 
     pub fn get(&self, id: TransformId) -> &Transform {

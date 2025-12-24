@@ -64,6 +64,7 @@ fn fetch_path(path_idx: u32) -> PathInfo {
     path.pattern_data = encoded0.y;
     path.fill_rule = encoded0.z >> 16u;
     path.opacity = f32(encoded0.z & 0xFFFFu) / 65535.0;
+    path.render_task = encoded0.w;
 
     path.scissor = vec4f(encoded1);
 

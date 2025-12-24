@@ -40,6 +40,8 @@ impl DrawHelper {
         if id.is_some() && id != self.current_bindings[idx] {
             if let Some(bind_group) = resolver.resolve_input(id) {
                 pass.set_bind_group(group_index, bind_group, &[]);
+            } else {
+                panic!("failed to resolve input index {idx:?} with bindings {id:?}")
             }
             self.current_bindings[idx] = id;
         }

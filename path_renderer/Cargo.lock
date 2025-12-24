@@ -2015,6 +2015,7 @@ name = "render_graph"
 version = "0.1.0"
 dependencies = [
  "core",
+ "guillotiere",
 ]
 
 [[package]]

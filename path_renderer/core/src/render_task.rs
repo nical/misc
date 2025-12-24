@@ -28,88 +28,58 @@ pub struct RenderTaskInfo {
     pub bounds: SurfaceIntRect,
     /// An offset to apply after clipping.
     pub offset: SurfaceVector,
+    /// Where the task is drawn in its render target.
+    pub target_rect: SurfaceIntRect,
     ///
     pub handle: RenderTaskHandle,
 }
 
 /// The data copied into to the gpu store.
-///
-/// Must match the layout of `RenderTask` in render_task.wgsl
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct RenderTaskData {
-    /// Acts as a clip.
-    pub rect: SurfaceRect,
+    // The beginning of this structure must match the layout
+    // of `RenderTask` in render_task.wgsl
+
+    /// Acts as a clip in the surface space of the render task.
+    pub clip: SurfaceRect,
     /// Optional offset.
     pub content_offset: SurfaceVector,
     /// 1.0 / target.width
     pub rcp_target_width: f32,
     /// 1.0 / target.height
     pub rcp_target_height: f32,
+
+    // The image source is stored immediately after the task data.
+
+    /// The pixels of the task, in the coordinate space of the target.
+    pub image_source: SurfaceRect
 }
 
 unsafe impl bytemuck::Pod for RenderTaskData {}
 unsafe impl bytemuck::Zeroable for RenderTaskData {}
 
-pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect, offset: SurfaceVector, target_size: SurfaceIntSize) -> RenderTaskInfo {
+pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect, target_offset: SurfaceVector, target_size: SurfaceIntSize) -> RenderTaskInfo {
     let size = target_size.to_f32();
+    let content_offset = bounds.min.to_f32() - target_offset.to_point();
+    let image_source = SurfaceRect {
+        min: target_offset.to_point(),
+        max: target_offset.to_point() + bounds.size().to_vector().to_f32(),
+    };
+
     let handle = RenderTaskHandle(f32_buffer.push(RenderTaskData {
-        rect: bounds.to_f32(),
-        content_offset: SurfaceVector::zero(),
+        clip: bounds.to_f32(),
+        content_offset,
         rcp_target_width: 1.0 / size.width,
         rcp_target_height: 1.0 / size.height,
+        image_source,
     }));
 
     RenderTaskInfo {
         bounds: *bounds,
-        offset,
+        offset: content_offset,
         handle,
-    }
-}
-
-pub struct FrameAtlasAllocator {
-    allocator: guillotiere::SimpleAtlasAllocator,
-    allocated_px: u32,
-}
-
-impl FrameAtlasAllocator {
-    pub fn new(size: SurfaceIntSize) -> Self {
-        FrameAtlasAllocator {
-            allocator: guillotiere::SimpleAtlasAllocator::with_options(
-                size.cast_unit(),
-                &guillotiere::AllocatorOptions {
-                    alignment: SurfaceIntSize::new(16, 16).cast_unit(),
-                    small_size_threshold: 64,
-                    large_size_threshold: 512,
-                },
-            ),
-            allocated_px: 0,
-        }
-    }
-
-    pub fn allocate(
-        &mut self,
-        f32_buffer: &mut GpuBufferWriter,
-        bounds: &SurfaceIntRect,
-    ) -> Option<RenderTaskInfo> {
-        let alloc = self.allocator.allocate(bounds.size().cast_unit())?;
-        let offset = alloc.min.cast_unit().to_f32().to_vector();
-        self.allocated_px += alloc.area() as u32;
-        Some(add_render_task(f32_buffer, bounds, offset, self.size()))
-    }
-
-    pub fn size(&self) -> SurfaceIntSize {
-        self.allocator.size().cast_unit()
-    }
-
-    pub fn is_empty(&mut self) -> bool {
-        self.allocator.is_empty()
-    }
-
-    pub fn occupancy(&self) -> f32 {
-        let s = self.size();
-        let area = s.width as f32 * s.height as f32;
-        self.allocated_px as f32 / area
+        target_rect: image_source.to_i32(),
     }
 }
 
@@ -147,13 +117,20 @@ impl DynamicAtlasAllocator {
         &mut self,
         bounds: &SurfaceIntRect,
     ) -> Option<AtlasHandle> {
-        let alloc = self.allocator.allocate(bounds.size().cast_unit())?;
-        let offset = alloc.rectangle.min.cast_unit().to_f32().to_vector();
+        let size = bounds.size();
+        let local_content_offset = bounds.min.to_vector().to_f32();
+        let alloc = self.allocator.allocate(size.cast_unit())?;
+        let target_origin = alloc.rectangle.min.cast_unit();
+        let target_offset = target_origin.to_f32().to_vector();
         self.allocated_px += alloc.rectangle.area() as u32;
         self.allocations.push(RenderTaskInfo {
             bounds: *bounds,
-            offset,
-            handle: RenderTaskHandle::INVALID
+            target_rect: SurfaceIntRect {
+                min: target_origin,
+                max: target_origin + size,
+            },
+            offset: target_offset - local_content_offset,
+            handle: RenderTaskHandle::INVALID,
         });
 
         Some(AtlasHandle(alloc.id.serialize()))
@@ -164,10 +141,11 @@ impl DynamicAtlasAllocator {
         if info.handle == RenderTaskHandle::INVALID {
             let size = self.allocator.size();
             let h = f32_buffer.push(RenderTaskData {
-                rect: info.bounds.to_f32(),
+                clip: info.bounds.to_f32(),
                 content_offset: SurfaceVector::zero(),
                 rcp_target_width: 1.0 / size.width as f32,
                 rcp_target_height: 1.0 / size.height as f32,
+                image_source: info.bounds.to_f32(),
             });
 
             info.handle = RenderTaskHandle(h);

@@ -207,7 +207,13 @@ fn geometry_vertex(vertex_index: u32, rect: vec4<f32>, z_index: u32, pattern: u3
 
     let task = render_task_fetch(render_task);
 
-    let local_position = mix(local_rect.xy, local_rect.zw, uv);
+    var local_position = mix(local_rect.xy, local_rect.zw, uv);
+    // Apply render task clip only if we have no transforms.
+    // Otherwise we'd need to clip the canvas position and provide
+    // the inverse transform to fix up the local position.
+    if (transform_id == GPU_BUFFER_ADDRESS_NONE) {
+        local_position = clamp(local_position, task.clip.xy, task.clip.zw);
+    }
 
     let canvas_position = (transform * vec3(local_position, 1.0)).xy;
     var target_position = render_task_target_position(task, canvas_position);

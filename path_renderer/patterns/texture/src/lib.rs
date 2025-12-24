@@ -1,6 +1,7 @@
 #![allow(exported_private_dependencies)]
 
 use core::geom::Box2D;
+use core::render_task::RenderTaskHandle;
 use core::shading::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
     Varying,
@@ -45,8 +46,9 @@ impl TextureRenderer {
             name: "pattern::texture_sample".into(),
             source: SAMPLE_SHADER_SRC.into(),
             varyings: vec![
-                Varying::float32x2("uv").interpolated(),
+                Varying::float32x3("uv_alpha").interpolated(),
                 Varying::float32x4("uv_bounds").interpolated(),
+                Varying::float32x4("dbg").interpolated(),
             ],
             bindings: Some(bind_group_layout),
         });
@@ -81,15 +83,16 @@ impl TextureRenderer {
         &self,
         f32_buffer: &mut GpuBufferWriter,
         src_texture: BindingsId,
-        src_rect: &Box2D<f32>,
+        src_task: RenderTaskHandle,
         dst_rect: &Box2D<f32>,
+        alpha: f32,
         is_opaque: bool,
     ) -> BuiltPattern {
         let handle = f32_buffer.push_slice(&[
-            src_rect.min.x,
-            src_rect.min.y,
-            src_rect.max.x,
-            src_rect.max.y,
+            src_task.to_u32() as f32,
+            alpha,
+            0.0,
+            0.0,
             dst_rect.min.x,
             dst_rect.min.y,
             dst_rect.max.x,
@@ -118,12 +121,18 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
 
 const SAMPLE_SHADER_SRC: &'static str = "
 #import gpu_buffer
+#import render_task
 #import pattern::color
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let data = f32_gpu_buffer_fetch_2(pattern_handle);
+
+    let opacity = data.data0.y;
+
     // Source and destination rects in pixels.
-    let src_rect = data.data0;
+    let src_task_address = u32(data.data0.x);
+    let src_rect = render_task_fetch_image_source(src_task_address);
+
     let dst_rect = data.data1;
 
     let inv_texture_size = vec2<f32>(1.0) / vec2<f32>(textureDimensions(src_color_texture, 0i).xy);
@@ -142,16 +151,17 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
         (src_rect.zw - vec2<f32>(0.5)) * inv_texture_size,
     );
 
-    return Pattern(dst_uv, uv_bounds);
+    return Pattern(vec3(dst_uv, opacity), uv_bounds, src_rect);
 }
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
-    var uv = pattern.uv;
+    var uv = pattern.uv_alpha.xy;
+    let alpha = pattern.uv_alpha.z;
     // restrict samples.
     uv = max(uv, pattern.uv_bounds.xy);
     uv = min(uv, pattern.uv_bounds.zw);
 
-    let color = textureSampleLevel(src_color_texture, default_sampler, uv, 0.0);
+    let color = textureSampleLevel(src_color_texture, default_sampler, uv, 0.0) * alpha;
 
     return unpremultiply_color(color);
 }

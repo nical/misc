@@ -231,7 +231,7 @@ impl Instance {
             graph: &frame.passes.bindings,
             external_inputs,
             external_attachments,
-            resources: self.resources.graph.resources()
+            resources: self.resources.temp.resources()
         };
 
         let mut ctx = PassRenderContext {
@@ -372,6 +372,7 @@ pub struct Bindings<'l> {
 }
 
 impl<'l> BindingResolver for Bindings<'l> {
+    // TODO: return a Result with a helpful error message.
     fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
         match binding.namespace() {
             BindingsNamespace::RenderGraph => {

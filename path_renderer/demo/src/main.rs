@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use core::gpu::gpu_buffer;
+use core::gpu::{GpuBufferAddress, gpu_buffer};
 use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
 use core::render_pass::RenderPassContext;
@@ -11,7 +11,7 @@ use core::path::Path;
 use core::resources::{Allocation, GpuResource};
 use core::shape::*;
 use core::units::{
-    LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntSize, SurfaceSpace, point, vector
+    LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize, SurfaceSpace, point, vector
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
@@ -730,6 +730,7 @@ impl App {
             test_stuff,
             &mut main_surface,
             &mut frame,
+            &mut graph,
             &mut self.instance,
             &mut self.renderers,
             &mut self.patterns,
@@ -855,6 +856,7 @@ fn paint_scene(
     testing: bool,
     surface: &mut RenderNode,
     frame: &mut Frame,
+    graph: &mut FrameGraph,
     _instance: &mut Instance,
     renderers: &mut Renderers,
     patterns: &mut Patterns,
@@ -1005,8 +1007,9 @@ fn paint_scene(
     }
 
     if testing {
-        let _tx2 = frame.transforms.get_mut(frame.transforms.root_id());
-        let transform_handle = _tx2.get_gpu_handle(&mut f32_buffer);
+
+        let tx2 = frame.transforms.get_mut(frame.transforms.root_id());
+        let transform_handle = tx2.get_gpu_handle(&mut f32_buffer);
 
         let mut many_stops = Vec::with_capacity(128);
         let step = 0.8 / 128.0;
@@ -1032,41 +1035,18 @@ fn paint_scene(
             offset,
         });
 
-        let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        let rotated = frame.transforms.get_mut(rotated);
-        let transform_handle = rotated.get_gpu_handle(&mut f32_buffer);
-        //let gradient = patterns.gradients.add_linear(
-        //    &mut f32_buffer,
-        //    &LinearGradientDescriptor {
-        //        from: point(0.0, 750.0),
-        //        to: point(0.0, 800.0),
-        //        extend_mode: ExtendMode::Repeat,
-        //        stops: &[
-        //            GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-        //            GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-        //            GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-        //            GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-        //            GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
-        //        ]
-        //    },
-        //);
+        //let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
+        //let rotated = frame.transforms.get_mut(rotated);
+        //let transform_handle = rotated.get_gpu_handle(&mut f32_buffer);
+
         let gradient = patterns.gradients.add_radial(
             &mut f32_buffer,
             &RadialGradientDescriptor {
                 stops: &many_stops,
-                //stops: &[
-                //    //GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.0 },
-                //    //GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 1.0 },
-                //    GradientStop { color: Color { r: 255, g: 255, b: 255, a: 255, }.to_colorf(), offset: 0.1 },
-                //    GradientStop { color: Color { r: 0, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.1 },
-                //    GradientStop { color: Color { r: 0, g: 0, b: 250, a: 255, }.to_colorf(), offset: 0.5 },
-                //    GradientStop { color: Color { r: 255, g: 30, b: 100, a: 255, }.to_colorf(), offset: 0.5 },
-                //    GradientStop { color: Color { r: 0, g: 160, b: 20, a: 255, }.to_colorf(), offset: 0.9 },
-                //],
                 start_radius: 10.0,
                 end_radius: 750.0,
                 extend_mode: ExtendMode::Repeat,
-                center: point(295.0, 800.0),
+                center: point(0.0, 0.0),
                 //focal: Some(point(250.0, 800.0)),
                 focal: None,
                 scale: Vector::new(1.0, 1.0),
@@ -1100,83 +1080,65 @@ fn paint_scene(
                     GradientStop { color: Color { r: 255, g: 0, b: 0, a: 255, }.to_colorf(), offset: 0.2 },
                     GradientStop { color: Color { r: 0, g: 255, b: 0, a: 255, }.to_colorf(), offset: 0.4 },
                     GradientStop { color: Color { r: 0, g: 0, b: 255, a: 255, }.to_colorf(), offset: 0.6 },
-                    //GradientStop { color: Color { r: 255, g: 0, b: 255, a: 255, }.to_colorf(), offset: 0.8 },
                 ]
             },
         );
 
-        //for i in 0..5000 {
-        //    let x = ((i * 14873) % (700 + i / 127)) as f32;
-        //    let y = ((i * 73621) % (600 + i / 371)) as f32;
-        //    let w = 10.0;
-        //    let h = 10.0;
-        //    let pat = patterns.colors.add(Color {
-        //        r: ((i * 2767) % 255) as u8,
-        //        g: ((i * 3475) % 255) as u8,
-        //        b: ((i * 9721) % 255) as u8,
-        //        a: 150
-        //    });
-        //    renderers.rectangles.fill_rect(
-        //        &mut surface.ctx(),
-        //        &frame.transforms,
-        //        &LocalRect {
-        //            min: point(x, y),
-        //            max: point(x + w, y + h),
-        //        },
-        //        Aa::ALL,
-        //        pat,
-        //        _tx2,
-        //    );
-        //}
+        let mut atlas = graph.add_atlas_render_node(
+            &mut f32_buffer,
+            RenderNodeDescriptor::new(SurfaceIntSize::new(1024, 1024))
+                .attachments(&[ColorAttachment::color().cleared(true)])
+        );
+
+        surface.read(atlas.color(0));
+        let bounds = SurfaceIntRect::from_origin_and_size(
+            SurfaceIntPoint::new(-50, 0),
+            SurfaceIntSize::new(150, 200),
+        );
+        let mut task_ctx = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
+        let task_id = task_ctx.render_task;
+
+        let identity = frame.transforms
+            .root_mut()
+            .get_gpu_handle(&mut f32_buffer);
 
         renderers.rectangles.fill_rect(
-            &mut surface.ctx(),
-            frame.transforms.get(view_transform),
+            &mut task_ctx,
+            frame.transforms.root(),
             &LocalRect {
-                min: point(200.0, 700.0),
-                max: point(300.0, 900.0),
-            },
-            Aa::ALL,
-            linear,
-            transform_handle,
-        );
-        renderers.rectangles.fill_rect(
-            &mut surface.ctx(),
-            frame.transforms.get(view_transform),
-            &LocalRect {
-                min: point(310.5, 700.5),
-                max: point(1510.5, 900.5),
+                min: point(0.0, 0.0),
+                max: point(1010.5, 900.5),
             },
             Aa::LEFT | Aa::RIGHT | Aa::ALL,
             gradient,
-            transform_handle,
+            GpuBufferAddress::INVALID,
         );
 
-        //renderers.tiling.fill_circle(
-        //    ctx,
-        //    transforms,
-        //    Circle::new(point(500.0, 300.0), 200.0),
-        //    patterns.gradients.add(
-        //        f32_buffer,
-        //        LinearGradient {
-        //            from: point(300.0, 100.0),
-        //            color0: Color {
-        //                r: 10,
-        //                g: 200,
-        //                b: 100,
-        //                a: 100,
-        //            },
-        //            to: point(700.0, 100.0),
-        //            color1: Color {
-        //                r: 200,
-        //                g: 100,
-        //                b: 250,
-        //                a: 255,
-        //            },
-        //        }
-        //        .transformed(&transforms.get_current().matrix().to_untyped()),
-        //    ),
-        //);
+        let atlas_binding = atlas.color(0).get_binding();
+        let img_src = patterns.textures.sample_rect(
+            &mut f32_buffer,
+            atlas_binding,
+            task_id,
+            &Box2D {
+                min: point(50.0, 900.0),
+                max: point(250.0, 1100.0),
+            },
+            0.3,
+            false,
+        );
+        renderers.rectangles.fill_rect(
+            &mut surface.ctx(),
+            frame.transforms.root(),
+            &LocalRect {
+                min: point(50.0, 900.0),
+                max: point(250.0, 1100.0),
+            },
+            Aa::ALL,
+            img_src,
+            GpuBufferAddress::INVALID,
+        );
+
+        atlas.finish();
 
         let mut builder = core::path::Path::builder();
         builder.begin(point(600.0, 0.0));
@@ -1207,49 +1169,13 @@ fn paint_scene(
             ).with_blend_mode(BlendMode::Screen),
         );
 
-        //let black = patterns.colors.add(Color::BLACK);
-        //renderers.tiling.fill_rect(
-        //    ctx,
-        //    transforms,
-        //    LocalRect {
-        //        min: point(10.0, 10.0),
-        //        max: point(50.0, 50.0),
-        //    },
-        //    black,
-        //);
-        //renderers.tiling.fill_rect(
-        //    ctx,
-        //    transforms,
-        //    LocalRect {
-        //        min: point(60.5, 10.5),
-        //        max: point(100.5, 50.5),
-        //    },
-        //    black,
-        //);
-
         let mut p = Path::builder();
-
-        //    p.begin(point(110.0, 110.0));
-        //    p.quadratic_bezier_to(point(200.0, 110.0), point(200.0, 200.0));
-        //    p.quadratic_bezier_to(point(200.0, 300.0), point(110.0, 200.0));
-        //    p.end(false);
-        //
-        //    p.begin(point(300.0, 100.0));
-        //    p.line_to(point(400.0, 100.0));
-        //    p.line_to(point(400.0, 200.0));
-        //    p.line_to(point(390.0, 250.0));
-        //    p.end(true);
 
         p.begin(point(700.0, 100.0));
         p.quadratic_bezier_to(point(700.0, 330.0), point(900.0, 300.0));
         p.quadratic_bezier_to(point(700.0, 300.0), point(700.0, 500.0));
-        //p.cubic_bezier_to(point(500.0, 100.0), point(500.0, 500.0), point(700.0, 100.0));
         p.end(false);
 
-        //p.begin(point(600.0, 400.0));
-        //p.end(true);
-        //p.begin(point(700.0, 400.0));
-        //p.end(true);
         let path_to_offset = p.build();
 
         let mut builder2 = core::path::Path::builder();

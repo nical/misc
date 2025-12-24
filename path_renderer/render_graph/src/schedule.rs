@@ -371,8 +371,14 @@ pub fn schedule_graph(
             match res.resource {
                 Resource::Auto => {
                     let virt_res = &mut virtual_resources[idx];
+
+                    // Make sure to require bindable resources if another node is reading from it.
+                    if virt_res.refs > 0 {
+                        virt_res.kind = virt_res.kind.with_binding();
+                    }
+
                     let resource = passes.resources.get(ResourceKey {
-                        kind: res.kind,
+                        kind: virt_res.kind,
                         size: node.size,
                     });
 

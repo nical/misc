@@ -386,6 +386,7 @@ impl Batcher {
 
     pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
         self.view_port = render_task.bounds.to_f32();
+        self.view = *render_task;
     }
 
     pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
@@ -395,6 +396,10 @@ impl Batcher {
     pub fn new() -> Self {
         use std::f32::{MAX, MIN};
         use crate::units::point;
+        let max_rect = SurfaceIntRect {
+            min: SurfaceIntPoint::new(i32::MIN, i32::MIN),
+            max: SurfaceIntPoint::new(i32::MAX, i32::MAX),
+        };
         Batcher {
             ordered: OrderedBatcher::new(),
             order_independent: OrderIndependentBatcher::new(),
@@ -403,10 +408,8 @@ impl Batcher {
                 max: point(MAX, MAX),
             },
             view: RenderTaskInfo {
-                bounds: SurfaceIntRect {
-                    min: SurfaceIntPoint::new(i32::MIN, i32::MIN),
-                    max: SurfaceIntPoint::new(i32::MAX, i32::MAX),
-                },
+                bounds: max_rect,
+                target_rect: max_rect,
                 offset: SurfaceVector::new(0.0, 0.0),
                 handle: RenderTaskHandle::INVALID,
             }
@@ -478,10 +481,10 @@ impl<T, I> BatchList<T, I> {
         // TODO: using the intersection with the viewport isn't quite correct in
         // the case of stencil and cover because while the cover geometry can be
         // clipped exactly, the stencil geometry may extend out of it.
-        let aabb = aabb.intersection_unchecked(&ctx.batcher.view_port)
+        let clipped_aabb = aabb.intersection_unchecked(&ctx.batcher.view_port)
             .translate(ctx.batcher.view.offset);
 
-        if aabb.is_empty() {
+        if clipped_aabb.is_empty() {
             return;
         }
 

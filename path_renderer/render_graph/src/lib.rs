@@ -343,16 +343,20 @@ impl FrameGraph {
             }
         }
 
-        let size = descriptor.size.unwrap().to_f32();
+        let size = descriptor.size.unwrap();
+        let sizef = size.to_f32();
+        let rect = SurfaceRect::from_size(sizef);
         let render_task = RenderTaskHandle(f32_buffer.push(RenderTaskData {
-            rect: SurfaceRect::from_size(size),
+            clip: rect,
+            image_source: rect,
             content_offset: SurfaceVector::zero(),
-            rcp_target_width: 1.0 / size.width,
-            rcp_target_height: 1.0 / size.height,
+            rcp_target_width: 1.0 / sizef.width,
+            rcp_target_height: 1.0 / sizef.height,
         }));
 
         let task_info = RenderTaskInfo {
-            bounds: SurfaceIntRect::from_size(descriptor.size.unwrap()),
+            bounds: SurfaceIntRect::from_size(size),
+            target_rect: SurfaceIntRect::from_size(size),
             offset: SurfaceVector::zero(),
             handle: render_task,
         };
@@ -370,6 +374,17 @@ impl FrameGraph {
         RenderNode::new(pass, self.add_node(&descriptor))
     }
 
+    pub fn add_atlas_render_node(&mut self, f32_buffer: &mut GpuBufferWriter, descriptor: RenderNodeDescriptor) -> AtlasRenderNode {
+        let size = descriptor.size;
+        let inner = self.add_render_node(f32_buffer, descriptor);
+
+        AtlasRenderNode {
+            inner,
+            allocator: guillotiere::SimpleAtlasAllocator::new(size.cast_unit()),
+            allocated_px: 0,
+        }
+    }
+
     pub fn schedule(&mut self, passes: &mut Passes) -> Result<(), Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
@@ -385,6 +400,10 @@ pub struct Node {
 }
 
 impl Node {
+    pub fn read(&mut self, dep: NodeDependency) {
+        self.dependencies.push(dep.as_graph_dependency())
+    }
+
     pub fn node_id(&self) -> NodeId {
         self.id
     }

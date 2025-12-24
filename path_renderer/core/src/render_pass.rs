@@ -195,6 +195,12 @@ impl RenderPassBuilder {
         self.batcher.begin(&render_task);
     }
 
+    // TODO: This isn't a very good API.
+    pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
+        self.render_task = render_task.handle;
+        self.batcher.set_render_task(render_task);
+    }
+
     pub fn end(&mut self) -> BuiltRenderPass {
         let mut batches = Vec::new();
         self.batcher.finish(&mut batches);
@@ -505,7 +511,9 @@ impl RenderCommands {
                         load: if attachment.flags.load {
                             wgpu::LoadOp::Load
                         } else if attachment.flags.clear {
-                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                            wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0, g: 0.0, b: 0.0, a: 0.0,
+                            })
                         } else {
                             wgpu::LoadOp::DontCare(unsafe {
                                 wgpu::LoadOpDontCare::enabled()

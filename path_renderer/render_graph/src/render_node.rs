@@ -1,7 +1,7 @@
 use crate::{ColorAttachment, Dependency, NodeDescriptor, NodeKind, Resource, Slot};
 use crate::{Node, NodeDependency};
 use core::render_pass::{RenderPassBuilder, RenderPassContext};
-use core::render_task::{FrameAtlasAllocator};
+use core::render_task::add_render_task;
 use core::units::{SurfaceIntRect, SurfaceIntSize};
 use core::{gpu::GpuBufferWriter};
 
@@ -110,6 +110,10 @@ impl RenderNode {
         }
     }
 
+    pub fn read(&mut self, dep: NodeDependency) {
+        self.node.read(dep);
+    }
+
     pub fn finish(self) {}
 }
 
@@ -139,16 +143,24 @@ impl<'l> Into<NodeDependency<'l>> for &'l RenderNode {
 }
 
 pub struct AtlasRenderNode {
-    inner: RenderNode,
-    atlas: FrameAtlasAllocator,
+    pub(crate) inner: RenderNode,
+    pub(crate) allocator: guillotiere::SimpleAtlasAllocator,
+    pub(crate) allocated_px: u32,
 }
 
 impl AtlasRenderNode {
-    pub fn allocate(&mut self, f32_buffer: &mut GpuBufferWriter, rect: &SurfaceIntRect) -> Option<RenderPassContext> {
-        let task_info = self.atlas.allocate(f32_buffer, rect)?;
-        self.inner.pass.batcher.set_render_task(&task_info);
+    pub fn allocate(&mut self, f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect) -> Option<RenderPassContext> {
+        let alloc = self.allocator.allocate(bounds.size().cast_unit())?;
+        let offset = alloc.min.cast_unit().to_f32().to_vector();
+        self.allocated_px += alloc.area() as u32;
+        let task_info = add_render_task(f32_buffer, bounds, offset, self.size());
+        self.inner.pass.set_render_task(&task_info);
 
         Some(self.inner.pass.ctx())
+    }
+
+    pub fn ctx(&mut self) -> RenderPassContext {
+        self.inner.pass.ctx()
     }
 
     pub fn finish(self) {
@@ -165,5 +177,19 @@ impl AtlasRenderNode {
 
     pub fn depth_stencil(&self) -> NodeDependency {
         self.inner.depth_stencil()
+    }
+
+    pub fn size(&self) -> SurfaceIntSize {
+        self.allocator.size().cast_unit()
+    }
+
+    pub fn is_empty(&mut self) -> bool {
+        self.allocator.is_empty()
+    }
+
+    pub fn occupancy(&self) -> f32 {
+        let s = self.size();
+        let area = s.width as f32 * s.height as f32;
+        self.allocated_px as f32 / area
     }
 }
