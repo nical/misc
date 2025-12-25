@@ -1,3 +1,4 @@
+use std::fmt;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::sync::{
@@ -34,24 +35,47 @@ impl std::ops::AddAssign for UploadStats {
 
 const GPU_BUFFER_WIDTH: u32 = 2048;
 
-// Packed into 20 bits, leaving 12 bits unused so that it can be packed
-// with other data in GPU instances.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// Optional offset in number of units (not necessarily bytes) into a
+/// GPU buffer.
+///
+/// The unit size depends on the pixel format of the underlying resource.
+///
+/// A GpuBufferAddress value is only valid for duration of the current frame.
+///
+/// Only uses the lower 20 bits, leaving 12 bits unused so that it can be packed
+/// with other data in GPU instances.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct GpuBufferAddress(pub(crate) u32);
 
 unsafe impl bytemuck::Pod for GpuBufferAddress {}
 unsafe impl bytemuck::Zeroable for GpuBufferAddress {}
 
-// Offset in number of units (not necessarily bytes) into a buffer.
-// The unit size depends on the pixel format of the underlying resource.
 impl GpuBufferAddress {
-    pub const MASK: u32 = 0xFFFFF;
-    pub const INVALID: Self = GpuBufferAddress(Self::MASK);
+    const MASK: u32 = 0xFFFFF;
+    pub const NONE: Self = GpuBufferAddress(Self::MASK);
 
+    #[inline]
+    pub fn is_some(&self) -> bool {
+        *self != GpuBufferAddress::NONE
+    }
+
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        *self == GpuBufferAddress::NONE
+    }
+
+    #[inline]
     pub fn to_u32(self) -> u32 {
         self.0
     }
 }
+
+impl std::fmt::Debug for GpuBufferAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
 
 // Offset in number of items (not necessarily bytes) into a buffer.
 // TODO: this almost redundant with GpuBufferHandle, it should probably

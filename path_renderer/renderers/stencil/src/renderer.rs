@@ -472,7 +472,7 @@ impl StencilAndCoverRenderer {
             z_index: fill.z_index,
             pattern: fill.pattern.data,
             opacity: 1.0, // TODO,
-            render_task: fill.task.handle,
+            render_task: fill.task.gpu_address,
         }.encode()).to_u32();
 
         match &fill.shape {

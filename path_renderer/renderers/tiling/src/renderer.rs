@@ -438,12 +438,12 @@ impl TileRenderer {
                     .with_z_index(fill.z_index)
                     .with_tolerance(tolerance)
                     .with_inverted(shape.inverted)
-                    .with_render_task(fill.task.handle);
+                    .with_render_task(fill.task.gpu_address);
                 tiler.fill_path(shape.path.iter(), &options, &fill.pattern, tiles);
             }
             Shape::Surface => {
                 let opacity = 1.0; // TODO
-                tiler.fill_surface(&fill.pattern, opacity, fill.z_index, fill.task.handle, tiles);
+                tiler.fill_surface(&fill.pattern, opacity, fill.z_index, fill.task.gpu_address, tiles);
             }
         }
     }

@@ -875,10 +875,10 @@ fn paint_scene(
                     GradientStop { color: Color { r: 50, g: 0, b: 50, a: 255 }.to_colorf(), offset: 1.0 },
                 ],
             }
-            .transformed(&frame.transforms.root().matrix().to_untyped()),
+            .transformed(&frame.transforms.identity().matrix().to_untyped()),
         );
 
-        renderers.tiling.fill_surface(&mut surface.ctx(), &frame.transforms.root(), gradient);
+        renderers.tiling.fill_surface(&mut surface.ctx(), &frame.transforms.identity(), gradient);
     }
 
     // Doing a minimal amount of work to de-duplicate patterns avoids
@@ -1099,19 +1099,19 @@ fn paint_scene(
         let task_id = task_ctx.render_task;
 
         let identity = frame.transforms
-            .root_mut()
+            .identity_mut()
             .get_gpu_handle(&mut f32_buffer);
 
         renderers.rectangles.fill_rect(
             &mut task_ctx,
-            frame.transforms.root(),
+            frame.transforms.identity_mut(),
             &LocalRect {
                 min: point(0.0, 0.0),
                 max: point(1010.5, 900.5),
             },
             Aa::LEFT | Aa::RIGHT | Aa::ALL,
             gradient,
-            GpuBufferAddress::INVALID,
+            &mut f32_buffer,
         );
 
         let atlas_binding = atlas.color(0).get_binding();
@@ -1128,14 +1128,14 @@ fn paint_scene(
         );
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),
-            frame.transforms.root(),
+            frame.transforms.identity_mut(),
             &LocalRect {
                 min: point(50.0, 900.0),
                 max: point(250.0, 1100.0),
             },
             Aa::ALL,
             img_src,
-            GpuBufferAddress::INVALID,
+            &mut f32_buffer,
         );
 
         atlas.finish();
@@ -1150,7 +1150,7 @@ fn paint_scene(
         let fill: FilledPath = builder.build().into();
         renderers.fill(fill_renderer).fill_path(
             &mut surface.ctx(),
-            frame.transforms.root(),
+            frame.transforms.identity(),
             fill,//.inverted(),
             patterns.checkerboards.add(
                 &mut f32_buffer,
@@ -1165,7 +1165,7 @@ fn paint_scene(
                     scale: 25.0,
                     offset: point(0.0, 0.0),
                 }
-                .transformed(&frame.transforms.root().matrix().to_untyped()),
+                .transformed(&frame.transforms.identity().matrix().to_untyped()),
             ).with_blend_mode(BlendMode::Screen),
         );
 

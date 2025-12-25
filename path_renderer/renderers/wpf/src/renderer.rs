@@ -1,4 +1,4 @@
-use core::render_task::RenderTaskHandle;
+use core::render_task::RenderTaskAdress;
 use core::{bytemuck, wgpu, BindingsId, PrepareContext};
 use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId, ZIndex};
@@ -23,7 +23,7 @@ pub struct PrimitiveInfo {
     pub z_index: u32,
     pub pattern: u32,
     pub opacity: f32,
-    pub render_task: RenderTaskHandle,
+    pub render_task: RenderTaskAdress,
 }
 
 pub type EncodedPrimitiveInfo = [u32; 4];
@@ -74,7 +74,7 @@ impl Shape {
 
 struct Fill {
     shape: Shape,
-    render_task: RenderTaskHandle,
+    render_task: RenderTaskAdress,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
@@ -149,7 +149,7 @@ impl WpfMeshRenderer {
             &mut |mut batch, task| {
                 batch.push(Fill {
                     shape: shape.clone(),
-                    render_task: task.handle,
+                    render_task: task.gpu_address,
                     pattern,
                     transform: transform_id,
                     z_index,

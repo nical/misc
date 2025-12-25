@@ -1,26 +1,49 @@
+use std::fmt;
 use crate::gpu::{GpuBufferAddress, GpuBufferWriter};
 use crate::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 
+/// The address of render task data in the float GpuBuffer.
+///
+/// This address is only valid for the duration of the frame current frame.
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct RenderTaskAdress(pub GpuBufferAddress);
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RenderTaskHandle(pub GpuBufferAddress);
+impl RenderTaskAdress {
+    pub const NONE: Self = RenderTaskAdress(GpuBufferAddress::NONE);
 
-impl RenderTaskHandle {
-    pub const INVALID: Self = RenderTaskHandle(GpuBufferAddress::INVALID);
-
-    pub fn is_valid(&self) -> bool {
-        *self != RenderTaskHandle::INVALID
+    #[inline]
+    pub fn is_some(self) -> bool {
+        self.0.is_some()
     }
 
-    pub fn to_u32(&self) -> u32 {
+    #[inline]
+    pub fn is_none(self) -> bool {
+        self.0.is_none()
+    }
+
+    #[inline]
+    pub fn to_buffer_address(self) -> GpuBufferAddress { self.0 }
+
+    #[inline]
+    pub fn to_u32(self) -> u32 {
         self.0.to_u32()
     }
 
+    #[inline]
     pub fn from_u32(addr: u32) -> Self {
-        RenderTaskHandle(GpuBufferAddress(addr))
+        RenderTaskAdress(GpuBufferAddress(addr))
     }
 }
 
+unsafe impl bytemuck::Pod for RenderTaskAdress {}
+unsafe impl bytemuck::Zeroable for RenderTaskAdress {}
+
+impl std::fmt::Debug for RenderTaskAdress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct RenderTaskInfo {
@@ -31,15 +54,16 @@ pub struct RenderTaskInfo {
     /// Where the task is drawn in its render target.
     pub target_rect: SurfaceIntRect,
     ///
-    pub handle: RenderTaskHandle,
+    pub gpu_address: RenderTaskAdress,
 }
 
 /// The data copied into to the gpu store.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct RenderTaskData {
-    // The beginning of this structure must match the layout
-    // of `RenderTask` in render_task.wgsl
+    // The first part of this struct (8 floats) contains data that
+    // is typically read by shaders when rendering into a render task.
+    // It must match the layout of `RenderTask` in render_task.wgsl
 
     /// Acts as a clip in the surface space of the render task.
     pub clip: SurfaceRect,
@@ -50,7 +74,8 @@ pub struct RenderTaskData {
     /// 1.0 / target.height
     pub rcp_target_height: f32,
 
-    // The image source is stored immediately after the task data.
+    // The second part, stored immediately after, is typically read by
+    // shaders when reading from the output of a render task.
 
     /// The pixels of the task, in the coordinate space of the target.
     pub image_source: SurfaceRect
@@ -67,7 +92,7 @@ pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect
         max: target_offset.to_point() + bounds.size().to_vector().to_f32(),
     };
 
-    let handle = RenderTaskHandle(f32_buffer.push(RenderTaskData {
+    let gpu_address = RenderTaskAdress(f32_buffer.push(RenderTaskData {
         clip: bounds.to_f32(),
         content_offset,
         rcp_target_width: 1.0 / size.width,
@@ -78,7 +103,7 @@ pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect
     RenderTaskInfo {
         bounds: *bounds,
         offset: content_offset,
-        handle,
+        gpu_address,
         target_rect: image_source.to_i32(),
     }
 }
@@ -130,7 +155,7 @@ impl DynamicAtlasAllocator {
                 max: target_origin + size,
             },
             offset: target_offset - local_content_offset,
-            handle: RenderTaskHandle::INVALID,
+            gpu_address: RenderTaskAdress::NONE,
         });
 
         Some(AtlasHandle(alloc.id.serialize()))
@@ -138,7 +163,7 @@ impl DynamicAtlasAllocator {
 
     pub fn get_render_task(&mut self, f32_buffer: &mut GpuBufferWriter, handle: AtlasHandle) -> RenderTaskInfo {
         let info = &mut self.allocations[handle.0 as usize];
-        if info.handle == RenderTaskHandle::INVALID {
+        if info.gpu_address.is_none() {
             let size = self.allocator.size();
             let h = f32_buffer.push(RenderTaskData {
                 clip: info.bounds.to_f32(),
@@ -148,7 +173,7 @@ impl DynamicAtlasAllocator {
                 image_source: info.bounds.to_f32(),
             });
 
-            info.handle = RenderTaskHandle(h);
+            info.gpu_address = RenderTaskAdress(h);
         }
 
         return info.clone()

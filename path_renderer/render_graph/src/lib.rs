@@ -11,7 +11,7 @@ use core::{BindingsId, RenderPassConfig, SurfaceKind, resources::TextureKind};
 use core::gpu::GpuBufferWriter;
 use core::instance::{Frame, Passes};
 use core::render_pass::RenderPassBuilder;
-use core::render_task::{RenderTaskData, RenderTaskHandle, RenderTaskInfo};
+use core::render_task::{RenderTaskData, RenderTaskAdress, RenderTaskInfo};
 use core::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 
 pub use crate::render_node::*;
@@ -346,7 +346,7 @@ impl FrameGraph {
         let size = descriptor.size.unwrap();
         let sizef = size.to_f32();
         let rect = SurfaceRect::from_size(sizef);
-        let render_task = RenderTaskHandle(f32_buffer.push(RenderTaskData {
+        let render_task = RenderTaskAdress(f32_buffer.push(RenderTaskData {
             clip: rect,
             image_source: rect,
             content_offset: SurfaceVector::zero(),
@@ -358,7 +358,7 @@ impl FrameGraph {
             bounds: SurfaceIntRect::from_size(size),
             target_rect: SurfaceIntRect::from_size(size),
             offset: SurfaceVector::zero(),
-            handle: render_task,
+            gpu_address: render_task,
         };
 
         pass.begin(

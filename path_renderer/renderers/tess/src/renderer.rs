@@ -1,5 +1,5 @@
 use core::{
-    BindingsId, PrepareContext, bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::{Circle, FilledPath}, transform::Transform, wgpu
+    BindingsId, PrepareContext, bytemuck, path::Path, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskAdress, shape::{Circle, FilledPath}, transform::Transform, wgpu
 };
 use core::transform::{TransformId, Transforms};
 use core::units::{point, LocalPoint, LocalRect};
@@ -60,14 +60,14 @@ struct Fill {
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,
-    render_task: RenderTaskHandle,
+    render_task: RenderTaskAdress,
 }
 
 pub struct PrimitiveInfo {
     pub z_index: u32,
     pub pattern: u32,
     pub opacity: f32,
-    pub render_task: RenderTaskHandle,
+    pub render_task: RenderTaskAdress,
 }
 
 pub type EncodedPrimitiveInfo = [u32; 4];
@@ -252,7 +252,7 @@ impl MeshRenderer {
                     pattern,
                     transform: transform_id,
                     z_index,
-                    render_task: task.handle,
+                    render_task: task.gpu_address,
                 });
             }
         );

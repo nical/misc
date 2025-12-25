@@ -1,7 +1,7 @@
 use wgpu_profiler::GpuProfiler;
 
 use crate::batching::{BatchId, Batcher};
-use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
+use crate::render_task::{RenderTaskAdress, RenderTaskInfo};
 use crate::resources::GpuResources;
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::path::FillRule;
@@ -155,7 +155,7 @@ pub struct RenderPassContext<'l> {
     pub z_indices: &'l mut ZIndices,
     pub batcher: &'l mut Batcher,
     pub config: RenderPassConfig,
-    pub render_task: RenderTaskHandle,
+    pub render_task: RenderTaskAdress,
 }
 
 // TODO: Should this move into render_graph?
@@ -163,7 +163,7 @@ pub struct RenderPassBuilder {
     z_indices: ZIndices,
     config: RenderPassConfig,
     pub(crate) size: SurfaceIntSize,
-    render_task: RenderTaskHandle,
+    render_task: RenderTaskAdress,
     pub batcher: Batcher,
 }
 
@@ -174,7 +174,7 @@ impl RenderPassBuilder {
             config: RenderPassConfig::default(),
             size: SurfaceIntSize::new(0, 0),
             batcher: Batcher::new(),
-            render_task: RenderTaskHandle::INVALID,
+            render_task: RenderTaskAdress::NONE,
         }
     }
 
@@ -191,13 +191,13 @@ impl RenderPassBuilder {
         self.z_indices.clear();
         self.config = config;
         self.size = render_task.bounds.size();
-        self.render_task = render_task.handle;
+        self.render_task = render_task.gpu_address;
         self.batcher.begin(&render_task);
     }
 
     // TODO: This isn't a very good API.
     pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
-        self.render_task = render_task.handle;
+        self.render_task = render_task.gpu_address;
         self.batcher.set_render_task(render_task);
     }
 

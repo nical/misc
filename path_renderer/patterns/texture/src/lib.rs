@@ -1,7 +1,7 @@
 #![allow(exported_private_dependencies)]
 
 use core::geom::Box2D;
-use core::render_task::RenderTaskHandle;
+use core::render_task::RenderTaskAdress;
 use core::shading::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
     Varying,
@@ -83,7 +83,7 @@ impl TextureRenderer {
         &self,
         f32_buffer: &mut GpuBufferWriter,
         src_texture: BindingsId,
-        src_task: RenderTaskHandle,
+        src_task: RenderTaskAdress,
         dst_rect: &Box2D<f32>,
         alpha: f32,
         is_opaque: bool,

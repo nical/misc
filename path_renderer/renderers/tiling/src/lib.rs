@@ -10,7 +10,7 @@ mod flatten;
 mod simd4;
 
 use core::batching::RendererId;
-use core::render_task::RenderTaskHandle;
+use core::render_task::RenderTaskAdress;
 use core::wgpu;
 use core::units::{LocalSpace, SurfaceSpace};
 use core::gpu::{GpuBufferDescriptor, GpuBufferResources};
@@ -95,7 +95,7 @@ pub struct FillOptions<'l> {
     pub tolerance: f32,
     pub transform: Option<&'l Transform>,
     pub opacity: f32,
-    pub render_task: RenderTaskHandle,
+    pub render_task: RenderTaskAdress,
 }
 
 impl<'l> FillOptions<'l> {
@@ -107,7 +107,7 @@ impl<'l> FillOptions<'l> {
             tolerance: 0.25,
             transform: None,
             opacity: 1.0,
-            render_task: RenderTaskHandle::INVALID,
+            render_task: RenderTaskAdress::NONE,
         }
     }
 
@@ -119,7 +119,7 @@ impl<'l> FillOptions<'l> {
             tolerance: 0.25,
             transform: Some(transform),
             opacity: 1.0,
-            render_task: RenderTaskHandle::INVALID,
+            render_task: RenderTaskAdress::NONE,
         }
     }
 
@@ -163,7 +163,7 @@ impl<'l> FillOptions<'l> {
         self
     }
 
-    pub fn with_render_task(mut self, task: RenderTaskHandle) -> Self {
+    pub fn with_render_task(mut self, task: RenderTaskAdress) -> Self {
         self.render_task = task;
         self
     }

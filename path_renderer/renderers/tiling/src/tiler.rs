@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use core::gpu::{GpuBufferAddress, GpuBufferWriter, GpuStreamWriter};
-use core::render_task::RenderTaskHandle;
+use core::render_task::RenderTaskAdress;
 use core::units::{LocalSpace, SurfaceSpace, SurfaceRect, SurfaceIntRect, Point, vector};
 use core::{pattern::BuiltPattern, units::point};
 
@@ -781,7 +781,7 @@ impl Tiler {
         pattern: &BuiltPattern,
         opacity: f32,
         z_index: u32,
-        render_task: RenderTaskHandle,
+        render_task: RenderTaskAdress,
         output: &mut TilerOutput,
     ) {
         let path_index = output.paths.push(PathInfo {
@@ -962,7 +962,7 @@ pub struct PathInfo {
     pub pattern_data: u32,
     pub fill_rule: u16,
     pub opacity: f32,
-    pub render_task: RenderTaskHandle,
+    pub render_task: RenderTaskAdress,
 
     // TODO: this can be [u16;4]
     pub scissor: [u32; 4],
@@ -990,7 +990,7 @@ impl PathInfo {
             pattern_data: data[1],
             fill_rule: (data[2] >> 16) as u16,
             opacity: (data[2] & 0xFFFF) as f32 / 65535.0,
-            render_task: RenderTaskHandle::from_u32(data[3]),
+            render_task: RenderTaskAdress::from_u32(data[3]),
             scissor: [data[4], data[5], data[6], data[7]],
         }
     }

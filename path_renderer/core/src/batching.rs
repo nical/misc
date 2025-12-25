@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use std::collections::VecDeque;
 
 use crate::render_pass::RenderPassContext;
-use crate::render_task::{RenderTaskHandle, RenderTaskInfo};
+use crate::render_task::{RenderTaskAdress, RenderTaskInfo};
 use crate::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceVector};
 use crate::worker::SendPtr;
 use crate::RenderPassConfig;
@@ -411,7 +411,7 @@ impl Batcher {
                 bounds: max_rect,
                 target_rect: max_rect,
                 offset: SurfaceVector::new(0.0, 0.0),
-                handle: RenderTaskHandle::INVALID,
+                gpu_address: RenderTaskAdress::NONE,
             }
         }
     }

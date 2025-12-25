@@ -9,7 +9,7 @@ use core::{
 use core::shading::{RenderPipelineIndex, RenderPipelineKey};
 use core::batching::{BatchFlags, BatchList};
 use core::render_pass::{BuiltRenderPass, RenderCommandId, RenderPassConfig, RenderPassContext, RendererId};
-use core::gpu::{GpuBufferAddress, StreamId};
+use core::gpu::{GpuBufferWriter, StreamId};
 use core::utils::DrawHelper;
 
 use std::ops::Range;
@@ -77,12 +77,11 @@ impl RectangleRenderer {
     pub fn fill_rect(
         &mut self,
         ctx: &mut RenderPassContext,
-        transform: &Transform,
+        transform: &mut Transform,
         local_rect: &LocalRect,
         mut aa: Aa,
         pattern: BuiltPattern,
-        // TODO: get this from Transforms.
-        transform_handle: GpuBufferAddress,
+        f32_buffer: &mut GpuBufferWriter,
     ) {
         let z_index = ctx.z_indices.push();
         let aabb = transform
@@ -95,6 +94,8 @@ impl RectangleRenderer {
         if pass_cfg.msaa {
             aa = Aa::NONE;
         }
+
+        let transform_handle = transform.get_gpu_handle(f32_buffer);
 
         // Inner rect.
         // This one is pushed as an optimization to avoid rendering large opaque patterns
@@ -127,7 +128,7 @@ impl RectangleRenderer {
                         pattern: pattern.data,
                         flags_transform: transform_handle.to_u32()
                             | (instance_flags | InstanceFlags::AaCenter).bits(),
-                        render_task: task.handle.to_u32(),
+                        render_task: task.gpu_address.to_u32(),
                     });
                 }
             );
@@ -162,7 +163,7 @@ impl RectangleRenderer {
                     z_index,
                     pattern: pattern.data,
                     flags_transform: transform_handle.to_u32() | instance_flags.bits(),
-                    render_task: task.handle.to_u32(),
+                    render_task: task.gpu_address.to_u32(),
                 });
             }
         );

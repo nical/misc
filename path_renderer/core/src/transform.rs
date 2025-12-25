@@ -1,3 +1,4 @@
+use std::fmt;
 use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
@@ -13,19 +14,62 @@ bitflags! {
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct TransformFlags: u16 {
-        const AXIS_ALIGNED = 1;
-        const GPU          = 2;
+        const GPU          = 1;
+        const AXIS_ALIGNED = 2;
+        const IDENTITY     = 4;
     }
 }
 
+/// Optional address of a transform in the float GpuBuffer.
+///
+/// This address is only valid for the duration of the frame current frame.
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct GpuTransformAddress(pub GpuBufferAddress);
+
+impl GpuTransformAddress {
+    pub const NONE: Self = GpuTransformAddress(GpuBufferAddress::NONE);
+
+    #[inline]
+    pub fn is_some(self) -> bool {
+        self.0.is_some()
+    }
+
+    #[inline]
+    pub fn is_none(self) -> bool {
+        self.0.is_none()
+    }
+
+    #[inline]
+    pub fn to_buffer_address(self) -> GpuBufferAddress { self.0 }
+
+    #[inline]
+    pub fn to_u32(self) -> u32 { self.0.to_u32() }
+}
+
+unsafe impl bytemuck::Pod for GpuTransformAddress {}
+unsafe impl bytemuck::Zeroable for GpuTransformAddress {}
+
+impl std::fmt::Debug for GpuTransformAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+
+/// Optional index of a CPU-side transform.
+///
+/// Only valid durin the current frame.
+/// Cannot be used on the GPU. See `GpuTransformAddress`.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TransformId(u16);
-pub type GpuTransformId = u16;
 
 impl TransformId {
     pub const ROOT: Self = TransformId(0);
     pub const NONE: Self = TransformId(std::u16::MAX);
+
+    #[inline]
     pub fn try_index(self) -> Option<usize> {
         if self == Self::NONE {
             return None;
@@ -34,28 +78,30 @@ impl TransformId {
         Some(self.0 as usize)
     }
 
+    #[inline]
     fn index(self) -> usize {
+        debug_assert!(self.is_some());
         self.0 as usize
     }
 
+    #[inline]
     pub fn from_index(idx: usize) -> Self {
         debug_assert!(idx < std::u32::MAX as usize);
         TransformId(idx as u16)
     }
 
-    pub fn is_none(self) -> bool {
-        self.0 == std::u16::MAX
+    #[inline]
+    pub fn is_some(self) -> bool {
+        self != Self::NONE
     }
 
-    pub fn or(self, or: Self) -> Self {
-        if self.is_none() {
-            return or;
-        }
-
-        self
+    #[inline]
+    pub fn is_none(self) -> bool {
+        self == Self::NONE
     }
 }
 
+// TODO: upstream into euclid.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScaleOffset {
     pub scale: Vector,
@@ -110,7 +156,7 @@ pub struct Transform {
     transform: LocalToSurfaceTransform,
     id: TransformId,
     flags: TransformFlags,
-    gpu_handle: GpuBufferAddress,
+    gpu_handle: GpuTransformAddress,
 }
 
 impl Transform {
@@ -136,9 +182,13 @@ impl Transform {
         self.id
     }
 
-    pub fn get_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuBufferAddress {
-        if self.gpu_handle != GpuBufferAddress::INVALID {
+    pub fn get_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuTransformAddress {
+        if self.gpu_handle.is_some() {
             return self.gpu_handle;
+        }
+
+        if self.flags.contains(TransformFlags::IDENTITY) {
+            return GpuTransformAddress::NONE;
         }
 
         let axis_aligned = if self.flags.contains(TransformFlags::AXIS_ALIGNED) {
@@ -148,7 +198,9 @@ impl Transform {
         };
         let t = &self.transform;
 
-        let handle = f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0]);
+        let handle = GpuTransformAddress(
+            f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0])
+        );
 
         self.gpu_handle = handle;
 
@@ -165,8 +217,8 @@ impl Transforms {
         let root = Transform {
             transform: LocalToSurfaceTransform::identity(),
             id: TransformId(0),
-            flags: TransformFlags::AXIS_ALIGNED,
-            gpu_handle: GpuBufferAddress::INVALID,
+            flags: TransformFlags::AXIS_ALIGNED | TransformFlags::IDENTITY,
+            gpu_handle: GpuTransformAddress::NONE,
         };
 
         Transforms {
@@ -187,15 +239,15 @@ impl Transforms {
             id,
             transform: *transform,
             flags,
-            gpu_handle: GpuBufferAddress::INVALID,
+            gpu_handle: GpuTransformAddress::NONE,
         });
 
         id
     }
 
-    pub fn root(&self) -> &Transform { &self.transforms[0] }
+    pub fn identity(&self) -> &Transform { &self.transforms[0] }
 
-    pub fn root_mut(&mut self) -> &mut Transform { &mut self.transforms[0] }
+    pub fn identity_mut(&mut self) -> &mut Transform { &mut self.transforms[0] }
 
     pub fn root_id(&self) -> TransformId { TransformId(0) }
 

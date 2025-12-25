@@ -1,7 +1,7 @@
 use core::{
     BindingsId, Point, PrepareContext, UploadContext, bytemuck, gpu::{
         GpuStreamWriter, StreamId, UploadStats, storage_buffer::{StorageBuffer, StorageKind}
-    }, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskHandle, shape::FilledPath, transform::Transform, units::LocalRect, wgpu
+    }, pattern::BuiltPattern, render_pass::{BuiltRenderPass, RenderCommandId}, render_task::RenderTaskAdress, shape::FilledPath, transform::Transform, units::LocalRect, wgpu
 };
 use core::transform::{TransformId, Transforms};
 use core::batching::{BatchFlags, BatchList};
@@ -48,7 +48,7 @@ struct Stroke {
     shape: Shape,
     pattern: BuiltPattern,
     z_index: ZIndex,
-    render_task: RenderTaskHandle,
+    render_task: RenderTaskAdress,
 }
 
 #[repr(C)]
@@ -183,7 +183,7 @@ impl MsaaStrokeRenderer {
                     pattern,
                     transform: transform_id,
                     z_index,
-                    render_task: task.handle,
+                    render_task: task.gpu_address,
                 });
             }
         );
