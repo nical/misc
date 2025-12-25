@@ -11,7 +11,7 @@ use core::path::Path;
 use core::resources::{Allocation, GpuResource};
 use core::shape::*;
 use core::units::{
-    LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize, SurfaceSpace, point, vector
+    LocalRect, LocalToSurfaceTransform, LocalTransform, SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceSpace, point, vector
 };
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
@@ -1035,10 +1035,6 @@ fn paint_scene(
             offset,
         });
 
-        //let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        //let rotated = frame.transforms.get_mut(rotated);
-        //let transform_handle = rotated.get_gpu_handle(&mut f32_buffer);
-
         let gradient = patterns.gradients.add_radial(
             &mut f32_buffer,
             &RadialGradientDescriptor {
@@ -1095,35 +1091,52 @@ fn paint_scene(
             SurfaceIntPoint::new(-50, 0),
             SurfaceIntSize::new(150, 200),
         );
-        let mut task_ctx = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
-        let task_id = task_ctx.render_task;
+        let mut task_ctx1 = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
+        let task_id1 = task_ctx1.render_task;
 
-        let identity = frame.transforms
-            .identity_mut()
-            .get_gpu_handle(&mut f32_buffer);
-
+        let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
         renderers.rectangles.fill_rect(
-            &mut task_ctx,
-            frame.transforms.identity_mut(),
+            &mut task_ctx1,
+            frame.transforms.get_mut(rotated),
             &LocalRect {
-                min: point(0.0, 0.0),
-                max: point(1010.5, 900.5),
+                min: point(-20.0, 20.0),
+                max: point(120.0, 195.0),
             },
             Aa::LEFT | Aa::RIGHT | Aa::ALL,
             gradient,
             &mut f32_buffer,
         );
 
+        let bounds = SurfaceIntRect::from_origin_and_size(
+            SurfaceIntPoint::new(300, 0),
+            SurfaceIntSize::new(100, 100),
+        );
+        let mut task_ctx2 = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
+        let task_id2 = task_ctx2.render_task;
+
+        renderers.rectangles.fill_rect(
+            &mut task_ctx2,
+            frame.transforms.identity_mut(),
+            &LocalRect {
+                min: point(-10.0, -10.0),
+                max: point(500.0, 500.0),
+            },
+            Aa::LEFT | Aa::RIGHT | Aa::ALL,
+            gradient,
+            &mut f32_buffer,
+        );
+
+
         let atlas_binding = atlas.color(0).get_binding();
         let img_src = patterns.textures.sample_rect(
             &mut f32_buffer,
             atlas_binding,
-            task_id,
-            &Box2D {
+            task_id1,
+            &LocalRect {
                 min: point(50.0, 900.0),
                 max: point(250.0, 1100.0),
             },
-            0.3,
+            0.5,
             false,
         );
         renderers.rectangles.fill_rect(
@@ -1133,6 +1146,27 @@ fn paint_scene(
                 min: point(50.0, 900.0),
                 max: point(250.0, 1100.0),
             },
+            Aa::ALL,
+            img_src,
+            &mut f32_buffer,
+        );
+
+        let img_bounds = LocalRect {
+            min: point(260.0, 1000.0),
+            max: point(360.0, 1100.0),
+        };
+        let img_src = patterns.textures.sample_rect(
+            &mut f32_buffer,
+            atlas_binding,
+            task_id2,
+            &img_bounds,
+            0.5,
+            false,
+        );
+        renderers.rectangles.fill_rect(
+            &mut surface.ctx(),
+            frame.transforms.identity_mut(),
+            &img_bounds,
             Aa::ALL,
             img_src,
             &mut f32_buffer,

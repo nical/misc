@@ -66,7 +66,7 @@ impl std::fmt::Debug for GpuTransformAddress {
 pub struct TransformId(u16);
 
 impl TransformId {
-    pub const ROOT: Self = TransformId(0);
+    pub const IDENTITY: Self = TransformId(0);
     pub const NONE: Self = TransformId(std::u16::MAX);
 
     #[inline]
@@ -172,6 +172,10 @@ impl Transform {
         Some(ScaleOffset::from_matrix(
             &self.transform.with_destination::<LocalSpace>(),
         ))
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.flags.contains(TransformFlags::IDENTITY)
     }
 
     pub fn matrix(&self) -> &LocalToSurfaceTransform {

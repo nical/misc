@@ -1,6 +1,5 @@
 #![allow(exported_private_dependencies)]
 
-use core::geom::Box2D;
 use core::render_task::RenderTaskAdress;
 use core::shading::{
     BindGroupLayout, BindGroupLayoutId, Binding, PatternDescriptor, ShaderPatternId, Shaders,
@@ -9,6 +8,7 @@ use core::shading::{
 use core::gpu::GpuBufferWriter;
 use core::pattern::BuiltPattern;
 use core::BindingsId;
+use core::units::LocalRect;
 use core::wgpu;
 
 #[derive(Clone, Debug)]
@@ -84,7 +84,7 @@ impl TextureRenderer {
         f32_buffer: &mut GpuBufferWriter,
         src_texture: BindingsId,
         src_task: RenderTaskAdress,
-        dst_rect: &Box2D<f32>,
+        dst_rect: &LocalRect,
         alpha: f32,
         is_opaque: bool,
     ) -> BuiltPattern {

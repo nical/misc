@@ -138,11 +138,16 @@ impl RectangleRenderer {
         let use_opaque_pass =
             pattern.is_opaque && (aa == Aa::NONE || pass_cfg.msaa) && pass_cfg.depth;
 
-        let batch_flags = if use_opaque_pass {
+
+        let mut batch_flags = if use_opaque_pass {
             BatchFlags::ORDER_INDEPENDENT
         } else {
             BatchFlags::empty()
         };
+
+        if !transform.is_identity() {
+            batch_flags.insert(BatchFlags::NEED_SCISSOR_RECT);
+        }
 
         self.batches.add(
             ctx,

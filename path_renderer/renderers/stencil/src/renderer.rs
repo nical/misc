@@ -461,7 +461,7 @@ impl StencilAndCoverRenderer {
         let local_aabb = fill.shape.aabb();
         let transformed_aabb = transform.matrix()
             .outer_transformed_box(&local_aabb)
-            .intersection_unchecked(&fill.task.bounds.to_f32());
+            .intersection_unchecked(&fill.task.bounds);
 
         if transformed_aabb.is_empty() {
             // Note: In theory this should have been skipped during batching.
@@ -512,7 +512,7 @@ impl StencilAndCoverRenderer {
                 }
             }
             _ => {
-                let clip = fill.task.bounds.to_f32();
+                let clip = fill.task.bounds;
                 generate_cover_geometry(
                     &local_aabb,
                     transform.matrix(),

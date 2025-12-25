@@ -1,6 +1,6 @@
 use wgpu_profiler::GpuProfiler;
 
-use crate::batching::{BatchId, Batcher};
+use crate::batching::{BatchId, Batcher, ScissorRect};
 use crate::render_task::{RenderTaskAdress, RenderTaskInfo};
 use crate::resources::GpuResources;
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
@@ -190,7 +190,7 @@ impl RenderPassBuilder {
     pub fn begin(&mut self, render_task: &RenderTaskInfo, config: RenderPassConfig) {
         self.z_indices.clear();
         self.config = config;
-        self.size = render_task.bounds.size();
+        self.size = render_task.bounds.size().to_i32();
         self.render_task = render_task.gpu_address;
         self.batcher.begin(&render_task);
     }
@@ -287,6 +287,7 @@ impl BuiltRenderPass {
     ) {
         let mut commands = RenderCommands::new();
         for batch in &self.batches {
+            commands.set_scissor_rect(&batch.scissor);
             let renderer_prepare_start = Instant::now();
             let renderer_idx = batch.renderer as usize;
             renderers[renderer_idx].add_render_commands(*batch, &mut commands);
@@ -296,7 +297,7 @@ impl BuiltRenderPass {
 
         commands.end_render_pass();
 
-        commands.render_pass(ctx, renderers, &self.io, &self.config());
+        commands.render_pass(ctx, renderers, self.size, &self.io, &self.config());
     }
 
     pub fn set_label(&mut self, label: &'static str) {
@@ -354,6 +355,8 @@ pub struct RenderCommandId {
     /// If Renderer::add_render_commands is not implemented manually,
     /// defaults to the batch index.
     pub index: u32,
+
+    pub scissor: Option<ScissorRect>,
 }
 
 impl From<BatchId> for RenderCommandId {
@@ -363,6 +366,7 @@ impl From<BatchId> for RenderCommandId {
             request_pre_pass: false,
             flags: 0,
             index: batch.index,
+            scissor: None,
         }
     }
 }
@@ -380,6 +384,7 @@ pub struct RenderCommands {
     sub_passes: Vec<SubPass>,
     requested_pre_pass: Vec<bool>,
     current_pass_start: u16,
+    current_scissor: Option<ScissorRect>,
 }
 
 impl RenderCommands {
@@ -391,21 +396,28 @@ impl RenderCommands {
             pre_passes: Vec::new(),
             requested_pre_pass: Vec::new(),
             current_pass_start: 0,
+            current_scissor: None,
         }
     }
 
-    pub fn push(&mut self, command: RenderCommandId) {
+    pub fn push(&mut self, mut command: RenderCommandId) {
         if command.request_pre_pass {
             self.request_pre_pass(command);
         }
+        command.scissor = self.current_scissor;
         self.ordered.push(command);
     }
 
-    pub fn push_order_independent(&mut self, command: RenderCommandId) {
+    pub fn push_order_independent(&mut self, mut command: RenderCommandId) {
         if command.request_pre_pass {
             self.request_pre_pass(command);
         }
+        command.scissor = self.current_scissor;
         self.order_independent.push(command)
+    }
+
+    pub(crate) fn set_scissor_rect(&mut self, scissor: &Option<ScissorRect>) {
+        self.current_scissor = *scissor;
     }
 
     pub fn end_render_pass(&mut self) {
@@ -461,11 +473,12 @@ impl RenderCommands {
         &self,
         ctx: &mut PassRenderContext,
         renderers: &[&mut dyn Renderer],
+        size: SurfaceIntSize,
         io: &RenderPassIo,
         config: &RenderPassConfig,
     ) {
         for sub_pass in &self.sub_passes {
-            self.render_sub_pass(ctx, renderers, sub_pass, io, config);
+            self.render_sub_pass(ctx, renderers, sub_pass, size, io, config);
         }
     }
 
@@ -482,6 +495,7 @@ impl RenderCommands {
         ctx: &mut PassRenderContext,
         renderers: &[&mut dyn Renderer],
         sub_pass: &SubPass,
+        size: SurfaceIntSize,
         io: &RenderPassIo,
         config: &RenderPassConfig,
     ) {
@@ -576,10 +590,27 @@ impl RenderCommands {
         let base_bind_group = ctx.resources.common.get_base_bindgroup();
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
+        let mut current_scissor = None;
+        let set_scissor = &mut |scissor: &Option<ScissorRect>, wgpu_pass: &mut wgpu::RenderPass| {
+            let scissor = match scissor {
+                Some(r) => *r,
+                None => ScissorRect {
+                    x: 0, y: 0,
+                    w: size.width as u16, h: size.height as u16,
+                }
+            };
+            wgpu_pass.set_scissor_rect(
+                scissor.x as u32, scissor.y as u32,
+                scissor.w as u32, scissor.h as u32,
+            );
+        };
+
         let mut prev_renderer = None;
         let mut start_idx = sub_pass.ordered.start;
+
         for (idx, command) in self.order_independent[sub_pass.order_independent.clone()].iter().enumerate() {
-            if Some(command.renderer) != prev_renderer && prev_renderer.is_some() {
+            let scissor_changed = command.scissor != current_scissor;
+            if (Some(command.renderer) != prev_renderer || scissor_changed) && prev_renderer.is_some() {
                 let commands = &self.order_independent[start_idx..idx];
                 let renderer_idx = prev_renderer.unwrap() as usize;
                 self.render_commands(
@@ -597,6 +628,11 @@ impl RenderCommands {
                 start_idx = idx;
             }
 
+            if scissor_changed {
+                set_scissor(&command.scissor, &mut wgpu_pass);
+            }
+
+            current_scissor = command.scissor;
             prev_renderer = Some(command.renderer);
         }
 
@@ -620,7 +656,8 @@ impl RenderCommands {
         let mut prev_renderer = None;
         let mut start_idx = sub_pass.ordered.start;
         for (idx, command) in self.ordered[sub_pass.ordered.clone()].iter().enumerate() {
-            if Some(command.renderer) != prev_renderer && prev_renderer.is_some() {
+            let scissor_changed = command.scissor != current_scissor;
+            if (Some(command.renderer) != prev_renderer || scissor_changed) && prev_renderer.is_some() {
                 let commands = &self.ordered[start_idx..idx];
                 let renderer_idx = prev_renderer.unwrap() as usize;
                 self.render_commands(
@@ -638,6 +675,11 @@ impl RenderCommands {
                 start_idx = idx;
             }
 
+            if scissor_changed {
+                set_scissor(&command.scissor, &mut wgpu_pass);
+            }
+
+            current_scissor = command.scissor;
             prev_renderer = Some(command.renderer);
         }
 

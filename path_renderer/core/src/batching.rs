@@ -8,6 +8,7 @@ use crate::worker::SendPtr;
 use crate::RenderPassConfig;
 
 pub type Rect = crate::units::SurfaceRect;
+pub type IntRect = crate::units::SurfaceIntRect;
 
 pub type SurfaceIndex = u16;
 pub type RendererId = u16;
@@ -16,10 +17,30 @@ pub type BatchKey = u64;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BatchId {
-    pub renderer: RendererId,
     pub index: BatchIndex,
+    pub renderer: RendererId,
     pub surface: SurfaceIndex,
     pub order_independent: bool,
+    pub scissor: Option<ScissorRect>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ScissorRect {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+impl ScissorRect {
+    pub fn from_surface_rect(r: &IntRect) -> Self {
+        ScissorRect {
+            x: r.min.x as u16,
+            y: r.min.y as u16,
+            w: r.width() as u16,
+            h: r.height() as u16,
+        }
+    }
 }
 
 bitflags! {
@@ -30,6 +51,10 @@ bitflags! {
         /// instead of stopping at the most recent one.
         const EARLIEST_CANDIDATE = 2;
         const NO_OVERLAP = 4;
+        /// Whether the item being added to the batch does not handle render
+        /// task clips in the shader and may need a scissor rect to avoid
+        /// overflowing the render task.
+        const NEED_SCISSOR_RECT = 8;
     }
 }
 
@@ -38,6 +63,7 @@ struct Batch {
     index: BatchIndex,
     key: BatchKey,
     rects: BatchRects,
+    scissor: Option<IntRect>,
 }
 
 struct BatchRects {
@@ -87,17 +113,18 @@ pub struct OrderedBatcher {
 }
 
 impl OrderedBatcher {
-    pub fn find_compatible_batch(
+    fn find_compatible_batch(
         &mut self,
         renderer: RendererId,
         key: &BatchKey,
         rect: &Rect,
+        scissor: Option<&IntRect>,
         flags: BatchFlags,
     ) -> Option<BatchIndex> {
         let selected = if flags.contains(BatchFlags::NO_OVERLAP) {
             self.find_no_overlap(renderer, key, rect, flags)
         } else {
-            self.find(renderer, key, rect, flags)
+            self.find(renderer, key, rect, scissor, flags)
         };
 
         if let Some(idx) = selected {
@@ -115,6 +142,7 @@ impl OrderedBatcher {
         batch_index: BatchIndex,
         key: &BatchKey,
         rect: &Rect,
+        scissor: Option<&IntRect>,
         _flags: BatchFlags,
     ) {
         if self.lookback.capacity() == self.lookback.len() {
@@ -125,12 +153,14 @@ impl OrderedBatcher {
             index: batch_index,
             key: *key,
             rects: BatchRects::new(rect),
+            scissor: scissor.cloned(),
         });
         self.batches.push(BatchId {
             renderer,
             index: batch_index,
             surface: self.pass_idx,
             order_independent: false,
+            scissor: scissor.map(|r| ScissorRect::from_surface_rect(r)),
         });
     }
 
@@ -166,12 +196,13 @@ impl OrderedBatcher {
         renderer: RendererId,
         key: &BatchKey,
         rect: &Rect,
+        scissor: Option<&IntRect>,
         flags: BatchFlags,
     ) -> Option<usize> {
         let mut selected = None;
         let first_candidate = !flags.contains(BatchFlags::EARLIEST_CANDIDATE);
         for (offset, batch) in self.lookback.iter_mut().enumerate().rev() {
-            if batch.renderer == renderer && *key == batch.key {
+            if batch.renderer == renderer && *key == batch.key && scissor == batch.scissor.as_ref() {
                 selected = Some(offset);
                 if first_candidate {
                     break;
@@ -254,6 +285,7 @@ impl OrderIndependentBatcher {
         index: BatchIndex,
         key: &BatchKey,
         rect: &Rect,
+        scissor: Option<&IntRect>,
         _flags: BatchFlags,
     ) {
         self.candidates.push(OrderIndependentBatch {
@@ -267,6 +299,7 @@ impl OrderIndependentBatcher {
             index,
             surface: self.pass_idx,
             order_independent: true,
+            scissor: scissor.map(|r| ScissorRect::from_surface_rect(r)),
         });
     }
 
@@ -317,6 +350,11 @@ pub struct Batcher {
     order_independent: OrderIndependentBatcher,
     view_port: Rect,
     view: RenderTaskInfo,
+    // True if the current render task does not cover the entire
+    // render target. In this case we may need to insert scissor
+    // rects to ensure that drawing commands don't overlfow the
+    // bounds of the render task.
+    may_need_scissor: bool,
 }
 
 impl Batcher {
@@ -327,12 +365,17 @@ impl Batcher {
         rect: &Rect,
         flags: BatchFlags,
     ) -> Option<BatchIndex> {
+        let scissor = if flags.contains(BatchFlags::NEED_SCISSOR_RECT) {
+            Some(&self.view.target_rect)
+        } else {
+            None
+        };
         if flags.contains(BatchFlags::ORDER_INDEPENDENT) {
             self.order_independent
                 .find_compatible_batch(renderer, key, rect, flags)
         } else {
             self.ordered
-                .find_compatible_batch(renderer, key, rect, flags)
+                .find_compatible_batch(renderer, key, rect, scissor, flags)
         }
     }
 
@@ -344,11 +387,16 @@ impl Batcher {
         rect: &Rect,
         flags: BatchFlags,
     ) {
+        let scissor = if flags.contains(BatchFlags::NEED_SCISSOR_RECT) {
+            Some(&self.view.target_rect)
+        } else {
+            None
+        };
         if flags.contains(BatchFlags::ORDER_INDEPENDENT) {
             self.order_independent
-                .add_batch(renderer, index, key, rect, flags);
+                .add_batch(renderer, index, key, rect, scissor, flags);
         } else {
-            self.ordered.add_batch(renderer, index, key, rect, flags);
+            self.ordered.add_batch(renderer, index, key, rect, scissor, flags);
         }
     }
 
@@ -385,8 +433,9 @@ impl Batcher {
     }
 
     pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
-        self.view_port = render_task.bounds.to_f32();
+        self.view_port = render_task.bounds;
         self.view = *render_task;
+        self.may_need_scissor = self.view.bounds.to_i32() != self.view.target_rect;
     }
 
     pub fn finish(&mut self, batches: &mut Vec<BatchId>) {
@@ -408,11 +457,12 @@ impl Batcher {
                 max: point(MAX, MAX),
             },
             view: RenderTaskInfo {
-                bounds: max_rect,
+                bounds: max_rect.to_f32(),
                 target_rect: max_rect,
                 offset: SurfaceVector::new(0.0, 0.0),
                 gpu_address: RenderTaskAdress::NONE,
-            }
+            },
+            may_need_scissor: false,
         }
     }
 
@@ -470,14 +520,17 @@ impl<T, I> BatchList<T, I> {
         ctx: &mut RenderPassContext,
         batch_key: &BatchKey,
         aabb: &Rect,
-        flags: BatchFlags,
+        mut flags: BatchFlags,
         or_add: &mut impl FnMut() -> I,
         then: &mut impl FnMut(BatchRef<T, I>, &RenderTaskInfo),
     ) {
-        // TODO: handle potential need for scissor rects here using a batch flag.
-        // if the flag is set and the item aabb is not contained in the viewport
-        // of the batcher, and the viewport isn't the entire surface, then look
-        // for a batch that is restricted to the viewport.
+        let mut skip_scissor = !ctx.batcher.may_need_scissor;
+        skip_scissor = skip_scissor ||flags.contains(BatchFlags::NEED_SCISSOR_RECT)
+            && ctx.batcher.view.bounds.contains_box(&aabb);
+        if skip_scissor {
+            flags.remove(BatchFlags::NEED_SCISSOR_RECT);
+        }
+
         // TODO: using the intersection with the viewport isn't quite correct in
         // the case of stencil and cover because while the cover geometry can be
         // clipped exactly, the stencil geometry may extend out of it.

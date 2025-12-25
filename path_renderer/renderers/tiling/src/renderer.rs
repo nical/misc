@@ -126,13 +126,11 @@ impl TileRenderer {
             }
         };
 
-        let batch_flags = BatchFlags::empty();
-
         if self.no_opaque_batches {
             pattern.is_opaque = false;
         }
 
-        self.batches.add(ctx, &pattern.batch_key(), &aabb, batch_flags,
+        self.batches.add(ctx, &pattern.batch_key(), &aabb, BatchFlags::empty(),
             &mut || BatchInfo {
                 pattern,
                 opaque_draw: None,
@@ -427,7 +425,7 @@ impl TileRenderer {
         transforms: &Transforms,
         tolerance: f32,
     ) {
-        tiler.set_scissor_rect(fill.task.bounds);
+        tiler.set_scissor_rect(fill.task.bounds.to_i32());
         let transform = transforms.get(fill.transform).matrix();
 
         match &fill.shape {

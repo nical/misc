@@ -48,7 +48,7 @@ impl std::fmt::Debug for RenderTaskAdress {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct RenderTaskInfo {
     /// Acts as a clip in surface space.
-    pub bounds: SurfaceIntRect,
+    pub bounds: SurfaceRect,
     /// An offset to apply after clipping.
     pub offset: SurfaceVector,
     /// Where the task is drawn in its render target.
@@ -60,7 +60,7 @@ pub struct RenderTaskInfo {
 /// The data copied into to the gpu store.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct RenderTaskData {
+pub struct RenderTaskGpuData {
     // The first part of this struct (8 floats) contains data that
     // is typically read by shaders when rendering into a render task.
     // It must match the layout of `RenderTask` in render_task.wgsl
@@ -81,19 +81,20 @@ pub struct RenderTaskData {
     pub image_source: SurfaceRect
 }
 
-unsafe impl bytemuck::Pod for RenderTaskData {}
-unsafe impl bytemuck::Zeroable for RenderTaskData {}
+unsafe impl bytemuck::Pod for RenderTaskGpuData {}
+unsafe impl bytemuck::Zeroable for RenderTaskGpuData {}
 
 pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect, target_offset: SurfaceVector, target_size: SurfaceIntSize) -> RenderTaskInfo {
     let size = target_size.to_f32();
-    let content_offset = bounds.min.to_f32() - target_offset.to_point();
+    let boundsf = bounds.to_f32();
+    let content_offset = boundsf.min - target_offset.to_point();
     let image_source = SurfaceRect {
         min: target_offset.to_point(),
-        max: target_offset.to_point() + bounds.size().to_vector().to_f32(),
+        max: target_offset.to_point() + boundsf.size().to_vector(),
     };
 
-    let gpu_address = RenderTaskAdress(f32_buffer.push(RenderTaskData {
-        clip: bounds.to_f32(),
+    let gpu_address = RenderTaskAdress(f32_buffer.push(RenderTaskGpuData {
+        clip: boundsf,
         content_offset,
         rcp_target_width: 1.0 / size.width,
         rcp_target_height: 1.0 / size.height,
@@ -101,7 +102,7 @@ pub fn add_render_task(f32_buffer: &mut GpuBufferWriter, bounds: &SurfaceIntRect
     }));
 
     RenderTaskInfo {
-        bounds: *bounds,
+        bounds: boundsf,
         offset: content_offset,
         gpu_address,
         target_rect: image_source.to_i32(),
@@ -143,13 +144,14 @@ impl DynamicAtlasAllocator {
         bounds: &SurfaceIntRect,
     ) -> Option<AtlasHandle> {
         let size = bounds.size();
-        let local_content_offset = bounds.min.to_vector().to_f32();
+        let boundsf = bounds.to_f32();
+        let local_content_offset = boundsf.min.to_vector();
         let alloc = self.allocator.allocate(size.cast_unit())?;
         let target_origin = alloc.rectangle.min.cast_unit();
         let target_offset = target_origin.to_f32().to_vector();
         self.allocated_px += alloc.rectangle.area() as u32;
         self.allocations.push(RenderTaskInfo {
-            bounds: *bounds,
+            bounds: boundsf,
             target_rect: SurfaceIntRect {
                 min: target_origin,
                 max: target_origin + size,
@@ -165,12 +167,12 @@ impl DynamicAtlasAllocator {
         let info = &mut self.allocations[handle.0 as usize];
         if info.gpu_address.is_none() {
             let size = self.allocator.size();
-            let h = f32_buffer.push(RenderTaskData {
-                clip: info.bounds.to_f32(),
+            let h = f32_buffer.push(RenderTaskGpuData {
+                clip: info.bounds,
                 content_offset: SurfaceVector::zero(),
                 rcp_target_width: 1.0 / size.width as f32,
                 rcp_target_height: 1.0 / size.height as f32,
-                image_source: info.bounds.to_f32(),
+                image_source: info.target_rect.to_f32(),
             });
 
             info.gpu_address = RenderTaskAdress(h);
