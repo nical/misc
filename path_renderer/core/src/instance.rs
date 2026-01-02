@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
+use crate::transfer::{Transfer, Transfers};
 use crate::render_pass::{BuiltRenderPass, PassRenderContext};
 use crate::transform::Transforms;
 use crate::worker::Workers;
@@ -19,11 +20,13 @@ pub struct Instance {
     pub resources: GpuResources,
     pub workers: Workers,
     pub staging_buffers: Arc<Mutex<StagingBufferPool>>,
+    pub transfers: Transfers,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub gpu_profiler: wgpu_profiler::GpuProfiler,
     pub gpu_profiling_enabled: bool,
     next_frame_index: u32,
+    next_bindings_namespace: BindingsNamespace,
 }
 
 impl Instance {
@@ -53,40 +56,47 @@ impl Instance {
             resources,
             workers,
             staging_buffers,
+            transfers: Transfers::new(),
             device: device.clone(),
             queue: queue.clone(),
             next_frame_index: 0,
+            next_bindings_namespace: BindingsNamespace(0),
             gpu_profiler,
             gpu_profiling_enabled,
         }
     }
 
     pub fn begin_frame(&mut self) -> Frame {
-        let idx = self.next_frame_index;
+        let num_namespaces = self.next_bindings_namespace.0 as usize;
+        let index = self.next_frame_index;
         self.next_frame_index += 1;
-        Frame::new(
-            idx,
-            self.resources.common.f32_buffer.begin_frame(
+
+        Frame {
+            f32_buffer: self.resources.common.f32_buffer.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.u32_buffer.begin_frame(
+            u32_buffer: self.resources.common.u32_buffer.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.vertices.begin_frame(
+            vertices: self.resources.common.vertices.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.indices.begin_frame(
+            indices: self.resources.common.indices.begin_frame(
                 self.staging_buffers.clone()
             ),
-            self.resources.common.instances.begin_frame(
+            instances: self.resources.common.instances.begin_frame(
                 self.staging_buffers.clone()
             ),
-        )
+            transforms: Transforms::new(),
+            passes: Passes::new(),
+            resources: FrameResources::new(num_namespaces),
+            index,
+        }
     }
 
     pub fn render_frame(
         &mut self,
-        frame: Frame,
+        mut frame: Frame,
         external_inputs: &[Option<&wgpu::BindGroup>],
         external_attachments: &[Option<&wgpu::TextureView>],
         encoder: &mut wgpu::CommandEncoder,
@@ -166,7 +176,7 @@ impl Instance {
             device,
             queue,
             &self.shaders,
-            frame.passes.resources.descriptors(),
+            frame.resources.descriptors(),
         );
 
         let mut upload_stats = UploadStats::default();
@@ -228,9 +238,9 @@ impl Instance {
         self.resources.begin_rendering(encoder);
 
         let bindings = Bindings {
-            graph: &frame.passes.bindings,
             external_inputs,
             external_attachments,
+            resource_maps: &frame.resources.bindings,
             resources: self.resources.temp.resources()
         };
 
@@ -249,6 +259,10 @@ impl Instance {
                     let pass = &frame.passes.render_passes[index as usize];
                     pass.render(&mut ctx, renderers);
                 }
+                PassId::Transfer(index) => {
+                    let pass = &mut frame.passes.transfer_passes[index as usize];
+                    pass.run(&mut self.transfers, &mut ctx, &self.device);
+                }
             }
         }
 
@@ -266,6 +280,7 @@ impl Instance {
 
     /// Should be called after submitting the frame.
     pub fn end_frame(&mut self) {
+        self.transfers.end_frame();
         self.resources.end_frame();
         {
             let mut staging_buffers = self.staging_buffers.lock().unwrap();
@@ -295,6 +310,18 @@ impl Instance {
             }
         }
     }
+
+    pub fn create_encoder(&self) -> wgpu::CommandEncoder {
+        self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: None }
+        )
+    }
+
+    pub fn create_bindings_namespace(&mut self) -> BindingsNamespace {
+        let namespace = self.next_bindings_namespace;
+        self.next_bindings_namespace = self.next_bindings_namespace.next();
+        namespace
+    }
 }
 
 pub struct Frame {
@@ -305,31 +332,13 @@ pub struct Frame {
     pub instances: GpuStreams,
     pub transforms: Transforms,
     pub passes: Passes,
+    pub resources: FrameResources,
+
     // pub allocator: FrameAllocator, // TODO
     index: u32,
 }
 
 impl Frame {
-    pub(crate) fn new(
-        index: u32,
-        f32_buffer: GpuBuffer,
-        u32_buffer: GpuBuffer,
-        vertices: GpuBuffer,
-        indices: GpuStreams,
-        instances: GpuStreams,
-    ) -> Self {
-        Frame {
-            f32_buffer,
-            u32_buffer,
-            vertices,
-            indices,
-            instances,
-            transforms: Transforms::new(),
-            passes: Passes::new(),
-            index,
-        }
-    }
-
     pub fn index(&self) -> u32 {
         self.index
     }
@@ -364,10 +373,10 @@ impl RenderStats {
     }
 }
 
-pub struct Bindings<'l> {
-    graph: &'l [Option<ResourceIndex>],
+struct Bindings<'l> {
     external_inputs: &'l[Option<&'l wgpu::BindGroup>],
     external_attachments: &'l[Option<&'l wgpu::TextureView>],
+    resource_maps: &'l [Vec<ResourceIndex>],
     resources: &'l[GpuResource],
 }
 
@@ -375,41 +384,76 @@ impl<'l> BindingResolver for Bindings<'l> {
     // TODO: return a Result with a helpful error message.
     fn resolve_input(&self, binding: BindingsId) -> Option<&wgpu::BindGroup> {
         match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                if let Some(id) = self.graph[binding.index()] {
+            BindingsNamespace::EXTERNAL => self.external_inputs[binding.index()],
+            BindingsNamespace::RENDERER => None,
+            BindingsNamespace::NONE => None,
+            BindingsNamespace(idx) => {
+                let idx = idx as usize;
+                if idx > self.resource_maps.len() {
+                    return None;
+                }
+                let table = &self.resource_maps[idx];
+                if table.is_empty() {
+                    self.resources[binding.index()].as_input.as_ref()
+                } else {
+                    let id = table[binding.index()];
                     let index = id.index as usize;
                     match id.allocation {
                         Allocation::Temporary => self.resources[index].as_input.as_ref(),
                         Allocation::External => self.external_inputs[index],
                     }
-                } else {
-                    None
                 }
             }
-            BindingsNamespace::External => {
-                self.external_inputs[binding.index()]
-            }
-            _ => None
         }
     }
 
     fn resolve_attachment(&self, binding: BindingsId) -> Option<&wgpu::TextureView> {
         match binding.namespace() {
-            BindingsNamespace::RenderGraph => {
-                if let Some(id) = self.graph[binding.index()] {
+            BindingsNamespace::EXTERNAL => self.external_attachments[binding.index()],
+            BindingsNamespace::RENDERER => None,
+            BindingsNamespace::NONE => None,
+            BindingsNamespace(idx) => {
+                let idx = idx as usize;
+                if idx > self.resource_maps.len() {
+                    return None;
+                }
+                let table = &self.resource_maps[idx];
+                if table.is_empty() {
+                    self.resources[binding.index()].as_attachment.as_ref()
+                } else {
+                    let id = table[binding.index()];
                     let index = id.index as usize;
                     match id.allocation {
                         Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
                         Allocation::External => self.external_attachments[index]
                     }
-                } else {
-                    return None;
                 }
             }
-            BindingsNamespace::External => {
-                self.external_attachments[binding.index()]
+        }
+    }
+
+    fn resolve_texture(&self, binding: BindingsId) -> Option<&wgpu::Texture> {
+        match binding.namespace() {
+            BindingsNamespace::EXTERNAL => None,
+            BindingsNamespace::RENDERER => None,
+            BindingsNamespace::NONE => None,
+            BindingsNamespace(idx) => {
+                let idx = idx as usize;
+                if idx > self.resource_maps.len() {
+                    return None;
+                }
+                let table = &self.resource_maps[idx];
+                if table.is_empty() {
+                    self.resources[binding.index()].texture.as_ref()
+                } else {
+                    let id = table[binding.index()];
+                    let index = id.index as usize;
+                    match id.allocation {
+                        Allocation::Temporary => self.resources[index].texture.as_ref(),
+                        Allocation::External => None,
+                    }
+                }
             }
-            _ => None
         }
     }
 }
@@ -418,24 +462,20 @@ impl<'l> BindingResolver for Bindings<'l> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum PassId {
     Render(u16),
+    Transfer(u16),
 }
 
 pub struct Passes {
     render_passes: Vec<BuiltRenderPass>,
-    // TODO: compute passes, transfer passes, etc.
+    transfer_passes: Vec<Transfer>,
     ordered_passes: Vec<PassId>,
-
-    // TODO: SHould the two below be in a separate struct?
-    pub resources: TemporaryResources,
-    bindings: Vec<Option<ResourceIndex>>,
 }
 
 impl Passes {
     pub fn new() -> Self {
         Passes {
             render_passes: Vec::with_capacity(32),
-            resources: TemporaryResources::new(),
-            bindings: Vec::with_capacity(32),
+            transfer_passes: Vec::new(),
             ordered_passes: Vec::with_capacity(32),
         }
     }
@@ -446,30 +486,34 @@ impl Passes {
         self.ordered_passes.push(PassId::Render(index));
     }
 
-    pub fn set_binding(&mut self, idx: usize, binding: Option<ResourceIndex>) {
-        while self.bindings.len() <= idx {
-            self.bindings.push(None)
-        }
-
-        debug_assert!(self.bindings[idx].is_none());
-        self.bindings[idx] = binding;
+    pub fn push_transfer(&mut self, pass: Transfer) {
+        let index = self.transfer_passes.len() as u16;
+        self.transfer_passes.push(pass);
+        self.ordered_passes.push(PassId::Transfer(index));
     }
 }
 
-pub struct TemporaryResources {
+pub struct FrameResources {
     available: Vec<(ResourceKey, Vec<u16>)>,
     resources: Vec<ResourceKey>,
+
+    bindings: Vec<Vec<ResourceIndex>>,
 }
 
-impl TemporaryResources {
-    fn new() -> Self {
-        TemporaryResources {
+impl FrameResources {
+    pub fn new(num_binding_namespaces: usize) -> Self {
+        let mut bindings = Vec::with_capacity(num_binding_namespaces);
+        for _ in 0..num_binding_namespaces {
+            bindings.push(Vec::new());
+        }
+        FrameResources {
             available: Vec::with_capacity(32),
             resources: Vec::with_capacity(32),
+            bindings,
         }
     }
 
-    pub fn get(&mut self, descriptor: ResourceKey) -> u16 {
+    pub fn allocate(&mut self, descriptor: ResourceKey) -> ResourceIndex {
         let mut resource = None;
         for (desc, resources) in &mut self.available {
             if *desc == descriptor {
@@ -478,14 +522,17 @@ impl TemporaryResources {
             }
         }
 
-        resource.unwrap_or_else(|| {
+        let idx = resource.unwrap_or_else(|| {
             let res = self.resources.len() as u16;
             self.resources.push(descriptor);
             res
-        })
+        });
+
+        ResourceIndex::temporary(idx)
     }
 
-    pub fn recycle(&mut self, descriptor: ResourceKey, index: u16) {
+    pub fn free(&mut self, descriptor: ResourceKey, index: ResourceIndex) {
+        assert!(index.allocation == Allocation::Temporary);
         let mut pool_idx = self.available.len();
         for (idx, (desc, _)) in self.available.iter().enumerate() {
             if *desc == descriptor {
@@ -497,10 +544,14 @@ impl TemporaryResources {
             self.available.push((descriptor, Vec::with_capacity(8)));
         }
 
-        self.available[pool_idx].1.push(index);
+        self.available[pool_idx].1.push(index.index);
     }
 
-    pub fn descriptors(&self) -> &[ResourceKey] {
+    pub(crate) fn descriptors(&self) -> &[ResourceKey] {
         &self.resources
+    }
+
+    pub fn set_resource_table(&mut self, namespace: BindingsNamespace, table: Vec<ResourceIndex>) {
+        self.bindings[namespace.0 as usize] = table;
     }
 }

@@ -6,7 +6,7 @@ use core::shading::{
 use core::gpu::{GpuBuffer, StreamId, TransferOps, UploadStats};
 use core::pattern::BuiltPattern;
 use core::shape::FilledPath;
-use core::render_task::RenderTaskInfo;
+use core::render_task::RenderTask;
 use core::transform::{Transform, TransformId, Transforms};
 use core::units::{point, LocalRect, SurfaceIntRect, SurfaceRect};
 use core::{wgpu, PrepareContext, UploadContext};
@@ -50,7 +50,7 @@ impl Shape {
 
 pub(crate) struct Fill {
     shape: Shape,
-    task: RenderTaskInfo,
+    task: RenderTask,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,

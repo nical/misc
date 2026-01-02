@@ -1,0 +1,12 @@
+[package]
+name = "testing_utils"
+version = "0.1.0"
+edition = "2021"
+workspace = "../.."
+
+[dependencies]
+core = { path = "../../core/" }
+clap = { version = "4.5", features = ["derive"] }
+png = "0.18.0"
+base64 = "0.22.1"
+futures = "0.3.5"

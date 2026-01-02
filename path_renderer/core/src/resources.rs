@@ -1,6 +1,7 @@
 use crate::SurfaceKind;
 use crate::gpu::{GpuBufferDescriptor, GpuBufferResources, GpuStreamsDescritptor, GpuStreamsResources, StagingBufferPoolRef};
 use crate::shading::Shaders;
+use crate::units::SurfaceIntSize;
 use std::u32;
 use std::fmt;
 use wgpu::util::DeviceExt;
@@ -20,6 +21,15 @@ pub enum Allocation {
 pub struct ResourceIndex {
     pub allocation: Allocation,
     pub index: u16,
+}
+
+impl ResourceIndex {
+    pub fn temporary(index: u16) -> Self {
+        ResourceIndex {
+            allocation: Allocation::Temporary,
+            index,
+        }
+    }
 }
 
 impl fmt::Debug for ResourceIndex {
@@ -277,13 +287,47 @@ impl fmt::Debug for ResourceKind {
     }
 }
 
+/// A compact descriptor describing a texture or buffer resource allocation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ResourceKey {
-    pub kind: ResourceKind,
-    pub size: (u16, u16),
+    kind: ResourceKind,
+    size: u32,
 }
 
+impl ResourceKey {
+    pub fn texture(kind: TextureKind, size: SurfaceIntSize) -> Self {
+        let kind = kind.as_resource();
+        let size = ((size.width as u32) << 16)
+           | (size.height as u32);
+        ResourceKey { kind, size }
+    }
 
+    pub fn buffer(kind: BufferKind, size: u32) -> Self {
+        let kind = kind.as_resource();
+        ResourceKey { kind, size }
+    }
+
+    pub fn as_texture(&self) -> Option<(TextureKind, SurfaceIntSize)> {
+        let kind = self.kind.as_texture()?;
+        let size = SurfaceIntSize::new(
+            (self.size << 16) as i32,
+            (self.size & 0xFFFF) as i32,
+        );
+        Some((kind, size))
+    }
+
+    pub fn as_buffer(&self) -> Option<(BufferKind, u32)> {
+        let kind = self.kind.as_buffer()?;
+        Some((kind, self.size))
+    }
+
+    pub fn with_binding(self) -> Self {
+        ResourceKey {
+            kind: self.kind.with_binding(),
+            size: self.size
+        }
+    }
+}
 
 pub struct GpuResources {
     pub common: CommonGpuResources,
@@ -453,6 +497,8 @@ impl CommonGpuResources {
 #[derive(Debug)]
 pub struct GpuResource {
     pub key: ResourceKey,
+    pub texture: Option<wgpu::Texture>,
+    pub buffer: Option<wgpu::Buffer>,
     pub as_input: Option<wgpu::BindGroup>,
     pub as_attachment: Option<wgpu::TextureView>,
 }
@@ -461,14 +507,14 @@ pub struct GpuResource {
 /// persisted across frames.
 pub struct TemporaryResources {
     pool: Vec<GpuResource>,
-    resources: Vec<GpuResource>,
+    allocated: Vec<GpuResource>,
 }
 
 impl TemporaryResources {
     pub fn new() -> Self {
         TemporaryResources {
             pool: Vec::new(),
-            resources: Vec::new(),
+            allocated: Vec::new(),
         }
     }
 
@@ -489,23 +535,23 @@ impl TemporaryResources {
             let resource = if pool_idx < self.pool.len() {
                 self.pool.swap_remove(pool_idx)
             } else {
-                if key.kind.is_texture() {
-                    self.allocate_texture(device, shaders, *key)
-                } else {
-                    unimplemented!()
-                }
+                self.allocate_resource(device, shaders, *key)
             };
 
-            self.resources.push(resource);
+            self.allocated.push(resource);
         }
     }
 
-    fn allocate_texture(&self,
+    fn allocate_resource(&self,
         device: &wgpu::Device,
         shaders: &Shaders,
         key: ResourceKey,
     ) -> GpuResource {
-        let kind = key.kind.as_texture().unwrap();
+        if key.kind.is_buffer() {
+            todo!();
+        }
+
+        let (kind, size) = key.as_texture().unwrap();
 
         println!("allocate texture {key:?}");
 
@@ -532,8 +578,8 @@ impl TemporaryResources {
             mip_level_count: 1,
             format,
             size: wgpu::Extent3d {
-                width: key.size.0 as u32,
-                height: key.size.1 as u32,
+                width: size.width as u32,
+                height: size.height as u32,
                 depth_or_array_layers: 1,
             },
             usage,
@@ -563,6 +609,8 @@ impl TemporaryResources {
 
         GpuResource {
             key,
+            texture: Some(texture),
+            buffer: None,
             as_input: bind_group,
             as_attachment: view,
         }
@@ -570,11 +618,11 @@ impl TemporaryResources {
 
     // Should be called only between upload and end_frame.
     pub fn get_resource(&self, index: u16) -> &GpuResource {
-        &self.resources[index as usize]
+        &self.allocated[index as usize]
     }
 
     pub fn resources(&self) -> &[GpuResource] {
-        &self.resources
+        &self.allocated
     }
 
     pub fn end_frame(&mut self) {
@@ -582,8 +630,8 @@ impl TemporaryResources {
         self.pool.clear();
 
         // Keep the one sthat were used.
-        self.pool.reserve(self.resources.len());
-        while let Some(res) = self.resources.pop() {
+        self.pool.reserve(self.allocated.len());
+        while let Some(res) = self.allocated.pop() {
             self.pool.push(res);
         }
     }

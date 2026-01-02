@@ -15,9 +15,11 @@ members = [
     "patterns/gradients",
     "patterns/checkerboard",
     "patterns/texture",
+    "testing/utils",
+    "testing/core_test",
     "document",
-    "demo"
-, "render_graph", "resource_cache", "stroke"]
+    "demo", "testing/core_test",
+]
 
 
 resolver = "2"

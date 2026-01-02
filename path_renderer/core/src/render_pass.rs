@@ -1,7 +1,7 @@
 use wgpu_profiler::GpuProfiler;
 
 use crate::batching::{BatchId, Batcher, ScissorRect};
-use crate::render_task::{RenderTaskAdress, RenderTaskInfo};
+use crate::render_task::{RenderTaskAdress, RenderTask};
 use crate::resources::GpuResources;
 use crate::shading::{DepthMode, RenderPipelines, StencilMode, SurfaceDrawConfig, SurfaceKind};
 use crate::path::FillRule;
@@ -187,7 +187,7 @@ impl RenderPassBuilder {
         }
     }
 
-    pub fn begin(&mut self, render_task: &RenderTaskInfo, config: RenderPassConfig) {
+    pub fn begin(&mut self, render_task: &RenderTask, config: RenderPassConfig) {
         self.z_indices.clear();
         self.config = config;
         self.size = render_task.bounds.size().to_i32();
@@ -196,7 +196,7 @@ impl RenderPassBuilder {
     }
 
     // TODO: This isn't a very good API.
-    pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
+    pub fn set_render_task(&mut self, render_task: &RenderTask) {
         self.render_task = render_task.gpu_address;
         self.batcher.set_render_task(render_task);
     }
@@ -226,11 +226,9 @@ impl Default for RenderPassIo {
         let attachment = ColorAttachment {
             msaa: None,
             non_msaa: None,
-            flags: AttachmentFlags {
-                load: false,
-                clear: false,
-                store: false,
-            }
+            load: false,
+            store: true,
+            clear: false,
         };
         RenderPassIo {
             label: None,
@@ -244,7 +242,9 @@ impl Default for RenderPassIo {
 pub struct ColorAttachment {
     pub non_msaa: Option<BindingsId>,
     pub msaa: Option<BindingsId>,
-    pub flags: AttachmentFlags,
+    pub load: bool,
+    pub store: bool,
+    pub clear: bool,
 }
 
 pub struct BuiltRenderPass {
@@ -522,9 +522,9 @@ impl RenderCommands {
                     view,
                     resolve_target,
                     ops: wgpu::Operations {
-                        load: if attachment.flags.load {
+                        load: if attachment.load {
                             wgpu::LoadOp::Load
-                        } else if attachment.flags.clear {
+                        } else if attachment.clear {
                             wgpu::LoadOp::Clear(wgpu::Color {
                                 r: 0.0, g: 0.0, b: 0.0, a: 0.0,
                             })
@@ -533,7 +533,7 @@ impl RenderCommands {
                                 wgpu::LoadOpDontCare::enabled()
                             })
                         },
-                        store: if attachment.flags.store {
+                        store: if attachment.store {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard

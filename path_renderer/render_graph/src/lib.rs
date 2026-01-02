@@ -4,14 +4,14 @@ mod schedule;
 mod render_node;
 
 use std::{fmt, sync::{Arc, Mutex}, u16};
-use core::bitflags::bitflags;
+use core::{BindingsNamespace, bitflags::bitflags};
 use core::smallvec::SmallVec;
 
 use core::{BindingsId, RenderPassConfig, SurfaceKind, resources::TextureKind};
 use core::gpu::GpuBufferWriter;
-use core::instance::{Frame, Passes};
+use core::instance::Frame;
 use core::render_pass::RenderPassBuilder;
-use core::render_task::{RenderTaskGpuData, RenderTaskAdress, RenderTaskInfo};
+use core::render_task::{RenderTaskGpuData, RenderTaskAdress, RenderTask};
 use core::units::{SurfaceIntRect, SurfaceIntSize, SurfaceRect, SurfaceVector};
 
 pub use crate::render_node::*;
@@ -293,9 +293,9 @@ pub struct FrameGraph {
 }
 
 impl FrameGraph {
-    pub fn new(_frame: &Frame) -> Self {
+    pub fn new(_frame: &Frame, namespace: BindingsNamespace) -> Self {
         FrameGraph {
-            inner: Arc::new(Mutex::new(RenderGraph::new())),
+            inner: Arc::new(Mutex::new(RenderGraph::new(namespace))),
         }
     }
 
@@ -354,7 +354,7 @@ impl FrameGraph {
             rcp_target_height: 1.0 / sizef.height,
         }));
 
-        let task_info = RenderTaskInfo {
+        let task_info = RenderTask {
             bounds: SurfaceRect::from_size(sizef),
             target_rect: SurfaceIntRect::from_size(size),
             offset: SurfaceVector::zero(),
@@ -385,11 +385,11 @@ impl FrameGraph {
         }
     }
 
-    pub fn schedule(&mut self, passes: &mut Passes) -> Result<(), Box<GraphError>> {
+    pub fn schedule(&mut self, frame: &mut Frame) -> Result<(), Box<GraphError>> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
 
-        inner.schedule(passes)
+        inner.schedule(&mut frame.passes, &mut frame.resources)
     }
 }
 

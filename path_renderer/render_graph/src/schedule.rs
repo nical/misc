@@ -1,10 +1,11 @@
+use core::units::SurfaceIntSize;
 use std::ops::Range;
 
 use core::smallvec::SmallVec;
-use core::instance::Passes;
-use core::render_pass::{AttachmentFlags, BuiltRenderPass, ColorAttachment};
+use core::instance::{Passes, FrameResources};
+use core::render_pass::{BuiltRenderPass, ColorAttachment};
 use core::resources::{Allocation, BufferKind, ResourceIndex, ResourceKey, ResourceKind, TextureKind};
-use core::BindingsId;
+use core::{BindingsId, BindingsNamespace};
 use crate::{Dependency, NodeDescriptor, NodeId, NodeKind, Resource, Slot};
 use crate::ResourceFlags;
 
@@ -21,17 +22,19 @@ pub struct RenderGraph {
     resources: Vec<NodeResource>,
     roots: Vec<Dependency>,
     next_virtual_resource: u16,
+    bindings_namespace: BindingsNamespace,
 
     built_render_passes: Vec<BuiltRenderPass>,
 }
 
 impl RenderGraph {
-    pub fn new() -> Self {
+    pub fn new(bindings_namespace: BindingsNamespace) -> Self {
         RenderGraph {
             nodes: Vec::new(),
             resources: Vec::new(),
             roots: Vec::new(),
             next_virtual_resource: 0,
+            bindings_namespace,
             built_render_passes: Vec::new(),
         }
     }
@@ -126,13 +129,15 @@ impl RenderGraph {
 
     pub fn get_binding(&self, dep: Dependency) -> BindingsId {
         let idx = self.nodes[dep.node.index()].resources.index(dep.slot);
-        BindingsId::graph(idx as u16)
+        BindingsId::temporary(idx as u16)
     }
 
-    pub fn schedule(&mut self, passes: &mut Passes) -> Result<(), Box<GraphError>> {
-        schedule_graph(self, passes)
+    pub fn schedule(&mut self, passes: &mut Passes, resources: &mut FrameResources) -> Result<(), Box<GraphError>> {
+        schedule_graph(self, passes, resources)
     }
 }
+
+type NodeSize = (u16, u16);
 
 struct Node {
     label: Option<&'static str>,
@@ -144,7 +149,7 @@ struct Node {
     // Size is also render-specific but a bit annoying to
     // move out of Node because the graph uses it to determine
     // the size of allocations for attachments.
-    size: (u16, u16),
+    size: NodeSize,
     // This is not really used at the moment.
     readable: bool,
 }
@@ -250,6 +255,7 @@ fn topological_sort(graph: &RenderGraph, sorted: &mut Vec<NodeId>) -> Result<(),
 pub fn schedule_graph(
     graph: &mut RenderGraph,
     passes: &mut Passes,
+    resources: &mut FrameResources,
 ) -> Result<(), Box<GraphError>> {
     // TODO: partial schedule
     let full_schedule = true;
@@ -260,7 +266,7 @@ pub fn schedule_graph(
     #[derive(Clone)]
     struct VirtualResource {
         refs: u16,
-        kind: ResourceKind,
+        key: ResourceKey,
         resolved_index: Option<ResourceIndex>,
         store: bool,
         reusable: bool,
@@ -273,7 +279,7 @@ pub fn schedule_graph(
             refs: 0,
             reusable: false,
             resolved_index: None,
-            kind: BufferKind::storage().as_resource(),
+            key: ResourceKey::buffer(BufferKind::storage(), 0),
             clear: false,
             store: false,
             load: false,
@@ -287,13 +293,21 @@ pub fn schedule_graph(
         let node = &graph.nodes[node_id.index()];
         for idx in node.resources.all() {
             let resource = &graph.resources[idx];
-
+            let key = if let Some(kind) = resource.kind.as_texture() {
+                let size = SurfaceIntSize::new(node.size.0 as i32, node.size.1 as i32);
+                ResourceKey::texture(kind, size)
+            } else if let Some(kind) = resource.kind.as_buffer() {
+                let size = node.size.0 as u32;
+                ResourceKey::buffer(kind, size)
+            } else {
+                unimplemented!();
+            };
             let vres = match resource.resource {
                 Resource::Auto => {
                     VirtualResource {
                         refs: 0,
                         reusable: full_schedule || !node.readable,
-                        kind: resource.kind,
+                        key,
                         resolved_index: None,
                         // Only make the physical resource available again if we
                         // know that no new reference can be added to it.
@@ -306,7 +320,7 @@ pub fn schedule_graph(
                     VirtualResource {
                         refs: 0,
                         reusable: false,
-                        kind: resource.kind,
+                        key,
                         resolved_index: Some(ResourceIndex {
                             index,
                             allocation: Allocation::External,
@@ -335,7 +349,7 @@ pub fn schedule_graph(
                         refs: 0,
                         reusable: false,
 
-                        kind: resource.kind,
+                        key,
                         resolved_index: dep_vres.resolved_index,
                         store: false,
                         clear: resource.flags.contains(ResourceFlags::CLEAR),
@@ -374,22 +388,16 @@ pub fn schedule_graph(
 
                     // Make sure to require bindable resources if another node is reading from it.
                     if virt_res.refs > 0 {
-                        virt_res.kind = virt_res.kind.with_binding();
+                        virt_res.key = virt_res.key.with_binding();
                     }
 
-                    let resource = passes.resources.get(ResourceKey {
-                        kind: virt_res.kind,
-                        size: node.size,
-                    });
+                    let resource = resources.allocate(virt_res.key);
 
                     // We can skip allocating unused resolve targets.
                     let allocate = virt_res.refs > 0 || !res.flags.contains(ResourceFlags::LAZY);
 
                     if allocate {
-                        virt_res.resolved_index = Some(ResourceIndex {
-                            allocation: Allocation::Temporary,
-                            index: resource
-                        });
+                        virt_res.resolved_index = Some(resource);
                     }
                 }
                 Resource::Dependency(dep) => {
@@ -408,7 +416,7 @@ pub fn schedule_graph(
             let vres = &virtual_resources[idx];
             if let Some(id) = vres.resolved_index {
                 if vres.reusable && vres.refs == 0 {
-                    passes.resources.recycle(ResourceKey { kind: vres.kind, size: node.size }, id.index);
+                    resources.free(vres.key, id);
                 }
             }
         }
@@ -423,14 +431,14 @@ pub fn schedule_graph(
             vres.refs -= 1;
             if let Some(id) = vres.resolved_index {
                 if vres.reusable && vres.refs == 0{
-                    passes.resources.recycle(ResourceKey { kind: vres.kind, size: node.size }, id.index);
+                    resources.free(vres.key, id);
                 }
             }
         }
 
         match node.kind {
             NodeKind::Render => {
-                let mut color = [ColorAttachment { non_msaa: None, msaa: None, flags: AttachmentFlags { clear: false, load: false, store: false,}}; 3];
+                let mut color = [ColorAttachment { non_msaa: None, msaa: None, clear: false, load: false, store: false, }; 3];
                 let mut attachments_iter = node.resources.color_attachments();
                 for i in 0..3 {
                     let non_msaa = attachments_iter.next();
@@ -443,30 +451,26 @@ pub fn schedule_graph(
                     if node.msaa {
                         let res = &virtual_resources[msaa_idx];
                         color[i] = ColorAttachment {
-                            non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
-                            msaa: Some(BindingsId::graph(msaa_idx as u16)),
-                            flags: AttachmentFlags {
-                                clear: res.clear,
-                                load: res.load,
-                                store: res.store,
-                            }
+                            non_msaa: Some(BindingsId::temporary(non_msaa_idx as u16)),
+                            msaa: Some(BindingsId::temporary(msaa_idx as u16)),
+                            clear: res.clear,
+                            load: res.load,
+                            store: res.store,
                         }
                     } else {
                         let res = &virtual_resources[non_msaa_idx];
                         color[i] = ColorAttachment {
-                            non_msaa: Some(BindingsId::graph(non_msaa_idx as u16)),
+                            non_msaa: Some(BindingsId::temporary(non_msaa_idx as u16)),
                             msaa: None,
-                            flags: AttachmentFlags {
-                                clear: res.clear,
-                                load: res.load,
-                                store: res.store,
-                            }
+                            clear: res.clear,
+                            load: res.load,
+                            store: res.store,
                         }
                     }
                 }
 
                 let depth_stencil = node.resources.depth_stencil.map(|idx| {
-                    BindingsId::graph(idx)
+                    BindingsId::temporary(idx)
                 });
 
                 // TODO: We only consider the case where we don't have built
@@ -493,9 +497,14 @@ pub fn schedule_graph(
         }
     }
 
-    for (idx, res) in virtual_resources.iter().enumerate() {
-        passes.set_binding(idx, res.resolved_index);
+    // This is not great. Maybe the table should contain Option<ResourceIndex>.
+    let default = ResourceIndex::temporary(u16::MAX);
+    let mut resource_table = Vec::with_capacity(virtual_resources.len());
+    for res in &virtual_resources {
+        resource_table.push(res.resolved_index.unwrap_or(default));
     }
+
+    resources.set_resource_table(graph.bindings_namespace, resource_table);
 
     Ok(())
 }
@@ -505,7 +514,7 @@ fn test_nested() {
     use super::{NodeDescriptor, ColorAttachment, TextureKind};
     use core::units::SurfaceIntSize;
 
-    let mut graph = RenderGraph::new();
+    let mut graph = RenderGraph::new(BindingsNamespace::testing(0));
 
     fn node() -> NodeDescriptor<'static> {
         NodeDescriptor::new()
@@ -584,11 +593,12 @@ fn test_nested() {
     topological_sort(&graph, &mut sorted).unwrap();
 
     let mut passes = Passes::new();
+    let mut resources = FrameResources::new(1);
 
-    let _ = graph.schedule(&mut passes).unwrap();
+    let _ = graph.schedule(&mut passes, &mut resources).unwrap();
 
     println!("sorted: {:?}", sorted);
-    println!("allocations: {:?}", passes.resources.descriptors());
+    //println!("allocations: {:?}", resources.descriptors());
 
     // n11 should get culled out since it is not reachable from the root.
     assert!(!sorted.contains(&n11));

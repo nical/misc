@@ -1,0 +1,7 @@
+[package]
+name = "core_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+testing_utils = { path = "../utils" }

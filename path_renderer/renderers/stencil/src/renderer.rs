@@ -19,7 +19,7 @@ use core::shading::{BlendMode, ShaderPatternId, GeometryId, RenderPipelineIndex,
 use core::batching::{BatchFlags, BatchList};
 use core::shape::{Circle, FilledPath};
 use core::render_pass::{RenderPassContext, RendererId, ZIndex};
-use core::render_task::RenderTaskInfo;
+use core::render_task::RenderTask;
 use core::pattern::BuiltPattern;
 use core::transform::{Transforms, TransformId};
 use core::utils::DrawHelper;
@@ -120,7 +120,7 @@ pub struct BatchInfo {
 
 struct Fill {
     shape: Shape,
-    task: RenderTaskInfo,
+    task: RenderTask,
     pattern: BuiltPattern,
     transform: TransformId,
     z_index: ZIndex,

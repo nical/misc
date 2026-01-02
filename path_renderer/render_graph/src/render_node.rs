@@ -1,7 +1,7 @@
 use crate::{ColorAttachment, Dependency, NodeDescriptor, NodeKind, Resource, Slot};
 use crate::{Node, NodeDependency};
 use core::render_pass::{RenderPassBuilder, RenderPassContext};
-use core::render_task::add_render_task;
+use core::render_task::RenderTask;
 use core::units::{SurfaceIntRect, SurfaceIntSize};
 use core::{gpu::GpuBufferWriter};
 
@@ -153,7 +153,7 @@ impl AtlasRenderNode {
         let alloc = self.allocator.allocate(bounds.size().cast_unit())?;
         let offset = alloc.min.cast_unit().to_f32().to_vector();
         self.allocated_px += alloc.area() as u32;
-        let task_info = add_render_task(f32_buffer, bounds, offset, self.size());
+        let task_info = RenderTask::new_sub_task(f32_buffer, bounds, offset, self.size());
         self.inner.pass.set_render_task(&task_info);
 
         Some(self.inner.pass.ctx())

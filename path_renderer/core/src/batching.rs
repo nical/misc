@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use std::collections::VecDeque;
 
 use crate::render_pass::RenderPassContext;
-use crate::render_task::{RenderTaskAdress, RenderTaskInfo};
+use crate::render_task::{RenderTaskAdress, RenderTask};
 use crate::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceVector};
 use crate::worker::SendPtr;
 use crate::RenderPassConfig;
@@ -349,7 +349,7 @@ pub struct Batcher {
     ordered: OrderedBatcher,
     order_independent: OrderIndependentBatcher,
     view_port: Rect,
-    view: RenderTaskInfo,
+    view: RenderTask,
     // True if the current render task does not cover the entire
     // render target. In this case we may need to insert scissor
     // rects to ensure that drawing commands don't overlfow the
@@ -423,7 +423,7 @@ impl Batcher {
         self.order_independent.set_render_pass(pass_idx);
     }
 
-    pub fn begin(&mut self, render_task: &RenderTaskInfo) {
+    pub fn begin(&mut self, render_task: &RenderTask) {
         self.ordered.begin();
         self.order_independent.begin();
         self.view = *render_task;
@@ -432,7 +432,7 @@ impl Batcher {
         //self.view.bounds = r;
     }
 
-    pub fn set_render_task(&mut self, render_task: &RenderTaskInfo) {
+    pub fn set_render_task(&mut self, render_task: &RenderTask) {
         self.view_port = render_task.bounds;
         self.view = *render_task;
         self.may_need_scissor = self.view.bounds.to_i32() != self.view.target_rect;
@@ -456,7 +456,7 @@ impl Batcher {
                 min: point(MIN, MIN),
                 max: point(MAX, MAX),
             },
-            view: RenderTaskInfo {
+            view: RenderTask {
                 bounds: max_rect.to_f32(),
                 target_rect: max_rect,
                 offset: SurfaceVector::new(0.0, 0.0),
@@ -522,7 +522,7 @@ impl<T, I> BatchList<T, I> {
         aabb: &Rect,
         mut flags: BatchFlags,
         or_add: &mut impl FnMut() -> I,
-        then: &mut impl FnMut(BatchRef<T, I>, &RenderTaskInfo),
+        then: &mut impl FnMut(BatchRef<T, I>, &RenderTask),
     ) {
         let mut skip_scissor = !ctx.batcher.may_need_scissor;
         skip_scissor = skip_scissor ||flags.contains(BatchFlags::NEED_SCISSOR_RECT)

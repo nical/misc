@@ -114,6 +114,7 @@ struct App {
     surface_desc: wgpu::SurfaceConfiguration,
 
     instance: Instance,
+    graph_namespace: BindingsNamespace,
 
     renderers: Renderers,
     patterns: Patterns,
@@ -425,6 +426,8 @@ impl App {
             debug_mode: 5,
         };
 
+        let graph_namespace = instance.create_bindings_namespace();
+
         Some(App {
             window,
             view,
@@ -433,6 +436,7 @@ impl App {
             surface,
             surface_desc,
             instance,
+            graph_namespace,
             renderers,
             patterns,
             overlay,
@@ -600,7 +604,7 @@ impl App {
         };
 
         let mut frame = self.instance.begin_frame();
-        let mut graph = FrameGraph::new(&frame);
+        let mut graph = FrameGraph::new(&frame, self.graph_namespace);
 
         self.renderers.begin_frame();
 
@@ -763,7 +767,7 @@ impl App {
             &mut self.renderers.msaa_strokes,
         ];
 
-        graph.schedule(&mut frame.passes).unwrap();
+        graph.schedule(&mut frame).unwrap();
 
         let external_attachments = [Some(&frame_view)];
         let stats = self.instance.render_frame(
