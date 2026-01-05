@@ -129,7 +129,7 @@ impl RenderGraph {
 
     pub fn get_binding(&self, dep: Dependency) -> BindingsId {
         let idx = self.nodes[dep.node.index()].resources.index(dep.slot);
-        BindingsId::temporary(idx as u16)
+        BindingsId::new(self.bindings_namespace, idx as u16)
     }
 
     pub fn schedule(&mut self, passes: &mut Passes, resources: &mut FrameResources) -> Result<(), Box<GraphError>> {
@@ -451,8 +451,8 @@ pub fn schedule_graph(
                     if node.msaa {
                         let res = &virtual_resources[msaa_idx];
                         color[i] = ColorAttachment {
-                            non_msaa: Some(BindingsId::temporary(non_msaa_idx as u16)),
-                            msaa: Some(BindingsId::temporary(msaa_idx as u16)),
+                            non_msaa: Some(BindingsId::new(graph.bindings_namespace, non_msaa_idx as u16)),
+                            msaa: Some(BindingsId::new(graph.bindings_namespace, msaa_idx as u16)),
                             clear: res.clear,
                             load: res.load,
                             store: res.store,
@@ -460,7 +460,7 @@ pub fn schedule_graph(
                     } else {
                         let res = &virtual_resources[non_msaa_idx];
                         color[i] = ColorAttachment {
-                            non_msaa: Some(BindingsId::temporary(non_msaa_idx as u16)),
+                            non_msaa: Some(BindingsId::new(graph.bindings_namespace, non_msaa_idx as u16)),
                             msaa: None,
                             clear: res.clear,
                             load: res.load,
@@ -470,7 +470,7 @@ pub fn schedule_graph(
                 }
 
                 let depth_stencil = node.resources.depth_stencil.map(|idx| {
-                    BindingsId::temporary(idx)
+                    BindingsId::new(graph.bindings_namespace, idx)
                 });
 
                 // TODO: We only consider the case where we don't have built

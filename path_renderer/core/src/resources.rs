@@ -296,6 +296,8 @@ pub struct ResourceKey {
 
 impl ResourceKey {
     pub fn texture(kind: TextureKind, size: SurfaceIntSize) -> Self {
+        debug_assert!(size.width > 0 && size.height > 0);
+        debug_assert!(size.width < u16::MAX as i32 && size.height < u16::MAX as i32);
         let kind = kind.as_resource();
         let size = ((size.width as u32) << 16)
            | (size.height as u32);
@@ -310,7 +312,7 @@ impl ResourceKey {
     pub fn as_texture(&self) -> Option<(TextureKind, SurfaceIntSize)> {
         let kind = self.kind.as_texture()?;
         let size = SurfaceIntSize::new(
-            (self.size << 16) as i32,
+            (self.size >> 16) as i32,
             (self.size & 0xFFFF) as i32,
         );
         Some((kind, size))

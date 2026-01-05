@@ -1,11 +1,20 @@
 use futures::executor::block_on;
 
 pub use core;
-use core::wgpu;
+use core::render_pass::{ColorAttachment, RenderPassBuilder, RenderPassContext};
+use core::render_task::RenderTask;
+use core::resources::{ResourceKey, TextureKind};
+use core::transfer::Transfer;
+use core::units::{SurfaceIntSize, SurfaceIntVector};
+use core::{BindingsId, RenderPassConfig, wgpu};
 
 pub mod args;
 
 use core::{Instance};
+use std::fs::File;
+use std::io::BufReader;
+use std::sync::mpsc::{TryRecvError, channel};
+use std::time::Duration;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Reftest {
@@ -18,61 +27,6 @@ pub struct Image {
     pub height: u32,
     pub data: Vec<u8>,
     // pub format: Format,
-}
-
-pub fn read_back(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Image {
-    let mut cmd_buf = device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-
-    let size = texture.size();
-    let bpp = 4; // TODO support other image formats.
-
-    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback buffer"),
-        size: size.width as u64 * size.height as u64 * bpp,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    cmd_buf.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback_buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size.width * bpp as u32),
-                rows_per_image: None,
-            },
-        },
-        wgpu::Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-    );
-
-    queue.submit(Some(cmd_buf.finish()));
-
-    let readback_buffer_slice = readback_buffer.slice(..);
-    readback_buffer_slice.map_async(wgpu::MapMode::Read, |_| ());
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-
-    let bytes = readback_buffer_slice.get_mapped_range().to_vec();
-
-    Image {
-        width: size.width as u32,
-        height: size.height as u32,
-        data: bytes,
-    }
 }
 
 pub struct ImageComparison {
@@ -98,7 +52,7 @@ pub fn compare_images(
         diff = diff.max((p1[1] as i16 - p2[1] as i16).abs());
         diff = diff.max((p1[2] as i16 - p2[2] as i16).abs());
         if check_alpha {
-            diff = diff.max((p1[4] as i16 - p2[4] as i16).abs());
+            diff = diff.max((p1[3] as i16 - p2[3] as i16).abs());
         }
         diff = diff.min(255);
 
@@ -165,4 +119,152 @@ pub fn init(backends: wgpu::Backends) -> core::Instance {
     )).unwrap();
 
     Instance::new(&device, &queue, 0, false)
+}
+
+pub type RenderPassTestCallback = Box<dyn FnOnce(RenderPassContext)>;
+
+pub enum ReftestImage {
+    FromFile(String),
+    Render(RenderPassTestCallback),
+}
+
+pub struct TestHarness {
+    instance: Instance,
+    extra_fuzz: u32,
+}
+
+impl TestHarness {
+    pub fn new(backend: wgpu::Backends) -> Self {
+        let instance = init(backend);
+
+        TestHarness {
+            instance,
+            extra_fuzz: 0,
+        }
+    }
+}
+
+pub struct SinglePassReftest {
+    pub name: &'static str,
+    pub a: ReftestImage,
+    pub b: ReftestImage,
+    pub size: SurfaceIntSize,
+    pub requirements: Vec<Reftest>,
+}
+
+impl SinglePassReftest {
+    pub fn run(self, harness: &mut TestHarness) -> Result<(), Reftest> {
+
+        let a = Self::run_one(self.a, self.size, &mut harness.instance);
+        let b = Self::run_one(self.b, self.size, &mut harness.instance);
+
+        let comparison = compare_images(&a, &b, true);
+
+        check_comparison(
+            &comparison,
+            &self.requirements,
+            harness.extra_fuzz,
+        )
+    }
+
+    fn run_one(image: ReftestImage, size: SurfaceIntSize, instance: &mut Instance) -> Image {
+        match image {
+            ReftestImage::FromFile(name) => {
+                let decoder = png::Decoder::new(BufReader::new(File::open(&name).unwrap()));
+                let mut reader = decoder.read_info().unwrap();
+                let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+                let info = reader.next_frame(&mut pixels).unwrap();
+                Image {
+                    width: info.width,
+                    height: info.height,
+                    data: pixels,
+                }
+            }
+            ReftestImage::Render(callback) => {
+                Self::run_callback(size, callback, instance)
+            }
+        }
+    }
+
+    fn run_callback(size: SurfaceIntSize, callback: RenderPassTestCallback, instance: &mut Instance) -> Image {
+        let mut frame = instance.begin_frame();
+        let mut f32_buffer = frame.f32_buffer.write();
+
+        // Build render passes
+
+        let mut pass_builder = RenderPassBuilder::new();
+
+        let key = ResourceKey::texture(
+            TextureKind::color()
+                .with_attachment()
+                .with_copy_src(),
+            size,
+        );
+        let target_idx = frame.resources.allocate(key);
+        let binding = BindingsId::temporary(target_idx.index);
+
+        let task = RenderTask::new(&mut f32_buffer, size, SurfaceIntVector::zero());
+
+        pass_builder.begin(&task, RenderPassConfig::default());
+
+        let ctx = pass_builder.ctx();
+
+        callback(ctx); // TODO
+
+        let mut pass = pass_builder.end();
+
+        pass.set_color_attachments(&[ColorAttachment {
+            non_msaa: Some(binding),
+            msaa: None,
+            load: false,
+            store: true,
+            clear: true,
+        }]);
+
+        let (sender, receiver) = channel();
+
+        frame.passes.push_render_pass(pass);
+        frame.passes.push_transfer(Transfer::ReadbackTexture {
+            src: binding,
+            rect: None,
+            callback: Some(Box::new(move|result| {
+                let readback = result.unwrap();
+
+                let mut data = Vec::with_capacity(readback.data.len());
+                data.extend_from_slice(readback.data);
+                let image = Image {
+                    data,
+                    width: readback.size.width as u32,
+                    height: readback.size.height as u32,
+                };
+
+                sender.send(image).unwrap();
+            })),
+        });
+
+        let mut encoder = instance.create_encoder();
+
+        std::mem::drop(f32_buffer);
+        instance.render_frame(frame, &[], &[], &mut encoder, &mut []);
+
+        instance.queue.submit(Some(encoder.finish()));
+        instance.end_frame();
+
+        loop {
+            match receiver.try_recv() {
+                Ok(img) => {
+                    return img;
+                }
+                Err(TryRecvError::Empty) => {
+                    instance.device.poll(wgpu::PollType::Wait {
+                        timeout: Some(Duration::from_millis(30)),
+                        submission_index: None,
+                    }).unwrap();
+                }
+                Err(e) => {
+                    panic!("{e:?}");
+                }
+            }
+        }
+    }
 }

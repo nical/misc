@@ -199,6 +199,7 @@ impl BindingsNamespace {
     pub const NONE: Self = BindingsNamespace(255);
     pub const EXTERNAL: Self = BindingsNamespace(254);
     pub const RENDERER: Self = BindingsNamespace(253);
+    pub const TEMP: Self = BindingsNamespace(252);
 
     fn next(&self) -> Self {
         assert!(self.0 < Self::RENDERER.0);
@@ -251,10 +252,9 @@ impl BindingsId {
         BindingsId::new(BindingsNamespace::EXTERNAL, idx)
     }
 
-    // TODO: multiple temp namespaces
     #[inline]
     pub const fn temporary(idx: u16) -> Self {
-        BindingsId::new(BindingsNamespace(0), idx)
+        BindingsId::new(BindingsNamespace::TEMP, idx)
     }
 
     #[inline]

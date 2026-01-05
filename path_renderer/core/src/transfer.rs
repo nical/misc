@@ -1,6 +1,6 @@
 use crate::BindingsId;
 use crate::render_pass::PassRenderContext;
-use crate::units::{SurfaceIntPoint, SurfaceIntSize};
+use crate::units::{SurfaceIntPoint, SurfaceIntRect, SurfaceIntSize};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReadbackError {
@@ -46,8 +46,7 @@ pub enum Transfer {
     },
     ReadbackTexture {
         src: BindingsId,
-        size: SurfaceIntSize,
-        src_offset: SurfaceIntPoint,
+        rect: Option<SurfaceIntRect>,
         callback: Option<ImageReadbackCallback>,
     }
 }
@@ -60,10 +59,17 @@ impl Transfer {
         device: &wgpu::Device,
     ) {
         match self {
-            Self::ReadbackTexture { src, size, src_offset, callback } => {
+            Self::ReadbackTexture { src, rect, callback } => {
                 let texture = ctx.bindings.resolve_texture(*src).unwrap();
                 let format = texture.format();
                 let bpp = format.block_copy_size(None).unwrap();
+
+                let texture_size = SurfaceIntSize::new(
+                    texture.size().width as i32,
+                    texture.size().height as i32,
+                );
+                let rect = rect.unwrap_or(SurfaceIntRect::from_size(texture_size));
+                let size = rect.size();
 
                 let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback buffer"),
@@ -77,8 +83,8 @@ impl Transfer {
                         texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d {
-                            x: src_offset.x as u32,
-                            y: src_offset.y as u32,
+                            x: rect.min.x as u32,
+                            y: rect.min.y as u32,
                             z: 0,
                         },
                         aspect: wgpu::TextureAspect::All,
@@ -100,7 +106,7 @@ impl Transfer {
 
                 transfers.pending_readbacks.push(PendingReadback {
                     buffer: readback_buffer,
-                    size: *size,
+                    size,
                     format,
                     callback: callback.take(),
                 });

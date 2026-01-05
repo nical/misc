@@ -387,6 +387,9 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => self.external_inputs[binding.index()],
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
+            BindingsNamespace::TEMP => {
+                self.resources[binding.index()].as_input.as_ref()
+            }
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
@@ -412,6 +415,9 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => self.external_attachments[binding.index()],
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
+            BindingsNamespace::TEMP => {
+                self.resources[binding.index()].as_attachment.as_ref()
+            }
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
@@ -437,6 +443,9 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => None,
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
+            BindingsNamespace::TEMP => {
+                self.resources[binding.index()].texture.as_ref()
+            }
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
