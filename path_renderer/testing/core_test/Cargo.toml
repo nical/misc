@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 testing_utils = { path = "../utils" }
+rectangles = { path = "../../renderers/rectangles"}
+pattern_color = { path = "../../patterns/color" }

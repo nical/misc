@@ -1,5 +1,6 @@
 use crate::{resources::Instance, InstanceFlags};
-use core::transform::Transform;
+use core::transform::{GpuTransformAddress, Transform};
+use core::units::SurfaceRect;
 use core::wgpu;
 use core::{
     pattern::BuiltPattern,
@@ -74,28 +75,64 @@ impl RectangleRenderer {
         &self.pipelines
     }
 
-    pub fn fill_rect(
+    pub fn fill_transformed_rect(
         &mut self,
         ctx: &mut RenderPassContext,
-        transform: &mut Transform,
+        transform: &Transform,
         local_rect: &LocalRect,
-        mut aa: Aa,
+        aa: Aa,
         pattern: BuiltPattern,
         f32_buffer: &mut GpuBufferWriter,
     ) {
-        let z_index = ctx.z_indices.push();
         let aabb = transform
             .matrix()
             .outer_transformed_box(&local_rect.cast_unit());
 
+        let transform_handle = transform.request_gpu_handle(f32_buffer);
+
+        self.fill_rect_impl(
+            ctx,
+            &local_rect,
+            &aabb,
+            transform_handle,
+            aa,
+            pattern,
+        );
+    }
+
+    pub fn fill_rect(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        local_rect: &SurfaceRect,
+        aa: Aa,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_rect_impl(
+            ctx,
+            &local_rect.cast_unit(),
+            &local_rect,
+            GpuTransformAddress::NONE,
+            aa,
+            pattern,
+        );
+    }
+
+    fn fill_rect_impl(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        local_rect: &LocalRect,
+        aabb: &SurfaceRect,
+        transform_handle: GpuTransformAddress,
+        mut aa: Aa,
+        pattern: BuiltPattern,
+    ) {
+        let z_index = ctx.z_indices.push();
         let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
         let pass_cfg = ctx.config;
 
         if pass_cfg.msaa {
             aa = Aa::NONE;
         }
-
-        let transform_handle = transform.get_gpu_handle(f32_buffer);
 
         // Inner rect.
         // This one is pushed as an optimization to avoid rendering large opaque patterns
@@ -123,7 +160,7 @@ impl RectangleRenderer {
                 },
                 &mut |mut batch, task| {
                     batch.push(Instance {
-                        local_rect: *local_rect,
+                        local_rect: local_rect.cast_unit(),
                         z_index,
                         pattern: pattern.data,
                         flags_transform: transform_handle.to_u32()
@@ -138,16 +175,11 @@ impl RectangleRenderer {
         let use_opaque_pass =
             pattern.is_opaque && (aa == Aa::NONE || pass_cfg.msaa) && pass_cfg.depth;
 
-
-        let mut batch_flags = if use_opaque_pass {
+        let batch_flags = if use_opaque_pass {
             BatchFlags::ORDER_INDEPENDENT
         } else {
             BatchFlags::empty()
         };
-
-        if !transform.is_identity() {
-            batch_flags.insert(BatchFlags::NEED_SCISSOR_RECT);
-        }
 
         self.batches.add(
             ctx,
@@ -164,7 +196,7 @@ impl RectangleRenderer {
             &mut |mut batch, task| {
                 batch.batch_data().edge_aa |= aa != Aa::NONE;
                 batch.push(Instance {
-                    local_rect: *local_rect,
+                    local_rect: local_rect.cast_unit(),
                     z_index,
                     pattern: pattern.data,
                     flags_transform: transform_handle.to_u32() | instance_flags.bits(),

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
@@ -151,12 +152,12 @@ impl ScaleOffset {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug)]
 pub struct Transform {
     transform: LocalToSurfaceTransform,
     id: TransformId,
     flags: TransformFlags,
-    gpu_handle: GpuTransformAddress,
+    gpu_handle: AtomicU32,
 }
 
 impl Transform {
@@ -186,9 +187,14 @@ impl Transform {
         self.id
     }
 
-    pub fn get_gpu_handle(&mut self, f32_buffer: &mut GpuBufferWriter) -> GpuTransformAddress {
-        if self.gpu_handle.is_some() {
-            return self.gpu_handle;
+    pub fn request_gpu_handle(&self, f32_buffer: &mut GpuBufferWriter) -> GpuTransformAddress {
+        // Note that this is a racy operation: Multiple threads can request a GPU handle resulting
+        // in the same transform being pushed multiple times to the GPU.
+        // This isn't a problem, however. We only care about shaders getting correct values for
+        // the transform, and avoiding pushing the same GPU transform hundreds of times.
+        let handle = gpu_handle_from_u32(self.gpu_handle.load(Ordering::Relaxed));
+        if handle.is_some() {
+            return handle;
         }
 
         if self.flags.contains(TransformFlags::IDENTITY) {
@@ -206,10 +212,18 @@ impl Transform {
             f32_buffer.push_slice(&[t.m11, t.m12, t.m21, t.m22, t.m31, t.m32, axis_aligned, 0.0])
         );
 
-        self.gpu_handle = handle;
+        self.gpu_handle.store(gpu_handle_to_u32(handle), Ordering::Relaxed);
 
         handle
     }
+}
+
+fn gpu_handle_from_u32(val: u32) -> GpuTransformAddress {
+    GpuTransformAddress(GpuBufferAddress(val))
+}
+
+fn gpu_handle_to_u32(addr: GpuTransformAddress) -> u32 {
+    addr.0.0
 }
 
 pub struct Transforms {
@@ -222,7 +236,7 @@ impl Transforms {
             transform: LocalToSurfaceTransform::identity(),
             id: TransformId(0),
             flags: TransformFlags::AXIS_ALIGNED | TransformFlags::IDENTITY,
-            gpu_handle: GpuTransformAddress::NONE,
+            gpu_handle: AtomicU32::new(gpu_handle_to_u32(GpuTransformAddress::NONE)),
         };
 
         Transforms {
@@ -243,7 +257,7 @@ impl Transforms {
             id,
             transform: *transform,
             flags,
-            gpu_handle: GpuTransformAddress::NONE,
+            gpu_handle: AtomicU32::new(gpu_handle_to_u32(GpuTransformAddress::NONE)),
         });
 
         id

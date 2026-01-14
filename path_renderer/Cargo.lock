@@ -512,6 +512,8 @@ dependencies = [
 name = "core_test"
 version = "0.1.0"
 dependencies = [
+ "pattern_color",
+ "rectangles",
  "testing_utils",
 ]
 

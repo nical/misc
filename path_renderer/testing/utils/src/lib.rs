@@ -121,15 +121,15 @@ pub fn init(backends: wgpu::Backends) -> core::Instance {
     Instance::new(&device, &queue, 0, false)
 }
 
-pub type RenderPassTestCallback = Box<dyn FnOnce(RenderPassContext)>;
+pub type RenderPassTestCallback<R> = Box<dyn FnOnce(RenderPassContext, &mut R)>;
 
-pub enum ReftestImage {
+pub enum ReftestImage<R> {
     FromFile(String),
-    Render(RenderPassTestCallback),
+    Render(RenderPassTestCallback<R>),
 }
 
 pub struct TestHarness {
-    instance: Instance,
+    pub instance: Instance,
     extra_fuzz: u32,
 }
 
@@ -144,30 +144,82 @@ impl TestHarness {
     }
 }
 
-pub struct SinglePassReftest {
+pub trait Renderers {
+    fn get<'b, 'a: 'b>(&'a mut self, list: &mut Vec<&'b mut dyn core::Renderer>);
+}
+
+impl Renderers for () {
+    fn get<'b, 'a: 'b>(&'a mut self, _list: &mut Vec<&'b mut dyn core::Renderer>) {
+    }
+}
+
+impl<R0: core::Renderer> Renderers for (R0,) {
+    fn get<'b, 'a: 'b>(&'a mut self, list: &mut Vec<&'b mut dyn core::Renderer>) {
+        list.push(&mut self.0);
+    }
+}
+
+impl<R0: core::Renderer, R1: core::Renderer> Renderers for (R0, R1) {
+    fn get<'b, 'a: 'b>(&'a mut self, list: &mut Vec<&'b mut dyn core::Renderer>) {
+        list.push(&mut self.0);
+        list.push(&mut self.1);
+    }
+}
+
+impl<R0: core::Renderer, R1: core::Renderer, R2: core::Renderer> Renderers for (R0, R1, R2) {
+    fn get<'b, 'a: 'b>(&'a mut self, list: &mut Vec<&'b mut dyn core::Renderer>) {
+        list.push(&mut self.0);
+        list.push(&mut self.1);
+        list.push(&mut self.2);
+    }
+}
+
+pub struct TestData<D, R> {
+    pub other: D,
+    pub renderers: R,
+}
+
+impl<D, R: Renderers> Renderers for TestData<D, R> {
+    fn get<'b, 'a: 'b>(&'a mut self, list: &mut Vec<&'b mut dyn core::Renderer>) {
+        self.renderers.get(list);
+    }
+}
+
+pub struct SinglePassReftest<R> {
+    pub data: R,
     pub name: &'static str,
-    pub a: ReftestImage,
-    pub b: ReftestImage,
+    pub a: ReftestImage<R>,
+    pub b: ReftestImage<R>,
     pub size: SurfaceIntSize,
     pub requirements: Vec<Reftest>,
 }
 
-impl SinglePassReftest {
-    pub fn run(self, harness: &mut TestHarness) -> Result<(), Reftest> {
-
-        let a = Self::run_one(self.a, self.size, &mut harness.instance);
-        let b = Self::run_one(self.b, self.size, &mut harness.instance);
+impl<R: Renderers> SinglePassReftest<R> {
+    pub fn run(mut self, harness: &mut TestHarness) -> Result<(), Reftest> {
+        println!("Test: {}", self.name);
+        println!("--");
+        let a = Self::run_one(self.a, self.size, &mut harness.instance, &mut self.data);
+        println!("--");
+        let b = Self::run_one(self.b, self.size, &mut harness.instance, &mut self.data);
+        println!("--");
 
         let comparison = compare_images(&a, &b, true);
 
-        check_comparison(
+        let result = check_comparison(
             &comparison,
             &self.requirements,
             harness.extra_fuzz,
-        )
+        );
+
+        match &result {
+            Ok(_) => { println!("{} passed", self.name) },
+            Err(e) => { println!("{} failed: {e:?}", self.name); }
+        }
+
+        result
     }
 
-    fn run_one(image: ReftestImage, size: SurfaceIntSize, instance: &mut Instance) -> Image {
+    fn run_one(image: ReftestImage<R>, size: SurfaceIntSize, instance: &mut Instance, renderers: &mut R) -> Image {
         match image {
             ReftestImage::FromFile(name) => {
                 let decoder = png::Decoder::new(BufReader::new(File::open(&name).unwrap()));
@@ -181,12 +233,17 @@ impl SinglePassReftest {
                 }
             }
             ReftestImage::Render(callback) => {
-                Self::run_callback(size, callback, instance)
+                Self::run_callback(size, callback, instance, renderers)
             }
         }
     }
 
-    fn run_callback(size: SurfaceIntSize, callback: RenderPassTestCallback, instance: &mut Instance) -> Image {
+    fn run_callback(
+        size: SurfaceIntSize,
+        callback: RenderPassTestCallback<R>,
+        instance: &mut Instance,
+        renderers: &mut R,
+    ) -> Image {
         let mut frame = instance.begin_frame();
         let mut f32_buffer = frame.f32_buffer.write();
 
@@ -209,7 +266,7 @@ impl SinglePassReftest {
 
         let ctx = pass_builder.ctx();
 
-        callback(ctx); // TODO
+        callback(ctx, renderers);
 
         let mut pass = pass_builder.end();
 
@@ -245,7 +302,10 @@ impl SinglePassReftest {
         let mut encoder = instance.create_encoder();
 
         std::mem::drop(f32_buffer);
-        instance.render_frame(frame, &[], &[], &mut encoder, &mut []);
+
+        let mut renderer_list = Vec::new();
+        renderers.get(&mut renderer_list);
+        instance.render_frame(frame, &[], &[], &mut encoder, &mut renderer_list);
 
         instance.queue.submit(Some(encoder.finish()));
         instance.end_frame();

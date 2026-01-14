@@ -1013,7 +1013,7 @@ fn paint_scene(
     if testing {
 
         let tx2 = frame.transforms.get_mut(frame.transforms.root_id());
-        let transform_handle = tx2.get_gpu_handle(&mut f32_buffer);
+        let transform_handle = tx2.request_gpu_handle(&mut f32_buffer);
 
         let mut many_stops = Vec::with_capacity(128);
         let step = 0.8 / 128.0;
@@ -1099,7 +1099,7 @@ fn paint_scene(
         let task_id1 = task_ctx1.render_task;
 
         let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        renderers.rectangles.fill_rect(
+        renderers.rectangles.fill_transformed_rect(
             &mut task_ctx1,
             frame.transforms.get_mut(rotated),
             &LocalRect {
@@ -1118,7 +1118,7 @@ fn paint_scene(
         let mut task_ctx2 = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
         let task_id2 = task_ctx2.render_task;
 
-        renderers.rectangles.fill_rect(
+        renderers.rectangles.fill_transformed_rect(
             &mut task_ctx2,
             frame.transforms.identity_mut(),
             &LocalRect {
@@ -1143,7 +1143,7 @@ fn paint_scene(
             0.5,
             false,
         );
-        renderers.rectangles.fill_rect(
+        renderers.rectangles.fill_transformed_rect(
             &mut surface.ctx(),
             frame.transforms.identity_mut(),
             &LocalRect {
@@ -1167,7 +1167,7 @@ fn paint_scene(
             0.5,
             false,
         );
-        renderers.rectangles.fill_rect(
+        renderers.rectangles.fill_transformed_rect(
             &mut surface.ctx(),
             frame.transforms.identity_mut(),
             &img_bounds,
