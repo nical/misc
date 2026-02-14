@@ -1,4 +1,5 @@
 use futures::executor::block_on;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 pub use core;
 use core::render_pass::{ColorAttachment, RenderPassBuilder, RenderPassContext};
@@ -32,7 +33,7 @@ pub struct Image {
 pub struct ImageComparison {
     // Number of pixels in the with a a difference greater or equal to
     // the index.
-    pub differences: [u32; 255],
+    pub differences: [u32; 256],
 }
 
 pub fn compare_images(
@@ -41,7 +42,7 @@ pub fn compare_images(
     check_alpha: bool,
 ) -> ImageComparison {
     let mut result = ImageComparison {
-        differences: [0; 255],
+        differences: [0; 256],
     };
 
     let iter1 = img1.data.chunks(4);
@@ -196,12 +197,10 @@ pub struct SinglePassReftest<R> {
 
 impl<R: Renderers> SinglePassReftest<R> {
     pub fn run(mut self, harness: &mut TestHarness) -> Result<(), Reftest> {
-        println!("Test: {}", self.name);
-        println!("--");
+        println!("REFTEST {}", self.name);
         let a = Self::run_one(self.a, self.size, &mut harness.instance, &mut self.data);
         println!("--");
         let b = Self::run_one(self.b, self.size, &mut harness.instance, &mut self.data);
-        println!("--");
 
         let comparison = compare_images(&a, &b, true);
 
@@ -212,9 +211,17 @@ impl<R: Renderers> SinglePassReftest<R> {
         );
 
         match &result {
-            Ok(_) => { println!("{} passed", self.name) },
-            Err(e) => { println!("{} failed: {e:?}", self.name); }
+            Ok(_) => {},
+            Err(e) => {
+                println!("REFTEST TEST-UNEXPECTED-FAIL | {} | {e:?}", self.name);
+                let a_data_url = image_data_url(&a);
+                println!("REFTEST   IMAGE 1 (TEST): {a_data_url}");
+                let b_data_url = image_data_url(&b);
+                println!("REFTEST   IMAGE 2 (REFERENCE): {b_data_url}");
+            }
         }
+
+        println!("REFTEST TEST-END {}", self.name);
 
         result
     }
@@ -327,4 +334,25 @@ impl<R: Renderers> SinglePassReftest<R> {
             }
         }
     }
+}
+
+
+pub fn image_data_url(image: &Image) -> String {
+    let mut png_buf: Vec<u8> = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(
+            &mut png_buf,
+            image.width,
+            image.height,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut png_writer = encoder.write_header().unwrap();
+        png_writer.write_image_data(&image.data).unwrap();
+    }
+
+    let mut data_url = format!("data:image/png;base64,");
+    STANDARD.encode_string(png_buf.as_slice(), &mut data_url);
+
+    data_url
 }
