@@ -494,13 +494,13 @@ impl StencilAndCoverRenderer {
         match &fill.shape {
             Shape::Circle(circle) => {
                 if let Some(t) = transform.as_scale_offset() {
-                    if (t.scale.x - t.scale.y).abs() > 0.001 {
+                    if (t.sx - t.sy).abs() > 0.001 {
                         todo!();
                     }
                     FillTessellator::new()
                         .tessellate_circle(
                             t.transform_point(circle.center).cast_unit(),
-                            circle.radius * t.scale.x,
+                            circle.radius * t.sx,
                             &FillOptions::tolerance(tolerance),
                             &mut GeomBuilder {
                                 vertices: &mut cover.vertices,

@@ -2,6 +2,7 @@
 
 use core::gpu::{GpuBufferAddress, gpu_buffer};
 use core::instance::{Frame, Instance, RenderStats};
+use core::nine_patch::{LocalNinePatch, SurfaceNinePatch};
 use core::pattern::BuiltPattern;
 use core::render_pass::RenderPassContext;
 use core::transform::{Transform, TransformId};
@@ -1099,16 +1100,26 @@ fn paint_scene(
         let task_id1 = task_ctx1.render_task;
 
         let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
-        renderers.rectangles.fill_transformed_rect(
-            &mut task_ctx1,
-            frame.transforms.get_mut(rotated),
-            &LocalRect {
+        let r = frame.transforms.get_mut(rotated);
+
+        let ninepatch = LocalNinePatch::new(
+            LocalRect {
                 min: point(-20.0, 20.0),
                 max: point(120.0, 195.0),
             },
-            Sides::LEFT | Sides::RIGHT | Sides::ALL,
-            gradient,
-            &mut f32_buffer,
+            20.0, 30.0, 40.0, 50.0
+        );
+        ninepatch.for_each_segment(
+            &mut |rect, side| {
+                renderers.rectangles.fill_transformed_rect(
+                    &mut task_ctx1,
+                    r,
+                    &rect.inflate(-1.0, -1.0),
+                    side,
+                    gradient,
+                    &mut f32_buffer,
+                );
+            }
         );
 
         let bounds = SurfaceIntRect::from_origin_and_size(

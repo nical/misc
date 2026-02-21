@@ -1,6 +1,7 @@
 #![allow(mismatched_lifetime_syntaxes)]
 
 pub extern crate wgpu;
+pub use lyon::geom::euclid;
 
 pub mod render_pass;
 pub mod gpu;
@@ -17,6 +18,7 @@ pub mod worker;
 pub mod shading;
 pub mod utils;
 pub mod transfer;
+pub mod nine_patch;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
 use crate::{batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
@@ -48,6 +50,9 @@ pub mod units {
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
     pub struct SurfaceSpace;
 
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+    pub struct NormalizedSpace;
+
     pub type Rect = euclid::default::Box2D<f32>;
     pub type Point = euclid::default::Point2D<f32>;
     pub type Vector = euclid::default::Vector2D<f32>;
@@ -69,6 +74,9 @@ pub mod units {
 
     pub type LocalToSurfaceTransform = euclid::Transform2D<f32, LocalSpace, SurfaceSpace>;
     pub type LocalTransform = euclid::Transform2D<f32, LocalSpace, LocalSpace>;
+
+    pub type LocalToSurfaceScaleOffset = euclid::ScaleOffset2D<f32, LocalSpace, SurfaceSpace>;
+    pub type LocalScaleOffset = euclid::ScaleOffset2D<f32, LocalSpace, LocalSpace>;
 
     pub use euclid::point2 as point;
     pub use euclid::vec2 as vector;
@@ -196,12 +204,16 @@ bitflags::bitflags! {
     #[repr(transparent)]
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
     pub struct Sides: u8 {
-        const TOP =     1;
-        const RIGHT =   2;
-        const BOTTOM =  4;
-        const LEFT =    8;
-        const ALL =     (1|2|4|8);
-        const NONE = 0;
+        const TOP          = 1;
+        const RIGHT        = 2;
+        const BOTTOM       = 4;
+        const LEFT         = 8;
+        const TOP_LEFT     = 1|8;
+        const TOP_RIGHT    = 1|2;
+        const BOTTOM_LEFT  = 4|8;
+        const BOTTOM_RIGHT = 4|2;
+        const ALL          = (1|2|4|8);
+        const NONE         = 0;
     }
 }
 

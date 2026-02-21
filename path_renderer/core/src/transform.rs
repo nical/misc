@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
+use crate::units::LocalToSurfaceScaleOffset;
 use crate::{
     gpu::{GpuBufferAddress, GpuBufferWriter},
     units::{
-        point, vector, LocalPoint, LocalSpace, LocalToSurfaceTransform, LocalTransform,
-        SurfacePoint, SurfaceVector, Vector,
+        LocalToSurfaceTransform,
     },
 };
 
@@ -102,56 +102,6 @@ impl TransformId {
     }
 }
 
-// TODO: upstream into euclid.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ScaleOffset {
-    pub scale: Vector,
-    pub offset: SurfaceVector,
-}
-
-impl ScaleOffset {
-    #[inline]
-    pub fn identity() -> Self {
-        ScaleOffset {
-            scale: vector(1.0, 1.0),
-            offset: vector(0.0, 0.0),
-        }
-    }
-
-    #[inline]
-    pub fn transform_point(&self, p: LocalPoint) -> SurfacePoint {
-        point(p.x * self.scale.x, p.y * self.scale.y) + self.offset
-    }
-
-    #[inline]
-    pub fn then(&self, other: &Self) -> Self {
-        ScaleOffset {
-            scale: vector(self.scale.x * other.scale.x, self.scale.y * other.scale.y),
-            offset: vector(self.offset.x * self.scale.x, self.offset.y * self.scale.y)
-                + other.offset,
-        }
-    }
-
-    #[inline]
-    pub fn to_matrix(&self) -> LocalToSurfaceTransform {
-        LocalToSurfaceTransform::new(
-            self.scale.x,
-            0.0,
-            0.0,
-            self.scale.y,
-            self.offset.x,
-            self.offset.y,
-        )
-    }
-
-    pub fn from_matrix(mat: &LocalTransform) -> Self {
-        ScaleOffset {
-            scale: vector(mat.m11, mat.m22),
-            offset: vector(mat.m31, mat.m32),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Transform {
     transform: LocalToSurfaceTransform,
@@ -165,14 +115,12 @@ impl Transform {
         self.flags.contains(TransformFlags::AXIS_ALIGNED)
     }
 
-    pub fn as_scale_offset(&self) -> Option<ScaleOffset> {
+    pub fn as_scale_offset(&self) -> Option<LocalToSurfaceScaleOffset> {
         if !self.flags.contains(TransformFlags::AXIS_ALIGNED) {
             return None;
         }
 
-        Some(ScaleOffset::from_matrix(
-            &self.transform.with_destination::<LocalSpace>(),
-        ))
+        Some(self.transform.to_scale_offset())
     }
 
     pub fn is_identity(&self) -> bool {
