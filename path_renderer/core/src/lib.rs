@@ -192,6 +192,19 @@ impl Color {
     }
 }
 
+bitflags::bitflags! {
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    pub struct Sides: u8 {
+        const TOP =     1;
+        const RIGHT =   2;
+        const BOTTOM =  4;
+        const LEFT =    8;
+        const ALL =     (1|2|4|8);
+        const NONE = 0;
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BindingsNamespace(pub(crate) u8);
 

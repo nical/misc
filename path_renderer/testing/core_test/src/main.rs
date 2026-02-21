@@ -7,6 +7,7 @@ use testing_utils::SinglePassReftest;
 use testing_utils::TestData;
 use testing_utils::TestHarness;
 use testing_utils::core::Color;
+use testing_utils::core::Sides;
 use testing_utils::core::units::*;
 use testing_utils::core::{self};
 
@@ -31,7 +32,7 @@ fn main() {
                     min: SurfacePoint::new(0.0, 0.0),
                     max: SurfacePoint::new(100.0, 200.0),
                 },
-                rectangles::Aa::empty(),
+                Sides::NONE,
                 blue,
             );
         })),
@@ -44,7 +45,7 @@ fn main() {
                     min: SurfacePoint::new(0.0, 0.0),
                     max: SurfacePoint::new(100.0, 200.0),
                 },
-                rectangles::Aa::empty(),
+                Sides::NONE,
                 blue,
             );
         })),

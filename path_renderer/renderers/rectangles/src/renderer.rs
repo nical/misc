@@ -1,7 +1,7 @@
 use crate::{resources::Instance, InstanceFlags};
 use core::transform::{GpuTransformAddress, Transform};
 use core::units::SurfaceRect;
-use core::wgpu;
+use core::{Sides, wgpu};
 use core::{
     pattern::BuiltPattern,
     units::LocalRect,
@@ -19,20 +19,6 @@ use super::resources::Geometries;
 
 pub const PATTERN_KIND_COLOR: u32 = 0;
 pub const PATTERN_KIND_SIMPLE_LINEAR_GRADIENT: u32 = 1;
-
-// The bits are shifted by 20 to pack with the gpu store handle.
-core::bitflags::bitflags! {
-    #[repr(transparent)]
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-    pub struct Aa: u32 {
-        const TOP =     1 << 20;
-        const RIGHT =   2 << 20;
-        const BOTTOM =  4 << 20;
-        const LEFT =    8 << 20;
-        const ALL =     (1|2|4|8) << 20;
-        const NONE = 0;
-    }
-}
 
 pub struct Batch {
     instances: Range<u32>,
@@ -80,7 +66,7 @@ impl RectangleRenderer {
         ctx: &mut RenderPassContext,
         transform: &Transform,
         local_rect: &LocalRect,
-        aa: Aa,
+        aa: Sides,
         pattern: BuiltPattern,
         f32_buffer: &mut GpuBufferWriter,
     ) {
@@ -104,7 +90,7 @@ impl RectangleRenderer {
         &mut self,
         ctx: &mut RenderPassContext,
         local_rect: &SurfaceRect,
-        aa: Aa,
+        aa: Sides,
         pattern: BuiltPattern,
     ) {
         self.fill_rect_impl(
@@ -123,15 +109,15 @@ impl RectangleRenderer {
         local_rect: &LocalRect,
         aabb: &SurfaceRect,
         transform_handle: GpuTransformAddress,
-        mut aa: Aa,
+        mut aa: Sides,
         pattern: BuiltPattern,
     ) {
         let z_index = ctx.z_indices.push();
-        let instance_flags = InstanceFlags::from_bits(aa.bits()).unwrap();
+        let instance_flags = InstanceFlags::aa_from_sides(aa);
         let pass_cfg = ctx.config;
 
         if pass_cfg.msaa {
-            aa = Aa::NONE;
+            aa = Sides::NONE;
         }
 
         // Inner rect.
@@ -141,7 +127,7 @@ impl RectangleRenderer {
         // deflate the rect to only the opaque portion. The depth test will prevent the subsequent
         // blended rect from evaluating and blending fragments in that area.
         if pattern.is_opaque
-            && aa != Aa::NONE
+            && aa != Sides::NONE
             && pass_cfg.depth
             && aabb.width() > 50.0
             && aabb.height() > 50.0
@@ -173,7 +159,7 @@ impl RectangleRenderer {
 
         // Main rect
         let use_opaque_pass =
-            pattern.is_opaque && (aa == Aa::NONE || pass_cfg.msaa) && pass_cfg.depth;
+            pattern.is_opaque && (aa == Sides::NONE || pass_cfg.msaa) && pass_cfg.depth;
 
         let batch_flags = if use_opaque_pass {
             BatchFlags::ORDER_INDEPENDENT
@@ -194,7 +180,7 @@ impl RectangleRenderer {
                 pipeline_idx: None,
             },
             &mut |mut batch, task| {
-                batch.batch_data().edge_aa |= aa != Aa::NONE;
+                batch.batch_data().edge_aa |= aa != Sides::NONE;
                 batch.push(Instance {
                     local_rect: local_rect.cast_unit(),
                     z_index,

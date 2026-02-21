@@ -5,7 +5,7 @@ use core::instance::{Frame, Instance, RenderStats};
 use core::pattern::BuiltPattern;
 use core::render_pass::RenderPassContext;
 use core::transform::{Transform, TransformId};
-use core::{Renderer, Vector};
+use core::{Renderer, Sides, Vector};
 use core::shading::BlendMode;
 use core::path::Path;
 use core::resources::{Allocation, GpuResource};
@@ -27,7 +27,7 @@ use lyon::geom::{Angle, Box2D};
 use lyon::path::PathEvent;
 use lyon::path::traits::PathBuilder;
 //use lyon::path::traits::PathBuilder;
-use rectangles::{Aa, RectangleRenderer, Rectangles};
+use rectangles::{RectangleRenderer, Rectangles};
 //use stats::{StatsRenderer, StatsRendererOptions, Overlay};
 //use stats::views::{Column, Counter, Layout, Style};
 use tiling::{AaMode, Occlusion, TileRenderer, Tiling, TilingOptions};
@@ -1106,7 +1106,7 @@ fn paint_scene(
                 min: point(-20.0, 20.0),
                 max: point(120.0, 195.0),
             },
-            Aa::LEFT | Aa::RIGHT | Aa::ALL,
+            Sides::LEFT | Sides::RIGHT | Sides::ALL,
             gradient,
             &mut f32_buffer,
         );
@@ -1124,7 +1124,7 @@ fn paint_scene(
                 min: point(-10.0, -10.0),
                 max: point(500.0, 500.0),
             },
-            Aa::LEFT | Aa::RIGHT | Aa::ALL,
+            Sides::LEFT | Sides::RIGHT | Sides::ALL,
             gradient,
         );
 
@@ -1146,7 +1146,7 @@ fn paint_scene(
                 min: point(50.0, 900.0),
                 max: point(250.0, 1100.0),
             },
-            Aa::ALL,
+            Sides::ALL,
             img_src,
         );
 
@@ -1165,7 +1165,7 @@ fn paint_scene(
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),
             &img_bounds,
-            Aa::ALL,
+            Sides::ALL,
             img_src,
         );
 

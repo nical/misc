@@ -1,3 +1,4 @@
+use core::Sides;
 use core::batching::RendererId;
 use core::bitflags::bitflags;
 use core::bytemuck;
@@ -9,16 +10,23 @@ use core::shading::{GeometryDescriptor, Shaders, Varying, VertexAtribute};
 
 use crate::RectangleRenderer;
 
+// Th
 bitflags! {
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct InstanceFlags: u32 {
-        const AaTop    = 1 << 20;
-        const AaRight  = 2 << 20;
-        const AaBottom = 4 << 20;
-        const AaLeft   = 8 << 20;
-        const Aa       = (1|2|4|8) << 20;
+        const AaTop    = (Sides::TOP.bits() as u32) << 20;
+        const AaRight  = (Sides::RIGHT.bits() as u32) << 20;
+        const AaBottom = (Sides::BOTTOM.bits() as u32) << 20;
+        const AaLeft   = (Sides::LEFT.bits() as u32) << 20;
+        const Aa       = (Sides::ALL.bits() as u32) << 20;
         const AaCenter = 16 << 20;
+    }
+}
+
+impl InstanceFlags {
+    pub fn aa_from_sides(aa: Sides) -> Self {
+        InstanceFlags::from_bits_truncate((aa.bits() as u32) << 20)
     }
 }
 
