@@ -28,6 +28,7 @@ pattern_color = { path = "../patterns/color" }
 pattern_gradients = { path = "../patterns/gradients" }
 pattern_checkerboard = { path = "../patterns/checkerboard" }
 pattern_texture = { path = "../patterns/texture" }
+pattern_corner = { path = "../patterns/corner" }
 
 lyon = "1.0.0"
 winit = "0.30"

@@ -15,6 +15,7 @@ members = [
     "patterns/gradients",
     "patterns/checkerboard",
     "patterns/texture",
+    "patterns/corner",
     "testing/utils",
     "testing/core_test",
     "document",

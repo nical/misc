@@ -592,6 +592,7 @@ dependencies = [
  "msaa_stroke",
  "pattern_checkerboard",
  "pattern_color",
+ "pattern_corner",
  "pattern_gradients",
  "pattern_texture",
  "profiling",
@@ -1805,6 +1806,13 @@ dependencies = [
 
 [[package]]
 name = "pattern_color"
+version = "0.1.0"
+dependencies = [
+ "core",
+]
+
+[[package]]
+name = "pattern_corner"
 version = "0.1.0"
 dependencies = [
  "core",

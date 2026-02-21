@@ -17,6 +17,7 @@ use core::units::{
 use core::wgpu::util::DeviceExt;
 use core::{BindingResolver, Color};
 use core::{BindingsId, BindingsNamespace};
+use pattern_corner::RoundedCornerRenderer;
 use render_graph::{FrameGraph, ColorAttachment, Resource, RenderNode, RenderNodeDescriptor};
 use stroke::*;
 use std::collections::VecDeque;
@@ -325,6 +326,7 @@ impl App {
             gradients: GradientRenderer::register(&mut instance.shaders),
             checkerboards: CheckerboardRenderer::register(&mut instance.shaders),
             textures: TextureRenderer::register(&device, &mut instance.shaders),
+            rounded_corner: RoundedCornerRenderer::register(&device, &mut instance.shaders),
         };
 
         let stats_renderer = OverlayRenderer::new(&device, &queue, &OverlayOptions {
@@ -1092,11 +1094,11 @@ fn paint_scene(
         );
 
         surface.read(atlas.color(0));
-        let bounds = SurfaceIntRect::from_origin_and_size(
-            SurfaceIntPoint::new(-50, 0),
+        let task1_bounds = SurfaceIntRect::from_origin_and_size(
+            SurfaceIntPoint::new(-10, 0),
             SurfaceIntSize::new(150, 200),
         );
-        let mut task_ctx1 = atlas.allocate(&mut f32_buffer, &bounds).unwrap();
+        let mut task_ctx1 = atlas.allocate(&mut f32_buffer, &task1_bounds).unwrap();
         let task_id1 = task_ctx1.render_task;
 
         let rotated = frame.transforms.add(&LocalToSurfaceTransform::rotation(Angle::radians(0.2)));
@@ -1104,7 +1106,7 @@ fn paint_scene(
 
         let ninepatch = LocalNinePatch::new(
             LocalRect {
-                min: point(-20.0, 20.0),
+                min: point(20.0, 20.0),
                 max: point(120.0, 195.0),
             },
             20.0, 30.0, 40.0, 50.0
@@ -1139,24 +1141,22 @@ fn paint_scene(
             gradient,
         );
 
+        let task1_dst_rect = SurfaceRect::from_origin_and_size(
+            point(50.0, 900.0),
+            task1_bounds.size().to_f32(),
+        );
         let atlas_binding = atlas.color(0).get_binding();
         let img_src = patterns.textures.sample_rect(
             &mut f32_buffer,
             atlas_binding,
             task_id1,
-            &LocalRect {
-                min: point(50.0, 900.0),
-                max: point(250.0, 1100.0),
-            },
-            0.5,
+            &task1_dst_rect.cast_unit(),
+            0.7,
             false,
         );
         renderers.rectangles.fill_rect(
             &mut surface.ctx(),
-            &SurfaceRect {
-                min: point(50.0, 900.0),
-                max: point(250.0, 1100.0),
-            },
+            &task1_dst_rect,
             Sides::ALL,
             img_src,
         );
@@ -1178,6 +1178,30 @@ fn paint_scene(
             &img_bounds,
             Sides::ALL,
             img_src,
+        );
+
+        let stretched = frame.transforms.add(&LocalToSurfaceTransform::scale(1.0, 1.0));
+        let stretched = frame.transforms.get_mut(stretched);
+        let rect = LocalRect {
+            min: point(810.0, 1000.0),
+            max: point(1020.0, 1100.0),
+        };
+        let rounded_rect = patterns.rounded_corner.non_uniform(
+            &mut f32_buffer,
+            &rect,
+            20.0,
+            30.0,
+            40.0,
+            1350.0,
+        );
+
+        renderers.rectangles.fill_transformed_rect(
+            &mut surface.ctx(),
+            stretched,
+            &rect,
+            Sides::ALL,
+            rounded_rect,
+            &mut f32_buffer,
         );
 
         atlas.finish();
@@ -1457,6 +1481,7 @@ struct Patterns {
     gradients: GradientRenderer,
     checkerboards: CheckerboardRenderer,
     textures: TextureRenderer,
+    rounded_corner: RoundedCornerRenderer,
 }
 
 struct SourceTexture {
