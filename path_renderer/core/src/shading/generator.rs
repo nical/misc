@@ -183,7 +183,7 @@ pub fn generate_shader_source(
     writeln!(source, ") -> @location(0) vec4<f32> {{").unwrap();
     writeln!(source, "    var color = vec4<f32>(1.0);").unwrap();
 
-    writeln!(source, "    color.a *= geometry_fragment(").unwrap();
+    writeln!(source, "    color *= geometry_fragment(").unwrap();
     for varying in &geometry.varyings {
         writeln!(source, "        geom_{},", varying.name).unwrap();
     }
@@ -196,11 +196,6 @@ pub fn generate_shader_source(
         }
         writeln!(source, "    ));").unwrap();
     }
-
-    writeln!(source, "    // Premultiply").unwrap();
-    writeln!(source, "    color.r *= color.a;").unwrap();
-    writeln!(source, "    color.g *= color.a;").unwrap();
-    writeln!(source, "    color.b *= color.a;").unwrap();
 
     writeln!(source, "    return color;").unwrap();
 

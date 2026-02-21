@@ -54,14 +54,17 @@ impl CheckerboardRenderer {
         let is_opaque = pattern.color0.is_opaque() && pattern.color1.is_opaque();
         let color0 = pattern.color0.to_f32();
         let color1 = pattern.color1.to_f32();
+        let a0 = color0[3];
+        let a1 = color1[3];
+        // Send the colors premultiplied.
         let handle = f32_buffer.push_slice(&[
-            color0[0],
-            color0[1],
-            color0[2],
+            color0[0] * a0,
+            color0[1] * a0,
+            color0[2] * a0,
             color0[3],
-            color1[0],
-            color1[1],
-            color1[2],
+            color1[0] * a1,
+            color1[1] * a1,
+            color1[2] * a1,
             color1[3],
             pattern.offset.x,
             pattern.offset.y,

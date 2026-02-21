@@ -127,6 +127,6 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
     let sdf = sdf_rounded_rect(pattern.local_pos, pattern.rectangle, pattern.radii);
     let alpha = distance_aa(pattern.local_pos, sdf);
 
-    return vec4f(1.0, 1.0, 1.0, alpha);
+    return vec4f(alpha);
 }
 ";

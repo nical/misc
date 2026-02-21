@@ -1,4 +1,5 @@
 #import gpu_buffer
+#import pattern::color
 
 const GRADIENT_EXTEND_MODE_CLAMP: u32 = 0;
 const GRADIENT_EXTEND_MODE_REPEAT: u32 = 1;
@@ -130,7 +131,9 @@ fn evaluate_gradient(gradient_header: vec4u, original_offset: f32, first_offsets
         factor = clamp((offset - prev_stop_offset) / d, 0.0, 1.0);
     }
 
-    return mix(color_pair.data0, color_pair.data1, factor);
+    let color0 = premultiply_color(color_pair.data0);
+    let color1 = premultiply_color(color_pair.data1);
+    return mix(color0, color1, factor);
 }
 
 /// Efficiently search through a large amount of gradient stops
