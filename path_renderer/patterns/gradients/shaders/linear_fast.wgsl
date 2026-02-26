@@ -3,7 +3,9 @@
 #import pattern::linear_gradient
 
 fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
-    let dir_offset = read_linear_gradient(pattern_handle);
+    let endpoints = f32_gpu_buffer_fetch_1(pattern_handle);
+
+    let offset = linear_gradient_vertex(pattern_pos, endpoints);
 
     // Note: this vertex shader is reading more data than it needs,
     // for example the two color stops could be packed into the header.
@@ -14,21 +16,17 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let header = gradient.data0;
     let stops = gradient.data1.xy;
     return Pattern(
-        vec4f(pattern_pos, stops),
-        vec4f(dir_offset, header.y),
+        vec4f(stops.x, stops.y, offset),
         gradient.data2,
         gradient.data3,
     );
 }
 
 fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
-    var offset = compute_linear_gradient_offset(
-        pattern.position_stop_offsets.xy,
-        pattern.dir_offset_extend_mode.xyz,
-    );
+    var offset = pattern.stops_and_offset.z;
 
     return evaluate_simple_gradient_2(
-        pattern.position_stop_offsets.zw,
+        pattern.stops_and_offset.xy,
         pattern.color0,
         pattern.color1,
         offset,

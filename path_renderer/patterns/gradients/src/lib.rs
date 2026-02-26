@@ -109,8 +109,7 @@ impl GradientRenderer {
             name: "gradients::linear_fast".into(),
             source: LINEAR_GRADIENT_FASR_SRC.into(),
             varyings: vec![
-                Varying::float32x4("position_stop_offsets").with_interpolation(true),
-                Varying::float32x4("dir_offset_extend_mode").flat(),
+                Varying::float32x3("stops_and_offset").with_interpolation(true),
                 Varying::float32x4("color0").flat(),
                 Varying::float32x4("color1").flat(),
             ],
@@ -133,7 +132,6 @@ impl GradientRenderer {
             source: UNIFIED_GRADIENT_SRC.into(),
             varyings: vec![
                 Varying::float32x4("interpolated_data").with_interpolation(true),
-                Varying::float32x4("flat_data").flat(),
                 Varying::float32x4("stop_offsets").flat(),
                 Varying::float32x4("color0").flat(),
                 Varying::float32x4("color1").flat(),

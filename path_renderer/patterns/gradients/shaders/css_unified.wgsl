@@ -12,12 +12,10 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
     let header = make_gradient_header(pattern_handle + 2, data.data2);
 
     var interpolated_data = vec4f(0.0);
-    var flat_data = vec4f(0.0);
     switch gradient_header_kind(header) {
         case GRADIENT_KIND_LINEAR: {
-            let dir_offset = decode_linear_gradient(data.data0);
-            interpolated_data = vec4f(pattern_pos, 0.0, 0.0);
-            flat_data = vec4f(dir_offset, 0.0);
+            let offset = linear_gradient_vertex(pattern_pos, data.data0);
+            interpolated_data = vec4f(offset, 0.0, 0.0, 0.0);
         }
         case GRADIENT_KIND_CONIC: {
             interpolated_data = decode_conic_gradient(pattern_pos, data.data0, data.data1);
@@ -45,7 +43,6 @@ fn pattern_vertex(pattern_pos: vec2<f32>, pattern_handle: u32) -> Pattern {
 
     return Pattern(
         interpolated_data,
-        flat_data,
         offsets,
         color0,
         color1,
@@ -57,10 +54,7 @@ fn pattern_fragment(pattern: Pattern) -> vec4<f32> {
     var offset = 0.0;
     switch gradient_header_kind(pattern.gradient_header) {
         case GRADIENT_KIND_LINEAR: {
-            offset = compute_linear_gradient_offset(
-                pattern.interpolated_data.xy,
-                pattern.flat_data.xyz,
-            );
+            offset = pattern.interpolated_data.x;
         }
         case GRADIENT_KIND_CONIC: {
             offset = compute_conic_gradient_offset(
