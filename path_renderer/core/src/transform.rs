@@ -3,13 +3,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use bitflags::bitflags;
 use lyon::geom::euclid::Transform2D;
 
-use crate::units::LocalToSurfaceScaleOffset;
-use crate::{
-    gpu::{GpuBufferAddress, GpuBufferWriter},
-    units::{
-        LocalToSurfaceTransform,
-    },
-};
+use crate::units::*;
+use crate::gpu::{GpuBufferAddress, GpuBufferWriter};
 
 bitflags! {
     #[repr(transparent)]
@@ -60,7 +55,7 @@ impl std::fmt::Debug for GpuTransformAddress {
 
 /// Optional index of a CPU-side transform.
 ///
-/// Only valid durin the current frame.
+/// Only valid during the current frame.
 /// Cannot be used on the GPU. See `GpuTransformAddress`.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -68,37 +63,21 @@ pub struct TransformId(u16);
 
 impl TransformId {
     pub const IDENTITY: Self = TransformId(0);
-    pub const NONE: Self = TransformId(std::u16::MAX);
-
-    #[inline]
-    pub fn try_index(self) -> Option<usize> {
-        if self == Self::NONE {
-            return None;
-        }
-
-        Some(self.0 as usize)
-    }
 
     #[inline]
     fn index(self) -> usize {
-        debug_assert!(self.is_some());
         self.0 as usize
     }
 
     #[inline]
     pub fn from_index(idx: usize) -> Self {
-        debug_assert!(idx < std::u32::MAX as usize);
+        debug_assert!(idx < std::u16::MAX as usize);
         TransformId(idx as u16)
     }
 
     #[inline]
-    pub fn is_some(self) -> bool {
-        self != Self::NONE
-    }
-
-    #[inline]
-    pub fn is_none(self) -> bool {
-        self == Self::NONE
+    pub fn is_identity(self) -> bool {
+        self != Self::IDENTITY
     }
 }
 
@@ -163,6 +142,14 @@ impl Transform {
         self.gpu_handle.store(gpu_handle_to_u32(handle), Ordering::Relaxed);
 
         handle
+    }
+
+    pub fn outer_rect(&self, rect: &LocalRect) -> SurfaceRect {
+        if self.is_identity() {
+            return rect.cast_unit();
+        }
+
+        self.matrix().outer_transformed_box(rect)
     }
 }
 
