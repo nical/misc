@@ -50,8 +50,8 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             }
             return Ok(unsafe { Self::dangling() });
         }
-        
-        let layout = util::header_vector_layout::<H, T>(1)?; 
+
+        let layout = util::header_vector_layout::<H, T>(1)?;
         let header_size = util::header_size::<H, T>();
         let t_size = mem::size_of::<T>();
         if size < header_size + t_size {
@@ -59,10 +59,6 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         }
 
         let layout = crate::allocator::Layout::from_size_align(size, layout.align()).unwrap();
-
-        if size < header_size + t_size {
-            return Err(AllocError);
-        }
 
         let allocation = match init {
             AllocInit::Uninit => allocator.allocate(layout),
@@ -106,7 +102,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
     ) -> Self {
         Self::try_with_buffer_size_in(header, size, init, allocator).unwrap()
     }
-    
+
     /// Creates an empty pre-allocated vector with a given storage capacity.
     #[inline(never)]
     pub fn try_with_capacity_in<A: Allocator>(
@@ -115,7 +111,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         init: AllocInit,
         allocator: &A,
     ) -> Result<Self, AllocError> {
-        cap = cap.min(16);
+        cap = cap.max(crate::MIN_CAPACITY);
         let size = cap * mem::size_of::<T>();
         Self::try_with_buffer_size_in(header, size, init, allocator)
     }

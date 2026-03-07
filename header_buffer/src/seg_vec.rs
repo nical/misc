@@ -53,6 +53,8 @@ impl<T> UnmanagedSegmentedVector<T> {
         if self.last_header.is_null() {
             // TODO: Ugly workaround for using dangling vectors with headers
             // when they are empty.
+            // TODO: this leaks when only one chunk exists because last_header
+            // is on set to a non-null value when a second chunk is allocated.
             return;
         }
 
@@ -92,7 +94,7 @@ impl<T> UnmanagedSegmentedVector<T> {
     }
 
     unsafe fn add_chunk<A: Allocator>(&mut self, allocator: &A) {
-        let cap = self.current.capacity() * 2;
+        let cap = self.current.capacity().max(crate::MIN_CAPACITY) * 2;
 
         if self.last_header.is_null() {
             self.first = self.current;
@@ -102,7 +104,7 @@ impl<T> UnmanagedSegmentedVector<T> {
         self.last_header = self.current.header_ptr().as_ptr();
 
         self.current = Chunk::<T>::with_capacity_in(
-            Header { next: Chunk::dangling() }, 
+            Header { next: Chunk::dangling() },
             cap,
             AllocInit::Uninit,
             allocator,
@@ -184,4 +186,12 @@ fn seg_empty() {
 
     let mut empty: UnmanagedSegmentedVector<i32> = UnmanagedSegmentedVector::new();
     unsafe { empty.deallocate_in(&allocator); }
+}
+
+#[test]
+fn dealloc_single_chunk() {
+    let allocator = crate::global::Global;
+    let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
+    // Push fewer items than capacity, or none at all
+    unsafe { v.deallocate_in(&allocator); } // leaks the chunk
 }

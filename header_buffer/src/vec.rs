@@ -126,7 +126,6 @@ impl<T, A: Allocator> Vector<T, A> {
 impl<T, A: Allocator> Drop for Vector<T, A> {
     fn drop(&mut self) {
         unsafe { self.inner.deallocate_in(&self.allocator) }
-        println!("Vector::Drop");
     }
 }
 

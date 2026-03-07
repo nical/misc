@@ -1,3 +1,5 @@
+#![allow(mismatched_lifetime_syntaxes)]
+
 extern crate alloc as alloc_crate;
 
 //pub mod alloc {
@@ -14,6 +16,8 @@ pub mod vec;
 
 pub use crate::unmanaged::{UnmanagedVector, UnmanagedHeaderVector};
 pub use crate::vec::Vector;
+
+const MIN_CAPACITY: usize = 16;
 
 #[macro_export]
 macro_rules! impl_vector_methods {
@@ -94,7 +98,7 @@ macro_rules! impl_vector_methods {
         }
 
         #[inline(always)]
-        pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &T {
+        pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
             self.inner.get_unchecked_mut(index)
         }
 
