@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::allocator::chunk::ChunkPool;
-use crate::allocator::frame::FrameAllocators;
+use crate::allocator::frame::WorkerAllocators;
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
 use crate::transfer::{Transfer, Transfers};
 use crate::render_pass::{BuiltRenderPass, PassRenderContext};
@@ -81,7 +81,7 @@ impl Instance {
         let num_workers = self.workers.num_workers();
         let mut allocators = Vec::with_capacity(num_workers);
         for _ in 0..num_workers {
-            allocators.push(FrameAllocators::new(self.chunks.clone()));
+            allocators.push(WorkerAllocators::new(self.chunks.clone()));
         }
 
         Frame {
@@ -349,7 +349,7 @@ pub struct Frame {
     pub transforms: Transforms,
     pub passes: Passes,
     pub resources: FrameResources,
-    allocators: Vec<FrameAllocators>,
+    allocators: Vec<WorkerAllocators>,
     index: u32,
 }
 

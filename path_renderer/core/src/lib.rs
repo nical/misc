@@ -22,7 +22,7 @@ pub mod nine_patch;
 pub mod allocator;
 
 use shading::{Shaders, PrepareRenderPipelines, RenderPipelines};
-use crate::{allocator::frame::FrameAllocators, batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
+use crate::{allocator::frame::WorkerAllocators, batching::BatchId, render_pass::{RenderCommandId, RenderCommands}};
 pub use crate::shading::{SurfaceDrawConfig, SurfaceKind, StencilMode, DepthMode};
 
 use render_pass::BuiltRenderPass;
@@ -327,7 +327,7 @@ pub struct PrepareWorkerData<'a> {
     pub vertices: GpuBuffer,
     pub indices: GpuStreams,
     pub instances: GpuStreams,
-    pub allocators: &'a FrameAllocators,
+    pub allocators: &'a WorkerAllocators,
 }
 
 unsafe impl<'a> Send for PrepareWorkerData<'a> {}

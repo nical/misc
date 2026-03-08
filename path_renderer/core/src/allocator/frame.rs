@@ -14,15 +14,16 @@ pub type TlFrameVec<'frame, T> = allocator_api2::vec::Vec<T, &'frame ThreadLocal
 // - ref-counted: one allocator per thread or a shared bump allocator?
 // - lifetime'd FrameAllocator: How to create one per worker?
 
-pub struct FrameAllocators {
+/// Per-worker allocators.
+pub struct WorkerAllocators {
     pub local: ThreadLocalFrameAllocator,
     //pub shared: SharedFrameAllocator,
     // pub tmp: TmpAllocator,
 }
 
-impl FrameAllocators {
-    pub fn new(chunks: ChunkPool) -> FrameAllocators {
-        FrameAllocators {
+impl WorkerAllocators {
+    pub fn new(chunks: ChunkPool) -> WorkerAllocators {
+        WorkerAllocators {
             local: ThreadLocalFrameAllocator::new(chunks.clone()),
             //shared: SharedFrameAllocator::new(chunks),
         }
@@ -102,25 +103,25 @@ unsafe impl<'l> Allocator for &'l ThreadLocalFrameAllocator {
     }
 }
 
-struct FrameBumpAllocatorImpl {
+struct FrameSharedBumpAllocatorImpl {
     bump: BumpAllocator,
     refs: AtomicI32,
 }
 
 // TODO: this leaks a chunk.
 pub struct SharedFrameAllocator {
-    allocator: *mut FrameBumpAllocatorImpl,
+    allocator: *mut FrameSharedBumpAllocatorImpl,
 }
 
 impl SharedFrameAllocator {
     pub fn new(chunks: ChunkPool) -> Self {
-        let layout = Layout::new::<FrameBumpAllocatorImpl>();
+        let layout = Layout::new::<FrameSharedBumpAllocatorImpl>();
 
         let uninit_u8 = Global.allocate(layout).unwrap();
 
         unsafe {
-            let allocator: NonNull<FrameBumpAllocatorImpl> = uninit_u8.cast();
-            allocator.as_ptr().write(FrameBumpAllocatorImpl {
+            let allocator: NonNull<FrameSharedBumpAllocatorImpl> = uninit_u8.cast();
+            allocator.as_ptr().write(FrameSharedBumpAllocatorImpl {
                 bump: BumpAllocator::new(chunks.clone()),
                 refs: AtomicI32::new(1),
             });
@@ -211,7 +212,7 @@ impl Drop for SharedFrameAllocator {
 
 #[test]
 fn frame_allocator_01() {
-    let allocators = FrameAllocators::new(ChunkPool::new());
+    let allocators = WorkerAllocators::new(ChunkPool::new());
 
     let mut v1 = allocators.local.new_vec();
     for i in 0..256u32 {
@@ -228,7 +229,7 @@ fn frame_allocator_01() {
 
 #[test]
 fn stacked_allocator_01() {
-    let allocators = FrameAllocators::new(ChunkPool::new());
+    let allocators = WorkerAllocators::new(ChunkPool::new());
     const N: usize = 256;
 
     let mut offset: usize = 0;
