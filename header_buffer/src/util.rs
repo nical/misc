@@ -79,7 +79,7 @@ pub fn header_vector_layout<Header, T>(n: usize) -> Result<Layout, AllocError> {
 
 pub unsafe fn get_header<H, T>(ptr: NonNull<T>) -> NonNull<H> {
     let header_size = header_size::<H, T>();
-    unsafe { nnptr::byte_sub(ptr, header_size).cast::<H>() }
+    unsafe { ptr.byte_sub(header_size).cast::<H>() }
 }
 
 //#[cold]
@@ -102,49 +102,4 @@ pub fn grow_amortized(len: usize, additional: usize) -> Result<usize, AllocError
     }
 
     Ok(cap)
-}
-
-// Waiting for `non_null_convenience` to be stabilized.
-pub mod nnptr {
-    use std::ptr::{self, NonNull};
-
-    #[inline(always)]
-    pub unsafe fn read<T>(src: NonNull<T>) -> T {
-        ptr::read(src.as_ptr())
-    }
-
-    #[inline(always)]
-    pub unsafe fn write<T>(dst: NonNull<T>, val: T) {
-        ptr::write(dst.as_ptr(), val)
-    }
-
-    #[inline(always)]
-    pub unsafe fn copy<T>(src: NonNull<T>, dst: NonNull<T>, count: usize) {
-        ptr::copy(src.as_ptr(), dst.as_ptr(), count)
-    }
-
-    #[inline(always)]
-    pub unsafe fn add<T>(p: NonNull<T>, count: usize) -> NonNull<T> {
-        NonNull::new_unchecked(p.as_ptr().add(count))
-    }
-
-    //#[inline(always)]
-    //pub unsafe fn sub<T>(p: NonNull<T>, count: usize) -> NonNull<T> {
-    //    let offset = p.as_ptr().sub(count);
-    //    NonNull::new_unchecked(offset)
-    //}
-
-    //#[inline(always)]
-    //pub unsafe fn byte_add<T>(p: NonNull<T>, count: usize) -> NonNull<T> {
-    //    let u8_ptr = p.as_ptr() as *mut u8;
-    //    let offset_u8_ptr = u8_ptr.add(count) as *mut T;
-    //    NonNull::new_unchecked(offset_u8_ptr)
-    //}
-
-    #[inline(always)]
-    pub unsafe fn byte_sub<T>(p: NonNull<T>, count: usize) -> NonNull<T> {
-        let u8_ptr = p.as_ptr() as *mut u8;
-        let offset_u8_ptr = u8_ptr.sub(count) as *mut T;
-        NonNull::new_unchecked(offset_u8_ptr)
-    }
 }

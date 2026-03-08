@@ -2,9 +2,9 @@
 
 extern crate alloc as alloc_crate;
 
-//pub mod alloc {
-//    pub use allocator_api2::alloc::{AllocError, Allocator, Global};
-//}
+pub mod alloc {
+    pub use allocator_api2::alloc::{AllocError, Allocator, Global};
+}
 
 pub mod allocator;
 pub mod frame_allocator;

@@ -121,6 +121,20 @@ impl<T, A: Allocator> Vector<T, A> {
             allocator,
         }
     }
+
+    pub fn try_reallocate_in<A2: Allocator>(mut self, new_cap: usize, new_allocator: A2) -> Result<Vector<T,A2>, AllocError> {
+        unsafe {
+            self.inner.try_realloc_in_new_allocator(new_cap, &self.allocator, &new_allocator)?;
+        }
+
+        let inner = self.inner;
+        mem::forget(self);
+
+        Ok(Vector {
+            inner,
+            allocator: new_allocator,
+        })
+    }
 }
 
 impl<T, A: Allocator> Drop for Vector<T, A> {
@@ -332,4 +346,42 @@ fn borrowed_dyn_alloc() {
     let alloc = Global;
     let mut ds2 = DataStructure::new_in(&alloc);
     ds2.push(2);
+}
+
+#[test]
+fn reallocate_in() {
+    pub use crate::alloc::Global;
+    use std::rc::Rc;
+
+    let alloc1 = Global;
+    let alloc2 = Global;
+
+    let mut vec = Vector::new_in(alloc1);
+    let val = Rc::new(());
+
+    for _ in 0..8 {
+        vec.push(val.clone());
+    }
+
+    assert_eq!(Rc::strong_count(&val), 9);
+
+    let mut vec = vec.try_reallocate_in(4, alloc2).unwrap();
+
+    assert_eq!(vec.len(), 4);
+    assert_eq!(vec.capacity(), 4);
+    assert_eq!(Rc::strong_count(&val), 5);
+
+    for _ in 0..12 {
+        vec.push(val.clone());
+    }
+
+    assert_eq!(vec.len(), 16);
+    assert!(vec.capacity() >= 16);
+    assert_eq!(Rc::strong_count(&val), 17);
+
+    let vec = vec.try_reallocate_in(0, alloc1).unwrap();
+
+    assert_eq!(vec.len(), 0);
+    assert_eq!(vec.capacity(), 0);
+    assert_eq!(Rc::strong_count(&val), 1);
 }

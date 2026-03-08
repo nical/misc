@@ -1,8 +1,10 @@
 use crate::allocator::{AllocError, Allocator};
-use crate::util::{self, is_zst, nnptr};
+use crate::util::{self, is_zst};
 use core::marker::PhantomData;
 use core::mem;
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
+use core::ops::{Index, IndexMut, Deref, DerefMut};
+use core::fmt::Debug;
 
 pub type UnmanagedVector<T> = UnmanagedHeaderVector<(), T>;
 
@@ -75,7 +77,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             isize::MAX as usize
         };
 
-        let data = unsafe { nnptr::add(allocation.cast::<u8>(), header_size).cast::<T>() };
+        let data = unsafe { allocation.cast::<u8>().add(header_size).cast::<T>() };
 
         if is_zst::<H>() {
             // In case the header has a Drop implementation.
@@ -83,7 +85,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         } else {
             unsafe {
                 let header_ptr = util::get_header::<H, T>(data);
-                nnptr::write(header_ptr, header);
+                header_ptr.write(header);
             }
         }
 
@@ -248,7 +250,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             let new_layout = util::header_vector_layout::<H, T>(new_cap).unwrap();
 
             let new_alloc = allocator.allocate(new_layout)?;
-            let new_items_ptr = nnptr::add(new_alloc.cast::<u8>(), header_size).cast::<T>();
+            let new_items_ptr = new_alloc.cast::<u8>().add(header_size).cast::<T>();
 
             if !is_zst::<H>() {
                 let old_header = util::get_header::<H, T>(self.data);
@@ -309,7 +311,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         if old_dangling {
             // According to https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
             // reading a ZST from NonNull::dangling is fine.
-            let header = nnptr::read(self.header_ptr());
+            let header = self.header_ptr().read();
             *self = UnmanagedHeaderVector::try_with_capacity_in(header, new_cap, AllocInit::Uninit, allocator)?;
             return Ok(());
         }
@@ -331,8 +333,83 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             };
 
             let header_size = util::header_size::<H, T>();
-            self.data = nnptr::add(new_alloc.cast::<u8>(), header_size).cast::<T>();
+            self.data = new_alloc.cast::<u8>().add(header_size).cast::<T>();
             self.cap = new_cap;
+        }
+
+        Ok(())
+    }
+
+    /// Attempts to move this vector into another allocator.
+    ///
+    /// All of the data is copied over into a new allocation in `new_allocator` after which
+    /// the old allocation is deallocated from `old_allocator`.
+    ///
+    /// If this method succeeds, `new_allocator` becomes the allocator currently used by this
+    /// vector.
+    ///
+    /// If the old and new allocator are the same, this method works but is likely less
+    /// efficient than `try_realloc_with_capacity`.
+    ///
+    /// # Safety
+    ///
+    /// The provided `old_allocator` must be the one currently used by this vector.
+    ///
+    /// # Error
+    ///
+    /// If reallocation fails:
+    ///  - The vector remains in its current state, still associated to the old allocator.
+    ///  - An allocation error is returned.
+    #[cold]
+    pub unsafe fn try_realloc_in_new_allocator<OldAllocator, NewAllocator>(
+        &mut self,
+        new_cap: usize,
+        old_allocator: &OldAllocator,
+        new_allocator: &NewAllocator,
+    ) -> Result<(), AllocError>
+    where
+        OldAllocator: Allocator,
+        NewAllocator: Allocator,
+    {
+        if Self::should_be_dangling(new_cap) {
+            self.deallocate_in(old_allocator);
+            return Ok(());
+        }
+
+        let new_layout = util::header_vector_layout::<H, T>(new_cap)?;
+        let new_buffer = new_allocator.allocate(new_layout)?.cast::<u8>();
+
+        let old_len = self.len();
+        if old_len > new_cap {
+            self.truncate(new_cap);
+        }
+
+        let old_cap = self.capacity();
+        let header_size = util::header_size::<H, T>();
+
+        let old_buffer = if !Self::should_be_dangling(old_cap) {
+            let old_buffer = self.alloc_ptr();
+            let copy_size = header_size + old_len.min(new_cap) * mem::size_of::<T>();
+            if copy_size > 0 {
+                ptr::copy_nonoverlapping(
+                    old_buffer.as_ptr(),
+                    new_buffer.as_ptr(),
+                    copy_size,
+                );
+            }
+
+            Some(old_buffer)
+        } else {
+            None
+        };
+
+        self.data = new_buffer.add(header_size).cast::<T>();
+        self.cap = new_cap;
+        self.len = self.len.min(new_cap);
+
+        if let Some(old_alloc) = old_buffer {
+            let old_layout = util::header_vector_layout::<H, T>(old_cap).unwrap();
+            old_allocator.deallocate(old_alloc, old_layout);
         }
 
         Ok(())
@@ -357,6 +434,25 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
 
     pub unsafe fn shrink_to_fit<A: Allocator>(&mut self, allocator: &A) {
         self.try_shrink_to(self.len, allocator).unwrap()
+    }
+
+    pub fn truncate(&mut self, new_len: usize) {
+        let old_len = self.len();
+        if old_len <= new_len {
+            return;
+        }
+
+        unsafe {
+            let mut elt = self.data.as_ptr().add(new_len);
+            let end = self.data.as_ptr().add(old_len);
+            while elt < end {
+                println!("   drop elt");
+                ptr::drop_in_place(elt);
+                elt = elt.add(1)
+            }
+        }
+
+        self.len = new_len;
     }
 
     #[inline(always)]
@@ -431,21 +527,21 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
 
     #[inline(always)]
     unsafe fn item_ptr(&self, index: usize) -> NonNull<T> {
-        nnptr::add(self.data, index)
+        self.data.add(index)
     }
 
     #[inline(always)]
     unsafe fn write_item(&mut self, index: usize, val: T) {
         debug_assert!(index < self.cap);
         let dst = self.item_ptr(index);
-        nnptr::write(dst, val);
+        dst.write(val);
     }
 
     #[inline(always)]
     unsafe fn read_item(&self, index: usize) -> T {
         debug_assert!(index < self.cap);
         let dst = self.item_ptr(index);
-        nnptr::read(dst)
+        dst.read()
     }
 
     /// Appends an element to the back of a collection.
@@ -482,11 +578,20 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         }
 
         unsafe {
+            self.push_assuming_capacity(val);
+        }
+
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub unsafe fn push_assuming_capacity(&mut self, val: T) {
+        debug_assert!(self.len < self.capacity());
+
+        unsafe {
             self.write_item(self.len, val);
         }
         self.len += 1;
-
-        Ok(())
     }
 
     /// Removes the last element from the vector and returns it, or `None` if it is empty.
@@ -555,10 +660,10 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
                 let ptr = self.item_ptr(index);
                 // copy it out, unsafely having a copy of the value on
                 // the stack and in the vector at the same time.
-                ret = nnptr::read(ptr);
+                ret = ptr.read();
 
                 // Shift everything down to fill in that spot.
-                nnptr::copy(nnptr::add(ptr, 1), ptr, self.len - index - 1);
+                ptr.add(1).copy_to(ptr, self.len - index - 1);
             }
 
             self.len -= 1;
@@ -580,12 +685,12 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             assert!(index < self.len);
 
             let ptr = self.item_ptr(index);
-            let item = nnptr::read(ptr);
+            let item = ptr.read();
 
             let last_idx = self.len - 1;
             if index != last_idx {
                 let last_ptr = self.item_ptr(last_idx);
-                nnptr::write(ptr, nnptr::read(last_ptr));
+                ptr.write(last_ptr.read());
             }
 
             self.len -= 1;
@@ -622,7 +727,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
                 if index < len {
                     // Shift everything over to make space. (Duplicating the
                     // `index`th element into two consecutive places.)
-                    nnptr::copy(p, nnptr::add(p, 1), len - index);
+                    p.copy_to(p.add(1), len - index);
                 } else if index == len {
                     // No elements need shifting.
                 } else {
@@ -630,7 +735,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
                 }
                 // Write it in, overwriting the first copy of the `index`th
                 // element.
-                nnptr::write(p, element);
+                p.write(element);
             }
             self.len += 1;
         }
@@ -681,8 +786,8 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
             let mut ptr = self.item_ptr(self.len);
 
             for item in slice {
-                nnptr::write(ptr, item.clone());
-                ptr = nnptr::add(ptr, 1)
+                ptr.write(item.clone());
+                ptr = ptr.add(1)
             }
         }
         self.len += slice.len();
@@ -720,6 +825,54 @@ impl<H, T> AsRef<[T]> for UnmanagedHeaderVector<H, T> {
 impl<H, T> AsMut<[T]> for UnmanagedHeaderVector<H, T> {
     fn as_mut(&mut self) -> &mut [T] {
         self.as_mut_slice()
+    }
+}
+
+impl<H, T, I> Index<I> for UnmanagedHeaderVector<H, T>
+where
+    I: core::slice::SliceIndex<[T]>,
+{
+    type Output = <I as core::slice::SliceIndex<[T]>>::Output;
+    fn index(&self, index: I) -> &Self::Output {
+        self.as_slice().index(index)
+    }
+}
+
+impl<H, T, I> IndexMut<I> for UnmanagedHeaderVector<H, T>
+where
+    I: core::slice::SliceIndex<[T]>,
+{
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        self.as_mut_slice().index_mut(index)
+    }
+}
+
+impl<H, T> Deref for UnmanagedHeaderVector<H, T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<H, T> DerefMut for UnmanagedHeaderVector<H, T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<H: Debug, T: Debug> Debug for UnmanagedHeaderVector<H, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        if is_zst::<H>() {
+            self.as_slice().fmt(f)
+        } else {
+            write!(f, "{:?}:{:?}", self.header(), self.as_slice())
+        }
+    }
+}
+
+impl<T> Default for UnmanagedHeaderVector<(), T> {
+    fn default() -> Self {
+        UnmanagedHeaderVector::new()
     }
 }
 
