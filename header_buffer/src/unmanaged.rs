@@ -35,7 +35,10 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         util::is_zst::<H>() && (util::is_zst::<T>() || cap == 0)
     }
 
-    /// Creates an empty pre-allocated vector with a given storage size.
+    /// Creates an empty pre-allocated vector with a given storage size for items.
+    ///
+    /// The specified storage size is only for items. Space for the header is automatically
+    /// included by this method.
     #[inline(never)]
     pub fn try_with_buffer_size_in<A: Allocator>(
         header: H,

@@ -115,7 +115,6 @@ impl<T> UnmanagedSegmentedVector<T> {
         Chunks {
             current: self.first,
             last: self.current,
-            total_len: self.len,
             _lifetime: PhantomData,
         }
     }
@@ -124,7 +123,6 @@ impl<T> UnmanagedSegmentedVector<T> {
 pub struct Chunks<'a, T> {
     current: Chunk<T>,
     last: Chunk<T>,
-    total_len: usize,
     _lifetime: PhantomData<&'a ()>,
 }
 
@@ -148,10 +146,6 @@ impl<'a, T:'a> Iterator for Chunks<'a, T> {
         let data = chunk.as_slice().as_ptr();
         let len = chunk.len();
         return Some(unsafe { std::slice::from_raw_parts(data, len) });
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.total_len, Some(self.total_len))
     }
 }
 

@@ -276,10 +276,13 @@ impl<A: Allocator> BumpAllocator<A> {
     pub fn deallocate_item(&mut self, ptr: NonNull<u8>, layout: Layout) {
         self.stats.deallocations += 1;
 
+        // If the allocation is in the current chunk, try to reclaim its memory,
+        // otherwise it will be reclaimed at the end of the frame.
         if Chunk::contains_item(self.current_chunk, ptr) {
             unsafe { Chunk::deallocate_item(self.current_chunk, ptr, layout); }
         }
 
+        // Either way, count this as deallocated.
         self.allocation_count -= 1;
         debug_assert!(self.allocation_count >= 0);
     }
@@ -292,6 +295,8 @@ impl<A: Allocator> BumpAllocator<A> {
 
         self.stats.reallocations += 1;
 
+        // If we can, attempt to grow the existing allocation, otherwise just create a new one
+        // and copy. The original allocation's memory will be reclaimed at the end of the frame.
         if Chunk::contains_item(self.current_chunk, ptr) {
             if let Ok(alloc) = Chunk::grow_item(self.current_chunk, ptr, old_layout, new_layout) {
                 self.stats.allocated_bytes += new_layout.size() - old_layout.size();
