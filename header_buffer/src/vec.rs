@@ -92,6 +92,7 @@ impl<T, A: Allocator> Vector<T, A> {
     }
 
     crate::impl_vector_methods!();
+    crate::impl_vector_methods_with_allocator!();
 
     #[inline(always)]
     pub fn into_unmanaged(self) -> (UnmanagedVector<T>, A) {

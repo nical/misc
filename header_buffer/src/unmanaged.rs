@@ -29,6 +29,10 @@ impl<T> UnmanagedHeaderVector<(), T> {
             _marker: PhantomData,
         }
     }
+
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::new())
+    }
 }
 
 impl<H, T> UnmanagedHeaderVector<H, T> {
@@ -437,19 +441,13 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
     }
 
     pub fn truncate(&mut self, new_len: usize) {
-        let old_len = self.len();
-        if old_len <= new_len {
+        if self.len() <= new_len {
             return;
         }
 
         unsafe {
-            let mut elt = self.data.as_ptr().add(new_len);
-            let end = self.data.as_ptr().add(old_len);
-            while elt < end {
-                println!("   drop elt");
-                ptr::drop_in_place(elt);
-                elt = elt.add(1)
-            }
+            let elems: *mut [T] = &mut self[new_len..];
+            core::ptr::drop_in_place(elems);
         }
 
         self.len = new_len;
@@ -503,7 +501,7 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
     /// Returns number of elements that can be added without reallocating.
     #[inline]
     pub fn remaining_capacity(&self) -> usize {
-        self.capacity() - self.len
+        self.capacity() - self.len()
     }
 
     #[inline]
@@ -792,6 +790,18 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         }
         self.len += slice.len();
     }
+
+    pub fn into_raw_parts(self) -> (NonNull<T>, usize, usize) {
+        (
+            self.data,
+            self.len,
+            self.cap,
+        )
+    }
+
+    pub unsafe fn from_raw_parts(data: NonNull<T>, len: usize, cap: usize) -> Self {
+        UnmanagedHeaderVector { data, len, cap, _marker: PhantomData }
+    }
 }
 
 impl<H, T> Copy for UnmanagedHeaderVector<H, T> {}
@@ -926,4 +936,46 @@ fn realloc_zst_items() {
 
     unsafe { v.deallocate_in(&allocator); }
     assert_eq!(S_DROP_COUNT.load(SeqCst), 512);
+}
+
+#[test]
+fn clear() {
+    use std::rc::Rc;
+    let rc = Rc::new(());
+    let allocator = crate::alloc::Global;
+
+    let mut v = UnmanagedVector::new();
+    unsafe {
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        assert_eq!(Rc::strong_count(&rc), 5);
+
+        v.clear();
+        assert_eq!(Rc::strong_count(&rc), 1);
+
+        v.deallocate_in(&allocator);
+    }
+}
+
+#[test]
+fn truncate() {
+    use std::rc::Rc;
+    let rc = Rc::new(());
+    let allocator = crate::alloc::Global;
+
+    let mut v = UnmanagedVector::new();
+    unsafe {
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        v.push(rc.clone(), &allocator);
+        assert_eq!(Rc::strong_count(&rc), 5);
+
+        v.truncate(2);
+        assert_eq!(Rc::strong_count(&rc), 3);
+
+        v.deallocate_in(&allocator);
+    }
 }

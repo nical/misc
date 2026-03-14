@@ -11,13 +11,63 @@ pub mod frame_allocator;
 pub mod global;
 pub mod seg_vec;
 pub mod unmanaged;
-mod util;
 pub mod vec;
+pub mod header_vec;
+pub mod shared_vec;
+mod util;
 
 pub use crate::unmanaged::{UnmanagedVector, UnmanagedHeaderVector};
 pub use crate::vec::Vector;
 
 const MIN_CAPACITY: usize = 16;
+
+#[macro_export]
+macro_rules! impl_vector_methods_with_allocator {
+    () => {
+        /// Returns a reference to the underlying allocator.
+        #[inline(always)]
+        pub fn allocator(&self) -> &A {
+            &self.allocator
+        }
+
+        /// Appends an element to the back of a collection.
+        #[inline(always)]
+        pub fn push(&mut self, val: T) {
+            unsafe { self.inner.push(val, &self.allocator) }
+        }
+
+        /// Inserts an element at position index within the vector, shifting all
+        /// elements after it to the right.
+        #[inline(always)]
+        pub fn insert(&mut self, index: usize, element: T) {
+            unsafe {
+                self.inner.insert(index, element, &self.allocator);
+            }
+        }
+
+        /// Clones and appends all elements in a slice to the vector.
+        pub fn extend_from_slice(&mut self, slice: &[T])
+        where
+            T: Clone,
+        {
+            unsafe { self.inner.extend_from_slice(slice, &self.allocator) }
+        }
+
+        /// Shrinks the capacity of the vector with a lower bound.
+        pub fn shrink_to(&mut self, new_cap: usize) {
+            unsafe {
+                self.inner.shrink_to(new_cap, &self.allocator)
+            }
+        }
+
+        /// Shrinks the capacity of the vector as much as possible.
+        pub fn shrink_to_fit(&mut self) {
+            unsafe {
+                self.inner.shrink_to_fit(&self.allocator)
+            }
+        }
+    }
+}
 
 #[macro_export]
 macro_rules! impl_vector_methods {
@@ -51,12 +101,6 @@ macro_rules! impl_vector_methods {
             self.inner.set_len(new_len);
         }
 
-        /// Returns a reference to the underlying allocator.
-        #[inline(always)]
-        pub fn allocator(&self) -> &A {
-            &self.allocator
-        }
-
         /// Extracts a slice containing the entire vector.
         #[inline(always)]
         pub fn as_slice(&self) -> &[T] {
@@ -70,8 +114,17 @@ macro_rules! impl_vector_methods {
         }
 
         /// Clears the vector, removing all values.
+        #[inline(always)]
         pub fn clear(&mut self) {
             self.inner.clear()
+        }
+
+        /// Shortens the vector, keeping the first `len` elements and dropping the rest.
+        ///
+        /// If `len` is greater or equal to the vector’s current length, this has no effect.
+        #[inline(always)]
+        pub fn truncate(&mut self, len: usize) {
+            self.inner.truncate(len)
         }
 
         // TODO: get and similar functions are more expressive in the standard library.
@@ -102,12 +155,6 @@ macro_rules! impl_vector_methods {
             self.inner.get_unchecked_mut(index)
         }
 
-        /// Appends an element to the back of a collection.
-        #[inline(always)]
-        pub fn push(&mut self, val: T) {
-            unsafe { self.inner.push(val, &self.allocator) }
-        }
-
         /// Appends an element if there is sufficient spare capacity, otherwise
         /// an error is returned with the element.
         #[inline(always)]
@@ -134,37 +181,6 @@ macro_rules! impl_vector_methods {
         #[inline(always)]
         pub fn swap_remove(&mut self, index: usize) -> T {
             self.inner.swap_remove(index)
-        }
-
-        /// Inserts an element at position index within the vector, shifting all
-        /// elements after it to the right.
-        #[inline(always)]
-        pub fn insert(&mut self, index: usize, element: T) {
-            unsafe {
-                self.inner.insert(index, element, &self.allocator);
-            }
-        }
-
-        /// Clones and appends all elements in a slice to the vector.
-        pub fn extend_from_slice(&mut self, slice: &[T])
-        where
-            T: Clone,
-        {
-            unsafe { self.inner.extend_from_slice(slice, &self.allocator) }
-        }
-
-        /// Shrinks the capacity of the vector with a lower bound.
-        pub fn shrink_to(&mut self, new_cap: usize) {
-            unsafe {
-                self.inner.shrink_to(new_cap, &self.allocator)
-            }
-        }
-
-        /// Shrinks the capacity of the vector as much as possible.
-        pub fn shrink_to_fit(&mut self) {
-            unsafe {
-                self.inner.shrink_to_fit(&self.allocator)
-            }
         }
     };
 }
