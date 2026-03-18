@@ -278,7 +278,7 @@ impl<H: Clone, T: Clone, R: RefCount, A: Allocator + Clone> RefCountedHeaderVect
 
         unsafe {
             self.internal_header_ptr().as_mut().len -= 1;
-            Some(self.read_item(len))
+            Some(self.read_item(len - 1))
         }
     }
 

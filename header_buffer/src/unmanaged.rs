@@ -41,10 +41,10 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         util::is_zst::<H>() && (util::is_zst::<T>() || cap == 0)
     }
 
-    /// Creates an empty pre-allocated vector with a given storage size for items.
+    /// Creates an empty pre-allocated vector with a given storage size.
     ///
-    /// The specified storage size is only for items. Space for the header is automatically
-    /// included by this method.
+    /// The size is the total allocated buffer size including space for
+    /// the header if any.
     #[inline(never)]
     pub fn try_with_buffer_size_in<A: Allocator>(
         header: H,
@@ -121,7 +121,8 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
         allocator: &A,
     ) -> Result<Self, AllocError> {
         cap = cap.max(crate::MIN_CAPACITY);
-        let size = cap * mem::size_of::<T>();
+        let header_size = util::header_size::<H, T>();
+        let size = header_size + cap * mem::size_of::<T>();
         Self::try_with_buffer_size_in(header, size, init, allocator)
     }
 

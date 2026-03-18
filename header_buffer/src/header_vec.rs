@@ -101,7 +101,7 @@ impl<H, T, A: Allocator> Drop for HeaderVector<H, T, A> {
     }
 }
 
-impl<T: Clone, A: Allocator + Clone> Clone for HeaderVector<T, A> {
+impl<H: Clone, T: Clone, A: Allocator + Clone> Clone for HeaderVector<H, T, A> {
     fn clone(&self) -> Self {
         HeaderVector {
             inner: self.inner.clone_in(&self.allocator, self.capacity()),
