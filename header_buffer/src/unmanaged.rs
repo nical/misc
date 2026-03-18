@@ -940,6 +940,164 @@ fn realloc_zst_items() {
 }
 
 #[test]
+fn header_capacity_respects_requested_minimum() {
+    let allocator = crate::global::Global;
+    let mut v: UnmanagedHeaderVector<u64, u32> =
+        UnmanagedHeaderVector::with_capacity_in(7u64, 4, AllocInit::Uninit, &allocator);
+
+    assert_eq!(*v.header(), 7);
+    assert!(v.capacity() >= crate::MIN_CAPACITY);
+
+    unsafe { v.deallocate_in(&allocator); }
+}
+
+#[test]
+fn buffer_size_includes_header_space() {
+    let allocator = crate::global::Global;
+    let header_size = util::header_size::<u64, u32>();
+    let size = header_size + 4 * mem::size_of::<u32>();
+    let mut v = UnmanagedHeaderVector::with_buffer_size_in(9u64, size, AllocInit::Uninit, &allocator);
+
+    assert_eq!(*v.header(), 9);
+    assert_eq!(v.capacity(), 4);
+
+    for i in 0..4u32 {
+        let result = v.push_within_capacity(i);
+        assert!(result.is_ok());
+    }
+    assert_eq!(v.push_within_capacity(4), Err(4));
+
+    unsafe { v.deallocate_in(&allocator); }
+}
+
+#[test]
+fn reallocate_in_new_allocator_preserves_header_and_prefix() {
+    let old_allocator = crate::global::Global;
+    let new_allocator = crate::global::Global;
+    let mut v = UnmanagedHeaderVector::with_capacity_in(11u32, 8, AllocInit::Uninit, &old_allocator);
+
+    unsafe {
+        v.extend_from_slice(&[1u32, 2, 3, 4, 5, 6], &old_allocator);
+        v.try_realloc_in_new_allocator(4, &old_allocator, &new_allocator)
+            .unwrap();
+    }
+
+    assert_eq!(*v.header(), 11);
+    assert_eq!(v.len(), 4);
+    assert_eq!(v.capacity(), 4);
+    assert_eq!(v.as_slice(), &[1, 2, 3, 4]);
+
+    unsafe { v.deallocate_in(&new_allocator); }
+}
+
+#[test]
+fn insert_remove_swap_remove_and_pop_work() {
+    let allocator = crate::global::Global;
+    let mut v = UnmanagedHeaderVector::with_capacity_in(5u32, 8, AllocInit::Uninit, &allocator);
+
+    unsafe {
+        v.extend_from_slice(&[1u32, 2, 3], &allocator);
+        v.insert(1, 9, &allocator);
+    }
+    assert_eq!(*v.header(), 5);
+    assert_eq!(v.as_slice(), &[1, 9, 2, 3]);
+
+    assert_eq!(v.remove(2), 2);
+    assert_eq!(v.as_slice(), &[1, 9, 3]);
+
+    assert_eq!(v.swap_remove(0), 1);
+    assert_eq!(v.len(), 2);
+    assert_eq!(v.as_slice(), &[3, 9]);
+
+    assert_eq!(v.pop(), Some(9));
+    assert_eq!(v.pop(), Some(3));
+    assert_eq!(v.pop(), None);
+
+    unsafe { v.deallocate_in(&allocator); }
+}
+
+#[test]
+fn extend_variants_respect_capacity() {
+    let allocator = crate::global::Global;
+    let header_size = util::header_size::<u32, u32>();
+    let size = header_size + 4 * mem::size_of::<u32>();
+    let mut v = UnmanagedHeaderVector::with_buffer_size_in(3u32, size, AllocInit::Uninit, &allocator);
+
+    unsafe {
+        v.push_assuming_capacity(1);
+    }
+    assert_eq!(v.push_within_capacity(2), Ok(()));
+
+    unsafe {
+        v.extend_from_slice_within_capacity(&[3, 4, 5]);
+    }
+    assert_eq!(v.as_slice(), &[1, 2, 3, 4]);
+    assert_eq!(v.remaining_capacity(), 0);
+
+    unsafe {
+        assert!(v.try_extend_from_slice(&[6], &allocator).is_ok());
+    }
+    assert_eq!(v.as_slice(), &[1, 2, 3, 4, 6]);
+    assert_eq!(*v.header(), 3);
+
+    unsafe { v.deallocate_in(&allocator); }
+}
+
+#[test]
+fn clone_and_shrink_preserve_header_and_contents() {
+    let allocator = crate::global::Global;
+    let mut v = UnmanagedHeaderVector::with_capacity_in(13u32, 16, AllocInit::Uninit, &allocator);
+
+    unsafe {
+        v.extend_from_slice(&[1u32, 2, 3, 4, 5], &allocator);
+    }
+
+    let mut clone = v.clone_in(&allocator, 32);
+    assert_eq!(*clone.header(), 13);
+    assert_eq!(clone.as_slice(), &[1, 2, 3, 4, 5]);
+    assert!(clone.capacity() >= 32);
+
+    clone.header_mut().clone_from(&99);
+    clone.as_mut_slice()[0] = 42;
+
+    assert_eq!(*v.header(), 13);
+    assert_eq!(v.as_slice(), &[1, 2, 3, 4, 5]);
+
+    unsafe {
+        v.shrink_to_fit(&allocator);
+    }
+    assert_eq!(*v.header(), 13);
+    assert_eq!(v.capacity(), v.len());
+    assert_eq!(v.as_slice(), &[1, 2, 3, 4, 5]);
+
+    unsafe {
+        clone.deallocate_in(&allocator);
+        v.deallocate_in(&allocator);
+    }
+}
+
+#[test]
+fn raw_parts_roundtrip_preserves_state() {
+    let allocator = crate::global::Global;
+    let mut v = UnmanagedHeaderVector::with_capacity_in(21u32, 8, AllocInit::Uninit, &allocator);
+
+    unsafe {
+        v.extend_from_slice(&[7u32, 8, 9], &allocator);
+    }
+
+    let cap = v.capacity();
+    let (data, len, cap2) = v.into_raw_parts();
+    assert_eq!(cap2, cap);
+
+    let mut v = unsafe { UnmanagedHeaderVector::<u32, u32>::from_raw_parts(data, len, cap2) };
+    assert_eq!(*v.header(), 21);
+    assert_eq!(v.as_slice(), &[7, 8, 9]);
+    assert_eq!(v.capacity(), cap);
+
+    unsafe { v.deallocate_in(&allocator); }
+}
+
+#[test]
 fn clear() {
     use std::rc::Rc;
     let rc = Rc::new(());
