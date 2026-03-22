@@ -8,3 +8,8 @@ allocator-api2 = "0.2.18"
 
 [dev-dependencies]
 allocator-api2-tests = "0.2.15"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "push"
+harness = false

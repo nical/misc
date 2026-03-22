@@ -50,28 +50,25 @@ impl<T> UnmanagedSegmentedVector<T> {
     }
 
     pub unsafe fn deallocate_in<A: Allocator>(&mut self, allocator: &A) {
-        if self.last_header.is_null() {
-            // TODO: Ugly workaround for using dangling vectors with headers
-            // when they are empty.
-            // TODO: this leaks when only one chunk exists because last_header
-            // is on set to a non-null value when a second chunk is allocated.
-            return;
-        }
-
-        let mut iter = self.first;
-        loop {
-            if iter.is_empty() {
-                break;
-            }
-            let next = iter.header().next;
-            unsafe {
+        // Walk the linked list of retired chunks.
+        if !self.last_header.is_null() {
+            let mut iter = self.first;
+            loop {
+                if iter.is_empty() {
+                    break;
+                }
+                let next = iter.header().next;
                 iter.deallocate_in(allocator);
+                iter = next;
             }
-            iter = next;
         }
 
-        self.current.deallocate_in(allocator);
+        // Deallocate the current chunk if it's a real allocation.
+        if self.current.capacity() > 0 {
+            self.current.deallocate_in(allocator);
+        }
 
+        self.current = Chunk::dangling();
         self.first = Chunk::dangling();
         self.last_header = ptr::null_mut();
         self.len = 0;
@@ -96,12 +93,17 @@ impl<T> UnmanagedSegmentedVector<T> {
     unsafe fn add_chunk<A: Allocator>(&mut self, allocator: &A) {
         let cap = self.current.capacity().max(crate::MIN_CAPACITY) * 2;
 
-        if self.last_header.is_null() {
-            self.first = self.current;
-        } else {
-            (*self.last_header).next = self.current;
+        // Only link the current chunk into the retired list if it's a
+        // real allocation (not dangling). A dangling chunk has no valid
+        // header to read or link through.
+        if self.current.capacity() > 0 {
+            if self.last_header.is_null() {
+                self.first = self.current;
+            } else {
+                (*self.last_header).next = self.current;
+            }
+            self.last_header = self.current.header_ptr().as_ptr();
         }
-        self.last_header = self.current.header_ptr().as_ptr();
 
         self.current = Chunk::<T>::with_capacity_in(
             Header { next: Chunk::dangling() },
@@ -180,6 +182,26 @@ fn seg_empty() {
 
     let mut empty: UnmanagedSegmentedVector<i32> = UnmanagedSegmentedVector::new();
     unsafe { empty.deallocate_in(&allocator); }
+}
+
+#[test]
+fn push_from_empty() {
+    let allocator = crate::global::Global;
+    let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::new();
+    for i in 0..200 {
+        unsafe { v.push(i, &allocator); }
+    }
+
+    let mut idx = 0;
+    for chunk in v.chunks() {
+        for &item in chunk {
+            assert_eq!(item, idx);
+            idx += 1;
+        }
+    }
+    assert_eq!(v.len(), 200);
+
+    unsafe { v.deallocate_in(&allocator); }
 }
 
 #[test]

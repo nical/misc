@@ -10,6 +10,7 @@ pub mod allocator;
 pub mod frame_allocator;
 pub mod global;
 pub mod seg_vec;
+pub mod seg_vec2;
 pub mod unmanaged;
 pub mod vec;
 pub mod header_vec;
