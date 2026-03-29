@@ -12,6 +12,7 @@ pub mod global;
 pub mod seg_vec;
 pub mod seg_vec2;
 pub mod unmanaged;
+pub mod unmanaged_slim;
 pub mod vec;
 pub mod header_vec;
 pub mod shared_vec;

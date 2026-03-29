@@ -37,6 +37,17 @@ fn bench_push(c: &mut Criterion) {
             });
         });
 
+        group.bench_with_input(BenchmarkId::new("unmanaged_slim", n), &n, |b, &n| {
+            b.iter(|| unsafe {
+                use header_buffer::unmanaged_slim::{UnmanagedVector2, AllocInit};
+                let mut v = UnmanagedVector2::with_capacity_in((), CAP, AllocInit::Uninit, &allocator);
+                for i in 0..n {
+                    v.push(val(i), &allocator);
+                }
+                v.deallocate_in(&allocator);
+            });
+        });
+
         //group.bench_with_input(BenchmarkId::new("vector", n), &n, |b, &n| {
         //    b.iter(|| {
         //        let mut v = header_buffer::Vector::<Item>::with_capacity(CAP);

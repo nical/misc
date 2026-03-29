@@ -6,6 +6,9 @@ use core::ptr::{self, NonNull};
 use core::ops::{Index, IndexMut, Deref, DerefMut};
 use core::fmt::Debug;
 
+// Note: switch len and cap to use causes a 10% regression on the push
+// benchmark.
+
 pub type UnmanagedVector<T> = UnmanagedHeaderVector<(), T>;
 
 pub enum AllocInit {
@@ -503,6 +506,11 @@ impl<H, T> UnmanagedHeaderVector<H, T> {
     #[inline]
     pub fn remaining_capacity(&self) -> usize {
         self.capacity() - self.len()
+    }
+
+    #[inline(always)]
+    pub fn is_full(&self) -> bool {
+        self.len == self.cap
     }
 
     #[inline]
@@ -1136,5 +1144,39 @@ fn truncate() {
         assert_eq!(Rc::strong_count(&rc), 3);
 
         v.deallocate_in(&allocator);
+    }
+}
+
+#[test]
+fn test_bench_unmanaged() {
+    const CAP: usize = 16;
+    const N: usize = 100;
+    type Item = [u32; 8];
+    fn val(i: usize) -> Item {
+        [i as u32; 8]
+    }
+
+    unsafe {
+        let allocator = crate::alloc::Global;
+        let mut v = UnmanagedVector::with_capacity_in((), CAP, AllocInit::Uninit, &allocator);
+        for i in 0..N {
+            v.push(val(i), &allocator);
+        }
+        v.deallocate_in(&allocator);
+    }
+}
+
+#[test]
+fn test_bench_std() {
+    const CAP: usize = 16;
+    const N: usize = 100;
+    type Item = [u32; 8];
+    fn val(i: usize) -> Item {
+        [i as u32; 8]
+    }
+
+    let mut v = Vec::with_capacity(CAP);
+    for i in 0..N {
+        v.push(val(i));
     }
 }
