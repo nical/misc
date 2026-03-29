@@ -70,7 +70,7 @@ impl ChunkPool {
                 alloc.cast()
             }
         };
-        println!(" + alloc chunk {:?}", chunk);
+        //println!(" + alloc chunk {:?}", chunk);
 
         let chunk_start: *mut u8 = chunk.cast().as_ptr();
 
@@ -117,7 +117,7 @@ impl ChunkPool {
                 let size = chunk.as_ref().size;
                 if size != DEFAULT_CHUNK_SIZE {
                     let layout = Layout::from_size_align(size, CHUNK_ALIGNMENT).unwrap();
-                    println!(" - dealloc large chunk {:?}", chunk);
+                    //println!(" - dealloc large chunk {:?}", chunk);
                     Global.deallocate(chunk.cast(), layout);
                     continue;
                 }
@@ -168,7 +168,7 @@ impl ChunkPool {
                     DEFAULT_CHUNK_SIZE,
                     CHUNK_ALIGNMENT
                 ).unwrap();
-                println!(" - dealloc chunk {:?}", chunk);
+                //println!(" - dealloc chunk {:?}", chunk);
                 Global.deallocate(chunk.cast(), layout);
             }
 
