@@ -606,6 +606,7 @@ dependencies = [
  "rectangles",
  "render_graph",
  "resource_cache",
+ "slug",
  "stencil",
  "stroke",
  "tess",
@@ -2319,6 +2320,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbff4acf519f630b3a3ddcfaea6c06b42174d9a44bc70c620e9ed1649d58b82a"
 dependencies = [
  "version_check",
+]
+
+[[package]]
+name = "slug"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "lyon",
+ "profiling",
 ]
 
 [[package]]

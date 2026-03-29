@@ -40,6 +40,7 @@ use std::time::{Instant, Duration};
 use stencil::{StencilAndCoverRenderer, StencilAndCover};
 use tess::{MeshRenderer, Tessellation};
 use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
+use slug::{Slug, SlugRenderer};
 //use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
@@ -63,7 +64,8 @@ const TILING: usize = 0;
 const STENCIL: usize = 1;
 //const TESS: usize = 2;
 const WPF: usize = 3;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf"];
+const SLUG: usize = 4;
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf", "slug"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -78,6 +80,7 @@ struct Renderers {
     wpf: WpfMeshRenderer,
     rectangles: RectangleRenderer,
     msaa_strokes: MsaaStrokeRenderer,
+    slug: SlugRenderer,
 }
 
 impl Renderers {
@@ -88,6 +91,7 @@ impl Renderers {
         self.wpf.begin_frame();
         self.rectangles.begin_frame();
         self.msaa_strokes.begin_frame();
+        self.slug.begin_frame();
     }
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
@@ -96,6 +100,7 @@ impl Renderers {
             &mut self.stencil as &mut dyn FillPath,
             &mut self.meshes as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
+            &mut self.slug as &mut dyn FillPath,
         ][idx]
     }
 }
@@ -362,6 +367,7 @@ impl App {
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &tessellation, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
+        let slug_factory = Slug::new(&device, &mut instance.shaders);
 
         let mut renderers = Renderers {
             tiling: tiling.new_renderer(
@@ -379,6 +385,7 @@ impl App {
             rectangles: rectangles.new_renderer(3),
             wpf: wpf.new_renderer(4),
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
+            slug: slug_factory.new_renderer(6),
         };
 
         renderers.tiling.tolerance = tolerance;
@@ -768,6 +775,7 @@ impl App {
             &mut self.renderers.rectangles,
             &mut self.renderers.wpf,
             &mut self.renderers.msaa_strokes,
+            &mut self.renderers.slug,
         ];
 
         graph.schedule(&mut frame).unwrap();
@@ -1699,6 +1707,18 @@ impl FillPath for MeshRenderer {
 }
 
 impl FillPath for WpfMeshRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, path, pattern);
+    }
+}
+
+impl FillPath for SlugRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,
