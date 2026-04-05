@@ -440,6 +440,7 @@ impl GpuBufferResources {
                     });
                     *handle = Some(buffer);
                     *allocated_size = size;
+                    self.epoch += 1;
                 }
 
                 let dst = handle.as_ref().unwrap();

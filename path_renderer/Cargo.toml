@@ -11,6 +11,7 @@ members = [
     "renderers/wpf",
     "renderers/msaa_stroke",
     "renderers/template",
+    "renderers/vger",
     "patterns/color",
     "patterns/gradients",
     "patterns/checkerboard",

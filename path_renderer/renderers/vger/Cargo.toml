@@ -1,0 +1,10 @@
+[package]
+name = "vger"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+workspace = "../.."
+
+[dependencies]
+core = { path = "../../core" }
+profiling = "1.0.4"

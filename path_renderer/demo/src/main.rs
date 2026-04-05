@@ -41,6 +41,7 @@ use stencil::{StencilAndCoverRenderer, StencilAndCover};
 use tess::{MeshRenderer, Tessellation};
 use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 use slug::{Slug, SlugRenderer};
+use vger::{Vger, VgerRenderer};
 //use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
@@ -65,7 +66,8 @@ const STENCIL: usize = 1;
 //const TESS: usize = 2;
 const WPF: usize = 3;
 const SLUG: usize = 4;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf", "slug"];
+const VGER: usize = 5;
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf", "slug", "vger"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -81,6 +83,7 @@ struct Renderers {
     rectangles: RectangleRenderer,
     msaa_strokes: MsaaStrokeRenderer,
     slug: SlugRenderer,
+    vger: VgerRenderer,
 }
 
 impl Renderers {
@@ -92,6 +95,7 @@ impl Renderers {
         self.rectangles.begin_frame();
         self.msaa_strokes.begin_frame();
         self.slug.begin_frame();
+        self.vger.begin_frame();
     }
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
@@ -101,6 +105,7 @@ impl Renderers {
             &mut self.meshes as &mut dyn FillPath,
             &mut self.wpf as &mut dyn FillPath,
             &mut self.slug as &mut dyn FillPath,
+            &mut self.vger as &mut dyn FillPath,
         ][idx]
     }
 }
@@ -368,6 +373,7 @@ impl App {
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
         let slug_factory = Slug::new(&device, &mut instance.shaders);
+        let vger = Vger::new(&device, &mut instance.shaders);
 
         let mut renderers = Renderers {
             tiling: tiling.new_renderer(
@@ -386,6 +392,7 @@ impl App {
             wpf: wpf.new_renderer(4),
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
             slug: slug_factory.new_renderer(6),
+            vger: vger.new_renderer(&device, &instance.shaders, 7),
         };
 
         renderers.tiling.tolerance = tolerance;
@@ -776,6 +783,7 @@ impl App {
             &mut self.renderers.wpf,
             &mut self.renderers.msaa_strokes,
             &mut self.renderers.slug,
+            &mut self.renderers.vger,
         ];
 
         graph.schedule(&mut frame).unwrap();
@@ -1727,5 +1735,17 @@ impl FillPath for SlugRenderer {
         pattern: BuiltPattern,
     ) {
         self.fill_path(ctx, transform, path, pattern);
+    }
+}
+
+impl FillPath for VgerRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, &path, pattern);
     }
 }
