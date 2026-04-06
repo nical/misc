@@ -69,7 +69,7 @@ const TESS: usize = 2;
 const WPF: usize = 3;
 const SLUG: usize = 4;
 const VGER: usize = 5;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil and cover", "tessellation", "wpf", "slug", "vger"];
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil-and-cover", "tessellation", "wpf", "slug", "vger"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -223,7 +223,17 @@ impl App {
                 println!("tolerance: {}", tolerance);
             }
             if read_fill {
-                fill_renderer = arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len();
+                let mut index = None;
+                for (idx, name) in FILL_RENDERER_STRINGS.iter().enumerate() {
+                    if name.starts_with(arg.as_str()) {
+                        index = Some(idx);
+                        break;
+                    }
+                }
+
+                fill_renderer = index.unwrap_or_else(||{
+                    arg.parse::<usize>().unwrap() % FILL_RENDERER_STRINGS.len()
+                })
             }
             if read_occlusion {
                 cpu_occlusion = Some(arg.contains("cpu") || arg.contains("all"));
@@ -440,7 +450,7 @@ impl App {
             return None;
         }
 
-        let scene_idx = if png_out.is_some() { 0 } else { 1 };
+        let scene_idx = 0;
 
         let surface_desc = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
