@@ -217,6 +217,7 @@ impl App {
         let mut png_size = None;
         let mut read_size = false;
         let mut gpu_profiling_enabled = false;
+        let mut overlay_enabled = false;
         for arg in &args {
             if read_tolerance {
                 tolerance = arg.parse::<f32>().unwrap();
@@ -282,6 +283,7 @@ impl App {
             read_size = arg == "--size";
             parallel |= arg == "--parallel";
             gpu_profiling_enabled |= arg == "--gpu-profiling";
+            overlay_enabled |= arg == "--overlay";
         }
 
         let scale_factor = 2.0;
@@ -484,7 +486,7 @@ impl App {
             stroke_renderer: 0,
             msaa: MsaaMode::Auto,
             scene_idx,
-            debug_overlay: false,
+            debug_overlay: overlay_enabled,
             debug_mode: 5,
         };
 
