@@ -333,6 +333,8 @@ impl MsaaStrokeRenderer {
 }
 
 impl core::Renderer for MsaaStrokeRenderer {
+    fn name(&self) -> &'static str { "msaa-stroke" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         self.prepare_impl(ctx, passes);
     }

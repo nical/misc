@@ -194,6 +194,8 @@ impl RectangleRenderer {
 }
 
 impl core::Renderer for RectangleRenderer {
+    fn name(&self) -> &'static str { "rectangles" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, _passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;

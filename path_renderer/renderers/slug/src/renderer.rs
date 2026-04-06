@@ -140,6 +140,8 @@ impl SlugRenderer {
 }
 
 impl core::Renderer for SlugRenderer {
+    fn name(&self) -> &'static str { "slug" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, _passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;

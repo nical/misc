@@ -126,6 +126,8 @@ impl TemplateRenderer {
 }
 
 impl core::Renderer for TemplateRenderer {
+    fn name(&self) -> &'static str { "TODO" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;

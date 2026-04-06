@@ -49,6 +49,8 @@ use pattern_color::SolidColorRenderer;
 use pattern_texture::TextureRenderer;
 use pattern_gradients::{ConicGradientDescriptor, ExtendMode, GradientRenderer, GradientStop, LinearGradientDescriptor, RadialGradientDescriptor};
 
+use core::transfer::Transfer;
+
 use futures::executor::block_on;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -63,7 +65,7 @@ use load_svg::*;
 
 const TILING: usize = 0;
 const STENCIL: usize = 1;
-//const TESS: usize = 2;
+const TESS: usize = 2;
 const WPF: usize = 3;
 const SLUG: usize = 4;
 const VGER: usize = 5;
@@ -137,6 +139,7 @@ struct App {
     wgpu_counters: counters::wgpu::Ids,
     renderer_counters: counters::render::Ids,
     paths: Vec<(Arc<Path>, Option<SvgPattern>, Option<Stroke>)>,
+    png_out: Option<String>,
 
     asap: bool,
     z_buffer: Option<bool>,
@@ -174,7 +177,10 @@ impl ApplicationHandler for AppState {
         this.update_inputs(event_loop, id, event);
 
         if this.view.render {
-            this.render();
+            if this.render() {
+                // PNG was saved, exit.
+                event_loop.exit();
+            }
         }
 
         if event_loop.exiting() {
@@ -199,6 +205,7 @@ impl App {
         let mut read_tolerance = false;
         let mut read_fill = false;
         let mut read_shader_name = false;
+        let mut read_png_out = false;
         let mut antialiasing = tiling::AaMode::AreaCoverage;
         let mut read_occlusion = false;
         let mut parallel = false;
@@ -206,6 +213,9 @@ impl App {
         let mut cpu_occlusion = None;
         let mut fill_renderer = 0;
         let mut print_shader = None;
+        let mut png_out = None;
+        let mut png_size = None;
+        let mut read_size = false;
         let mut gpu_profiling_enabled = false;
         for arg in &args {
             if read_tolerance {
@@ -221,6 +231,19 @@ impl App {
             }
             if read_shader_name {
                 print_shader = Some(arg.to_string());
+            }
+            if read_png_out {
+                png_out = Some(arg.to_string());
+            }
+            if read_size {
+                let parts: Vec<&str> = arg.split('x').collect();
+                if parts.len() == 2 {
+                    let w = parts[0].parse::<u32>().expect("Invalid width in --size WxH");
+                    let h = parts[1].parse::<u32>().expect("Invalid height in --size WxH");
+                    png_size = Some((w, h));
+                } else {
+                    panic!("--size expects WxH format, e.g. --size 800x600");
+                }
             }
             if arg == "--x11" {
                 // This used to get this demo to work in renderdoc (with the gl backend) but now
@@ -245,13 +268,19 @@ impl App {
             read_fill = arg == "--fill";
             read_shader_name = arg == "--print-shader";
             read_occlusion = arg == "--occlusion";
+            read_png_out = arg == "--png";
+            read_size = arg == "--size";
             parallel |= arg == "--parallel";
             gpu_profiling_enabled |= arg == "--gpu-profiling";
         }
 
         let scale_factor = 2.0;
 
-        let window_size = window.inner_size();
+        let window_size = if let Some((w, h)) = png_size {
+            PhysicalSize::new(w, h)
+        } else {
+            window.inner_size()
+        };
 
         let backends = if force_gl {
             wgpu::Backends::GL
@@ -411,6 +440,8 @@ impl App {
             return None;
         }
 
+        let scene_idx = if png_out.is_some() { 0 } else { 1 };
+
         let surface_desc = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: wgpu::TextureFormat::Bgra8Unorm,
@@ -438,12 +469,14 @@ impl App {
             fill_renderer,
             stroke_renderer: 0,
             msaa: MsaaMode::Auto,
-            scene_idx: 0,
+            scene_idx,
             debug_overlay: false,
             debug_mode: 5,
         };
 
         let graph_namespace = instance.create_bindings_namespace();
+
+        update_title(&window, view.fill_renderer, view.stroke_renderer, view.msaa);
 
         Some(App {
             window,
@@ -462,6 +495,7 @@ impl App {
             wgpu_counters,
             renderer_counters,
             paths,
+            png_out,
             asap,
             z_buffer,
         })
@@ -579,8 +613,10 @@ impl App {
         }
     }
 
-    fn render(&mut self) {
-        if self.view.size_changed {
+    fn render(&mut self) -> bool {
+        let render_to_png = self.png_out.is_some();
+
+        if self.view.size_changed && !render_to_png {
             self.view.size_changed = false;
             let physical = self.view.window_size;
             self.surface_desc.width = physical.width as u32;
@@ -589,25 +625,29 @@ impl App {
         }
 
         if !self.view.render {
-            return;
+            return false;
         }
         self.view.render = false;
-        //self.view.debug_mode = self.view.debug_mode % 7;
 
-        let wgpu_frame = match self.surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(e) => {
-                println!("Swap-chain error: {:?}", e);
-                return;
-            }
-        };
+        let wgpu_frame;
+        let frame_view;
+        if !render_to_png {
+            wgpu_frame = match self.surface.get_current_texture() {
+                Ok(texture) => Some(texture),
+                Err(e) => {
+                    println!("Swap-chain error: {:?}", e);
+                    return false;
+                }
+            };
 
-        //println!("\n\n\n ----- \n\n");
-
-        let frame_view = wgpu_frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.instance.shaders.defaults.color_format()),
-            ..Default::default()
-        });
+            frame_view = Some(wgpu_frame.as_ref().unwrap().texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.instance.shaders.defaults.color_format()),
+                ..Default::default()
+            }));
+        } else {
+            wgpu_frame = None;
+            frame_view = None;
+        }
 
         let size = SurfaceIntSize::new(self.view.window_size.width, self.view.window_size.height);
 
@@ -627,7 +667,7 @@ impl App {
 
         self.overlay.begin_frame();
 
-        if self.view.debug_overlay {
+        if self.view.debug_overlay && !render_to_png {
 
             self.overlay.style.min_group_width = 490;
 
@@ -708,18 +748,27 @@ impl App {
 
         let record_start = Instant::now();
 
-        let test_stuff = self.view.scene_idx == 0;
+        let test_stuff = self.view.scene_idx == 1;
 
         let depth = self.z_buffer.unwrap_or(self.view.fill_renderer != TILING);
         let stencil = self.view.fill_renderer == STENCIL;
         let msaa = if self.view.fill_renderer == TILING || self.view.fill_renderer == WPF { msaa_tiling } else { msaa_default };
         let clear = !test_stuff;
 
-        let attachments = [
-            ColorAttachment::color()
-                .with_external(0, false)
-                .cleared(clear)
-        ];
+        let attachments = if render_to_png {
+            [
+                ColorAttachment {
+                    kind: core::resources::TextureKind::color().with_copy_src(),
+                    ..ColorAttachment::color().cleared(clear)
+                }
+            ]
+        } else {
+            [
+                ColorAttachment::color()
+                    .with_external(0, false)
+                    .cleared(clear)
+            ]
+        };
         let mut descriptor = RenderNodeDescriptor::new(size)
             .msaa(msaa)
             .attachments(&attachments);
@@ -731,6 +780,12 @@ impl App {
         let mut main_surface = graph.add_render_node(&mut f32_buffer, descriptor);
         std::mem::drop(f32_buffer);
         graph.add_root(&main_surface);
+
+        let readback_binding = if render_to_png {
+            Some(main_surface.color(0).get_binding())
+        } else {
+            None
+        };
 
         let tx = self.view.pan[0].round();
         let ty = self.view.pan[1].round();
@@ -763,19 +818,21 @@ impl App {
         let frame_build_start = Instant::now();
         let record_time = frame_build_start - record_start;
 
-        // TODO
-        self.stats_renderer.update(
-            &self.overlay.geometry,
-            (size.width as u32, size.height as u32),
-            1.0,
-            &self.device,
-            &self.queue,
-        );
+        if !render_to_png {
+            // TODO
+            self.stats_renderer.update(
+                &self.overlay.geometry,
+                (size.width as u32, size.height as u32),
+                1.0,
+                &self.device,
+                &self.queue,
+            );
+        }
 
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut renderers = &mut [
+        let renderers = &mut [
             &mut self.renderers.tiling as &mut dyn Renderer,
             &mut self.renderers.stencil,
             &mut self.renderers.meshes,
@@ -788,20 +845,47 @@ impl App {
 
         graph.schedule(&mut frame).unwrap();
 
-        let external_attachments = [Some(&frame_view)];
+        // Set up the readback transfer for PNG output.
+        let readback_receiver = if let Some(binding) = readback_binding {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            frame.passes.push_transfer(Transfer::ReadbackTexture {
+                src: binding,
+                rect: None,
+                callback: Some(Box::new(move |result| {
+                    let readback = result.unwrap();
+                    let mut data = Vec::with_capacity(readback.data.len());
+                    data.extend_from_slice(readback.data);
+                    sender.send((
+                        data,
+                        readback.size.width as u32,
+                        readback.size.height as u32,
+                    )).unwrap();
+                })),
+            });
+            Some(receiver)
+        } else {
+            None
+        };
+
+        let external_attachments: &[Option<&wgpu::TextureView>] = if render_to_png {
+            &[]
+        } else {
+            &[frame_view.as_ref()]
+        };
         let stats = self.instance.render_frame(
             frame,
             &[],
-            &external_attachments,
+            external_attachments,
             &mut encoder,
             renderers
         );
 
-        if self.view.debug_overlay {
+        if self.view.debug_overlay && !render_to_png {
+            let fv = frame_view.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Debug overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
+                    view: fv,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -817,14 +901,35 @@ impl App {
             self.stats_renderer.render(&mut render_pass);
         }
 
-        let present_start = Instant::now();
-
         self.queue.submit(Some(encoder.finish()));
 
-        self.window.pre_present_notify();
-        wgpu_frame.present();
+        if let Some(receiver) = readback_receiver {
+            // end_frame issues the buffer.map_async for pending readbacks.
+            self.instance.end_frame();
 
-        let present_time = Instant::now() - present_start;
+            // Wait for the readback to complete and save to PNG.
+            let (data, width, height) = loop {
+                match receiver.try_recv() {
+                    Ok(result) => break result,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.device.poll(wgpu::PollType::Wait {
+                            timeout: Some(Duration::from_millis(100)),
+                            submission_index: None,
+                        }).unwrap();
+                    }
+                    Err(e) => panic!("Readback failed: {:?}", e),
+                }
+            };
+
+            let png_path = self.png_out.as_ref().unwrap();
+            save_png(png_path, &data, width, height);
+            println!("Saved {width}x{height} PNG to {png_path}");
+
+            return true;
+        }
+
+        self.window.pre_present_notify();
+        wgpu_frame.unwrap().present();
 
         self.instance.end_frame();
 
@@ -835,7 +940,7 @@ impl App {
         let rec_t = ms(record_time);
         let fbt = stats.prepare_time_ms;
         let rt = stats.upload_time_ms + stats.render_time_ms;
-        let pt = ms(present_time);
+        let pt = 0.0;
         self.counters.set(self.renderer_counters.batching(), rec_t);
         self.counters.set(self.renderer_counters.prepare(), fbt);
         self.counters.set(self.renderer_counters.render(), rt);
@@ -857,7 +962,31 @@ impl App {
         }
 
         self.device.poll(wgpu::PollType::Poll).unwrap();
+
+        false
     }
+}
+
+fn save_png(path: &str, data: &[u8], width: u32, height: u32) {
+    use std::io::BufWriter;
+
+    let file = std::fs::File::create(path).expect("Failed to create PNG file");
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    // The render target format is Bgra8Unorm, so we need to swizzle B and R.
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder.write_header().unwrap();
+
+    // Swizzle BGRA -> RGBA
+    let mut rgba = Vec::with_capacity(data.len());
+    for pixel in data.chunks(4) {
+        rgba.push(pixel[2]); // R (was B)
+        rgba.push(pixel[1]); // G
+        rgba.push(pixel[0]); // B (was R)
+        rgba.push(pixel[3]); // A
+    }
+    png_writer.write_image_data(&rgba).unwrap();
 }
 
 fn main() {

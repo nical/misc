@@ -737,6 +737,8 @@ fn generate_cover_geometry(
 }
 
 impl core::Renderer for StencilAndCoverRenderer {
+    fn name(&self) -> &'static str { "stencil-and-cover" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         // TODO: measure and adjust the batch count threshold.
         if self.parallel && self.batches.batch_count() > 16 {

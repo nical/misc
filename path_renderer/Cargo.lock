@@ -602,6 +602,7 @@ dependencies = [
  "pattern_corner",
  "pattern_gradients",
  "pattern_texture",
+ "png",
  "profiling",
  "rectangles",
  "render_graph",

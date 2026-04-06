@@ -298,6 +298,8 @@ impl WpfMeshRenderer {
 }
 
 impl core::Renderer for WpfMeshRenderer {
+    fn name(&self) -> &'static str { "wpf" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         self.prepare_impl(ctx, passes);
     }

@@ -490,6 +490,8 @@ const CMD_FLAGS_OPAQUE: u8 = 1;
 const CMD_FLAGS_MASKED: u8 = 2;
 
 impl core::Renderer for TileRenderer {
+    fn name(&self) -> &'static str { "tiles" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         if self.parallel {
             self.prepare_parallel(ctx, passes);

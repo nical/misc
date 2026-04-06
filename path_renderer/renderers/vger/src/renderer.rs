@@ -268,6 +268,8 @@ impl VgerRenderer {
 }
 
 impl core::Renderer for VgerRenderer {
+    fn name(&self) -> &'static str { "vger" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, _passes: &[BuiltRenderPass]) {
         if self.batches.is_empty() {
             return;

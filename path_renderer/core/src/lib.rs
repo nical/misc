@@ -374,6 +374,8 @@ impl RendererStats {
 }
 
 pub trait Renderer {
+    fn name(&self) -> &'static str;
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]);
 
     fn upload(&mut self, _ctx: &mut UploadContext) -> UploadStats { UploadStats::default() }

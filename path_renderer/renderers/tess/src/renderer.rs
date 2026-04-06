@@ -425,6 +425,8 @@ impl MeshRenderer {
 }
 
 impl core::Renderer for MeshRenderer {
+    fn name(&self) -> &'static str { "meshes" }
+
     fn prepare(&mut self, ctx: &mut PrepareContext, passes: &[BuiltRenderPass]) {
         self.prepare_impl(ctx, passes);
     }
