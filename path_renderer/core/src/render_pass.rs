@@ -587,6 +587,8 @@ impl RenderCommands {
 
         let mut wgpu_pass = ctx.encoder.begin_render_pass(&pass_descriptor);
 
+        let profiler_query = ctx.gpu_profiler.begin_query("render pass", &mut wgpu_pass);
+
         let base_bind_group = ctx.resources.common.get_base_bindgroup();
         wgpu_pass.set_bind_group(0, base_bind_group, &[]);
 
@@ -699,6 +701,8 @@ impl RenderCommands {
                 &mut wgpu_pass,
             );
         }
+
+        ctx.gpu_profiler.end_query(&mut wgpu_pass, profiler_query);
     }
 
     pub fn render_commands<'pass, 'resources: 'pass>(
@@ -714,6 +718,7 @@ impl RenderCommands {
         gpu_profiler: &'resources GpuProfiler,
         wgpu_pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        let query = gpu_profiler.begin_query(renderers[renderer_idx].name(), wgpu_pass);
         let start_time = std::time::Instant::now();
         let stats = &mut stats[renderer_idx];
         renderers[renderer_idx].render(
@@ -730,6 +735,7 @@ impl RenderCommands {
         );
 
         let time = crate::instance::ms(std::time::Instant::now() - start_time);
+        gpu_profiler.end_query(wgpu_pass, query);
         stats.render_time += time;
     }
 }

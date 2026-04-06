@@ -252,8 +252,6 @@ impl core::Renderer for SlugRenderer {
                 continue;
             }
 
-            let query = ctx.gpu_profiler.begin_query("slug batch", render_pass);
-
             let pipeline = ctx.render_pipelines
                 .get(batch_info.pipeline_idx.unwrap())
                 .unwrap();
@@ -263,8 +261,6 @@ impl core::Renderer for SlugRenderer {
             render_pass.set_pipeline(pipeline);
             render_pass.draw_indexed(0..6, 0, batch_info.instances.clone());
             ctx.stats.draw_calls += 1;
-
-            ctx.gpu_profiler.end_query(render_pass, query);
         }
     }
 }

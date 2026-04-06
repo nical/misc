@@ -393,6 +393,10 @@ impl App {
         counters.enable_history(renderer_counters.batching());
         counters.enable_history(renderer_counters.prepare());
         counters.enable_history(renderer_counters.render());
+        if instance.gpu_profiling_enabled {
+            counters.enable_history(renderer_counters.cpu_total());
+            counters.enable_history(renderer_counters.gpu_total());
+        }
         counters.enable_history(wgpu_counters.texture_memory());
         counters.enable_history(wgpu_counters.buffer_memory());
         counters.enable_history(wgpu_counters.memory_allocations());
@@ -681,6 +685,36 @@ impl App {
 
             self.overlay.style.min_group_width = 490;
 
+            if self.instance.gpu_profiling_enabled {
+                let mut selection = Vec::new();
+                self.counters.select_counters([
+                    self.renderer_counters.cpu_total(),
+                    self.renderer_counters.gpu_total(),
+                ].iter().cloned(), &mut selection);
+
+                self.overlay.draw_item(&Table {
+                    columns: &[
+                        Column::color(),
+                        Column::name().with_unit().label("timings"),
+                        Column::avg().label("Avg"),
+                        Column::max().label("Max"),
+                        Column::history_graph(),
+                    ],
+                    rows: &selection,
+                    labels: true,
+                });
+
+                self.overlay.draw_item(&Graphs {
+                    counters: &selection,
+                    width: Some(120),
+                    height: None,
+                    reference_value: 8.0,
+                    orientation: Orientation::Vertical,
+                });
+
+                self.overlay.end_group();
+            }
+
             let mut selection = Vec::new();
             self.counters.select_counters([
                 self.renderer_counters.batching(),
@@ -709,6 +743,7 @@ impl App {
             });
 
             self.overlay.end_group();
+
             let fill_str = FILL_RENDERER_STRINGS[self.view.fill_renderer];
             let stroke_str = STROKE_RENDERER_STRINGS[self.view.stroke_renderer];
             self.overlay.draw_item(&format!("Renderers: {fill_str}/{stroke_str}").as_str());
@@ -956,6 +991,7 @@ impl App {
         self.counters.set(self.renderer_counters.render(), rt);
         self.counters.set(self.renderer_counters.present(), pt);
         self.counters.set(self.renderer_counters.cpu_total(), rec_t + fbt + rt);
+        self.counters.set(self.renderer_counters.gpu_total(), self.instance.previous_gpu_time);
         self.counters.set(self.renderer_counters.render_passes(), stats.render_passes as f32);
         self.counters.set(self.renderer_counters.draw_calls(), stats.draw_calls as f32);
         self.counters.set(self.renderer_counters.uploads(), stats.uploads.bytes as f32 / 1000.0);
@@ -1729,7 +1765,8 @@ pub mod counters {
         prepare: float = "prepare"   with { unit: "ms", safe_range: Some(0.0..6.0), color: (200, 150, 100, 255) },
         render: float = "render"     with { unit: "ms", safe_range: Some(0.0..4.0), color: (50, 50, 200, 255) },
         present: float = "present"   with { unit: "ms", safe_range: Some(0.0..12.0), color: (200, 200, 30, 255) },
-        cpu_total: float = "total"   with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 250, 250, 255) },
+        cpu_total: float = "cpu time" with { unit: "ms", safe_range: Some(0.0..16.0), color: (50, 50, 200, 255) },
+        gpu_total: float = "gpu time" with { unit: "ms", safe_range: Some(0.0..16.0), color: (200, 50, 50, 255) },
         draw_calls: int = "draw calls",
         render_passes: int = "render passes",
         staging_buffers: int = "staging buffers",

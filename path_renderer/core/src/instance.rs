@@ -27,6 +27,7 @@ pub struct Instance {
     pub queue: wgpu::Queue,
     pub gpu_profiler: wgpu_profiler::GpuProfiler,
     pub gpu_profiling_enabled: bool,
+    pub previous_gpu_time: f32,
     chunks: ChunkPool,
     next_frame_index: u32,
     next_bindings_namespace: BindingsNamespace,
@@ -68,6 +69,7 @@ impl Instance {
             next_bindings_namespace: BindingsNamespace(0),
             gpu_profiler,
             gpu_profiling_enabled,
+            previous_gpu_time: 0.0,
             chunks,
         }
     }
@@ -260,6 +262,8 @@ impl Instance {
             resources: self.resources.temp.resources()
         };
 
+        //let profiler_query = self.gpu_profiler.begin_query("gpu time", encoder);
+
         let mut ctx = PassRenderContext {
             encoder,
             resources: &self.resources,
@@ -281,6 +285,8 @@ impl Instance {
                 }
             }
         }
+
+        //self.gpu_profiler.end_query(encoder, profiler_query);
 
         if self.gpu_profiling_enabled {
             self.gpu_profiler.resolve_queries(encoder);
@@ -311,13 +317,22 @@ impl Instance {
 
                     if let Some(queries) = &results {
                         println!("-------- GPU timestamp queries --------");
+                        let mut sum = 0.0;
                         for query in queries {
                             if let Some(time) = &query.time {
-                                println!("{}: {:.4}ms", query.label, (time.end - time.start) * 1000.0);
+                                let t = (time.end - time.start) * 1000.0;
+                                println!("{}: {:.4}ms", query.label, t);
+                                if query.label.as_str() == "render pass" {
+                                    sum += t;
+                                }
                             } else {
                                 println!("{}: --", query.label);
                             }
                         }
+                        if sum > 0.0 {
+                            println!("total: {sum:.4}ms")
+                        }
+                        self.previous_gpu_time = sum as f32;
                     }
                 }
                 Err(e) => {
