@@ -159,6 +159,10 @@ pub struct StencilAndCoverRenderer {
     pub stats: Stats,
     pub tolerance: f32,
     pub parallel: bool,
+    /// Whether to use the depth buffer for occlusion culling.
+    /// If so, opaque shapes are rendered front-to-back to maximize
+    /// the amount of fragments discarded by the depth test.
+    pub use_depth_buffer: bool,
     shared: Arc<StencilAndCoverResources>,
 }
 
@@ -184,6 +188,7 @@ impl StencilAndCoverRenderer {
             },
             tolerance: 0.25,
             parallel: false,
+            use_depth_buffer: false,
             shared,
         }
     }
@@ -241,19 +246,25 @@ impl StencilAndCoverRenderer {
             StencilMode::Ignore => 3,
         };
 
+        let opaque_batch = self.use_depth_buffer && pattern.is_opaque;
+        let mut flags = BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE;
+        if opaque_batch {
+            flags |= BatchFlags::ORDER_INDEPENDENT;
+        }
+
         let z_index = ctx.z_indices.push();
         self.batches.add(
             ctx,
             &(pattern.batch_key() | (stencil_key << 32)),
             &aabb,
-            BatchFlags::NO_OVERLAP | BatchFlags::EARLIEST_CANDIDATE,
+            flags,
             &mut || BatchInfo {
                 draws: 0..0,
                 worker_index: None,
                 pattern_shader: pattern.shader,
                 pattern_bindings: pattern.bindings,
                 stencil_mode,
-                blend_mode: pattern.blend_mode,
+                blend_mode: if opaque_batch { BlendMode::Overwrite } else { pattern.blend_mode },
             },
             &mut |mut batch, view| {
                 batch.push(Fill {
@@ -326,7 +337,12 @@ impl StencilAndCoverRenderer {
                 if cover_idx_end > cover_idx_start {
                     let surface = surface.draw_config(true, None).with_stencil(batch_info.stencil_mode);
                     let pipeline_idx =
-                        shaders.prepare(RenderPipelineKey::new(self.cover_geometry, batch_info.pattern_shader, batch_info.blend_mode, surface));
+                        shaders.prepare(RenderPipelineKey::new(
+                            self.cover_geometry,
+                            batch_info.pattern_shader,
+                            batch_info.blend_mode,
+                            surface
+                        ));
                     self.draws.push(Draw::Cover {
                         stream_id: None,
                         indices: cover_idx_start..cover_idx_end,

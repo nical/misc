@@ -404,7 +404,7 @@ impl App {
         counters.enable_history(wgpu_counters.memory_allocations());
 
         // TODO: support CPU-side occlusion in the parallel path
-        let tiling_occlusion = Occlusion {
+        let occlusion_mode = Occlusion {
             cpu: cpu_occlusion.unwrap_or(!parallel),
             gpu: z_buffer.unwrap_or(false),
         };
@@ -427,8 +427,8 @@ impl App {
                 0,
                 &tiling::RendererOptions {
                     tolerance,
-                    occlusion: tiling_occlusion,
-                    no_opaque_batches: !tiling_occlusion.cpu && !tiling_occlusion.gpu,
+                    occlusion: occlusion_mode,
+                    no_opaque_batches: !occlusion_mode.cpu && !occlusion_mode.gpu,
                 }
             ),
             stencil: stencil_and_cover.new_renderer(1),
@@ -444,6 +444,7 @@ impl App {
         renderers.tiling.parallel = parallel;
         renderers.stencil.tolerance = tolerance;
         renderers.stencil.parallel = parallel;
+        renderers.stencil.use_depth_buffer = occlusion_mode.gpu;
         renderers.meshes.tolerance = tolerance;
         renderers.msaa_strokes.tolerance = tolerance;
 

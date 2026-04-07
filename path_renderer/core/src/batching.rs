@@ -337,6 +337,7 @@ impl OrderIndependentBatcher {
     ) -> Option<BatchIndex> {
         for batch in self.candidates.iter_mut().rev() {
             if batch.renderer == renderer && *key == batch.key && !batch.rect.intersects(rect) {
+                batch.rect = batch.rect.union(rect);
                 return Some(batch.index);
             }
         }
