@@ -309,6 +309,7 @@ pub(crate) struct ChunkHeader {
     pub size: usize,
 }
 
+#[allow(unused)]
 pub(crate) unsafe fn poison_chunk(this: NonNull<ChunkHeader>) {
     unsafe {
         let start: *mut u32 = this.as_ptr().add(1).cast();

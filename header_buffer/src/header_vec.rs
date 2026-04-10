@@ -3,7 +3,7 @@ use core::mem;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 use crate::allocator::{AllocError, Allocator};
-use crate::global::Global;
+use crate::allocator::Global;
 use crate::unmanaged::{AllocInit, UnmanagedHeaderVector};
 
 pub struct HeaderVector<H, T, A: Allocator = Global> {

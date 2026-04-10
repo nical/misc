@@ -211,7 +211,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::global::Global;
+    use crate::allocator::Global;
 
     #[test]
     fn empty() {

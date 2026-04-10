@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use header_buffer::global::Global;
+use header_buffer::allocator::Global;
 use header_buffer::unmanaged::{AllocInit, UnmanagedVector};
 
 fn bench_push(c: &mut Criterion) {

@@ -6,7 +6,7 @@ use core::ptr::NonNull;
 
 use crate::alloc::{Allocator, AllocError};
 
-use crate::global::Global;
+use crate::allocator::Global;
 use crate::unmanaged::AllocInit;
 use crate::util::{self, grow_amortized, is_zst};
 use crate::{UnmanagedHeaderVector, header_vec::HeaderVector};

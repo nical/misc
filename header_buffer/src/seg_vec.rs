@@ -206,7 +206,7 @@ impl<'a, T:'a> Iterator for Chunks<'a, T> {
 
 #[test]
 fn seg_simple() {
-    use crate::global::Global;
+    use crate::allocator::Global;
 
     let allocator = Global;
     let mut v = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
@@ -229,7 +229,7 @@ fn seg_simple() {
 
 #[test]
 fn seg_empty() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
 
     let mut empty: UnmanagedSegmentedVector<i32> = UnmanagedSegmentedVector::new();
@@ -238,7 +238,7 @@ fn seg_empty() {
 
 #[test]
 fn push_from_empty() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::new();
     for i in 0..200 {
         unsafe { v.push(i, &allocator); }
@@ -258,7 +258,7 @@ fn push_from_empty() {
 
 #[test]
 fn dealloc_single_chunk() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
     // Push fewer items than capacity, or none at all
     unsafe { v.deallocate_in(&allocator); }
@@ -273,7 +273,7 @@ fn iterate_empty_no_capacity() {
 
 #[test]
 fn iterate_empty_with_capacity() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<i32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
     assert_eq!(v.len(), 0);
@@ -283,7 +283,7 @@ fn iterate_empty_with_capacity() {
 
 #[test]
 fn single_element() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
     unsafe { v.push(42, &allocator); }
@@ -297,7 +297,7 @@ fn single_element() {
 
 #[test]
 fn partial_fill_no_retired_chunks() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(32, &allocator);
     for i in 0..5 {
@@ -315,7 +315,7 @@ fn partial_fill_no_retired_chunks() {
 
 #[test]
 fn exactly_one_retired_chunk() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     // MIN_CAPACITY is 16, so the first chunk has capacity 16.
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
@@ -341,7 +341,7 @@ fn exactly_one_retired_chunk() {
 
 #[test]
 fn len_at_various_points() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
 
@@ -368,7 +368,7 @@ fn len_at_various_points() {
 
 #[test]
 fn many_retired_chunks() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     // Start small to create many chunks: capacity 16, then 32, 64, 128 ...
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
@@ -393,7 +393,7 @@ fn many_retired_chunks() {
 
 #[test]
 fn dealloc_after_partial_use() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(32, &allocator);
     for i in 0..10 {
@@ -409,7 +409,7 @@ fn dealloc_after_partial_use() {
 
 #[test]
 fn chunk_sizes_grow() {
-    use crate::global::Global;
+    use crate::allocator::Global;
     let allocator = Global;
     let mut v: UnmanagedSegmentedVector<u32> = UnmanagedSegmentedVector::with_capacity_in(16, &allocator);
 

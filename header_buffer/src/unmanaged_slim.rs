@@ -1269,7 +1269,7 @@ fn realloc_zst_header() {
 
     assert!(is_zst::<Foo>());
 
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in(Foo, 0, AllocInit::Uninit, &allocator);
     for i in 0u32..512 {
         unsafe {
@@ -1294,7 +1294,7 @@ fn realloc_zst_items() {
         }
     }
 
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in((), 0, AllocInit::Uninit, &allocator);
     for _ in 0u32..512 {
         unsafe {
@@ -1308,7 +1308,7 @@ fn realloc_zst_items() {
 
 #[test]
 fn header_capacity_respects_requested_minimum() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md): (HeaderVectorBuffer<u64, u32>, VectorMetadata) =
         HeaderVectorBuffer::with_capacity_in(7u64, 4, AllocInit::Uninit, &allocator);
 
@@ -1320,7 +1320,7 @@ fn header_capacity_respects_requested_minimum() {
 
 #[test]
 fn buffer_size_includes_header_space() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let header_size = util::header_size::<u64, u32>();
     let size = header_size + 4 * mem::size_of::<u32>();
     let (mut v, mut md) = HeaderVectorBuffer::with_buffer_size_in(9u64, size, AllocInit::Uninit, &allocator);
@@ -1339,8 +1339,8 @@ fn buffer_size_includes_header_space() {
 
 #[test]
 fn reallocate_in_new_allocator_preserves_header_and_prefix() {
-    let old_allocator = crate::global::Global;
-    let new_allocator = crate::global::Global;
+    let old_allocator = crate::allocator::Global;
+    let new_allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in(11u32, 8, AllocInit::Uninit, &old_allocator);
 
     unsafe {
@@ -1359,7 +1359,7 @@ fn reallocate_in_new_allocator_preserves_header_and_prefix() {
 
 #[test]
 fn insert_remove_swap_remove_and_pop_work() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in(5u32, 8, AllocInit::Uninit, &allocator);
 
     unsafe {
@@ -1385,7 +1385,7 @@ fn insert_remove_swap_remove_and_pop_work() {
 
 #[test]
 fn extend_variants_respect_capacity() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let header_size = util::header_size::<u32, u32>();
     let size = header_size + 4 * mem::size_of::<u32>();
     let (mut v, mut md) = HeaderVectorBuffer::with_buffer_size_in(3u32, size, AllocInit::Uninit, &allocator);
@@ -1412,7 +1412,7 @@ fn extend_variants_respect_capacity() {
 
 #[test]
 fn clone_and_shrink_preserve_header_and_contents() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in(13u32, 16, AllocInit::Uninit, &allocator);
 
     unsafe {
@@ -1445,7 +1445,7 @@ fn clone_and_shrink_preserve_header_and_contents() {
 
 #[test]
 fn raw_parts_roundtrip_preserves_state() {
-    let allocator = crate::global::Global;
+    let allocator = crate::allocator::Global;
     let (mut v, mut md) = HeaderVectorBuffer::with_capacity_in(21u32, 8, AllocInit::Uninit, &allocator);
 
     unsafe {

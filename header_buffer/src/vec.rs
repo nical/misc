@@ -3,7 +3,7 @@ use core::mem;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 use crate::allocator::{AllocError, Allocator};
-use crate::global::Global;
+use crate::allocator::Global;
 use crate::unmanaged::UnmanagedVector;
 
 pub struct Vector<T, A: Allocator = Global> {

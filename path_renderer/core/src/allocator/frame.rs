@@ -131,6 +131,14 @@ impl SharedFrameAllocator {
             }
         }
     }
+
+    unsafe fn delete_allocator(allocator: *mut FrameSharedBumpAllocatorImpl) {
+        let layout = Layout::new::<FrameSharedBumpAllocatorImpl>();
+        unsafe {
+            std::ptr::drop_in_place(allocator);
+            Global.deallocate(NonNull::new(allocator as *mut u8).unwrap(), layout);
+        }
+    }
 }
 
 unsafe impl Allocator for SharedFrameAllocator {
@@ -204,7 +212,9 @@ impl Drop for SharedFrameAllocator {
     fn drop(&mut self) {
         unsafe {
             if let Some(allocator) = self.allocator.as_ref() {
-                allocator.refs.fetch_sub(1, Ordering::Relaxed);
+                if allocator.refs.fetch_sub(1, Ordering::Relaxed) == 1 {
+                    Self::delete_allocator(self.allocator);
+                }
             }
         }
     }

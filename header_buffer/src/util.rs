@@ -4,6 +4,7 @@ use core::ptr::NonNull;
 
 use crate::allocator::*;
 
+#[allow(unused)]
 #[track_caller]
 #[inline(always)]
 #[cfg(debug_assertions)]
@@ -21,14 +22,6 @@ pub unsafe fn assume(v: bool) {
         unsafe {
             core::hint::unreachable_unchecked();
         }
-    }
-}
-
-#[inline(always)]
-pub fn invalid_mut<T>(addr: usize) -> *mut T {
-    #[allow(clippy::useless_transmute, clippy::transmutes_expressible_as_ptr_casts)]
-    unsafe {
-        core::mem::transmute(addr)
     }
 }
 
