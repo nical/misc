@@ -419,10 +419,13 @@ impl CommonGpuResources {
             label: Some("indices"),
         });
 
+        // The chunk size is picked to be a multiple of common struct sizes, including
+        // 48 bytes. This avoids gaps between stream chunks that prevent copy operations
+        // from being merged.
         let instances = GpuStreamsResources::new(&GpuStreamsDescritptor {
             usages: wgpu::BufferUsages::VERTEX,
-            buffer_size: 1024 * 128,
-            chunk_size: 1024 * 2,
+            buffer_size: 1024 * 96,
+            chunk_size: 1024 * 6,
             label: Some("instances"),
         });
 

@@ -276,8 +276,21 @@ impl<'l> Drop for GpuStreamWriter<'l> {
 
 pub struct GpuStreamsDescritptor {
     pub usages: wgpu::BufferUsages,
+    /// Size of the destination resource.
+    ///
+    /// Should be a multiple of the chunk_size to avoid wasting space.
     pub buffer_size: u32,
+    /// The size of consecutive regions of memory that the writer can
+    /// access exclusively.
+    ///
+    /// To maximize efficiency, pick a chunk size that is a multiple of
+    /// the size of the items that are written into it. This way, with
+    /// large streams that require multiple chunks, there is no empty
+    /// space at the end of a full stream which allows the copy operation
+    /// to be merged with that of the next chunk in a lot of cases and
+    /// reduces per-copy overhead.
     pub chunk_size: u32,
+
     pub label: Option<&'static str>,
 }
 
@@ -372,6 +385,32 @@ impl GpuStreamsResources {
             buffer.current_offset = 0;
         }
 
+        // Do a pass over the sorted copy ops and merge consecutive
+        // copies with the same source and destination resources.
+        let mut prev_i = None;
+        for i in 0..ops.len() {
+            let Some(prev_idx) = prev_i else {
+                prev_i = Some(i);
+                continue;
+            };
+            let prev = &ops[prev_idx];
+            let next = &ops[i];
+            let prev_stream = (prev.sort_key >> 48) as u32;
+            let next_stream = (next.sort_key >> 48) as u32;
+            let prev_end = prev.staging_offset.0 + prev.size;
+            let next_start = next.staging_offset.0;
+            if (prev.staging_id == next.staging_id)
+                & (prev_stream == next_stream)
+                & (prev_end == next_start ) {
+                let next_size = next.size;
+                // We can merge.
+                ops[prev_idx].size += next_size;
+                ops[i].size = 0;
+            } else {
+                prev_i = Some(i);
+            }
+        }
+
         let mut op_idx = 0;
         let mut op_start = 0;
         let mut stream_size = 0;
@@ -423,6 +462,10 @@ impl GpuStreamsResources {
                 // Loop over the ops in the stream's range and issue copies from the
                 // staging buffer(s).
                 for op in &ops[op_start..op_idx] {
+                    if op.size == 0 {
+                        // This op was merged into the previous one, skip it.
+                        continue;
+                    }
                     stats.copy_ops += 1;
                     stats.bytes += op.size as u64;
                     let staging_buffer = staging_buffers.get_handle(op.staging_id);
