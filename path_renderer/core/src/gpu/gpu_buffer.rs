@@ -212,6 +212,10 @@ impl GpuBufferResources {
             | wgpu::TextureFormat::R32Uint
             | wgpu::TextureFormat::R32Sint
             | wgpu::TextureFormat::R32Float => 4,
+            wgpu::TextureFormat::R16Uint
+            | wgpu::TextureFormat::R16Sint
+            | wgpu::TextureFormat::R16Float
+            => 2,
             _ => unimplemented!(),
         };
 
@@ -264,7 +268,8 @@ impl GpuBufferResources {
                 bytes_per_px,
                 ..
             } => {
-                let height = size / (*width * *bytes_per_px);
+                let bytes_per_row = *width * *bytes_per_px;
+                let height = size / bytes_per_row + 1;
 
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
                     label: self.label,

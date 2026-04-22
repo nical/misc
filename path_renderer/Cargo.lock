@@ -208,6 +208,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bands"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "profiling",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -590,6 +598,7 @@ dependencies = [
 name = "demo"
 version = "0.1.0"
 dependencies = [
+ "bands",
  "color-backtrace",
  "core",
  "debug_overlay",

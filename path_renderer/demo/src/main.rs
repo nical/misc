@@ -42,6 +42,7 @@ use tess::{MeshRenderer, Tessellation};
 use msaa_stroke::{MsaaStroke, MsaaStrokeRenderer};
 use slug::{Slug, SlugRenderer};
 use vger::{Vger, VgerRenderer};
+use bands::{Bands, BandsOptions, BandsRenderer};
 //use tiling::*;
 
 use pattern_checkerboard::{Checkerboard, CheckerboardRenderer};
@@ -69,7 +70,8 @@ const TESS: usize = 2;
 const WPF: usize = 3;
 const SLUG: usize = 4;
 const VGER: usize = 5;
-const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil-and-cover", "tessellation", "wpf", "slug", "vger"];
+const BANDS: usize = 6;
+const FILL_RENDERER_STRINGS: &[&str] = &["tiling", "stencil-and-cover", "tessellation", "wpf", "slug", "vger", "bands"];
 
 const STROKE_TO_FILL: usize = 0;
 const INSTANCED: usize = 1;
@@ -86,6 +88,7 @@ struct Renderers {
     msaa_strokes: MsaaStrokeRenderer,
     slug: SlugRenderer,
     vger: VgerRenderer,
+    bands: BandsRenderer,
 }
 
 impl Renderers {
@@ -98,6 +101,7 @@ impl Renderers {
         self.msaa_strokes.begin_frame();
         self.slug.begin_frame();
         self.vger.begin_frame();
+        self.bands.begin_frame();
     }
 
     fn fill(&mut self, idx: usize) -> &mut dyn FillPath {
@@ -108,6 +112,7 @@ impl Renderers {
             &mut self.wpf as &mut dyn FillPath,
             &mut self.slug as &mut dyn FillPath,
             &mut self.vger as &mut dyn FillPath,
+            &mut self.bands as &mut dyn FillPath,
         ][idx]
     }
 }
@@ -206,7 +211,8 @@ impl App {
         let mut read_fill = false;
         let mut read_shader_name = false;
         let mut read_png_out = false;
-        let mut antialiasing = tiling::AaMode::AreaCoverage;
+        let mut tiling_aa = tiling::AaMode::AreaCoverage;
+        let mut bands_aa = bands::AaMode::AreaCoverage;
         let mut read_occlusion = false;
         let mut parallel = false;
         let mut z_buffer = None;
@@ -265,11 +271,13 @@ impl App {
             //    trace = wgpu::Trace::On(std::path::Path::new("./trace"));
             //}
             if (arg == "--ssaa") || (arg == "--ssaa4") {
-                antialiasing = AaMode::Ssaa4;
+                tiling_aa = tiling::AaMode::Ssaa4;
+                bands_aa = bands::AaMode::Ssaa4;
             }
 
             if arg == "--ssaa8" {
-                antialiasing = AaMode::Ssaa8;
+                tiling_aa = tiling::AaMode::Ssaa8;
+                bands_aa = bands::AaMode::Ssaa4;
             }
             force_gl |= arg == "--gl";
             force_vk |= arg == "--vulkan";
@@ -412,13 +420,16 @@ impl App {
         let rectangles = Rectangles::new(&device, &mut instance.shaders);
         let tessellation = Tessellation::new(&device, &mut instance.shaders);
         let tiling = Tiling::new(&device, &mut instance.shaders, &TilingOptions {
-            antialiasing,
+            antialiasing: tiling_aa,
         });
         let stencil_and_cover = StencilAndCover::new(&mut instance.resources.common, &tessellation, &device, &mut instance.shaders);
         let wpf = Wpf::new(&device, &mut instance.shaders);
         let msaa_stroke = MsaaStroke::new(&device, &mut instance.shaders);
         let slug_factory = Slug::new(&device, &mut instance.shaders);
         let vger = Vger::new(&device, &mut instance.shaders);
+        let bands = Bands::new(&device, &mut instance.shaders, &BandsOptions {
+            antialiasing: bands_aa,
+        });
 
         let mut renderers = Renderers {
             tiling: tiling.new_renderer(
@@ -438,6 +449,7 @@ impl App {
             msaa_strokes: msaa_stroke.new_renderer(&device, 5),
             slug: slug_factory.new_renderer(6),
             vger: vger.new_renderer(&device, &instance.shaders, 7),
+            bands: bands.new_renderer(&device, &instance.shaders, 8),
         };
 
         renderers.tiling.tolerance = tolerance;
@@ -889,6 +901,7 @@ impl App {
             &mut self.renderers.msaa_strokes,
             &mut self.renderers.slug,
             &mut self.renderers.vger,
+            &mut self.renderers.bands,
         ];
 
         graph.schedule(&mut frame).unwrap();
@@ -1918,6 +1931,18 @@ impl FillPath for SlugRenderer {
 }
 
 impl FillPath for VgerRenderer {
+    fn fill_path(
+        &mut self,
+        ctx: &mut RenderPassContext,
+        transform: &Transform,
+        path: FilledPath,
+        pattern: BuiltPattern,
+    ) {
+        self.fill_path(ctx, transform, &path, pattern);
+    }
+}
+
+impl FillPath for BandsRenderer {
     fn fill_path(
         &mut self,
         ctx: &mut RenderPassContext,

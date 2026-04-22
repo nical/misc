@@ -12,6 +12,7 @@ members = [
     "renderers/msaa_stroke",
     "renderers/template",
     "renderers/vger",
+    "renderers/bands",
     "patterns/color",
     "patterns/gradients",
     "patterns/checkerboard",

@@ -393,8 +393,9 @@ pub fn schedule_graph(
 
                     let resource = resources.allocate(virt_res.key);
 
-                    // We can skip allocating unused resolve targets.
-                    let allocate = virt_res.refs > 0 || !res.flags.contains(ResourceFlags::LAZY);
+                    // We can skip allocating unused resolve targets, but must
+                    // allocate if the resource is stored (e.g. root output for PNG readback).
+                    let allocate = virt_res.refs > 0 || virt_res.store || !res.flags.contains(ResourceFlags::LAZY);
 
                     if allocate {
                         virt_res.resolved_index = Some(resource);
