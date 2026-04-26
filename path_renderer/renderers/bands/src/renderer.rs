@@ -326,18 +326,12 @@ impl BandsRenderer {
                 }
                 PathEvent::Quadratic { from, ctrl, to, .. } => {
                     let seg = QuadraticBezierSegment { from, ctrl, to }.transformed(matrix);
-                    seg.for_each_y_monotonic_range(&mut |range| {
-                        let sub = seg.split_range(range);
-                        builder.add_segment(&sub);
-                    });
+                    builder.add_segment(&seg);
                 }
                 PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
                     let cubic = CubicBezierSegment { from, ctrl1, ctrl2, to }.transformed(matrix);
                     cubic.for_each_quadratic_bezier(0.2, &mut |quad| {
-                        quad.for_each_y_monotonic_range(&mut |range| {
-                            let sub = quad.split_range(range);
-                            builder.add_segment(&sub);
-                        });
+                        builder.add_segment(&quad);
                     });
                 }
                 PathEvent::End { last, first, .. } => {
