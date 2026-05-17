@@ -1,8 +1,6 @@
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    marker::PhantomPinned,
-    pin::Pin,
     ptr::{self, NonNull},
 };
 
@@ -356,12 +354,10 @@ fn align(val: usize, alignment: usize) -> usize {
     val + alignment - rem
 }
 
+type BumpAllocatorStorageCell = UnsafeCell<BumpAllocatorStorageImpl>;
+
 /// Wrapper around [`BumpAllocatorMemory`] that allows interior mutability
 /// and implements the [`Allocator`] trait via [`BumpAllocator`] handles.
-///
-/// This type is `!Unpin` and must be used behind `Pin<Box<...>>` to ensure
-/// a stable address for the raw pointers held by [`BumpAllocator`] handles.
-/// The [`new`](Self::new) constructor returns `Pin<Box<Self>>` directly.
 ///
 /// This type is not `Sync`: it must not be shared across threads. Multiple
 /// [`BumpAllocator`] handles (e.g. via `Clone` on containers that store the
@@ -373,16 +369,16 @@ fn align(val: usize, alignment: usize) -> usize {
 /// Dropping a `BumpAllocatorStorage` while [`BumpAllocator`] handles are
 /// still alive will panic.
 pub struct BumpAllocatorStorage {
-    inner: UnsafeCell<BumpAllocatorStorageImpl>,
-    _pin: PhantomPinned,
+    inner: *mut BumpAllocatorStorageCell,
 }
 
 impl BumpAllocatorStorage {
-    pub fn new(chunks: ChunkPool) -> Pin<Box<Self>> {
-        Box::pin(BumpAllocatorStorage {
-            inner: UnsafeCell::new(BumpAllocatorStorageImpl::new(chunks)),
-            _pin: PhantomPinned,
-        })
+    pub fn new(chunks: ChunkPool) -> Self {
+        let cell = Box::new(UnsafeCell::new(BumpAllocatorStorageImpl::new(chunks)));
+        let ptr = Box::into_raw(cell);
+        BumpAllocatorStorage {
+            inner: ptr,
+        }
     }
 
     /// Obtain a [`BumpAllocator`] handle that implements [`Allocator`].
@@ -390,10 +386,10 @@ impl BumpAllocatorStorage {
     /// The handle is reference-counted; cloning it increments the count and
     /// dropping it decrements the count. The storage must not be dropped
     /// while any handle is alive.
-    pub fn allocator(self: &Pin<Box<Self>>) -> BumpAllocator {
-        unsafe { (*self.inner.get()).ref_count += 1; }
+    pub fn allocator(self: &Self) -> BumpAllocator {
+        unsafe { (*(*self.inner).get()).ref_count += 1; }
         BumpAllocator {
-            storage: &**self as *const Self as *mut Self,
+            storage: self.inner,
         }
     }
 
@@ -403,7 +399,7 @@ impl BumpAllocatorStorage {
 
     /// The number of live [`BumpAllocator`] handles pointing to this storage.
     pub fn ref_count(&self) -> i32 {
-        unsafe { (*self.inner.get()).ref_count }
+        unsafe { (*(*self.inner).get()).ref_count }
     }
 
     /// Mutably access the underlying memory for stats, reset, etc.
@@ -416,9 +412,8 @@ impl BumpAllocatorStorage {
     unsafe fn inner(&self) -> &mut BumpAllocatorStorageImpl {
         // SAFETY: we are not moving the BumpAllocatorStorage, only accessing
         // the inner UnsafeCell's content mutably.
-        unsafe { &mut *self.inner.get() }
+        unsafe { &mut *(*self.inner).get() }
     }
-
 }
 
 impl Drop for BumpAllocatorStorage {
@@ -428,6 +423,9 @@ impl Drop for BumpAllocatorStorage {
             ref_count == 0,
             "BumpAllocatorStorage dropped with {ref_count} outstanding BumpAllocator handle(s)",
         );
+        unsafe {
+            let _ = Box::from_raw(self.inner);
+        }
     }
 }
 
@@ -442,7 +440,7 @@ impl Drop for BumpAllocatorStorage {
 /// Must only be used from a single thread. The backing
 /// [`BumpAllocatorStorage`] must outlive all handles.
 pub struct BumpAllocator {
-    storage: *mut BumpAllocatorStorage,
+    storage: *mut BumpAllocatorStorageCell,
 }
 
 impl BumpAllocator {
@@ -450,13 +448,13 @@ impl BumpAllocator {
     unsafe fn memory(&self) -> &mut BumpAllocatorStorageImpl {
         // SAFETY: the caller guarantees single-threaded access and that the
         // storage outlives this handle.
-        unsafe { &mut *(*self.storage).inner.get() }
+        unsafe { &mut *(*self.storage).get() }
     }
 
     #[inline]
     fn add_ref(&self) {
         unsafe {
-            (*self.storage).inner().ref_count += 1;
+            self.memory().ref_count += 1;
         }
     }
 
@@ -464,7 +462,7 @@ impl BumpAllocator {
     #[inline]
     fn release_ref(&self) -> bool {
         unsafe {
-            let rc = &mut (*self.storage).inner().ref_count;
+            let rc = &mut self.memory().ref_count;
             *rc -= 1;
             *rc == 0
         }
@@ -519,7 +517,7 @@ mod tests {
     use super::*;
     use crate::Vector;
 
-    fn make_storage() -> Pin<Box<BumpAllocatorStorage>> {
+    fn make_storage() -> BumpAllocatorStorage {
         BumpAllocatorStorage::new(ChunkPool::new())
     }
 
@@ -638,21 +636,22 @@ mod tests {
         assert_eq!(storage.ref_count(), 0);
     }
 
+    // Note: this test intentionally leaks memeory but there is no way to tell
+    // miri that it's OK.
     #[test]
     fn storage_drop_panics_with_live_handles() {
         let storage = make_storage();
         let alloc = storage.allocator();
-        // TODO: instead of papering over the issue here, we should make it so
-        // that dropping the storage actually leaks it before panicking if there
-        // are external references, so that the external references don't touch
-        // a deallocated storage during unwinding.
+        let mut v = Vector::new_in(alloc);
+        v.push(1u32);
+
+        // This leaks the storage so that alloc does not point to dangling
+        // memory.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Panics because alloc is still alive.
             drop(storage);
         }));
         assert!(result.is_err());
-        // The storage has been freed (even though its Drop panicked), so we
-        // must not let the handle's Drop access it.
-        std::mem::forget(alloc);
     }
 
     #[test]
