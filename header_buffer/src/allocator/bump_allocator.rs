@@ -10,7 +10,6 @@ use crate::allocator::{Allocator, AllocError};
 use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, CHUNK_HEADER_SIZE, ChunkPool};
 
 // TODO:
-//  - Put the stats behind a feature flag (empty struct when the feature is not enabled)
 //  - keep a pointer to the bump allocator storage in the chunk headers
 //  - Keep a pointer to the chunk header instead of the storage in BumpAllocator to avoid an indirection.
 //    - overall the idea is to only ever touch the storage when recording stats and when running out of
@@ -54,6 +53,7 @@ struct BumpAllocatorStorageImpl {
     allocation_count: i32,
     ref_count: i32,
 
+    #[cfg(feature="stats")]
     stats: Stats,
 }
 
@@ -64,19 +64,28 @@ impl BumpAllocatorStorageImpl {
             chunks,
             allocation_count: 0,
             ref_count: 0,
+            #[cfg(feature="stats")]
             stats: Stats::default(),
         }
     }
 
+    #[cfg(feature="stats")]
     fn get_stats(&mut self) -> Stats {
         let cur_utilization = self.current_chunk.map(|c| Chunk::utilization(c) - 1.0).unwrap_or(0.0);
         self.stats.chunk_utilization = self.stats.chunks as f32 + cur_utilization;
         self.stats
     }
 
+    #[cfg(not(feature="stats"))]
+    fn get_stats(&mut self) -> Stats {
+        Stats::default()
+    }
+
     fn allocate_item(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.stats.allocations += 1;
-        self.stats.allocated_bytes += layout.size();
+        #[cfg(feature="stats")] {
+            self.stats.allocations += 1;
+            self.stats.allocated_bytes += layout.size();
+        }
 
         if let Some(chunk) = self.current_chunk {
             if let Ok(alloc) = Chunk::allocate_item(chunk, layout) {
@@ -99,7 +108,9 @@ impl BumpAllocatorStorageImpl {
     }
 
     fn deallocate_item(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        self.stats.deallocations += 1;
+        #[cfg(feature="stats")] {
+            self.stats.deallocations += 1;
+        }
 
         // If we are deallocating an item them we allocated one and therefore
         // we must have a chunk.
@@ -122,7 +133,9 @@ impl BumpAllocatorStorageImpl {
             "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
         );
 
-        self.stats.reallocations += 1;
+        #[cfg(feature="stats")] {
+            self.stats.reallocations += 1;
+        }
 
         let current_chunk = self.current_chunk.unwrap();
 
@@ -130,8 +143,10 @@ impl BumpAllocatorStorageImpl {
         // and copy. The original allocation's memory will be reclaimed at the end of the frame.
         if Chunk::contains_item(current_chunk, ptr) {
             if let Ok(alloc) = Chunk::grow_item(current_chunk, ptr, old_layout, new_layout) {
-                self.stats.allocated_bytes += new_layout.size() - old_layout.size();
-                self.stats.in_place_reallocations += 1;
+                #[cfg(feature="stats")] {
+                    self.stats.allocated_bytes += new_layout.size() - old_layout.size();
+                    self.stats.in_place_reallocations += 1;
+                }
                 return Ok(alloc);
             }
         }
@@ -143,8 +158,10 @@ impl BumpAllocatorStorageImpl {
             Chunk::allocate_item(chunk, new_layout).map_err(|_| AllocError)?
         };
 
-        self.stats.allocated_bytes += new_layout.size();
-        self.stats.reallocated_bytes += old_layout.size();
+        #[cfg(feature="stats")] {
+            self.stats.allocated_bytes += new_layout.size();
+            self.stats.reallocated_bytes += old_layout.size();
+        }
 
         unsafe {
             ptr::copy_nonoverlapping(ptr.as_ptr(), new_alloc.as_ptr().cast(), old_layout.size());
@@ -176,7 +193,9 @@ impl BumpAllocatorStorageImpl {
 
         self.current_chunk = Some(chunk);
 
-        self.stats.chunks += 1;
+        #[cfg(feature="stats")] {
+            self.stats.chunks += 1;
+        }
 
         Ok(chunk)
     }
@@ -302,6 +321,7 @@ impl Chunk {
         }
     }
 
+    #[cfg(feature="stats")]
     fn available_size(this: NonNull<Chunk>) -> usize {
         unsafe {
             let this = this.as_ptr();
@@ -309,6 +329,7 @@ impl Chunk {
         }
     }
 
+    #[cfg(feature="stats")]
     pub(crate) fn utilization(this: NonNull<Chunk>) -> f32 {
         let size = unsafe { (*this.as_ptr()).size } as f32;
         (size - Chunk::available_size(this) as f32) / size

@@ -3,6 +3,9 @@ name = "header_buffer"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+stats = []
+
 [dependencies]
 allocator-api2 = "0.2.18"
 
