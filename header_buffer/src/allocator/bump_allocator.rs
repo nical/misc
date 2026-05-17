@@ -81,110 +81,6 @@ impl BumpAllocatorStorageImpl {
         Stats::default()
     }
 
-    fn allocate_item(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        #[cfg(feature="stats")] {
-            self.stats.allocations += 1;
-            self.stats.allocated_bytes += layout.size();
-        }
-
-        if let Some(chunk) = self.current_chunk {
-            if let Ok(alloc) = Chunk::allocate_item(chunk, layout) {
-                self.allocation_count += 1;
-                return Ok(alloc);
-            }
-        }
-
-        let chunk = self.alloc_chunk(layout.size())?;
-
-        match Chunk::allocate_item(chunk, layout) {
-            Ok(alloc) => {
-                self.allocation_count += 1;
-                    return Ok(alloc);
-            }
-            Err(_) => {
-                return Err(AllocError);
-            }
-        }
-    }
-
-    fn deallocate_item(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        #[cfg(feature="stats")] {
-            self.stats.deallocations += 1;
-        }
-
-        // If we are deallocating an item them we allocated one and therefore
-        // we must have a chunk.
-        let current_chunk = self.current_chunk.unwrap();
-
-        // If the allocation is in the current chunk, try to reclaim its memory,
-        // otherwise it will be reclaimed at the end of the frame.
-        if Chunk::contains_item(current_chunk, ptr) {
-            unsafe { Chunk::deallocate_item(current_chunk, ptr, layout); }
-        }
-
-        // Either way, count this as deallocated.
-        self.allocation_count -= 1;
-        debug_assert!(self.allocation_count >= 0);
-    }
-
-    unsafe fn grow_item(&mut self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        debug_assert!(
-            new_layout.size() >= old_layout.size(),
-            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
-        );
-
-        #[cfg(feature="stats")] {
-            self.stats.reallocations += 1;
-        }
-
-        let current_chunk = self.current_chunk.unwrap();
-
-        // If we can, attempt to grow the existing allocation, otherwise just create a new one
-        // and copy. The original allocation's memory will be reclaimed at the end of the frame.
-        if Chunk::contains_item(current_chunk, ptr) {
-            if let Ok(alloc) = Chunk::grow_item(current_chunk, ptr, old_layout, new_layout) {
-                #[cfg(feature="stats")] {
-                    self.stats.allocated_bytes += new_layout.size() - old_layout.size();
-                    self.stats.in_place_reallocations += 1;
-                }
-                return Ok(alloc);
-            }
-        }
-
-        let new_alloc = if let Ok(alloc) = Chunk::allocate_item(current_chunk, new_layout) {
-            alloc
-        } else {
-            let chunk = self.alloc_chunk(new_layout.size())?;
-            Chunk::allocate_item(chunk, new_layout).map_err(|_| AllocError)?
-        };
-
-        #[cfg(feature="stats")] {
-            self.stats.allocated_bytes += new_layout.size();
-            self.stats.reallocated_bytes += old_layout.size();
-        }
-
-        unsafe {
-            ptr::copy_nonoverlapping(ptr.as_ptr(), new_alloc.as_ptr().cast(), old_layout.size());
-        }
-
-        Ok(new_alloc)
-    }
-
-    unsafe fn shrink_item(&mut self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        debug_assert!(
-            new_layout.size() <= old_layout.size(),
-            "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
-        );
-
-        if let Some(chunk) = self.current_chunk {
-            if Chunk::contains_item(chunk, ptr) {
-                return unsafe { Ok(Chunk::shrink_item(chunk, ptr, old_layout, new_layout)) };
-            }
-        }
-        // Can't actually shrink, so return the full range of the previous allocation.
-        Ok(NonNull::slice_from_raw_parts(ptr, old_layout.size()))
-    }
-
     fn alloc_chunk(&mut self, item_size: usize) -> Result<NonNull<Chunk>, AllocError> {
         let chunk_size = align(item_size, CHUNK_ALIGNMENT) + CHUNK_HEADER_SIZE;
 
@@ -500,6 +396,118 @@ impl BumpAllocator {
             *rc == 0
         }
     }
+
+    fn allocate_item(this: *mut BumpAllocatorStorageCell, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let self_mut = unsafe { &mut *(*this).get() };
+
+        #[cfg(feature="stats")] {
+            self.stats.allocations += 1;
+            self.stats.allocated_bytes += layout.size();
+        }
+
+        if let Some(chunk) = self_mut.current_chunk {
+            if let Ok(alloc) = Chunk::allocate_item(chunk, layout) {
+                self_mut.allocation_count += 1;
+                return Ok(alloc);
+            }
+        }
+
+        let chunk = self_mut.alloc_chunk(layout.size())?;
+
+        match Chunk::allocate_item(chunk, layout) {
+            Ok(alloc) => {
+                self_mut.allocation_count += 1;
+                    return Ok(alloc);
+            }
+            Err(_) => {
+                return Err(AllocError);
+            }
+        }
+    }
+
+    fn deallocate_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, layout: Layout) {
+        let self_mut = unsafe { &mut *(*storage).get() };
+
+        #[cfg(feature="stats")] {
+            self_mut.stats.deallocations += 1;
+        }
+
+        // If we are deallocating an item them we allocated one and therefore
+        // we must have a chunk.
+        let current_chunk = self_mut.current_chunk.unwrap();
+
+        // If the allocation is in the current chunk, try to reclaim its memory,
+        // otherwise it will be reclaimed at the end of the frame.
+        if Chunk::contains_item(current_chunk, ptr) {
+            unsafe { Chunk::deallocate_item(current_chunk, ptr, layout); }
+        }
+
+        // Either way, count this as deallocated.
+        self_mut.allocation_count -= 1;
+        debug_assert!(self_mut.allocation_count >= 0);
+    }
+
+    unsafe fn grow_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let self_mut = unsafe { &mut *(*storage).get() };
+
+        debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        #[cfg(feature="stats")] {
+            self.stats.reallocations += 1;
+        }
+
+        let current_chunk = self_mut.current_chunk.unwrap();
+
+        // If we can, attempt to grow the existing allocation, otherwise just create a new one
+        // and copy. The original allocation's memory will be reclaimed at the end of the frame.
+        if Chunk::contains_item(current_chunk, ptr) {
+            if let Ok(alloc) = Chunk::grow_item(current_chunk, ptr, old_layout, new_layout) {
+                #[cfg(feature="stats")] {
+                    self_mut.stats.allocated_bytes += new_layout.size() - old_layout.size();
+                    self_mut.stats.in_place_reallocations += 1;
+                }
+                return Ok(alloc);
+            }
+        }
+
+        let new_alloc = if let Ok(alloc) = Chunk::allocate_item(current_chunk, new_layout) {
+            alloc
+        } else {
+            let chunk = self_mut.alloc_chunk(new_layout.size())?;
+            Chunk::allocate_item(chunk, new_layout).map_err(|_| AllocError)?
+        };
+
+        #[cfg(feature="stats")] {
+            self.stats.allocated_bytes += new_layout.size();
+            self.stats.reallocated_bytes += old_layout.size();
+        }
+
+        unsafe {
+            ptr::copy_nonoverlapping(ptr.as_ptr(), new_alloc.as_ptr().cast(), old_layout.size());
+        }
+
+        Ok(new_alloc)
+    }
+
+    unsafe fn shrink_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let self_mut = unsafe { &mut *(*storage).get() };
+
+        debug_assert!(
+            new_layout.size() <= old_layout.size(),
+            "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
+        );
+
+        if let Some(chunk) = self_mut.current_chunk {
+            if Chunk::contains_item(chunk, ptr) {
+                return unsafe { Ok(Chunk::shrink_item(chunk, ptr, old_layout, new_layout)) };
+            }
+        }
+        // Can't actually shrink, so return the full range of the previous allocation.
+        Ok(NonNull::slice_from_raw_parts(ptr, old_layout.size()))
+    }
 }
 
 impl Clone for BumpAllocator {
@@ -517,13 +525,11 @@ impl Drop for BumpAllocator {
 
 unsafe impl Allocator for BumpAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe {
-            self.memory().allocate_item(layout)
-        }
+        BumpAllocator::allocate_item(self.storage, layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        self.memory().deallocate_item(ptr, layout)
+        BumpAllocator::deallocate_item(self.storage, ptr, layout)
     }
 
     unsafe fn grow(
@@ -532,7 +538,7 @@ unsafe impl Allocator for BumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        self.memory().grow_item(ptr, old_layout, new_layout)
+        BumpAllocator::grow_item(self.storage, ptr, old_layout, new_layout)
     }
 
     unsafe fn shrink(
@@ -541,7 +547,7 @@ unsafe impl Allocator for BumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        self.memory().shrink_item(ptr, old_layout, new_layout)
+        BumpAllocator::shrink_item(self.storage, ptr, old_layout, new_layout)
     }
 }
 
