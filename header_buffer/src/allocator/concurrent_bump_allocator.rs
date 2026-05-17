@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::allocator::{Allocator, AllocError};
-use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, CHUNK_HEADER_SIZE, ChunkPool};
+use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, ChunkPool};
+
+const CHUNK_HEADER_SIZE: usize = 64;
 
 /// Chunk header written at the start of every raw allocation.
 ///

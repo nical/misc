@@ -1,12 +1,10 @@
 use std::sync::Mutex;
 use std::{ptr::NonNull, sync::Arc};
 use std::ptr;
-use crate::allocator::bump_allocator::Chunk;
 use crate::allocator::{Allocator, Layout, AllocError, Global};
 
 // TODO: 16 might be enough in practice.
 pub(crate) const CHUNK_ALIGNMENT: usize = 32;
-pub(crate) const CHUNK_HEADER_SIZE: usize = 64;
 pub(crate) const DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
 
 
@@ -42,30 +40,6 @@ impl ChunkPool {
         }
     }
 
-    /// Acquire a chunk from the pool or allocate a new one.
-    ///
-    /// `min_size` is the minimum required total size (header + data).
-    /// The actual allocation size is `max(min_size, self.chunk_size)`; recycled
-    /// chunks are only considered when that maximum equals `self.chunk_size`.
-    pub(crate) fn allocate_chunk(
-        &self,
-        min_size: usize,
-        previous: Option<NonNull<Chunk>>,
-    ) -> Result<NonNull<Chunk>, AllocError> {
-        let (raw, size) = self.allocate_raw(min_size)?;
-        let chunk: NonNull<Chunk> = raw.cast();
-        let chunk_start: *mut u8 = chunk.cast().as_ptr();
-        unsafe {
-            let chunk_end = chunk_start.add(size);
-            let cursor = chunk_start.add(CHUNK_ALIGNMENT);
-            ptr::write(
-                chunk.as_ptr(),
-                Chunk { previous, chunk_end, cursor, size },
-            );
-        }
-        Ok(chunk)
-    }
-
     /// Put the provided list of chunks into the pool.
     ///
     /// Chunks with size different from the default chunk size are deallocated
@@ -75,30 +49,17 @@ impl ChunkPool {
     ///
     /// Ownership of the provided chunks is transfered to the pool, nothing
     /// else can access them after this function runs.
-    pub(crate) unsafe fn recycle_chunks(&self, chunk: NonNull<Chunk>, stop: Option<NonNull<Chunk>>) {
+    pub(crate) unsafe fn recycle_chunks(&self, chunks: &mut dyn Iterator<Item=(NonNull<u8>, usize)>) {
         let mut inner = self.inner.lock().unwrap();
-        let mut iter = Some(chunk);
-        // Go through the provided linked list of chunks, and insert each
-        // of them at the beginning of our linked list of recycled chunks.
-        while let Some(mut chunk) = iter {
-            if iter == stop {
-                break;
-            }
-            // Advance the iterator.
-            iter = unsafe { chunk.as_mut().previous.take() };
+        for (chunk, size) in chunks {
+            #[cfg(debug_assertions)]
+            poison_memory(chunk, size);
 
-            unsafe {
-                // Don't recycle chunks with a non-standard size.
-                let size = chunk.as_ref().size;
-                if size != self.chunk_size {
-                    let layout = Layout::from_size_align(size, CHUNK_ALIGNMENT).unwrap();
-                    //println!(" - dealloc large chunk {:?}", chunk);
-                    Global.deallocate(chunk.cast(), layout);
-                    continue;
-                }
-
-                #[cfg(debug_assertions)]
-                Chunk::poison_memory(chunk);
+            if size != self.chunk_size {
+                let layout = Layout::from_size_align(size, CHUNK_ALIGNMENT).unwrap();
+                //println!(" - dealloc large chunk {:?}", chunk);
+                Global.deallocate(chunk, layout);
+                continue;
             }
 
             // Turn the chunk into a recycled chunk.
@@ -216,3 +177,14 @@ impl Drop for ChunkPool {
 // it exclusively owns. All access is serialised by the Mutex in ChunkPool, so
 // transferring ChunkPoolImpl between threads is safe.
 unsafe impl Send for ChunkPoolImpl {}
+
+#[allow(unused)]
+pub(crate) unsafe fn poison_memory(chunk: NonNull<u8>, size: usize) {
+    unsafe {
+        let start: *mut u32 = chunk.add(core::mem::size_of::<AvailableChunk>()).as_ptr().cast::<u32>();
+        let end: *const u32 = chunk.add(size).as_ptr().cast();
+        let len = end.offset_from(start) as usize;
+        let slice = std::slice::from_raw_parts_mut(start, len);
+        slice.fill(0xDEADBEEF);
+    }
+}

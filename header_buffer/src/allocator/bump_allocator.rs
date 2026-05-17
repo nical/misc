@@ -5,7 +5,9 @@ use std::{
 };
 
 use crate::allocator::{Allocator, AllocError};
-use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, CHUNK_HEADER_SIZE, ChunkPool};
+use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, ChunkPool};
+
+const CHUNK_HEADER_SIZE: usize = 64;
 
 // TODO:
 //  - keep a pointer to the bump allocator storage in the chunk headers
@@ -184,10 +186,24 @@ impl BumpAllocatorStorageImpl {
     }
 
     fn alloc_chunk(&mut self, item_size: usize) -> Result<NonNull<Chunk>, AllocError> {
-        let chunk = self.chunks.allocate_chunk(
-            align(item_size, CHUNK_ALIGNMENT) + CHUNK_HEADER_SIZE,
-            self.current_chunk,
-        )?;
+        let chunk_size = align(item_size, CHUNK_ALIGNMENT) + CHUNK_HEADER_SIZE;
+
+        let (raw, size) = self.chunks.allocate_raw(chunk_size)?;
+        let chunk: NonNull<Chunk> = raw.cast();
+        let chunk_start: *mut u8 = chunk.cast().as_ptr();
+        unsafe {
+            let chunk_end = chunk_start.add(size);
+            let cursor = chunk_start.add(CHUNK_ALIGNMENT);
+            ptr::write(
+                chunk.as_ptr(),
+                Chunk {
+                    previous: self.current_chunk,
+                    chunk_end,
+                    cursor,
+                    size,
+                },
+            );
+        }
 
         self.current_chunk = Some(chunk);
 
@@ -203,8 +219,12 @@ impl Drop for BumpAllocatorStorageImpl {
     fn drop(&mut self) {
         assert!(self.allocation_count == 0);
         unsafe {
-            if let Some(chunk) = self.current_chunk {
-                self.chunks.recycle_chunks(chunk, None);
+            if self.current_chunk.is_some() {
+                let mut iter = ChunkIterator {
+                    current: self.current_chunk,
+                    stop: None,
+                };
+                self.chunks.recycle_chunks(&mut iter);
             }
         }
     }
@@ -215,15 +235,15 @@ const _SANITY_CHECK: () = {
     assert!(CHUNK_HEADER_SIZE >= std::mem::size_of::<Chunk>());
 };
 
-pub(crate) struct Chunk {
-    pub(crate) previous: Option<NonNull<Chunk>>,
-    pub(crate) chunk_end: *mut u8,
-    pub(crate) cursor: *mut u8,
-    pub(crate) size: usize,
+struct Chunk {
+    previous: Option<NonNull<Chunk>>,
+    chunk_end: *mut u8,
+    cursor: *mut u8,
+    size: usize,
 }
 
 impl Chunk {
-    pub fn allocate_item(this: NonNull<Chunk>, layout: Layout) -> Result<NonNull<[u8]>, ()> {
+    fn allocate_item(this: NonNull<Chunk>, layout: Layout) -> Result<NonNull<[u8]>, ()> {
         debug_assert!(CHUNK_ALIGNMENT % layout.align() == 0);
 
         let size = align(layout.size(), CHUNK_ALIGNMENT);
@@ -248,7 +268,7 @@ impl Chunk {
         }
     }
 
-    pub unsafe fn deallocate_item(this: NonNull<Chunk>, item: NonNull<u8>, layout: Layout) {
+    unsafe fn deallocate_item(this: NonNull<Chunk>, item: NonNull<u8>, layout: Layout) {
         debug_assert!(Chunk::contains_item(this, item));
 
         unsafe {
@@ -263,7 +283,7 @@ impl Chunk {
         }
     }
 
-    pub unsafe fn grow_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, ()> {
+    unsafe fn grow_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, ()> {
         debug_assert!(Chunk::contains_item(this, item));
 
         let old_size = align(old_layout.size(), CHUNK_ALIGNMENT);
@@ -291,7 +311,7 @@ impl Chunk {
         Ok(NonNull::slice_from_raw_parts(item, new_size))
     }
 
-    pub unsafe fn shrink_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> NonNull<[u8]> {
+    unsafe fn shrink_item(this: NonNull<Chunk>, item: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> NonNull<[u8]> {
         debug_assert!(Chunk::contains_item(this, item));
 
         let old_size = align(old_layout.size(), CHUNK_ALIGNMENT);
@@ -309,7 +329,7 @@ impl Chunk {
         NonNull::slice_from_raw_parts(item, new_size)
     }
 
-    pub fn contains_item(this: NonNull<Chunk>, item: NonNull<u8>) -> bool {
+    fn contains_item(this: NonNull<Chunk>, item: NonNull<u8>) -> bool {
         unsafe {
             let start: *mut u8 = this.cast::<u8>().as_ptr().add(CHUNK_HEADER_SIZE);
             let end: *mut u8 = (*this.as_ptr()).chunk_end;
@@ -328,19 +348,32 @@ impl Chunk {
     }
 
     #[cfg(feature="stats")]
-    pub(crate) fn utilization(this: NonNull<Chunk>) -> f32 {
+    fn utilization(this: NonNull<Chunk>) -> f32 {
         let size = unsafe { (*this.as_ptr()).size } as f32;
         (size - Chunk::available_size(this) as f32) / size
     }
+}
 
-    #[allow(unused)]
-    pub(crate) unsafe fn poison_memory(this: NonNull<Chunk>) {
+pub struct ChunkIterator {
+    current: Option<NonNull<Chunk>>,
+    stop: Option<NonNull<Chunk>>,
+}
+
+impl Iterator for ChunkIterator {
+    type Item = (NonNull<u8>, usize);
+    fn next(&mut self) -> Option<(NonNull<u8>, usize)> {
+        if self.current == self.stop {
+            return None;
+        }
+
+        let Some(mut chunk) = self.current else {
+            return None;
+        };
+
         unsafe {
-            let start: *mut u32 = this.as_ptr().cast::<u32>().add(CHUNK_HEADER_SIZE / 4);
-            let end: *const u32 = this.as_ref().chunk_end.cast();
-            let len = end.offset_from(start) as usize;
-            let slice = std::slice::from_raw_parts_mut(start, len);
-            slice.fill(0xDEADBEEF);
+            let size = chunk.as_ref().size;
+            self.current = chunk.as_mut().previous.take();
+            Some((chunk.cast(), size))
         }
     }
 }
