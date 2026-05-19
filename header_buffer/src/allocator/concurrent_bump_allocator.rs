@@ -1,14 +1,15 @@
 //! Lock-free bump allocator for concurrent use.
 //!
-//! Allocation within a chunk is lock-free (CAS on an atomic cursor).
-//! Adding a new chunk acquires a short-lived mutex (rare: only when a chunk is full).
-//! Deallocation is lock-free.
+//! Allocation within a chunk is lock-free and on the fast path only touches
+//! the current chunk's header, the storage struct is not read or written.
+//!
+//! Adding a new chunk acquires a short-lived mutex (rare: only when a chunk
+//! is full). Deallocation only decrements an atomic counter.
 
 use std::alloc::Layout;
 use std::marker::PhantomPinned;
-use std::pin::Pin;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::allocator::{Allocator, AllocError};
@@ -18,23 +19,38 @@ const CHUNK_HEADER_SIZE: usize = 64;
 
 /// Chunk header written at the start of every raw allocation.
 ///
-/// The data area begins `DATA_OFFSET` bytes from the chunk pointer.
-/// `DATA_OFFSET` is `size_of::<AtomicChunk>()` rounded up to `CHUNK_ALIGNMENT`.
+/// The data area begins `CHUNK_HEADER_SIZE` bytes from the chunk pointer.
 ///
 /// The `next` field forms an intrusive singly-linked list of all live chunks,
-/// with `ConcurrentBumpAllocator::current_chunk` as the head.  Links are set
-/// once at chunk-creation time (under the slow-path mutex) and read only in
-/// `reset` (under `&mut self`), so no additional synchronisation is needed
-/// beyond what the mutex and `&mut self` already provide.
+/// with `ConcurrentBumpAllocatorStorageImpl::current_chunk` as the head.
+/// Links are set at chunk-creation time under the slow-path mutex.
+///
+/// `ref_count` and `allocation_count` live on the chunk so the fast path
+/// does not need to touch the storage struct. Per-chunk values are not
+/// individually meaningful (a handle's chunk pointer can be retargeted on
+/// the slow path without adjusting either counter, so a handle may decrement
+/// a chunk it did not allocate on). The SUM across all chunks is invariant
+/// and equals the live handle count and net outstanding allocations
+/// respectively; storage-wide accessors and the drop assertion walk the
+/// chunk list to obtain it.
 struct AtomicChunk {
-    /// Current byte offset into the data area. Advanced atomically by allocators.
+    /// Current byte offset into the data area. Advanced atomically.
     cursor: AtomicUsize,
     /// Size of the data area in bytes (does not include the header).
     capacity: usize,
-    /// Total raw allocation size (header + data), stored for `Global::deallocate`.
+    /// Total raw allocation size (header + data), stored for recycling.
     size: usize,
     /// Next (older) chunk in the intrusive list, or null if this is the oldest.
     next: AtomicPtr<AtomicChunk>,
+    /// Back-pointer to the storage impl. The impl is heap-allocated and
+    /// never moved, so this pointer is stable for the chunk's lifetime.
+    /// Read only on the slow path.
+    storage: NonNull<ConcurrentBumpAllocatorStorageImpl>,
+    /// Per-chunk live handle count. Sum across all chunks == total live handles.
+    ref_count: AtomicI32,
+    /// Per-chunk net allocation count. Sum across all chunks == net
+    /// outstanding allocations (allocs - deallocs).
+    allocation_count: AtomicI32,
 }
 
 const _SANITY_CHECK: () = {
@@ -50,14 +66,9 @@ impl AtomicChunk {
 
     /// Attempt to reserve `size` bytes (must be a multiple of `CHUNK_ALIGNMENT`).
     ///
-    /// Lock-free: uses a CAS loop on the atomic cursor.  Spurious CAS failures
-    /// (e.g. from `compare_exchange_weak` on ARM) cause an immediate retry.
-    ///
-    /// Memory ordering: the caller must have loaded the chunk pointer with
-    /// `Acquire` before calling this, which establishes visibility of the header
-    /// (including `capacity`).  The cursor CAS itself uses `Relaxed` — the
-    /// uniqueness of the claimed slot follows from the atomicity of the CAS, not
-    /// from any additional ordering.
+    /// Lock-free: CAS loop on the atomic cursor. The caller must have loaded
+    /// the chunk pointer with `Acquire` before calling, which establishes
+    /// visibility of the header (including `capacity`).
     #[inline]
     fn try_allocate(this: NonNull<Self>, size: usize) -> Result<NonNull<[u8]>, ()> {
         let chunk = unsafe { this.as_ref() };
@@ -86,9 +97,14 @@ impl AtomicChunk {
 }
 
 /// Acquire a chunk from `pool` with at least `min_size` bytes (header + data).
-/// The pool may round up to its preferred chunk size.
-/// `next` is the previous list head, threaded into the new chunk's header.
-fn new_chunk(pool: &ChunkPool, min_size: usize, next: *mut AtomicChunk) -> Result<NonNull<AtomicChunk>, AllocError> {
+/// `next` is threaded into the new chunk's intrusive-list link. `storage` is
+/// the chunk's back-pointer to its owning storage impl.
+fn new_chunk(
+    pool: &ChunkPool,
+    min_size: usize,
+    next: *mut AtomicChunk,
+    storage: NonNull<ConcurrentBumpAllocatorStorageImpl>,
+) -> Result<NonNull<AtomicChunk>, AllocError> {
     let (raw, total_size) = pool.allocate_raw(min_size)?;
     let chunk: NonNull<AtomicChunk> = raw.cast();
     unsafe {
@@ -97,6 +113,9 @@ fn new_chunk(pool: &ChunkPool, min_size: usize, next: *mut AtomicChunk) -> Resul
             capacity: total_size - CHUNK_HEADER_SIZE,
             size: total_size,
             next: AtomicPtr::new(next),
+            storage,
+            ref_count: AtomicI32::new(0),
+            allocation_count: AtomicI32::new(0),
         });
     }
     Ok(chunk)
@@ -107,132 +126,318 @@ unsafe fn recycle_chunk(pool: &ChunkPool, chunk: NonNull<AtomicChunk>) {
     unsafe { pool.recycle_raw(chunk.cast(), size); }
 }
 
-/// A bump allocator that can be shared and used concurrently from multiple threads.
-///
-/// Each call to [`allocate`](Self::allocate) loads the current chunk pointer
-/// (with `Acquire`) and then does a CAS loop on the chunk's atomic cursor to
-/// claim a slot.  No lock is taken on the common path.
-///
-/// When the current chunk is full, a mutex is acquired to install a new one.
-/// The double-check pattern ensures at most one new chunk is added per full
-/// chunk, even under heavy contention.
-///
-/// [`deallocate`](Self::deallocate) only decrements an atomic counter.  Memory
-/// is not reclaimed per-item; call [`reset`](Self::reset) to free all chunks at
-/// once.
-///
-/// Growing always allocates a new region and copies — in-place extension is
-/// unsafe because another thread may have claimed the bytes immediately after
-/// any given slot.  Shrinking returns a smaller slice view without reclaiming
-/// the tail (same reason).
-pub struct ConcurrentBumpAllocatorMemory {
-    /// Head of the intrusive chunk list and the target for fast-path allocation.
-    /// Loaded lock-free on the fast path; updated under `install_lock`.
-    current_chunk: AtomicPtr<AtomicChunk>,
-    /// Net outstanding allocations (allocs − deallocs).
-    /// Only used for the debug assertion in `reset` / `drop`.
-    allocation_count: AtomicI32,
-    /// Source and sink for chunk memory.  Shared with other allocators so that
-    /// recycled chunks can be reused across frames / threads.
-    /// `chunks.chunk_size` is the preferred total allocation size per chunk.
-    chunks: ChunkPool,
-    /// Serialises concurrent attempts to install a new chunk.  Holds no data:
-    /// the chunk list is maintained through the intrusive `next` pointers.
-    install_lock: Mutex<()>,
+#[inline]
+fn round_up(val: usize, align: usize) -> usize {
+    let rem = val % align;
+    if rem == 0 { val } else { val + align - rem }
 }
 
-// SAFETY: all interior mutability is mediated by atomics or a Mutex.
-unsafe impl Send for ConcurrentBumpAllocatorMemory {}
-unsafe impl Sync for ConcurrentBumpAllocatorMemory {}
+/// Inner storage. Heap-allocated and never moved so chunks' back-pointers
+/// remain valid. Wrapped by [`ConcurrentBumpAllocatorStorage`] which owns
+/// it via a raw `NonNull` so that a panicking outer `Drop` does not
+/// deallocate this struct.
+struct ConcurrentBumpAllocatorStorageImpl {
+    /// Head of the intrusive chunk list and target for the slow path's
+    /// re-check. Updated under `install_lock`. The fast path does not read
+    /// this field, handles cache their own chunk pointer.
+    current_chunk: AtomicPtr<AtomicChunk>,
+    /// Source and sink for chunk memory.
+    chunks: ChunkPool,
+    /// Serialises concurrent attempts to install a new chunk.
+    install_lock: Mutex<()>,
+    _pin: PhantomPinned,
+}
 
-impl ConcurrentBumpAllocatorMemory {
+impl ConcurrentBumpAllocatorStorageImpl {
+    fn walk_chunks_sum(&self, mut f: impl FnMut(&AtomicChunk) -> i32) -> i32 {
+        let mut sum = 0i32;
+        let mut ptr = self.current_chunk.load(Ordering::Acquire);
+        while let Some(chunk) = NonNull::new(ptr) {
+            unsafe {
+                sum = sum.wrapping_add(f(chunk.as_ref()));
+                ptr = chunk.as_ref().next.load(Ordering::Acquire);
+            }
+        }
+        sum
+    }
+
+    /// Sum `(allocation_count, ref_count)` over the chunk list using
+    /// non-atomic accesses. Requires `&mut self`.
+    fn sum_counters_mut(&mut self) -> (i32, i32) {
+        let mut total_alloc = 0i32;
+        let mut total_ref = 0i32;
+        let mut ptr = *self.current_chunk.get_mut();
+        while let Some(chunk) = NonNull::new(ptr) {
+            unsafe {
+                total_alloc = total_alloc.wrapping_add(*(*chunk.as_ptr()).allocation_count.get_mut());
+                total_ref = total_ref.wrapping_add(*(*chunk.as_ptr()).ref_count.get_mut());
+                ptr = *(*chunk.as_ptr()).next.get_mut();
+            }
+        }
+        (total_alloc, total_ref)
+    }
+
+    /// Return every chunk to the pool and clear `current_chunk`. Requires
+    /// `&mut self`.
+    fn recycle_all_chunks(&mut self) {
+        let mut ptr = *self.current_chunk.get_mut();
+        while let Some(chunk) = NonNull::new(ptr) {
+            unsafe {
+                ptr = *(*chunk.as_ptr()).next.get_mut();
+                recycle_chunk(&self.chunks, chunk);
+            }
+        }
+        *self.current_chunk.get_mut() = ptr::null_mut();
+    }
+}
+
+impl Drop for ConcurrentBumpAllocatorStorageImpl {
+    fn drop(&mut self) {
+        // Reachable only after the outer `ConcurrentBumpAllocatorStorage::drop`
+        // has verified that no handles or allocations remain. Chunks must be
+        // returned to the pool here so the pool can reuse them.
+        self.recycle_all_chunks();
+    }
+}
+
+/// Backing storage for [`ConcurrentBumpAllocator`] handles.
+///
+/// Internally wraps a heap allocation of a private impl struct; chunks
+/// store back-pointers to that impl, so its address is stable.
+///
+/// `ConcurrentBumpAllocatorStorage` and `ConcurrentBumpAllocator` are
+/// `Send + Sync`.
+///
+/// # Panics
+///
+/// Dropping a `ConcurrentBumpAllocatorStorage` while
+/// [`ConcurrentBumpAllocator`] handles or outstanding allocations remain
+/// will panic. If the panic is caught, the inner backing memory is *not*
+/// deallocated, so any surviving handles continue to point at valid memory.
+pub struct ConcurrentBumpAllocatorStorage {
+    inner: NonNull<ConcurrentBumpAllocatorStorageImpl>,
+}
+
+// SAFETY: the inner impl is itself Send + Sync (atomics, Mutex, ChunkPool);
+// ownership of the heap allocation is unique to this wrapper.
+unsafe impl Send for ConcurrentBumpAllocatorStorage {}
+unsafe impl Sync for ConcurrentBumpAllocatorStorage {}
+
+impl ConcurrentBumpAllocatorStorage {
     pub fn new(chunks: ChunkPool) -> Self {
-        ConcurrentBumpAllocatorMemory {
+        let boxed = Box::new(ConcurrentBumpAllocatorStorageImpl {
             current_chunk: AtomicPtr::new(ptr::null_mut()),
-            allocation_count: AtomicI32::new(0),
             chunks,
             install_lock: Mutex::new(()),
+            _pin: PhantomPinned,
+        });
+
+        let mut inner = NonNull::new(Box::into_raw(boxed)).unwrap();
+
+        // Allocate the initial chunk so handles can always rely on a
+        // non-null chunk pointer on the fast path.
+        unsafe {
+            let chunk = new_chunk(
+                &inner.as_ref().chunks,
+                CHUNK_HEADER_SIZE,
+                ptr::null_mut(),
+                inner,
+            ).expect("failed to allocate initial chunk");
+            inner.as_mut().current_chunk = AtomicPtr::new(chunk.as_ptr());
+        }
+
+        ConcurrentBumpAllocatorStorage { inner }
+    }
+
+    #[inline]
+    fn storage(&self) -> &ConcurrentBumpAllocatorStorageImpl {
+        unsafe { self.inner.as_ref() }
+    }
+
+    /// Obtain a [`ConcurrentBumpAllocator`] handle that implements [`Allocator`].
+    ///
+    /// Cloning the handle increments a per-chunk atomic reference count;
+    /// dropping decrements it. The storage must not be dropped while any
+    /// handle is alive.
+    pub fn allocator(&self) -> ConcurrentBumpAllocator {
+        let chunk = self.storage().current_chunk.load(Ordering::Acquire);
+        debug_assert!(!chunk.is_null());
+        unsafe { (*chunk).ref_count.fetch_add(1, Ordering::Relaxed); }
+        ConcurrentBumpAllocator {
+            chunk: AtomicPtr::new(chunk),
         }
     }
 
-    /// Allocate memory for `layout`.
+    /// The number of live [`ConcurrentBumpAllocator`] handles pointing to
+    /// this storage.
     ///
-    /// Alignments greater than `CHUNK_ALIGNMENT` are not supported.
-    pub fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    /// Computed by walking the intrusive chunk list and summing per-chunk
+    /// reference counts.
+    pub fn ref_count(&self) -> i32 {
+        self.storage().walk_chunks_sum(|c| c.ref_count.load(Ordering::Relaxed))
+    }
+
+    /// Net outstanding allocations (allocs - deallocs) across all chunks.
+    pub fn allocation_count(&self) -> i32 {
+        self.storage().walk_chunks_sum(|c| c.allocation_count.load(Ordering::Relaxed))
+    }
+
+    /// Free all chunks and reset to an initial (one empty chunk) state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any allocations or handles are still outstanding.
+    pub fn reset(&mut self) {
+        let mut storage_ptr = self.inner;
+        let storage = unsafe { storage_ptr.as_mut() };
+
+        let (total_alloc, total_ref) = storage.sum_counters_mut();
+        assert_eq!(total_ref, 0, "reset() called with {total_ref} live handle(s)");
+        assert_eq!(total_alloc, 0, "reset() called with {total_alloc} outstanding allocation(s)");
+
+        // TODO: instead of recycling all chunks and reallocating, just leave one.
+        storage.recycle_all_chunks();
+
+        // Reinstall a fresh empty chunk so subsequent allocator() calls
+        // produce handles with non-null chunk pointers.
+        let chunk = new_chunk(&storage.chunks, CHUNK_HEADER_SIZE, ptr::null_mut(), storage_ptr)
+            .expect("failed to allocate initial chunk after reset");
+        *storage.current_chunk.get_mut() = chunk.as_ptr();
+    }
+}
+
+impl Drop for ConcurrentBumpAllocatorStorage {
+    fn drop(&mut self) {
+        // The assertions below run before `Box::from_raw` reclaims the inner
+        // allocation. If either panics, the inner is leaked rather than
+        // freed and any surviving handles continue to point at valid memory.
+        let (total_alloc, total_ref) = unsafe { self.inner.as_mut().sum_counters_mut() };
+        assert!(
+            total_ref == 0,
+            "ConcurrentBumpAllocatorStorage dropped with {total_ref} outstanding handle(s)",
+        );
+        assert_eq!(
+            total_alloc, 0,
+            "ConcurrentBumpAllocatorStorage dropped with {total_alloc} outstanding allocation(s)",
+        );
+
+        // Both assertions passed: hand the box back so its Drop recycles
+        // every chunk and the allocation itself is freed.
+        unsafe {
+            let _ = Box::from_raw(self.inner.as_ptr());
+        }
+    }
+}
+
+/// A lightweight, cloneable allocator handle that implements [`Allocator`].
+///
+/// Created via [`ConcurrentBumpAllocatorStorage::allocator`]. The fast path
+/// only touches the current chunk's header (a single chunk-pointer load plus
+/// a CAS on the chunk's cursor and a fetch_add on its allocation_count)
+/// the storage struct is not read or written.
+///
+/// Cloning increments a per-chunk atomic reference count; dropping decrements
+/// it. The backing storage will panic on drop if any handles are still alive.
+///
+/// This type is `Send + Sync`; the same handle can be used from multiple
+/// threads concurrently.
+pub struct ConcurrentBumpAllocator {
+    /// Most recently observed current chunk. May lag behind the storage's
+    /// `current_chunk`, the slow path catches up by re-reading and storing.
+    /// Non-null from construction through drop.
+    chunk: AtomicPtr<AtomicChunk>,
+}
+
+// SAFETY: chunks remain valid for the lifetime of any handle (storage drop
+// asserts ref_count == 0). All access to the chunk header is atomic.
+unsafe impl Send for ConcurrentBumpAllocator {}
+unsafe impl Sync for ConcurrentBumpAllocator {}
+
+impl ConcurrentBumpAllocator {
+    fn allocate_impl(
+        chunk: &AtomicPtr<AtomicChunk>,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
         debug_assert!(
             CHUNK_ALIGNMENT % layout.align() == 0,
             "layout alignment {} is not supported (CHUNK_ALIGNMENT = {})",
             layout.align(), CHUNK_ALIGNMENT,
         );
-
         let size = round_up(layout.size(), CHUNK_ALIGNMENT);
 
-        // Fast path: CAS on the current chunk's cursor, no lock taken.
-        let raw = self.current_chunk.load(Ordering::Acquire);
-        if let Some(chunk) = NonNull::new(raw) {
-            if let Ok(alloc) = AtomicChunk::try_allocate(chunk, size) {
-                self.allocation_count.fetch_add(1, Ordering::Relaxed);
-                return Ok(alloc);
-            }
+        // Fast path: only the chunk header is touched.
+        let raw = chunk.load(Ordering::Acquire);
+        // SAFETY: a handle's chunk pointer is non-null from construction
+        // through drop.
+        let current = unsafe { NonNull::new_unchecked(raw) };
+        if let Ok(alloc) = AtomicChunk::try_allocate(current, size) {
+            unsafe { current.as_ref().allocation_count.fetch_add(1, Ordering::Relaxed); }
+            return Ok(alloc);
         }
 
-        self.allocate_slow(size)
+        Self::allocate_slow(chunk, current, size)
     }
 
-    /// Slow path: acquire the lock, maybe install a new chunk, then allocate.
     #[cold]
-    fn allocate_slow(&self, size: usize) -> Result<NonNull<[u8]>, AllocError> {
-        let _guard = self.install_lock.lock().unwrap();
+    fn allocate_slow(
+        chunk: &AtomicPtr<AtomicChunk>,
+        current: NonNull<AtomicChunk>,
+        size: usize,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Reach the storage impl through the chunk's back-pointer.
+        let mut storage_ptr = unsafe { current.as_ref().storage };
+        let storage = unsafe { storage_ptr.as_mut() };
 
-        // Re-check: another thread may have installed a new chunk while we waited.
-        let old_head = self.current_chunk.load(Ordering::Acquire);
-        if let Some(chunk) = NonNull::new(old_head) {
-            if let Ok(alloc) = AtomicChunk::try_allocate(chunk, size) {
-                self.allocation_count.fetch_add(1, Ordering::Relaxed);
-                return Ok(alloc);
+        let _guard = storage.install_lock.lock().unwrap();
+
+        // Re-check: another thread may have installed a new chunk while we
+        // waited on the lock.
+        let storage_head = storage.current_chunk.load(Ordering::Acquire);
+        if storage_head != current.as_ptr() {
+            if let Some(head) = NonNull::new(storage_head) {
+                if let Ok(alloc) = AtomicChunk::try_allocate(head, size) {
+                    unsafe { head.as_ref().allocation_count.fetch_add(1, Ordering::Relaxed); }
+                    chunk.store(storage_head, Ordering::Release);
+                    return Ok(alloc);
+                }
             }
         }
 
-        // Install a new chunk large enough for this request.
-        // Pass `old_head` so the new chunk's `next` links it into the list.
-        // The pool applies max(min_size, pool.chunk_size) internally.
-        let chunk = new_chunk(&self.chunks, size + CHUNK_HEADER_SIZE, old_head)?;
+        // Install a new chunk.
+        let new = new_chunk(
+            &storage.chunks,
+            size + CHUNK_HEADER_SIZE,
+            storage_head,
+            storage_ptr,
+        )?;
+        storage.current_chunk.store(new.as_ptr(), Ordering::Release);
 
-        // Release: ensures header writes are visible to any thread that
-        // subsequently loads current_chunk with Acquire.
-        self.current_chunk.store(chunk.as_ptr(), Ordering::Release);
-
-        let alloc = AtomicChunk::try_allocate(chunk, size)
+        let alloc = AtomicChunk::try_allocate(new, size)
             .expect("freshly allocated chunk must be large enough");
-
-        self.allocation_count.fetch_add(1, Ordering::Relaxed);
+        unsafe { new.as_ref().allocation_count.fetch_add(1, Ordering::Relaxed); }
+        chunk.store(new.as_ptr(), Ordering::Release);
         Ok(alloc)
     }
 
-    /// Signal that `ptr` is no longer in use.
-    ///
-    /// The memory is not immediately reclaimed; call [`reset`](Self::reset) to
-    /// free all chunks.
-    pub fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
-        let prev = self.allocation_count.fetch_sub(1, Ordering::Relaxed);
-        debug_assert!(prev > 0, "more deallocations than allocations");
+    fn deallocate_impl(chunk: &AtomicPtr<AtomicChunk>, _ptr: NonNull<u8>, _layout: Layout) {
+        // Decrement the count on whichever chunk this handle currently
+        // points at. The actual allocation may have been on a different
+        // chunk; the storage-wide sum is what's checked.
+        let current = chunk.load(Ordering::Relaxed);
+        unsafe { (*current).allocation_count.fetch_sub(1, Ordering::Relaxed); }
     }
 
-    /// Grow an allocation by allocating a new, larger region and copying.
-    ///
-    /// The old allocation is counted as freed; the returned pointer must be
-    /// passed to `deallocate` (or `grow` / `shrink`) when done.
-    pub fn grow(
-        &self,
+    unsafe fn grow_impl(
+        chunk: &AtomicPtr<AtomicChunk>,
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         debug_assert!(new_layout.size() >= old_layout.size());
 
-        // In-place growth is unsafe in a concurrent context because another thread
-        // may have claimed the bytes immediately following the old allocation.
-        let new_alloc = self.allocate(new_layout)?; // count +1
+        // In-place growth is unsafe concurrently: another thread may already
+        // have claimed the bytes immediately after this allocation.
+        let new_alloc = Self::allocate_impl(chunk, new_layout)?;
         unsafe {
             ptr::copy_nonoverlapping(
                 ptr.as_ptr(),
@@ -240,191 +445,46 @@ impl ConcurrentBumpAllocatorMemory {
                 old_layout.size(),
             );
         }
-        // grow replaces the old allocation: net allocation_count change is zero.
-        self.allocation_count.fetch_sub(1, Ordering::Relaxed);
+        // grow replaces the old allocation: net change in the storage-wide
+        // allocation count is zero.
+        Self::deallocate_impl(chunk, ptr, old_layout);
         Ok(new_alloc)
     }
 
-    /// Return a smaller view of an allocation.
-    ///
-    /// The tail bytes are not reclaimed (see `deallocate`).
-    pub fn shrink(
-        &self,
+    unsafe fn shrink_impl(
+        _chunk: &AtomicPtr<AtomicChunk>,
         ptr: NonNull<u8>,
         _old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()))
     }
-
-    /// Free all chunks and reset the allocator to its initial (empty) state.
-    ///
-    /// Requires `&mut self` to guarantee no concurrent access is possible.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any allocations are still outstanding.
-    pub fn reset(&mut self) {
-        assert_eq!(
-            *self.allocation_count.get_mut(),
-            0,
-            "reset() called while allocations are still outstanding",
-        );
-
-        // Walk the intrusive list from head (newest) to tail (oldest).
-        let mut ptr = *self.current_chunk.get_mut();
-        while let Some(chunk) = NonNull::new(ptr) {
-            // Read `next` before recycling — `recycle_chunk` hands the memory back.
-            ptr = *unsafe { (*chunk.as_ptr()).next.get_mut() };
-            unsafe { recycle_chunk(&self.chunks, chunk); }
-        }
-        *self.current_chunk.get_mut() = ptr::null_mut();
-    }
-}
-
-impl Default for ConcurrentBumpAllocatorMemory {
-    fn default() -> Self {
-        Self::new(ChunkPool::new())
-    }
-}
-
-impl Drop for ConcurrentBumpAllocatorMemory {
-    fn drop(&mut self) {
-        // Reuse reset() logic but keep the panic for outstanding allocations,
-        // matching the behaviour of BumpAllocator::drop.
-        self.reset();
-    }
-}
-
-#[inline]
-fn round_up(val: usize, align: usize) -> usize {
-    let rem = val % align;
-    if rem == 0 { val } else { val + align - rem }
-}
-
-/// Wrapper around [`ConcurrentBumpAllocatorMemory`] that provides
-/// reference-counted [`ConcurrentBumpAllocator`] handles implementing
-/// the [`Allocator`] trait.
-///
-/// This type is `!Unpin` and must be used behind `Pin<Box<...>>` to ensure
-/// a stable address for the raw pointers held by [`ConcurrentBumpAllocator`]
-/// handles. The [`new`](Self::new) constructor returns `Pin<Box<Self>>`
-/// directly.
-///
-/// The storage and its handles are `Send + Sync` — they can be shared
-/// across threads freely.
-///
-/// # Panics
-///
-/// Dropping a `ConcurrentBumpAllocatorStorage` while
-/// [`ConcurrentBumpAllocator`] handles are still alive will panic.
-pub struct ConcurrentBumpAllocatorStorage {
-    inner: ConcurrentBumpAllocatorMemory,
-    ref_count: AtomicU32,
-    _pin: PhantomPinned,
-}
-
-impl ConcurrentBumpAllocatorStorage {
-    pub fn new(chunks: ChunkPool) -> Pin<Box<Self>> {
-        Box::pin(ConcurrentBumpAllocatorStorage {
-            inner: ConcurrentBumpAllocatorMemory::new(chunks),
-            ref_count: AtomicU32::new(0),
-            _pin: PhantomPinned,
-        })
-    }
-
-    /// Obtain a [`ConcurrentBumpAllocator`] handle that implements [`Allocator`].
-    ///
-    /// The handle is reference-counted; cloning it increments the count and
-    /// dropping it decrements the count. The storage must not be dropped
-    /// while any handle is alive.
-    pub fn allocator(self: &Pin<Box<Self>>) -> ConcurrentBumpAllocator {
-        self.ref_count.fetch_add(1, Ordering::Relaxed);
-        ConcurrentBumpAllocator {
-            storage: &**self as *const Self as *mut Self,
-        }
-    }
-
-    /// The number of live [`ConcurrentBumpAllocator`] handles pointing to
-    /// this storage.
-    pub fn ref_count(&self) -> u32 {
-        self.ref_count.load(Ordering::Relaxed)
-    }
-
-    /// Access the underlying memory.
-    pub fn memory(&self) -> &ConcurrentBumpAllocatorMemory {
-        &self.inner
-    }
-
-    /// Mutably access the underlying memory for reset, etc.
-    ///
-    /// # Safety
-    ///
-    /// This obtains a mutable reference to the inner memory without moving
-    /// the storage. The caller must ensure no [`ConcurrentBumpAllocator`]
-    /// handles are concurrently accessing the memory.
-    pub fn memory_mut(self: &mut Pin<Box<Self>>) -> &mut ConcurrentBumpAllocatorMemory {
-        // SAFETY: we are not moving the ConcurrentBumpAllocatorStorage,
-        // only accessing the inner field mutably.
-        unsafe { &mut self.as_mut().get_unchecked_mut().inner }
-    }
-}
-
-impl Drop for ConcurrentBumpAllocatorStorage {
-    fn drop(&mut self) {
-        let count = self.ref_count.load(Ordering::Relaxed);
-        assert!(
-            count == 0,
-            "ConcurrentBumpAllocatorStorage dropped with {count} outstanding \
-             ConcurrentBumpAllocator handle(s)",
-        );
-    }
-}
-
-/// A lightweight, cloneable allocator handle that implements [`Allocator`].
-///
-/// Created via [`ConcurrentBumpAllocatorStorage::allocator`]. Cloning
-/// increments an atomic reference count; dropping decrements it. The backing
-/// storage will panic on drop if any handles are still alive.
-///
-/// This type is `Send + Sync` and can be used from multiple threads
-/// concurrently.
-pub struct ConcurrentBumpAllocator {
-    storage: *mut ConcurrentBumpAllocatorStorage,
-}
-
-// SAFETY: The inner ConcurrentBumpAllocatorMemory is Send + Sync (all
-// mutability mediated by atomics / Mutex), and the ref_count is atomic.
-unsafe impl Send for ConcurrentBumpAllocator {}
-unsafe impl Sync for ConcurrentBumpAllocator {}
-
-impl ConcurrentBumpAllocator {
-    #[inline]
-    fn memory(&self) -> &ConcurrentBumpAllocatorMemory {
-        unsafe { &(*self.storage).inner }
-    }
 }
 
 impl Clone for ConcurrentBumpAllocator {
     fn clone(&self) -> Self {
-        unsafe { (*self.storage).ref_count.fetch_add(1, Ordering::Relaxed); }
-        ConcurrentBumpAllocator { storage: self.storage }
+        let chunk = self.chunk.load(Ordering::Relaxed);
+        unsafe { (*chunk).ref_count.fetch_add(1, Ordering::Relaxed); }
+        ConcurrentBumpAllocator {
+            chunk: AtomicPtr::new(chunk),
+        }
     }
 }
 
 impl Drop for ConcurrentBumpAllocator {
     fn drop(&mut self) {
-        unsafe { (*self.storage).ref_count.fetch_sub(1, Ordering::Relaxed); }
+        let chunk = self.chunk.load(Ordering::Relaxed);
+        unsafe { (*chunk).ref_count.fetch_sub(1, Ordering::Relaxed); }
     }
 }
 
 unsafe impl Allocator for ConcurrentBumpAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.memory().allocate(layout)
+        Self::allocate_impl(&self.chunk, layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        self.memory().deallocate(ptr, layout)
+        Self::deallocate_impl(&self.chunk, ptr, layout)
     }
 
     unsafe fn grow(
@@ -433,7 +493,7 @@ unsafe impl Allocator for ConcurrentBumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        self.memory().grow(ptr, old_layout, new_layout)
+        Self::grow_impl(&self.chunk, ptr, old_layout, new_layout)
     }
 
     unsafe fn shrink(
@@ -442,7 +502,7 @@ unsafe impl Allocator for ConcurrentBumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        self.memory().shrink(ptr, old_layout, new_layout)
+        Self::shrink_impl(&self.chunk, ptr, old_layout, new_layout)
     }
 }
 
@@ -451,7 +511,7 @@ mod tests {
     use super::*;
     use crate::Vector;
 
-    fn make_storage() -> Pin<Box<ConcurrentBumpAllocatorStorage>> {
+    fn make_storage() -> ConcurrentBumpAllocatorStorage {
         ConcurrentBumpAllocatorStorage::new(ChunkPool::new())
     }
 
@@ -547,10 +607,7 @@ mod tests {
             v.extend_from_slice(&[1, 2, 3, 4, 5]);
         }
 
-        assert_eq!(
-            storage.memory().allocation_count.load(Ordering::Relaxed),
-            0,
-        );
+        assert_eq!(storage.allocation_count(), 0);
     }
 
     #[test]
@@ -571,17 +628,21 @@ mod tests {
         assert_eq!(storage.ref_count(), 0);
     }
 
+    // Note: this test intentionally leaks memory but there is no way to tell
+    // miri that it's OK.
     #[test]
     fn storage_drop_panics_with_live_handles() {
         let storage = make_storage();
         let alloc = storage.allocator();
+        let mut v = Vector::new_in(alloc);
+        v.push(1u32);
+
+        // The panic in storage Drop leaves the inner backing memory live, so
+        // the handle (and its Vector) can still be safely dropped afterwards.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             drop(storage);
         }));
         assert!(result.is_err());
-        // The storage has been freed (even though its Drop panicked), so we
-        // must not let the handle's Drop access it.
-        std::mem::forget(alloc);
     }
 
     #[test]
@@ -626,9 +687,6 @@ mod tests {
         }
 
         assert_eq!(storage.ref_count(), 0);
-        assert_eq!(
-            storage.memory().allocation_count.load(Ordering::Relaxed),
-            0,
-        );
+        assert_eq!(storage.allocation_count(), 0);
     }
 }

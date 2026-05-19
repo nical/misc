@@ -4,6 +4,9 @@ use std::ptr::NonNull;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use header_buffer::allocator::bump_allocator::{BumpAllocator, BumpAllocatorStorage};
 use header_buffer::allocator::chunk_pool::ChunkPool;
+use header_buffer::allocator::concurrent_bump_allocator::{
+    ConcurrentBumpAllocator, ConcurrentBumpAllocatorStorage,
+};
 use header_buffer::allocator::{Allocator, Global};
 use header_buffer::Vector;
 
@@ -57,6 +60,25 @@ fn bench_raw_allocate(c: &mut Criterion) {
                 drop(storage);
             });
         });
+
+        let pool = ChunkPool::new();
+        group.bench_with_input(BenchmarkId::new("concurrent_bump", n), &n, |b, &n| {
+            b.iter(|| {
+                let storage = ConcurrentBumpAllocatorStorage::new(pool.clone());
+                let alloc = storage.allocator();
+                let mut ptrs: Vec<NonNull<u8>> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let p = alloc.allocate(layout).unwrap().cast();
+                    ptrs.push(p);
+                }
+                for p in &ptrs {
+                    unsafe { alloc.deallocate(*p, layout) };
+                }
+                black_box(ptrs);
+                drop(alloc);
+                drop(storage);
+            });
+        });
     }
 
     group.finish();
@@ -88,6 +110,21 @@ fn bench_vec_push(c: &mut Criterion) {
                 let storage = BumpAllocatorStorage::new(pool.clone());
                 let alloc = storage.allocator();
                 let mut v: Vector<Item, BumpAllocator> =
+                    Vector::with_capacity_in(CAP, alloc);
+                for i in 0..n {
+                    v.push(val(i));
+                }
+                drop(v);
+                drop(storage);
+            });
+        });
+
+        let pool = ChunkPool::new();
+        group.bench_with_input(BenchmarkId::new("concurrent_bump", n), &n, |b, &n| {
+            b.iter(|| {
+                let storage = ConcurrentBumpAllocatorStorage::new(pool.clone());
+                let alloc = storage.allocator();
+                let mut v: Vector<Item, ConcurrentBumpAllocator> =
                     Vector::with_capacity_in(CAP, alloc);
                 for i in 0..n {
                     v.push(val(i));
@@ -153,6 +190,30 @@ fn bench_many_small_vecs(c: &mut Criterion) {
                 });
             },
         );
+
+        let concurrent_pool = ChunkPool::new();
+        group.bench_with_input(
+            BenchmarkId::new("concurrent_bump", &id),
+            &(n_vecs, len),
+            |b, &(n_vecs, len)| {
+                b.iter(|| {
+                    let storage = ConcurrentBumpAllocatorStorage::new(concurrent_pool.clone());
+                    let alloc = storage.allocator();
+                    let mut all: Vec<Vector<Item, ConcurrentBumpAllocator>> =
+                        Vec::with_capacity(n_vecs);
+                    for _ in 0..n_vecs {
+                        let mut v: Vector<Item, ConcurrentBumpAllocator> =
+                            Vector::new_in(alloc.clone());
+                        for i in 0..len {
+                            v.push(val(i));
+                        }
+                        all.push(v);
+                    }
+                    drop(all);
+                    drop(alloc);
+                });
+            },
+        );
     }
 
     group.finish();
@@ -207,6 +268,26 @@ fn bench_mixed_sizes(c: &mut Criterion) {
                 drop(storage);
             });
         });
+
+        let pool = ChunkPool::new();
+        group.bench_with_input(BenchmarkId::new("concurrent_bump", n), &n, |b, &n| {
+            b.iter(|| {
+                let storage = ConcurrentBumpAllocatorStorage::new(pool.clone());
+                let alloc = storage.allocator();
+                let mut ptrs: Vec<(NonNull<u8>, Layout)> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let layout = layouts[i & 3];
+                    let p = alloc.allocate(layout).unwrap().cast();
+                    ptrs.push((p, layout));
+                }
+                for (p, layout) in &ptrs {
+                    unsafe { alloc.deallocate(*p, *layout) };
+                }
+                black_box(ptrs);
+                drop(alloc);
+                drop(storage);
+            });
+        });
     }
 
     group.finish();
@@ -235,6 +316,26 @@ fn bench_storage_reuse(c: &mut Criterion) {
     group.bench_function("shared_pool", |b| {
         b.iter(|| {
             let storage = BumpAllocatorStorage::new(pool.clone());
+            drop(storage);
+        });
+    });
+
+    group.bench_function("concurrent_fresh_pool_per_iter", |b| {
+        b.iter(|| {
+            let pool = ChunkPool::new();
+            let storage = ConcurrentBumpAllocatorStorage::new(pool);
+            drop(storage);
+        });
+    });
+
+    let pool = ChunkPool::new();
+    {
+        let s = ConcurrentBumpAllocatorStorage::new(pool.clone());
+        drop(s);
+    }
+    group.bench_function("concurrent_shared_pool", |b| {
+        b.iter(|| {
+            let storage = ConcurrentBumpAllocatorStorage::new(pool.clone());
             drop(storage);
         });
     });
