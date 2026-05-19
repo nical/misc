@@ -1,10 +1,10 @@
 use std::{
     alloc::Layout,
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     ptr::{self, NonNull},
 };
 
-use crate::allocator::{Allocator, AllocError};
+use crate::allocator::{AllocError, Allocator, chunk_pool::DEFAULT_CHUNK_SIZE};
 use crate::allocator::chunk_pool::{CHUNK_ALIGNMENT, ChunkPool};
 
 const CHUNK_HEADER_SIZE: usize = 64;
@@ -48,31 +48,18 @@ pub struct Stats {
 }
 
 struct BumpAllocatorStorageImpl {
-    current_chunk: Option<NonNull<Chunk>>,
+    current_chunk: NonNull<Chunk>,
     chunks: ChunkPool,
-    allocation_count: i32,
-    ref_count: i32,
 
     #[cfg(feature="stats")]
     stats: Stats,
 }
 
 impl BumpAllocatorStorageImpl {
-    fn new(chunks: ChunkPool) -> Self {
-        BumpAllocatorStorageImpl {
-            current_chunk: None,
-            chunks,
-            allocation_count: 0,
-            ref_count: 0,
-            #[cfg(feature="stats")]
-            stats: Stats::default(),
-        }
-    }
-
     #[cfg(feature="stats")]
     fn get_stats(&mut self) -> Stats {
-        let cur_utilization = self.current_chunk.map(|c| Chunk::utilization(c) - 1.0).unwrap_or(0.0);
-        self.stats.chunk_utilization = self.stats.chunks as f32 + cur_utilization;
+        let cur_utilization = Chunk::utilization(self.current_chunk);
+        self.stats.chunk_utilization = self.stats.chunks as f32 + cur_utilization - 1.0;
         self.stats
     }
 
@@ -81,47 +68,29 @@ impl BumpAllocatorStorageImpl {
         Stats::default()
     }
 
-    fn alloc_chunk(&mut self, item_size: usize) -> Result<NonNull<Chunk>, AllocError> {
-        let chunk_size = align(item_size, CHUNK_ALIGNMENT) + CHUNK_HEADER_SIZE;
-
-        let (raw, size) = self.chunks.allocate_raw(chunk_size)?;
-        let chunk: NonNull<Chunk> = raw.cast();
-        let chunk_start: *mut u8 = chunk.cast().as_ptr();
+    fn allocation_count(&self) -> i32 {
+        let mut count = 0;
+        let mut iter = Some(self.current_chunk);
         unsafe {
-            let chunk_end = chunk_start.add(size);
-            let cursor = chunk_start.add(CHUNK_ALIGNMENT);
-            ptr::write(
-                chunk.as_ptr(),
-                Chunk {
-                    previous: self.current_chunk,
-                    chunk_end,
-                    cursor,
-                    size,
-                },
-            );
+            while let Some(chunk) = iter {
+                count += chunk.as_ref().allocation_count;
+                iter = chunk.as_ref().previous;
+            }
         }
 
-        self.current_chunk = Some(chunk);
-
-        #[cfg(feature="stats")] {
-            self.stats.chunks += 1;
-        }
-
-        Ok(chunk)
+        count
     }
 }
 
 impl Drop for BumpAllocatorStorageImpl {
     fn drop(&mut self) {
-        assert!(self.allocation_count == 0);
+        assert!(self.allocation_count() == 0);
         unsafe {
-            if self.current_chunk.is_some() {
-                let mut iter = ChunkIterator {
-                    current: self.current_chunk,
-                    stop: None,
-                };
-                self.chunks.recycle_chunks(&mut iter);
-            }
+            let mut iter = ChunkIterator {
+                current: Some(self.current_chunk),
+                stop: None,
+            };
+            self.chunks.recycle_chunks(&mut iter);
         }
     }
 }
@@ -136,6 +105,9 @@ struct Chunk {
     chunk_end: *mut u8,
     cursor: *mut u8,
     size: usize,
+    allocator: NonNull<BumpAllocatorStorageCell>,
+    ref_count: i32,
+    allocation_count: i32,
 }
 
 impl Chunk {
@@ -298,13 +270,42 @@ type BumpAllocatorStorageCell = UnsafeCell<BumpAllocatorStorageImpl>;
 /// Dropping a `BumpAllocatorStorage` while [`BumpAllocator`] handles are
 /// still alive will panic.
 pub struct BumpAllocatorStorage {
-    inner: *mut BumpAllocatorStorageCell,
+    inner: NonNull<BumpAllocatorStorageCell>,
 }
 
 impl BumpAllocatorStorage {
     pub fn new(chunks: ChunkPool) -> Self {
-        let cell = Box::new(UnsafeCell::new(BumpAllocatorStorageImpl::new(chunks)));
+
+        let (raw, size) = chunks.allocate_raw(DEFAULT_CHUNK_SIZE).unwrap();
+        let chunk: NonNull<Chunk> = raw.cast();
+
+        let cell = Box::new(UnsafeCell::new(BumpAllocatorStorageImpl {
+            current_chunk: chunk,
+            chunks,
+            #[cfg(feature="stats")]
+            stats: Stats::default(),
+        }));
+
         let ptr = Box::into_raw(cell);
+        let ptr = NonNull::new(ptr).unwrap();
+        let chunk_start: *mut u8 = chunk.cast().as_ptr();
+        unsafe {
+            let chunk_end = chunk_start.add(size);
+            let cursor = chunk_start.add(CHUNK_HEADER_SIZE);
+            ptr::write(
+                chunk.as_ptr(),
+                Chunk {
+                    previous: None,
+                    chunk_end,
+                    cursor,
+                    size,
+                    allocator: ptr,
+                    ref_count: 0,
+                    allocation_count: 0,
+                },
+            );
+        }
+
         BumpAllocatorStorage {
             inner: ptr,
         }
@@ -316,9 +317,11 @@ impl BumpAllocatorStorage {
     /// dropping it decrements the count. The storage must not be dropped
     /// while any handle is alive.
     pub fn allocator(self: &Self) -> BumpAllocator {
-        unsafe { (*(*self.inner).get()).ref_count += 1; }
-        BumpAllocator {
-            storage: self.inner,
+        unsafe {
+            let mut chunk = (*self.inner.as_ref().get()).current_chunk;
+            chunk.as_mut().ref_count += 1;
+
+            BumpAllocator { chunk: Cell::new(chunk) }
         }
     }
 
@@ -328,7 +331,16 @@ impl BumpAllocatorStorage {
 
     /// The number of live [`BumpAllocator`] handles pointing to this storage.
     pub fn ref_count(&self) -> i32 {
-        unsafe { (*(*self.inner).get()).ref_count }
+        unsafe {
+            let mut count = 0;
+            let mut iter = Some(self.inner().current_chunk);
+            while let Some(chunk) = iter {
+                count += chunk.as_ref().ref_count;
+                iter = chunk.as_ref().previous;
+            }
+
+            count
+        }
     }
 
     /// Mutably access the underlying memory for stats, reset, etc.
@@ -341,7 +353,7 @@ impl BumpAllocatorStorage {
     unsafe fn inner(&self) -> &mut BumpAllocatorStorageImpl {
         // SAFETY: we are not moving the BumpAllocatorStorage, only accessing
         // the inner UnsafeCell's content mutably.
-        unsafe { &mut *(*self.inner).get() }
+        unsafe { &mut *(self.inner.as_ref()).get() }
     }
 }
 
@@ -353,7 +365,7 @@ impl Drop for BumpAllocatorStorage {
             "BumpAllocatorStorage dropped with {ref_count} outstanding BumpAllocator handle(s)",
         );
         unsafe {
-            let _ = Box::from_raw(self.inner);
+            let _ = Box::from_raw(self.inner.as_ptr());
         }
     }
 }
@@ -369,21 +381,14 @@ impl Drop for BumpAllocatorStorage {
 /// Must only be used from a single thread. The backing
 /// [`BumpAllocatorStorage`] must outlive all handles.
 pub struct BumpAllocator {
-    storage: *mut BumpAllocatorStorageCell,
+    chunk: Cell<NonNull<Chunk>>,
 }
 
 impl BumpAllocator {
     #[inline]
-    unsafe fn memory(&self) -> &mut BumpAllocatorStorageImpl {
-        // SAFETY: the caller guarantees single-threaded access and that the
-        // storage outlives this handle.
-        unsafe { &mut *(*self.storage).get() }
-    }
-
-    #[inline]
     fn add_ref(&self) {
         unsafe {
-            self.memory().ref_count += 1;
+            self.chunk.get().as_mut().ref_count += 1;
         }
     }
 
@@ -391,33 +396,45 @@ impl BumpAllocator {
     #[inline]
     fn release_ref(&self) -> bool {
         unsafe {
-            let rc = &mut self.memory().ref_count;
+            let rc = &mut self.chunk.get().as_mut().ref_count;
             *rc -= 1;
             *rc == 0
         }
     }
 
-    fn allocate_item(this: *mut BumpAllocatorStorageCell, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let self_mut = unsafe { &mut *(*this).get() };
-
+    fn allocate_item(chunk: &Cell<NonNull<Chunk>>, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         #[cfg(feature="stats")] {
-            self.stats.allocations += 1;
-            self.stats.allocated_bytes += layout.size();
+            let storage_mut = unsafe { &mut *chunk.as_mut().allocator.as_ref().get() };
+            //let storage_mut = unsafe { self.storage() };
+            storage_mut.stats.allocations += 1;
+            storage_mut.stats.allocated_bytes += layout.size();
         }
 
-        if let Some(chunk) = self_mut.current_chunk {
-            if let Ok(alloc) = Chunk::allocate_item(chunk, layout) {
-                self_mut.allocation_count += 1;
-                return Ok(alloc);
+        if let Ok(alloc) = Chunk::allocate_item(chunk.get(), layout) {
+            unsafe { chunk.get().as_mut().allocation_count += 1; }
+            return Ok(alloc);
+        }
+
+        let storage = unsafe { (*chunk.get().as_ptr()).allocator };
+
+        unsafe {
+            let mut storage_chunk = (*storage.as_ref().get()).current_chunk;
+            if storage_chunk != chunk.get() {
+                if let Ok(alloc) = Chunk::allocate_item(storage_chunk, layout) {
+                    storage_chunk.as_mut().allocation_count += 1;
+                    chunk.set(storage_chunk);
+                    return Ok(alloc);
+                }
             }
         }
 
-        let chunk = self_mut.alloc_chunk(layout.size())?;
+        let mut new_chunk = Self::alloc_chunk(storage, layout.size())?;
+        chunk.set(new_chunk);
 
-        match Chunk::allocate_item(chunk, layout) {
+        match Chunk::allocate_item(new_chunk, layout) {
             Ok(alloc) => {
-                self_mut.allocation_count += 1;
-                    return Ok(alloc);
+                unsafe { new_chunk.as_mut().allocation_count += 1; }
+                return Ok(alloc);
             }
             Err(_) => {
                 return Err(AllocError);
@@ -425,64 +442,57 @@ impl BumpAllocator {
         }
     }
 
-    fn deallocate_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, layout: Layout) {
-        let self_mut = unsafe { &mut *(*storage).get() };
-
+    fn deallocate_item(mut chunk: NonNull<Chunk>, ptr: NonNull<u8>, layout: Layout) {
         #[cfg(feature="stats")] {
-            self_mut.stats.deallocations += 1;
+            let storage_mut = unsafe { &mut *chunk.as_mut().allocator.as_ref().get() };
+            storage_mut.stats.deallocations += 1;
         }
 
-        // If we are deallocating an item them we allocated one and therefore
-        // we must have a chunk.
-        let current_chunk = self_mut.current_chunk.unwrap();
-
+        unsafe { chunk.as_mut().allocation_count -= 1 };
         // If the allocation is in the current chunk, try to reclaim its memory,
         // otherwise it will be reclaimed at the end of the frame.
-        if Chunk::contains_item(current_chunk, ptr) {
-            unsafe { Chunk::deallocate_item(current_chunk, ptr, layout); }
+        if Chunk::contains_item(chunk, ptr) {
+            unsafe { Chunk::deallocate_item(chunk, ptr, layout); }
         }
-
-        // Either way, count this as deallocated.
-        self_mut.allocation_count -= 1;
-        debug_assert!(self_mut.allocation_count >= 0);
     }
 
-    unsafe fn grow_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let self_mut = unsafe { &mut *(*storage).get() };
-
+    unsafe fn grow_item(chunk: &Cell<NonNull<Chunk>>, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         debug_assert!(
             new_layout.size() >= old_layout.size(),
             "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
         );
 
-        #[cfg(feature="stats")] {
-            self.stats.reallocations += 1;
-        }
+        #[cfg(feature="stats")]
+        let storage_mut = unsafe { &mut *chunk.as_ref().allocator.as_ref().get() };
 
-        let current_chunk = self_mut.current_chunk.unwrap();
+        #[cfg(feature="stats")] {
+            storage_mut.stats.reallocations += 1;
+        }
 
         // If we can, attempt to grow the existing allocation, otherwise just create a new one
         // and copy. The original allocation's memory will be reclaimed at the end of the frame.
-        if Chunk::contains_item(current_chunk, ptr) {
-            if let Ok(alloc) = Chunk::grow_item(current_chunk, ptr, old_layout, new_layout) {
+        if Chunk::contains_item(chunk.get(), ptr) {
+            if let Ok(alloc) = Chunk::grow_item(chunk.get(), ptr, old_layout, new_layout) {
                 #[cfg(feature="stats")] {
-                    self_mut.stats.allocated_bytes += new_layout.size() - old_layout.size();
-                    self_mut.stats.in_place_reallocations += 1;
+                    storage_mut.stats.allocated_bytes += new_layout.size() - old_layout.size();
+                    storage_mut.stats.in_place_reallocations += 1;
                 }
                 return Ok(alloc);
             }
         }
 
-        let new_alloc = if let Ok(alloc) = Chunk::allocate_item(current_chunk, new_layout) {
+        let new_alloc = if let Ok(alloc) = Chunk::allocate_item(chunk.get(), new_layout) {
             alloc
         } else {
-            let chunk = self_mut.alloc_chunk(new_layout.size())?;
-            Chunk::allocate_item(chunk, new_layout).map_err(|_| AllocError)?
+            let storage = chunk.get().as_ref().allocator;
+            let new_chunk = BumpAllocator::alloc_chunk(storage, new_layout.size())?;
+            chunk.set(new_chunk);
+            Chunk::allocate_item(new_chunk, new_layout).map_err(|_| AllocError)?
         };
 
         #[cfg(feature="stats")] {
-            self.stats.allocated_bytes += new_layout.size();
-            self.stats.reallocated_bytes += old_layout.size();
+            storage_mut.stats.allocated_bytes += new_layout.size();
+            storage_mut.stats.reallocated_bytes += old_layout.size();
         }
 
         unsafe {
@@ -492,28 +502,58 @@ impl BumpAllocator {
         Ok(new_alloc)
     }
 
-    unsafe fn shrink_item(storage: *mut BumpAllocatorStorageCell, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let self_mut = unsafe { &mut *(*storage).get() };
-
+    unsafe fn shrink_item(chunk: NonNull<Chunk>, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         debug_assert!(
             new_layout.size() <= old_layout.size(),
             "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
         );
 
-        if let Some(chunk) = self_mut.current_chunk {
-            if Chunk::contains_item(chunk, ptr) {
-                return unsafe { Ok(Chunk::shrink_item(chunk, ptr, old_layout, new_layout)) };
-            }
+        if Chunk::contains_item(chunk, ptr) {
+            return unsafe { Ok(Chunk::shrink_item(chunk, ptr, old_layout, new_layout)) };
         }
+
         // Can't actually shrink, so return the full range of the previous allocation.
         Ok(NonNull::slice_from_raw_parts(ptr, old_layout.size()))
+    }
+
+    fn alloc_chunk(storage: NonNull<BumpAllocatorStorageCell>, item_size: usize) -> Result<NonNull<Chunk>, AllocError> {
+        let storage_mut = unsafe { &mut *storage.as_ref().get() };
+        let min_chunk_size = align(item_size, CHUNK_ALIGNMENT) + CHUNK_HEADER_SIZE;
+
+        let (raw, size) = storage_mut.chunks.allocate_raw(min_chunk_size)?;
+        let chunk: NonNull<Chunk> = raw.cast();
+        let chunk_start: *mut u8 = chunk.cast().as_ptr();
+        unsafe {
+            let chunk_end = chunk_start.add(size);
+            let cursor = chunk_start.add(CHUNK_HEADER_SIZE);
+            ptr::write(
+                chunk.as_ptr(),
+                Chunk {
+                    previous: Some(storage_mut.current_chunk),
+                    chunk_end,
+                    cursor,
+                    size,
+                    allocator: storage,
+                    ref_count: 0,
+                    allocation_count: 0,
+                },
+            );
+        }
+
+        storage_mut.current_chunk = chunk;
+
+        #[cfg(feature="stats")] {
+            storage_mut.stats.chunks += 1;
+        }
+
+        Ok(chunk)
     }
 }
 
 impl Clone for BumpAllocator {
     fn clone(&self) -> Self {
         self.add_ref();
-        BumpAllocator { storage: self.storage }
+        BumpAllocator { chunk: self.chunk.clone() }
     }
 }
 
@@ -525,11 +565,11 @@ impl Drop for BumpAllocator {
 
 unsafe impl Allocator for BumpAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        BumpAllocator::allocate_item(self.storage, layout)
+        BumpAllocator::allocate_item(&self.chunk, layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        BumpAllocator::deallocate_item(self.storage, ptr, layout)
+        BumpAllocator::deallocate_item(self.chunk.get(), ptr, layout)
     }
 
     unsafe fn grow(
@@ -538,7 +578,7 @@ unsafe impl Allocator for BumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BumpAllocator::grow_item(self.storage, ptr, old_layout, new_layout)
+        BumpAllocator::grow_item(&self.chunk, ptr, old_layout, new_layout)
     }
 
     unsafe fn shrink(
@@ -547,7 +587,7 @@ unsafe impl Allocator for BumpAllocator {
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BumpAllocator::shrink_item(self.storage, ptr, old_layout, new_layout)
+        BumpAllocator::shrink_item(self.chunk.get(), ptr, old_layout, new_layout)
     }
 }
 
@@ -654,7 +694,7 @@ mod tests {
 
         // After the vec and allocator handle are dropped, allocation_count
         // should be back to zero.
-        unsafe { assert_eq!(storage.inner().allocation_count, 0); }
+        unsafe { assert_eq!(storage.inner().allocation_count(), 0); }
     }
 
     #[test]

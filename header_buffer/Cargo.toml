@@ -16,3 +16,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "push"
 harness = false
+
+[[bench]]
+name = "bump_allocator"
+harness = false
+
+[profile.release]
+debug = true

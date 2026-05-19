@@ -18,6 +18,7 @@ pub struct ChunkPool {
 
 struct ChunkPoolImpl {
     first: Option<NonNull<AvailableChunk>>,
+    chunk_size: usize,
     count: i32,
 }
 
@@ -35,6 +36,7 @@ impl ChunkPool {
             chunk_size,
             inner: Arc::new(Mutex::new(ChunkPoolImpl {
                 first: None,
+                chunk_size,
                 count: 0,
             })),
         }
@@ -57,7 +59,6 @@ impl ChunkPool {
 
             if size != self.chunk_size {
                 let layout = Layout::from_size_align(size, CHUNK_ALIGNMENT).unwrap();
-                //println!(" - dealloc large chunk {:?}", chunk);
                 Global.deallocate(chunk, layout);
                 continue;
             }
@@ -129,36 +130,9 @@ impl ChunkPool {
     /// operation outside of the critical path. Specifying a lower `count`
     /// allows the caller to split the work and spread it over time.
     #[inline(never)]
-    pub fn purge_chunks(&self, target: u32, mut count: u32) -> bool {
+    pub fn purge_chunks(&self, target: u32, count: u32) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        assert!(inner.count >= 0);
-
-        while inner.count as u32 > target {
-            if count == 0 {
-                return false;
-            }
-
-            unsafe {
-                // First can't be None because inner.count > 0.
-                let chunk = inner.first.unwrap();
-
-                // Pop chunk off the list.
-                inner.first = chunk.as_ref().next;
-
-                // Deallocate chunk.
-                let layout = Layout::from_size_align(
-                    self.chunk_size,
-                    CHUNK_ALIGNMENT
-                ).unwrap();
-                //println!(" - dealloc chunk {:?}", chunk);
-                Global.deallocate(chunk.cast(), layout);
-            }
-
-            inner.count -= 1;
-            count -= 1;
-        }
-
-        return true;
+        return purge_chunks_impl(&mut *inner, target, count);
     }
 
     /// Deallocate all of the chunks.
@@ -167,9 +141,44 @@ impl ChunkPool {
     }
 }
 
-impl Drop for ChunkPool {
+fn purge_chunks_impl(
+    inner: &mut ChunkPoolImpl,
+    target: u32,
+    mut count: u32,
+) -> bool {
+    assert!(inner.count >= 0);
+
+    let layout = Layout::from_size_align(
+        inner.chunk_size,
+        CHUNK_ALIGNMENT
+    ).unwrap();
+
+    while inner.count as u32 > target {
+        if count == 0 {
+            return false;
+        }
+
+        unsafe {
+            // First can't be None because inner.count > 0.
+            let chunk = inner.first.unwrap();
+
+            // Pop chunk off the list.
+            inner.first = chunk.as_ref().next;
+
+            // Deallocate chunk.
+            Global.deallocate(chunk.cast(), layout);
+        }
+
+        inner.count -= 1;
+        count -= 1;
+    }
+
+    return true;
+}
+
+impl Drop for ChunkPoolImpl {
     fn drop(&mut self) {
-        self.purge_all_chunks();
+        purge_chunks_impl(self, 0, u32::MAX);
     }
 }
 
