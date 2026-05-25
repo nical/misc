@@ -366,6 +366,79 @@ impl BumpAllocatorStorage {
         // the inner UnsafeCell's content mutably.
         unsafe { &mut *(self.inner.as_ref()).get() }
     }
+
+    /// Capture the current bump cursor and chunk. Used by `ScopedAllocator`
+    /// to roll the allocator back to a known state.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        unsafe {
+            let inner = self.inner();
+            let chunk = inner.current_chunk;
+            let cursor = chunk.as_ref().cursor;
+            Snapshot { chunk, cursor }
+        }
+    }
+
+    /// Roll the bump allocator back to the state captured by `snap`.
+    ///
+    /// Chunks newer than `snap.chunk` are returned to the [`ChunkPool`]. The
+    /// snapshot chunk's cursor is reset to `snap.cursor`. The per-chunk
+    /// `ref_count` and `allocation_count` of recycled chunks are folded into
+    /// the snapshot chunk so that the storage-wide sums (which is what the
+    /// drop assertions check) stay invariant.
+    ///
+    /// # Safety
+    ///
+    /// All [`BumpAllocator`] handles and allocations created after `snap` was
+    /// taken must have been dropped before calling this. The snapshot chunk
+    /// must still be reachable in the chunk chain.
+    pub(crate) unsafe fn restore(&self, snap: &Snapshot) {
+        let inner = unsafe { self.inner() };
+
+        let mut ref_delta: i32 = 0;
+        let mut alloc_delta: i32 = 0;
+
+        while inner.current_chunk != snap.chunk {
+            let cur = inner.current_chunk;
+            let cur_ref = unsafe { cur.as_ref() };
+            ref_delta += cur_ref.ref_count;
+            alloc_delta += cur_ref.allocation_count;
+
+            let prev = cur_ref
+                .previous
+                .expect("snapshot chunk not reachable in chain");
+            let size = cur_ref.size;
+
+            inner.current_chunk = prev;
+            unsafe {
+                inner.chunks.recycle_raw(cur.cast(), size);
+            }
+
+            #[cfg(feature = "stats")]
+            {
+                inner.stats.chunks = inner.stats.chunks.saturating_sub(1);
+            }
+        }
+
+        let snap_chunk = unsafe { &mut *snap.chunk.as_ptr() };
+        snap_chunk.ref_count += ref_delta;
+        snap_chunk.allocation_count += alloc_delta;
+        snap_chunk.cursor = snap.cursor;
+    }
+}
+
+/// A point-in-time view of a [`BumpAllocatorStorage`], used to roll the
+/// allocator back to that point. Created by [`BumpAllocatorStorage::snapshot`]
+/// and consumed by [`BumpAllocatorStorage::restore`].
+pub(crate) struct Snapshot {
+    chunk: NonNull<Chunk>,
+    cursor: *mut u8,
+}
+
+impl Snapshot {
+    #[cfg(test)]
+    pub(crate) fn cursor_addr(&self) -> usize {
+        self.cursor as usize
+    }
 }
 
 impl Drop for BumpAllocatorStorage {
