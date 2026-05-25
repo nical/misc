@@ -1,16 +1,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::allocator::chunk::ChunkPool;
+use crate::allocator::ChunkPool;
 use crate::allocator::frame::WorkerAllocators;
 use crate::gpu::{GpuBuffer, GpuStreams, StagingBufferPool, UploadStats};
-use crate::transfer::{Transfer, Transfers};
 use crate::render_pass::{BuiltRenderPass, PassRenderContext};
+use crate::resources::{Allocation, GpuResource, GpuResources, ResourceIndex, ResourceKey};
+use crate::shading::{RenderPipelineBuilder, RenderPipelines, Shaders};
+use crate::transfer::{Transfer, Transfers};
 use crate::transform::Transforms;
 use crate::worker::Workers;
-use crate::{BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer, RendererStats, UploadContext, WgpuContext};
-use crate::resources::{GpuResource, GpuResources, ResourceKey, Allocation, ResourceIndex};
-use crate::shading::{RenderPipelineBuilder, Shaders, RenderPipelines};
+use crate::{
+    BindingResolver, BindingsId, BindingsNamespace, PrepareContext, PrepareWorkerData, Renderer,
+    RendererStats, UploadContext, WgpuContext,
+};
 
 pub fn ms(duration: Duration) -> f32 {
     (duration.as_micros() as f64 / 1000.0) as f32
@@ -34,25 +37,34 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, num_workers: usize, gpu_profiling_enabled: bool) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        num_workers: usize,
+        gpu_profiling_enabled: bool,
+    ) -> Self {
         let staging_buffers = unsafe {
-            Arc::new(Mutex::new(StagingBufferPool::new(1024 * 64, device.clone())))
+            Arc::new(Mutex::new(StagingBufferPool::new(
+                1024 * 64,
+                device.clone(),
+            )))
         };
 
         let shaders = Shaders::new(&device);
         let render_pipelines = RenderPipelines::new();
-        let resources = GpuResources::new(
-            &device,
-            staging_buffers.clone(),
-        );
+        let resources = GpuResources::new(&device, staging_buffers.clone());
 
         let workers = Workers::new(num_workers);
 
-        let gpu_profiler = wgpu_profiler::GpuProfiler::new(device, wgpu_profiler::GpuProfilerSettings {
-            enable_timer_queries: gpu_profiling_enabled,
-            enable_debug_groups: gpu_profiling_enabled,
-            max_num_pending_frames: 4,
-        }).unwrap();
+        let gpu_profiler = wgpu_profiler::GpuProfiler::new(
+            device,
+            wgpu_profiler::GpuProfilerSettings {
+                enable_timer_queries: gpu_profiling_enabled,
+                enable_debug_groups: gpu_profiling_enabled,
+                max_num_pending_frames: 4,
+            },
+        )
+        .unwrap();
 
         let chunks = ChunkPool::new();
 
@@ -87,21 +99,31 @@ impl Instance {
         }
 
         Frame {
-            f32_buffer: self.resources.common.f32_buffer.begin_frame(
-                self.staging_buffers.clone()
-            ),
-            u32_buffer: self.resources.common.u32_buffer.begin_frame(
-                self.staging_buffers.clone()
-            ),
-            vertices: self.resources.common.vertices.begin_frame(
-                self.staging_buffers.clone()
-            ),
-            indices: self.resources.common.indices.begin_frame(
-                self.staging_buffers.clone()
-            ),
-            instances: self.resources.common.instances.begin_frame(
-                self.staging_buffers.clone()
-            ),
+            f32_buffer: self
+                .resources
+                .common
+                .f32_buffer
+                .begin_frame(self.staging_buffers.clone()),
+            u32_buffer: self
+                .resources
+                .common
+                .u32_buffer
+                .begin_frame(self.staging_buffers.clone()),
+            vertices: self
+                .resources
+                .common
+                .vertices
+                .begin_frame(self.staging_buffers.clone()),
+            indices: self
+                .resources
+                .common
+                .indices
+                .begin_frame(self.staging_buffers.clone()),
+            instances: self
+                .resources
+                .common
+                .instances
+                .begin_frame(self.staging_buffers.clone()),
             transforms: Transforms::new(),
             passes: Passes::new(),
             resources: FrameResources::new(num_namespaces),
@@ -190,12 +212,8 @@ impl Instance {
             staging_buffers.unmap_active_buffers();
         }
 
-        self.resources.upload(
-            device,
-            queue,
-            &self.shaders,
-            frame.resources.descriptors(),
-        );
+        self.resources
+            .upload(device, queue, &self.shaders, frame.resources.descriptors());
 
         let mut upload_stats = UploadStats::default();
         {
@@ -259,7 +277,7 @@ impl Instance {
             external_inputs,
             external_attachments,
             resource_maps: &frame.resources.bindings,
-            resources: self.resources.temp.resources()
+            resources: self.resources.temp.resources(),
         };
 
         //let profiler_query = self.gpu_profiler.begin_query("gpu time", encoder);
@@ -343,9 +361,8 @@ impl Instance {
     }
 
     pub fn create_encoder(&self) -> wgpu::CommandEncoder {
-        self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: None }
-        )
+        self.device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })
     }
 
     pub fn create_bindings_namespace(&mut self) -> BindingsNamespace {
@@ -396,18 +413,21 @@ impl RenderStats {
             prepare_time_ms: 0.0,
             upload_time_ms: 0.0,
             render_time_ms: 0.0,
-            uploads: UploadStats { bytes: 0, copy_ops: 0 },
+            uploads: UploadStats {
+                bytes: 0,
+                copy_ops: 0,
+            },
             staging_buffers: 0,
-            stagin_buffer_chunks: 0
+            stagin_buffer_chunks: 0,
         }
     }
 }
 
 struct Bindings<'l> {
-    external_inputs: &'l[Option<&'l wgpu::BindGroup>],
-    external_attachments: &'l[Option<&'l wgpu::TextureView>],
+    external_inputs: &'l [Option<&'l wgpu::BindGroup>],
+    external_attachments: &'l [Option<&'l wgpu::TextureView>],
     resource_maps: &'l [Vec<ResourceIndex>],
-    resources: &'l[GpuResource],
+    resources: &'l [GpuResource],
 }
 
 impl<'l> BindingResolver for Bindings<'l> {
@@ -417,9 +437,7 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => self.external_inputs[binding.index()],
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
-            BindingsNamespace::TEMP => {
-                self.resources[binding.index()].as_input.as_ref()
-            }
+            BindingsNamespace::TEMP => self.resources[binding.index()].as_input.as_ref(),
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
@@ -445,9 +463,7 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => self.external_attachments[binding.index()],
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
-            BindingsNamespace::TEMP => {
-                self.resources[binding.index()].as_attachment.as_ref()
-            }
+            BindingsNamespace::TEMP => self.resources[binding.index()].as_attachment.as_ref(),
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
@@ -461,7 +477,7 @@ impl<'l> BindingResolver for Bindings<'l> {
                     let index = id.index as usize;
                     match id.allocation {
                         Allocation::Temporary => self.resources[index].as_attachment.as_ref(),
-                        Allocation::External => self.external_attachments[index]
+                        Allocation::External => self.external_attachments[index],
                     }
                 }
             }
@@ -473,9 +489,7 @@ impl<'l> BindingResolver for Bindings<'l> {
             BindingsNamespace::EXTERNAL => None,
             BindingsNamespace::RENDERER => None,
             BindingsNamespace::NONE => None,
-            BindingsNamespace::TEMP => {
-                self.resources[binding.index()].texture.as_ref()
-            }
+            BindingsNamespace::TEMP => self.resources[binding.index()].texture.as_ref(),
             BindingsNamespace(idx) => {
                 let idx = idx as usize;
                 if idx > self.resource_maps.len() {
@@ -496,7 +510,6 @@ impl<'l> BindingResolver for Bindings<'l> {
         }
     }
 }
-
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum PassId {

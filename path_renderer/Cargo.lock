@@ -452,6 +452,7 @@ dependencies = [
  "etagere",
  "futures",
  "guillotiere",
+ "header_buffer",
  "lru",
  "lyon",
  "profiling",
@@ -1066,6 +1067,13 @@ dependencies = [
  "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "header_buffer"
+version = "0.1.0"
+dependencies = [
+ "allocator-api2 0.2.21",
 ]
 
 [[package]]

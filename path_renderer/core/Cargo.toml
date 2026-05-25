@@ -22,6 +22,7 @@ rayon = "1.10.0"
 wgpu-profiler = { git = "https://github.com/nical/wgpu-profiler", branch="wgpu-28" }
 lru = "0.16.2"
 allocator-api2 = "0.3.0"
+header_buffer = { path = "../../header_buffer" }
 
 [profile.release]
 debug=true
