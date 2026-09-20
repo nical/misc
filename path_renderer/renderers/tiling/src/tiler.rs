@@ -362,33 +362,17 @@ impl Tiler {
     ) {
         let _panic = PanicLogger::new("Bug: tile_segment panic with ", edge);
 
-        // Leave some margin around this early scissor test so that
-        // we keep track of the previous tile near the boundary of the
-        // scissor rect.
-        let min_y = edge.to.y.min(edge.from.y);
-        let max_y = edge.to.y.max(edge.from.y);
-        let min_x = edge.to.x.min(edge.from.x);
-        let max_x = edge.to.x.max(edge.from.x);
-        if min_y > self.culling_rect.max.y + 1.0
-            || max_y < self.culling_rect.min.y - 1.0
-            || min_x > self.culling_rect.max.x + 1.0
-        {
-            return;
-        }
-
         let mut src_tx = (from_i32_x >> LOCAL_COORD_BITS);
         let mut src_ty = (from_i32_y >> LOCAL_COORD_BITS);
         let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
         let dst_ty = (to_i32_y >> LOCAL_COORD_BITS);
-        let scissor_min_tx = self.scissor_tiles.min.x;
-        let scissor_min_ty = self.scissor_tiles.min.y;
-        let scissor_max_tx = self.scissor_tiles.max.x - 1;
-        let scissor_max_ty = self.scissor_tiles.max.y - 1;
 
         // Fast path for segments contained in a single tile (the vast
         // majority of flattened curve segments). No tile boundary is
         // crossed so there is no backdrop or auxiliary edge to add,
-        // and the edge fits in a single event.
+        // and the edge fits in a single event. The scissor test below
+        // also takes care of culling, so the culling rect check further
+        // down is only needed for the multi-tile code path.
         if src_tx == dst_tx && src_ty == dst_ty {
             if src_ty >= self.scissor_tiles.min.y && src_ty < self.scissor_tiles.max.y
                 && src_tx >= self.scissor_tiles.min.x && src_tx < self.scissor_tiles.max.x
@@ -406,6 +390,25 @@ impl Tiler {
             }
             return;
         }
+
+        // Leave some margin around this early scissor test so that
+        // we keep track of the previous tile near the boundary of the
+        // scissor rect.
+        let min_y = edge.to.y.min(edge.from.y);
+        let max_y = edge.to.y.max(edge.from.y);
+        let min_x = edge.to.x.min(edge.from.x);
+        let max_x = edge.to.x.max(edge.from.x);
+        if min_y > self.culling_rect.max.y + 1.0
+            || max_y < self.culling_rect.min.y - 1.0
+            || min_x > self.culling_rect.max.x + 1.0
+        {
+            return;
+        }
+
+        let scissor_min_tx = self.scissor_tiles.min.x;
+        let scissor_min_ty = self.scissor_tiles.min.y;
+        let scissor_max_tx = self.scissor_tiles.max.x - 1;
+        let scissor_max_ty = self.scissor_tiles.max.y - 1;
 
         let dx = edge.to.x - edge.from.x;
         let dy = edge.to.y - edge.from.y;
