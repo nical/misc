@@ -74,6 +74,10 @@ pub struct TileRenderer {
 
     pub(crate) resources: TileGpuResources,
     pub parallel: bool,
+
+    // Recycled between frames to avoid re-growing them from scratch.
+    pub(crate) mask_tiles_scratch: Vec<EncodedTileInstance>,
+    pub(crate) occlusion_scratch: OcclusionBuffer,
 }
 
 impl TileRenderer {
@@ -169,12 +173,13 @@ impl TileRenderer {
         let mut path_store = self.resources.paths.begin_frame(ctx.staging_buffers.clone());
 
         let opaque_stream = instances.next_stream_id();
+        self.mask_tiles_scratch.clear();
         let mut tiles = TilerOutput {
             opaque_tiles: instances.write(opaque_stream, 0),
-            mask_tiles: Vec::new(),
+            mask_tiles: std::mem::take(&mut self.mask_tiles_scratch),
             paths: path_store.write(),
             edges: edge_store.write(),
-            occlusion: OcclusionBuffer::disabled(),
+            occlusion: std::mem::replace(&mut self.occlusion_scratch, OcclusionBuffer::disabled()),
         };
 
         let mut batches = self.batches.take();
@@ -220,6 +225,8 @@ impl TileRenderer {
             }
         }
 
+        self.mask_tiles_scratch = std::mem::take(&mut tiles.mask_tiles);
+        self.occlusion_scratch = std::mem::replace(&mut tiles.occlusion, OcclusionBuffer::disabled());
         std::mem::drop(tiles);
 
         self.edge_transfer_ops = vec![edge_store.finish()];

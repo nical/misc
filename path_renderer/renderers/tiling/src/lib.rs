@@ -350,6 +350,9 @@ impl Tiling {
             path_transfer_ops: Vec::new(),
             edge_transfer_ops: Vec::new(),
             parallel: false,
+
+            mask_tiles_scratch: Vec::new(),
+            occlusion_scratch: crate::occlusion::OcclusionBuffer::disabled(),
         }
     }
 }

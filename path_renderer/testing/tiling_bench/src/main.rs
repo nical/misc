@@ -124,6 +124,9 @@ fn run_svg(filename: &str, options: &Options) {
     let mut tiler = Tiler::new();
     let mut frame_times = Vec::with_capacity(options.frames as usize);
     let mut stats = FrameStats::default();
+    // Recycled across frames like TileRenderer does.
+    let mut mask_tiles_scratch = Vec::new();
+    let mut occlusion_scratch = OcclusionBuffer::disabled();
 
     for frame in 0..(options.warmup + options.frames) {
         let start = Instant::now();
@@ -136,12 +139,13 @@ fn run_svg(filename: &str, options: &Options) {
         let instances = instances_store.begin_frame(staging.clone());
 
         let opaque_stream = instances.next_stream_id();
+        mask_tiles_scratch.clear();
         let mut output = TilerOutput {
             opaque_tiles: instances.write(opaque_stream, 0),
-            mask_tiles: Vec::new(),
+            mask_tiles: std::mem::take(&mut mask_tiles_scratch),
             paths: paths_buffer.write(),
             edges: edges_buffer.write(),
-            occlusion: OcclusionBuffer::disabled(),
+            occlusion: std::mem::replace(&mut occlusion_scratch, OcclusionBuffer::disabled()),
         };
 
         tiler.begin_target(viewport);
@@ -175,6 +179,8 @@ fn run_svg(filename: &str, options: &Options) {
             edge_bytes: output.edges.pushed_bytes(),
             path_bytes: output.paths.pushed_bytes(),
         };
+        mask_tiles_scratch = std::mem::take(&mut output.mask_tiles);
+        occlusion_scratch = std::mem::replace(&mut output.occlusion, OcclusionBuffer::disabled());
         drop(output);
 
         if frame >= options.warmup {
