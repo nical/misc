@@ -843,7 +843,7 @@ impl<'l> Clone for GpuBufferWriter<'l> {
 
 #[test]
 fn gpu_buffer_simple() {
-    let staging_buffers = Arc::new(Mutex::new(StagingBufferPool::new_for_testing(1024 * 32)));
+    let staging_buffers = Arc::new(Mutex::new(StagingBufferPool::new_cpu_only(1024 * 32)));
 
     let resource = GpuBufferResources::new(&GpuBufferDescriptor::Texture {
         format: wgpu::TextureFormat::Rgba8Unorm,

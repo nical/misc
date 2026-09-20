@@ -2562,6 +2562,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiling_bench"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "lyon",
+ "tiling",
+ "usvg",
+]
+
+[[package]]
 name = "tiny-skia"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

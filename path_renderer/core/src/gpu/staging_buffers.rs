@@ -79,8 +79,12 @@ impl StagingBufferPool {
         }
     }
 
-    #[allow(unused)]
-    pub(crate) fn new_for_testing(buffer_size: u32) -> Self {
+    /// Creates a pool that is not backed by a GPU device.
+    ///
+    /// Chunks are allocated from plain CPU-side buffers. This is useful for
+    /// tests and benchmarks that exercise the CPU side of the pipeline
+    /// without a GPU.
+    pub fn new_cpu_only(buffer_size: u32) -> Self {
         StagingBufferPool {
             buffer_size,
             available: Vec::new(),

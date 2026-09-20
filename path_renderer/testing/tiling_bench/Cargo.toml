@@ -1,0 +1,15 @@
+[package]
+name = "tiling_bench"
+version = "0.1.0"
+edition = "2021"
+workspace = "../.."
+
+[[bin]]
+name = "tiling_bench"
+path = "src/main.rs"
+
+[dependencies]
+core = { path = "../../core" }
+tiling = { path = "../../renderers/tiling" }
+lyon = "1.0.0"
+usvg = "0.36"

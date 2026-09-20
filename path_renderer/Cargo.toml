@@ -20,6 +20,7 @@ members = [
     "patterns/corner",
     "testing/utils",
     "testing/core_test",
+    "testing/tiling_bench",
     "document",
     "demo",
     "renderers/slug",
