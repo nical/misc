@@ -218,8 +218,18 @@ impl Tiler {
                         continue;
                     }
 
-                    flattener.set_line(segment.to);
+                    // Line segments don't need the flattener: push the
+                    // endpoint directly and flush if the buffer is full.
+                    if let Some(pos) = skipped {
+                        self.point_buffer.push(transform.transform_point(pos));
+                        skipped = None;
+                    }
+                    self.point_buffer.push(segment.to);
+                    if self.point_buffer.capacity() == self.point_buffer.len() {
+                        self.flush(occlusion, false);
+                    }
                     from = to;
+                    continue;
                 }
                 PathEvent::Quadratic { ctrl, to, .. } => {
                     //println!("# quad ctrl= {ctrl:?} to={to:?}");
