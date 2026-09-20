@@ -304,10 +304,22 @@ impl Tiler {
         //println!("flush {point_buffer:?}");
         let mut iter = point_buffer.iter();
         let mut from = *iter.next().unwrap();
+        // Each point's fixed-point conversion is done once and carried
+        // over to the next segment where it acts as the from-endpoint.
+        let mut from_i32_x = (from.x * COORD_SCALE) as i32;
+        let mut from_i32_y = (from.y * COORD_SCALE) as i32;
 
         for to in iter {
-            self.tile_segment(&LineSegment { from, to: *to });
+            let to_i32_x = (to.x * COORD_SCALE) as i32;
+            let to_i32_y = (to.y * COORD_SCALE) as i32;
+            self.tile_segment(
+                &LineSegment { from, to: *to },
+                from_i32_x, from_i32_y,
+                to_i32_x, to_i32_y,
+            );
             from = *to;
+            from_i32_x = to_i32_x;
+            from_i32_y = to_i32_y;
         }
 
         point_buffer.clear();
@@ -318,8 +330,12 @@ impl Tiler {
         self.point_buffer = point_buffer;
     }
 
-    fn tile_segment(&mut self, edge: &LineSegment<f32>) {
-
+    fn tile_segment(
+        &mut self,
+        edge: &LineSegment<f32>,
+        from_i32_x: i32, from_i32_y: i32,
+        to_i32_x: i32, to_i32_y: i32,
+    ) {
         let _panic = PanicLogger::new("Bug: tile_segment panic with ", edge);
 
         // Leave some margin around this early scissor test so that
@@ -336,10 +352,6 @@ impl Tiler {
             return;
         }
 
-        let from_i32_x = (edge.from.x * COORD_SCALE) as i32;
-        let from_i32_y = (edge.from.y * COORD_SCALE) as i32;
-        let to_i32_x = (edge.to.x * COORD_SCALE) as i32;
-        let to_i32_y = (edge.to.y * COORD_SCALE) as i32;
         let mut src_tx = (from_i32_x >> LOCAL_COORD_BITS);
         let mut src_ty = (from_i32_y >> LOCAL_COORD_BITS);
         let dst_tx = (to_i32_x >> LOCAL_COORD_BITS);
@@ -357,12 +369,12 @@ impl Tiler {
             if src_ty >= self.scissor_tiles.min.y && src_ty < self.scissor_tiles.max.y
                 && src_tx >= self.scissor_tiles.min.x && src_tx < self.scissor_tiles.max.x
             {
-                let offset_x = (src_tx * UNITS_PER_TILE) as f32;
-                let offset_y = (src_ty * UNITS_PER_TILE) as f32;
-                let local_x0 = ((edge.from.x * COORD_SCALE) - offset_x).min(255.0) as u8;
-                let local_y0 = ((edge.from.y * COORD_SCALE) - offset_y).min(255.0) as u8;
-                let local_x1 = ((edge.to.x * COORD_SCALE) - offset_x).min(255.0) as u8;
-                let local_y1 = ((edge.to.y * COORD_SCALE) - offset_y).min(255.0) as u8;
+                // Both endpoints are in this tile so the local coordinates
+                // are the low bits of the fixed-point coordinates.
+                let local_x0 = (from_i32_x & LOCAL_COORD_MASK) as u8;
+                let local_y0 = (from_i32_y & LOCAL_COORD_MASK) as u8;
+                let local_x1 = (to_i32_x & LOCAL_COORD_MASK) as u8;
+                let local_y1 = (to_i32_y & LOCAL_COORD_MASK) as u8;
                 self.events[src_ty as usize % EVENT_BUCKETS].push(Event::edge(
                     src_tx as u16, src_ty as u16,
                     [local_x0, local_y0, local_x1, local_y1],
