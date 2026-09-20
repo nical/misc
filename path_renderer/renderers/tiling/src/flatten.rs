@@ -385,6 +385,7 @@ impl FlattenerLevien {
             });
         }
 
+        self.ty = CurveType::None;
         return false;
     }
 
@@ -401,6 +402,7 @@ impl FlattenerLevien {
         let dy = (quad.to.y - quad.from.y).abs();
         if dx + dy < 64.0 * self.tolerance {
             flatten_quadratic_linear(&quad, self.tolerance, output);
+            self.ty = CurveType::None;
             return false;
         }
 
@@ -410,6 +412,7 @@ impl FlattenerLevien {
             });
         }
 
+        self.ty = CurveType::None;
         return false;
     }
 
