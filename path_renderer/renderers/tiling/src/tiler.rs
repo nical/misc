@@ -204,8 +204,15 @@ impl Tiler {
                 }
                 PathEvent::End { first, .. } => {
                     //println!("# end first={first:?}");
-                    flattener.set_line(transform.transform_point(first));
-                    force_flush = true;
+                    // Like line segments, the closing edge doesn't need
+                    // the flattener; push the point and flush the contour.
+                    if let Some(pos) = skipped {
+                        self.point_buffer.push(transform.transform_point(pos));
+                        skipped = None;
+                    }
+                    self.point_buffer.push(transform.transform_point(first));
+                    self.flush(occlusion, true);
+                    continue;
                 }
                 PathEvent::Line { to, .. } => {
                     //println!("# line to={to:?}");
