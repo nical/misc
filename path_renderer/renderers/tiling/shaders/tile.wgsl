@@ -264,7 +264,7 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             // +---+---+---+---+---+---+---+---+
             // |   |   |   | f |   |   |   |   |
             // +---+---+---+---+---+---+---+---+
-            // |   | g |   |   |   |   |   | c |
+            // |   | g |   |   |   |   |   |   |
             // +---+---+---+---+---+---+---+---+
             // |   |   |   |   |   | h |   |   |
             // +---+---+---+---+---+---+---+---+
@@ -317,8 +317,10 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             lower.y += dy;
             wn1.w += s * rasterize_edge_ssaa(upper, lower);
         } #else {
-            // Position of this pixel's top-left corner (uv points to the pixel's center).
-            // See comment in tiler.rs about the half-pixel offset.
+            // uv is a position in pixels relative to the tile's origin, sampled at the
+            // center of the pixel. rasterize_edge_analytical works in coordinates local
+            // to the pixel, with the pixel covering the unit square, so shift by half a
+            // pixel to get the top-left corner of the pixel.
             let pixel_offset = uv - vec2<f32>(0.5);
 
             // Move to coordinates local to the current pixel.
