@@ -183,6 +183,10 @@ impl Tiler {
         // Keep track of from manually instead of using the value provided by the
         // iterator because we want to skip tiny edges without intorducing gaps.
         let mut from = point(0.0, 0.0);
+        // The transformed version of `from`, cached so that each point is
+        // only transformed once even though it is the endpoint of two
+        // consecutive segments.
+        let mut from_t = point(0.0, 0.0);
         let square_tolerance = self.tolerance * self.tolerance;
 
         self.point_buffer.clear();
@@ -194,7 +198,8 @@ impl Tiler {
             match evt {
                 PathEvent::Begin { at } => {
                     //println!("# begin {at:?}");
-                    self.point_buffer.push(transform.transform_point(at));
+                    from_t = transform.transform_point(at);
+                    self.point_buffer.push(from_t);
                     from = at;
                 }
                 PathEvent::End { first, .. } => {
@@ -204,11 +209,12 @@ impl Tiler {
                 }
                 PathEvent::Line { to, .. } => {
                     //println!("# line to={to:?}");
-                    let segment = LineSegment { from, to }.transformed(transform);
+                    let segment = LineSegment { from: from_t, to: transform.transform_point(to) };
                     let min_y = segment.from.y.min(segment.to.y);
                     let max_y = segment.from.y.max(segment.to.y);
                     if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
                         from = to;
+                        from_t = segment.to;
                         skipped = Some(to);
                         //println!("skip line segment");
                         continue;
@@ -229,15 +235,21 @@ impl Tiler {
                         self.flush(occlusion, false);
                     }
                     from = to;
+                    from_t = segment.to;
                     continue;
                 }
                 PathEvent::Quadratic { ctrl, to, .. } => {
                     //println!("# quad ctrl= {ctrl:?} to={to:?}");
-                    let segment = QuadraticBezierSegment { from, ctrl, to }.transformed(transform);
+                    let segment = QuadraticBezierSegment {
+                        from: from_t,
+                        ctrl: transform.transform_point(ctrl),
+                        to: transform.transform_point(to),
+                    };
                     let min_y = segment.from.y.min(segment.ctrl.y).min(segment.to.y);
                     let max_y = segment.from.y.max(segment.ctrl.y).max(segment.to.y);
                     if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
                         from = to;
+                        from_t = segment.to;
                         skipped = Some(to);
                         //println!("skip quad segment");
                         continue;
@@ -251,21 +263,22 @@ impl Tiler {
 
                     flattener.set_quadratic(&segment);
                     from = to;
+                    from_t = segment.to;
                 }
                 PathEvent::Cubic { ctrl1, ctrl2, to, .. } => {
                     //println!("# cubic from={from:?} ctrl1={ctrl1:?} ctrl2={ctrl2:?} to={to:?}");
                     let segment = CubicBezierSegment {
-                        from,
-                        ctrl1,
-                        ctrl2,
-                        to,
-                    }
-                    .transformed(transform);
+                        from: from_t,
+                        ctrl1: transform.transform_point(ctrl1),
+                        ctrl2: transform.transform_point(ctrl2),
+                        to: transform.transform_point(to),
+                    };
 
                     let min_y = segment.from.y.min(segment.ctrl1.y).min(segment.ctrl2.y).min(segment.to.y);
                     let max_y = segment.from.y.max(segment.ctrl1.y).max(segment.ctrl2.y).max(segment.to.y);
                     if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
                         from = to;
+                        from_t = segment.to;
                         skipped = Some(to);
                         //println!("skip cubic segment");
                         continue;
@@ -282,6 +295,7 @@ impl Tiler {
 
                     flattener.set_cubic(&segment);
                     from = to;
+                    from_t = segment.to;
                 }
             }
 
