@@ -205,11 +205,17 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             var p0 = edge.xy;
             var p1 = edge.zw;
 
-            let s = sign(p1.y - p0.y);
+            // A horizontal edge contributes zero to the winding number of every
+            // sample. Skipping it here also means the orientation below is decided
+            // by a strict comparison.
+            if (p0.y == p1.y) {
+                continue;
+            }
 
-            let select = step(0.0, s);
-            var upper = mix(p0, p1, 1.0 - select) - uv;
-            var lower = mix(p0, p1, select) - uv;
+            let downwards = p1.y > p0.y;
+            let s = select(-1.0, 1.0, downwards);
+            var upper = select(p1, p0, downwards) - uv;
+            var lower = select(p0, p1, downwards) - uv;
 
             // The four samples sit on rows 3/8 and 1/8 above and below the pixel
             // center. An edge whose y range does not reach them covers none of them
@@ -255,10 +261,16 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
         } #else if TILING_SSAA8 {
             var p0 = edge.xy;
             var p1 = edge.zw;
-            let s = sign(p1.y - p0.y);
-            let select = step(0.0, s);
-            var upper = mix(p0, p1, 1.0 - select) - uv;
-            var lower = mix(p0, p1, select) - uv;
+
+            // See the comment in the ssaa4 branch.
+            if (p0.y == p1.y) {
+                continue;
+            }
+
+            let downwards = p1.y > p0.y;
+            let s = select(-1.0, 1.0, downwards);
+            var upper = select(p1, p0, downwards) - uv;
+            var lower = select(p0, p1, downwards) - uv;
 
             // The eight samples sit on rows 7/16, 5/16, 3/16 and 1/16 above and below
             // the pixel center. See the comment in the ssaa4 branch.
