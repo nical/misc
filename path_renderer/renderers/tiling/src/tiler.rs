@@ -42,7 +42,14 @@ fn encode_local_coord(units: i32) -> u8 {
 /// land slightly outside of the tile.
 #[inline]
 fn encode_local_coord_f32(units: f32) -> u8 {
-    encode_local_coord(units.clamp(0.0, UNITS_PER_TILE_F32) as i32)
+    // `max` and `min` return the operand that is not NaN, so this lands in
+    // 0..=UNITS_PER_TILE for every input including NaN and the infinities. A
+    // checked cast costs a few instructions more and this runs once per
+    // coordinate of every edge that crosses a tile boundary.
+    let units = units.max(0.0).min(UNITS_PER_TILE_F32);
+    debug_assert!(units >= 0.0 && units <= UNITS_PER_TILE_F32);
+
+    encode_local_coord(unsafe { units.to_int_unchecked::<i32>() })
 }
 
 struct TileUnit;
@@ -1158,6 +1165,24 @@ fn local_coord_round_trip() {
     // The two sides of the tile are exact.
     assert_eq!(decode(encode_local_coord(0)), 0.0);
     assert_eq!(decode(encode_local_coord(UNITS_PER_TILE)), TILE_SIZE_F32);
+
+    // encode_local_coord_f32 casts without checking, so it has to bring every
+    // input into range first, including the ones that are not a number.
+    assert_eq!(encode_local_coord_f32(0.0), 0);
+    assert_eq!(encode_local_coord_f32(UNITS_PER_TILE_F32), 255);
+    assert_eq!(encode_local_coord_f32(-0.5), 0);
+    assert_eq!(encode_local_coord_f32(-1000.0), 0);
+    assert_eq!(encode_local_coord_f32(1000.0), 255);
+    assert_eq!(encode_local_coord_f32(f32::NAN), 0);
+    assert_eq!(encode_local_coord_f32(f32::NEG_INFINITY), 0);
+    assert_eq!(encode_local_coord_f32(f32::INFINITY), 255);
+    for units in 0..=UNITS_PER_TILE {
+        assert_eq!(
+            encode_local_coord_f32(units as f32),
+            encode_local_coord(units),
+            "{units} units",
+        );
+    }
 
     // Everything in between lands on the nearest of the 256 positions a byte can
     // represent, so it is off by at most half of the spacing between them. Before
