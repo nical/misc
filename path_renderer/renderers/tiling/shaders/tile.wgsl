@@ -210,6 +210,15 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             let select = step(0.0, s);
             var upper = mix(p0, p1, 1.0 - select) - uv;
             var lower = mix(p0, p1, select) - uv;
+
+            // The four samples sit on rows 3/8 and 1/8 above and below the pixel
+            // center. An edge whose y range does not reach them covers none of them
+            // and cannot change any of the winding numbers. For a given pixel most
+            // edges of the tile are several rows away, so this is the common case.
+            if (lower.y < -3.0/8.0 || upper.y > 3.0/8.0) {
+                continue;
+            }
+
             // Sample positions:
             // +---+---+---+---+
             // |   |   | a |   |
@@ -250,6 +259,13 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             let select = step(0.0, s);
             var upper = mix(p0, p1, 1.0 - select) - uv;
             var lower = mix(p0, p1, select) - uv;
+
+            // The eight samples sit on rows 7/16, 5/16, 3/16 and 1/16 above and below
+            // the pixel center. See the comment in the ssaa4 branch.
+            if (lower.y < -7.0/16.0 || upper.y > 7.0/16.0) {
+                continue;
+            }
+
             // Sample positions:
             // +---+---+---+---+---+---+---+---+
             // |   |   |   |   |   |   |   | a |
