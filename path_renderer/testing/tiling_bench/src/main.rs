@@ -29,6 +29,8 @@ use tiling::{FillOptions, FillRule, Transform};
 
 struct SceneItem {
     path: Path,
+    // Conservative local-space bounding rect (includes control points).
+    aabb: core::units::LocalRect,
     fill_rule: FillRule,
     pattern: BuiltPattern,
 }
@@ -163,7 +165,8 @@ fn run_svg(filename: &str, options: &Options) {
                 .with_transform(Some(&transform))
                 .with_fill_rule(item.fill_rule)
                 .with_tolerance(options.tolerance)
-                .with_z_index(i as u32 + 1);
+                .with_z_index(i as u32 + 1)
+                .with_aabb(Some(transform.outer_transformed_box(&item.aabb)));
             tiler.fill_path(item.path.iter(), &fill_options, &item.pattern, &mut output);
         }
 
@@ -261,7 +264,8 @@ fn report_top_paths(
             .with_transform(Some(transform))
             .with_fill_rule(item.fill_rule)
             .with_tolerance(options.tolerance)
-            .with_z_index(i as u32 + 1);
+            .with_z_index(i as u32 + 1)
+            .with_aabb(Some(transform.outer_transformed_box(&item.aabb)));
         let start = Instant::now();
         tiler.fill_path(item.path.iter(), &fill_options, &item.pattern, &mut output);
         timings.push((i, start.elapsed()));
@@ -326,8 +330,31 @@ fn load_svg(filename: &str) -> (lyon::geom::Box2D<f32>, Vec<SceneItem>) {
                 }
             }
 
+            let path = builder.build();
+            let mut aabb = lyon::geom::Box2D {
+                min: euclid::point2(f32::MAX, f32::MAX),
+                max: euclid::point2(f32::MIN, f32::MIN),
+            };
+            for evt in path.iter() {
+                use lyon::path::PathEvent as E;
+                let pts: &[lyon::geom::Point<f32>] = match &evt {
+                    E::Begin { at } => &[*at],
+                    E::Line { to, .. } => &[*to],
+                    E::Quadratic { ctrl, to, .. } => &[*ctrl, *to],
+                    E::Cubic { ctrl1, ctrl2, to, .. } => &[*ctrl1, *ctrl2, *to],
+                    E::End { .. } => &[],
+                };
+                for p in pts {
+                    aabb.min.x = aabb.min.x.min(p.x);
+                    aabb.min.y = aabb.min.y.min(p.y);
+                    aabb.max.x = aabb.max.x.max(p.x);
+                    aabb.max.y = aabb.max.y.max(p.y);
+                }
+            }
+
             scene.push(SceneItem {
-                path: builder.build(),
+                path,
+                aabb: aabb.cast_unit(),
                 fill_rule,
                 pattern: BuiltPattern::new(ShaderPatternId::from_index(0), 0)
                     .with_opacity(is_opaque),

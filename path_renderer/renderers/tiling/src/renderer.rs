@@ -437,13 +437,15 @@ impl TileRenderer {
 
         match &fill.shape {
             Shape::Path(shape) => {
+                let aabb = transform.outer_transformed_box(shape.path.aabb());
                 let options = FillOptions::new()
                     .with_transform(Some(transform))
                     .with_fill_rule(shape.fill_rule)
                     .with_z_index(fill.z_index)
                     .with_tolerance(tolerance)
                     .with_inverted(shape.inverted)
-                    .with_render_task(fill.task.gpu_address);
+                    .with_render_task(fill.task.gpu_address)
+                    .with_aabb(Some(aabb));
                 tiler.fill_path(shape.path.iter(), &options, &fill.pattern, tiles);
             }
             Shape::Surface => {

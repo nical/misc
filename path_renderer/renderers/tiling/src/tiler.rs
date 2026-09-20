@@ -38,6 +38,10 @@ pub struct Tiler {
     culling_rect: SurfaceRect,
     scissor_tiles: Box2D<i32>,
     edge_buffer: Vec<EncodedEdge>,
+    // Whether segments of the current path can lie outside the culling
+    // rect. False when the path's bounding rect is fully inside, which
+    // lets the binning skip its per-segment culling tests.
+    cull_segments: bool,
 }
 
 // TODO: The inverted mode currently only works with 1 event bucket but
@@ -73,6 +77,7 @@ impl Tiler {
                 max: point(0, 0),
             },
             edge_buffer: Vec::with_capacity(32),
+            cull_segments: true,
         }
     }
 
@@ -125,6 +130,12 @@ impl Tiler {
 
         let identity = Transform2D::identity();
         let transform = options.transform.unwrap_or(&identity);
+
+        self.cull_segments = options.aabb.map_or(true, |aabb| {
+            !(aabb.min.y >= self.culling_rect.min.y - 1.0
+                && aabb.max.y <= self.culling_rect.max.y + 1.0
+                && aabb.max.x <= self.culling_rect.max.x + 1.0)
+        });
 
         self.tile_path(path, transform, &mut output.occlusion);
 
@@ -217,14 +228,16 @@ impl Tiler {
                 PathEvent::Line { to, .. } => {
                     //println!("# line to={to:?}");
                     let segment = LineSegment { from: from_t, to: transform.transform_point(to) };
-                    let min_y = segment.from.y.min(segment.to.y);
-                    let max_y = segment.from.y.max(segment.to.y);
-                    if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
-                        from = to;
-                        from_t = segment.to;
-                        skipped = Some(to);
-                        //println!("skip line segment");
-                        continue;
+                    if self.cull_segments {
+                        let min_y = segment.from.y.min(segment.to.y);
+                        let max_y = segment.from.y.max(segment.to.y);
+                        if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
+                            from = to;
+                            from_t = segment.to;
+                            skipped = Some(to);
+                            //println!("skip line segment");
+                            continue;
+                        }
                     }
 
                     if segment.to_vector().square_length() < square_tolerance {
@@ -252,14 +265,16 @@ impl Tiler {
                         ctrl: transform.transform_point(ctrl),
                         to: transform.transform_point(to),
                     };
-                    let min_y = segment.from.y.min(segment.ctrl.y).min(segment.to.y);
-                    let max_y = segment.from.y.max(segment.ctrl.y).max(segment.to.y);
-                    if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
-                        from = to;
-                        from_t = segment.to;
-                        skipped = Some(to);
-                        //println!("skip quad segment");
-                        continue;
+                    if self.cull_segments {
+                        let min_y = segment.from.y.min(segment.ctrl.y).min(segment.to.y);
+                        let max_y = segment.from.y.max(segment.ctrl.y).max(segment.to.y);
+                        if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
+                            from = to;
+                            from_t = segment.to;
+                            skipped = Some(to);
+                            //println!("skip quad segment");
+                            continue;
+                        }
                     }
                     if segment.baseline().to_vector().square_length() < square_tolerance {
                         let center = (segment.from + segment.to.to_vector()) * 0.5;
@@ -281,14 +296,16 @@ impl Tiler {
                         to: transform.transform_point(to),
                     };
 
-                    let min_y = segment.from.y.min(segment.ctrl1.y).min(segment.ctrl2.y).min(segment.to.y);
-                    let max_y = segment.from.y.max(segment.ctrl1.y).max(segment.ctrl2.y).max(segment.to.y);
-                    if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
-                        from = to;
-                        from_t = segment.to;
-                        skipped = Some(to);
-                        //println!("skip cubic segment");
-                        continue;
+                    if self.cull_segments {
+                        let min_y = segment.from.y.min(segment.ctrl1.y).min(segment.ctrl2.y).min(segment.to.y);
+                        let max_y = segment.from.y.max(segment.ctrl1.y).max(segment.ctrl2.y).max(segment.to.y);
+                        if min_y > self.culling_rect.max.y + 1.0 || max_y < self.culling_rect.min.y - 1.0 {
+                            from = to;
+                            from_t = segment.to;
+                            skipped = Some(to);
+                            //println!("skip cubic segment");
+                            continue;
+                        }
                     }
 
                     if segment.baseline().to_vector().square_length() < square_tolerance {
@@ -385,7 +402,8 @@ impl Tiler {
         if src_tx == dst_tx && src_ty == dst_ty {
             if src_ty >= self.scissor_tiles.min.y && src_ty < self.scissor_tiles.max.y
                 && src_tx >= self.scissor_tiles.min.x && src_tx < self.scissor_tiles.max.x
-                && !(edge.from.x.min(edge.to.x) > self.culling_rect.max.x + 1.0)
+                && !(self.cull_segments
+                    && edge.from.x.min(edge.to.x) > self.culling_rect.max.x + 1.0)
             {
                 // Both endpoints are in this tile so the local coordinates
                 // are the low bits of the fixed-point coordinates.
@@ -404,15 +422,17 @@ impl Tiler {
         // Leave some margin around this early scissor test so that
         // we keep track of the previous tile near the boundary of the
         // scissor rect.
-        let min_y = edge.to.y.min(edge.from.y);
-        let max_y = edge.to.y.max(edge.from.y);
         let min_x = edge.to.x.min(edge.from.x);
         let max_x = edge.to.x.max(edge.from.x);
-        if min_y > self.culling_rect.max.y + 1.0
-            || max_y < self.culling_rect.min.y - 1.0
-            || min_x > self.culling_rect.max.x + 1.0
-        {
-            return;
+        if self.cull_segments {
+            let min_y = edge.to.y.min(edge.from.y);
+            let max_y = edge.to.y.max(edge.from.y);
+            if min_y > self.culling_rect.max.y + 1.0
+                || max_y < self.culling_rect.min.y - 1.0
+                || min_x > self.culling_rect.max.x + 1.0
+            {
+                return;
+            }
         }
 
         let scissor_min_tx = self.scissor_tiles.min.x;

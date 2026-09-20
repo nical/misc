@@ -12,7 +12,7 @@ mod simd4;
 use core::batching::RendererId;
 use core::render_task::RenderTaskAdress;
 use core::wgpu;
-use core::units::{LocalSpace, SurfaceSpace};
+use core::units::{LocalSpace, SurfaceSpace, SurfaceRect};
 use core::gpu::{GpuBufferDescriptor, GpuBufferResources};
 use core::shading::{Shaders, PipelineDefaults, GeometryDescriptor, GeometryId, BindGroupLayout, BindGroupLayoutId, Binding, Varying, VertexAtribute};
 
@@ -96,6 +96,11 @@ pub struct FillOptions<'l> {
     pub transform: Option<&'l Transform>,
     pub opacity: f32,
     pub render_task: RenderTaskAdress,
+    /// Optional bounding rect of the transformed path.
+    ///
+    /// When provided and fully inside the view, the tiler skips its
+    /// per-segment culling tests.
+    pub aabb: Option<SurfaceRect>,
 }
 
 impl<'l> FillOptions<'l> {
@@ -108,6 +113,7 @@ impl<'l> FillOptions<'l> {
             transform: None,
             opacity: 1.0,
             render_task: RenderTaskAdress::NONE,
+            aabb: None,
         }
     }
 
@@ -120,6 +126,7 @@ impl<'l> FillOptions<'l> {
             transform: Some(transform),
             opacity: 1.0,
             render_task: RenderTaskAdress::NONE,
+            aabb: None,
         }
     }
 
@@ -135,6 +142,7 @@ impl<'l> FillOptions<'l> {
             transform,
             opacity: self.opacity,
             render_task: self.render_task,
+            aabb: self.aabb,
         }
     }
 
@@ -165,6 +173,11 @@ impl<'l> FillOptions<'l> {
 
     pub fn with_render_task(mut self, task: RenderTaskAdress) -> Self {
         self.render_task = task;
+        self
+    }
+
+    pub fn with_aabb(mut self, aabb: Option<SurfaceRect>) -> Self {
+        self.aabb = aabb;
         self
     }
 }
