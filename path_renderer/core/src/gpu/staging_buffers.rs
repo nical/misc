@@ -53,6 +53,7 @@ pub struct StagingBufferPool {
     current_chunks_offset: u32,
 
     pub(crate) cpu_buffers: Vec<Vec<u8>>,
+    next_cpu_buffer: usize,
 
     device: Option<wgpu::Device>,
 }
@@ -75,6 +76,7 @@ impl StagingBufferPool {
             },
             current_chunks_offset: 0,
             cpu_buffers: Vec::new(),
+            next_cpu_buffer: 0,
             device: Some(device),
         }
     }
@@ -97,6 +99,7 @@ impl StagingBufferPool {
                 size: 0,
             },
             cpu_buffers: Vec::new(),
+            next_cpu_buffer: 0,
             current_chunks_offset: 0,
             device: None,
         }
@@ -132,17 +135,31 @@ impl StagingBufferPool {
     }
 
     fn create_cpu_buffer(&mut self) -> MappedStagingBuffer {
-        let mut buffer = vec![0; self.buffer_size as usize];
-
-        let id = StagingBufferId(self.cpu_buffers.len() as u32);
-        let ptr = buffer.as_mut_ptr();
-        self.cpu_buffers.push(buffer);
+        let idx = self.next_cpu_buffer;
+        self.next_cpu_buffer += 1;
+        if idx == self.cpu_buffers.len() {
+            self.cpu_buffers.push(vec![0; self.buffer_size as usize]);
+        }
 
         MappedStagingBuffer {
-            ptr,
-            id,
+            ptr: self.cpu_buffers[idx].as_mut_ptr(),
+            id: StagingBufferId(idx as u32),
             size: self.buffer_size,
         }
+    }
+
+    /// Makes all CPU-only buffers available again without freeing them.
+    ///
+    /// Only relevant for pools created with `new_cpu_only`. Callers must
+    /// not access chunks handed out before the call.
+    pub fn recycle_cpu_buffers(&mut self) {
+        self.next_cpu_buffer = 0;
+        self.current_chunks = MappedStagingBuffer {
+            ptr: std::ptr::null_mut(),
+            id: StagingBufferId(u32::MAX),
+            size: 0,
+        };
+        self.current_chunks_offset = 0;
     }
 
     pub fn get_mapped_chunk(&mut self, size: u32) -> MappedStagingBufferChunk {

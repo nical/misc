@@ -127,13 +127,14 @@ fn run_svg(filename: &str, options: &Options) {
     // Recycled across frames like TileRenderer does.
     let mut mask_tiles_scratch = Vec::new();
     let mut occlusion_scratch = OcclusionBuffer::disabled();
+    // The real renderer recycles mapped staging buffers between frames, so
+    // the CPU-only pool reuses its buffers too instead of reallocating.
+    let staging = Arc::new(Mutex::new(StagingBufferPool::new_cpu_only(1024 * 128)));
 
     for frame in 0..(options.warmup + options.frames) {
         let start = Instant::now();
 
-        // A fresh pool every frame keeps CPU-side staging chunks from
-        // accumulating (they are never recycled in CPU-only mode).
-        let staging = Arc::new(Mutex::new(StagingBufferPool::new_cpu_only(1024 * 128)));
+        staging.lock().unwrap().recycle_cpu_buffers();
         let paths_buffer = paths_store.begin_frame(staging.clone());
         let edges_buffer = edges_store.begin_frame(staging.clone());
         let instances = instances_store.begin_frame(staging.clone());
