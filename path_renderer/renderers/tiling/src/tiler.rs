@@ -218,7 +218,7 @@ impl Tiler {
                         continue;
                     }
 
-                    flattener.set_line(transform.transform_point(to));
+                    flattener.set_line(segment.to);
                     from = to;
                 }
                 PathEvent::Quadratic { ctrl, to, .. } => {
