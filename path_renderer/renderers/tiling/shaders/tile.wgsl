@@ -135,15 +135,31 @@ fn rasterize_edge_analytical(p0: vec2<f32>, p1: vec2<f32>) -> f32 {
     return area * (y1 - y0);
 }
 
-fn rasterize_edge_ssaa(upper: vec2<f32>, lower: vec2<f32>) -> f32 {
-    // 1 if the sample is in the edge's y range, 0 otherwise.
-    let y_range_test = step(upper.y, 0.0) * step(0.0, lower.y);
+// The winding number contribution of one edge to one sample.
+//
+// `offset` is the sample's position, `edge` the vector from the upper to the lower
+// endpoint of the edge, `winding` the edge's winding direction, and `cross_at_origin`
+// the cross product of `edge` with the vector from the sample pattern's origin to the
+// upper endpoint. `y_min` and `y_max` are the edge's y range in the sample pattern's
+// coordinate system.
+//
+// The two quantities the test needs are affine in `offset`, so everything that does
+// not depend on the sample is computed once per edge by the caller and only two fused
+// multiply-adds and three comparisons are left here.
+fn ssaa_sample(
+    offset: vec2<f32>,
+    edge: vec2<f32>,
+    cross_at_origin: f32,
+    y_min: f32,
+    y_max: f32,
+    winding: f32,
+) -> f32 {
+    // The sample is between the two endpoints on the y axis.
+    let in_y_range = offset.y >= y_min && offset.y <= y_max;
+    // The sample is on the right hand side of the edge.
+    let cross = cross_at_origin + edge.x * offset.y - edge.y * offset.x;
 
-    let v1 = lower - upper;
-    let v2 = upper;
-    let is_right_side = step(0.0, v1.x * v2.y - v2.x * v1.y);
-
-    return y_range_test * is_right_side;
+    return select(0.0, winding, in_y_range && cross >= 0.0);
 }
 
 fn even_odd(winding_number: f32) -> f32 {
@@ -214,18 +230,24 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
 
             let downwards = p1.y > p0.y;
             let s = select(-1.0, 1.0, downwards);
-            var upper = select(p1, p0, downwards) - uv;
-            var lower = select(p0, p1, downwards) - uv;
+            let upper = select(p1, p0, downwards) - uv;
+            let lower = select(p0, p1, downwards) - uv;
+
+            // The offsets below are applied to the edge rather than to the sample, so
+            // the edge's y range in the sample pattern's coordinate system is the
+            // negated and flipped y range of the edge.
+            let y_min = -lower.y;
+            let y_max = -upper.y;
 
             // The four samples sit on rows 3/8 and 1/8 above and below the pixel
             // center. An edge whose y range does not reach them covers none of them
             // and cannot change any of the winding numbers. For a given pixel most
             // edges of the tile are several rows away, so this is the common case.
-            if (lower.y < -3.0/8.0 || upper.y > 3.0/8.0) {
+            if (y_min > 3.0/8.0 || y_max < -3.0/8.0) {
                 continue;
             }
 
-            // Sample positions:
+            // Sample offsets:
             // +---+---+---+---+
             // |   |   | a |   |
             // +---+---+---+---+
@@ -235,29 +257,21 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             // +---+---+---+---+
             // |   | d |   |   |
             // +---+---+---+---+
-            // Instead of expressing a, b, c, and d relative to the pixel center, we
-            // store them as offsets from the previous sample position. This way we don't
-            // need to hold both upper/lower and the result of adding the offset.
-            // This saves 4 VGPR and was just enough to get to 32 VGPR which hit maximum
-            // occupancy with the color pattern on my RDNA3 iGPU, reducing by 10% the GPU
-            // time of the draw call accoring to RGP.
-            // This is still slower than the area coverage code path.
+            // These are offsets applied to the edge, so the sample pattern is this
+            // grid mirrored through the pixel center. Both are rotated grids with one
+            // sample per row and per column, which is what matters here.
             const a = vec2<f32>( 1.0/8.0, -3.0/8.0);
             const b = vec2<f32>(-3.0/8.0, -1.0/8.0);
             const c = vec2<f32>( 3.0/8.0,  1.0/8.0);
             const d = vec2<f32>(-1.0/8.0,  3.0/8.0);
-            upper += a;
-            lower += a;
-            wn.x += s * rasterize_edge_ssaa(upper, lower);
-            upper += (b - a);
-            lower += (b - a);
-            wn.y += s * rasterize_edge_ssaa(upper, lower);
-            upper += (c - b);
-            lower += (c - b);
-            wn.z += s * rasterize_edge_ssaa(upper, lower);
-            upper += (d - c);
-            lower += (d - c);
-            wn.w += s * rasterize_edge_ssaa(upper, lower);
+
+            let v = lower - upper;
+            let cross_at_origin = v.x * upper.y - upper.x * v.y;
+
+            wn.x += ssaa_sample(a, v, cross_at_origin, y_min, y_max, s);
+            wn.y += ssaa_sample(b, v, cross_at_origin, y_min, y_max, s);
+            wn.z += ssaa_sample(c, v, cross_at_origin, y_min, y_max, s);
+            wn.w += ssaa_sample(d, v, cross_at_origin, y_min, y_max, s);
         } #else if TILING_SSAA8 {
             var p0 = edge.xy;
             var p1 = edge.zw;
@@ -269,16 +283,20 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
 
             let downwards = p1.y > p0.y;
             let s = select(-1.0, 1.0, downwards);
-            var upper = select(p1, p0, downwards) - uv;
-            var lower = select(p0, p1, downwards) - uv;
+            let upper = select(p1, p0, downwards) - uv;
+            let lower = select(p0, p1, downwards) - uv;
+
+            // See the comment in the ssaa4 branch.
+            let y_min = -lower.y;
+            let y_max = -upper.y;
 
             // The eight samples sit on rows 7/16, 5/16, 3/16 and 1/16 above and below
             // the pixel center. See the comment in the ssaa4 branch.
-            if (lower.y < -7.0/16.0 || upper.y > 7.0/16.0) {
+            if (y_min > 7.0/16.0 || y_max < -7.0/16.0) {
                 continue;
             }
 
-            // Sample positions:
+            // Sample offsets:
             // +---+---+---+---+---+---+---+---+
             // |   |   |   |   |   |   |   | a |
             // +---+---+---+---+---+---+---+---+
@@ -296,54 +314,28 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             // +---+---+---+---+---+---+---+---+
             // |   |   |   |   |   | h |   |   |
             // +---+---+---+---+---+---+---+---+
-            const a = vec2<f32>(7.0/16.0, -7.0/16.0);
-            const b = -10.0/16.0;
-            const c =  4.0/16.0;
-            const d = -8.0/16.0;
-            const e = 12.0/16.0;
-            const f = -6.0/16.0;
-            const g = -4.0/16.0;
-            const h =  8.0/16.0;
-            const dy = 2.0/16.0;
+            // As in the ssaa4 branch, these are offsets applied to the edge, so the
+            // sample pattern is this grid mirrored through the pixel center.
+            const a = vec2<f32>( 7.0/16.0, -7.0/16.0);
+            const b = vec2<f32>(-3.0/16.0, -5.0/16.0);
+            const c = vec2<f32>( 1.0/16.0, -3.0/16.0);
+            const d = vec2<f32>(-7.0/16.0, -1.0/16.0);
+            const e = vec2<f32>( 5.0/16.0,  1.0/16.0);
+            const f = vec2<f32>(-1.0/16.0,  3.0/16.0);
+            const g = vec2<f32>(-5.0/16.0,  5.0/16.0);
+            const h = vec2<f32>( 3.0/16.0,  7.0/16.0);
 
-            upper += a;
-            lower += a;
-            wn0.x += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += b;
-            upper.y += dy;
-            lower.x += b;
-            lower.y += dy;
-            wn0.y += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += c;
-            upper.y += dy;
-            lower.x += c;
-            lower.y += dy;
-            wn0.z += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += d;
-            upper.y += dy;
-            lower.x += d;
-            lower.y += dy;
-            wn0.w += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += e;
-            upper.y += dy;
-            lower.x += e;
-            lower.y += dy;
-            wn1.x += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += f;
-            upper.y += dy;
-            lower.x += f;
-            lower.y += dy;
-            wn1.y += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += g;
-            upper.y += dy;
-            lower.x += g;
-            lower.y += dy;
-            wn1.z += s * rasterize_edge_ssaa(upper, lower);
-            upper.x += h;
-            upper.y += dy;
-            lower.x += h;
-            lower.y += dy;
-            wn1.w += s * rasterize_edge_ssaa(upper, lower);
+            let v = lower - upper;
+            let cross_at_origin = v.x * upper.y - upper.x * v.y;
+
+            wn0.x += ssaa_sample(a, v, cross_at_origin, y_min, y_max, s);
+            wn0.y += ssaa_sample(b, v, cross_at_origin, y_min, y_max, s);
+            wn0.z += ssaa_sample(c, v, cross_at_origin, y_min, y_max, s);
+            wn0.w += ssaa_sample(d, v, cross_at_origin, y_min, y_max, s);
+            wn1.x += ssaa_sample(e, v, cross_at_origin, y_min, y_max, s);
+            wn1.y += ssaa_sample(f, v, cross_at_origin, y_min, y_max, s);
+            wn1.z += ssaa_sample(g, v, cross_at_origin, y_min, y_max, s);
+            wn1.w += ssaa_sample(h, v, cross_at_origin, y_min, y_max, s);
         } #else {
             // uv is a position in pixels relative to the tile's origin, sampled at the
             // center of the pixel. rasterize_edge_analytical works in coordinates local
