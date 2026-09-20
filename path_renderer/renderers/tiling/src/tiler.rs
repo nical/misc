@@ -349,6 +349,28 @@ impl Tiler {
         let scissor_max_tx = self.scissor_tiles.max.x - 1;
         let scissor_max_ty = self.scissor_tiles.max.y - 1;
 
+        // Fast path for segments contained in a single tile (the vast
+        // majority of flattened curve segments). No tile boundary is
+        // crossed so there is no backdrop or auxiliary edge to add,
+        // and the edge fits in a single event.
+        if src_tx == dst_tx && src_ty == dst_ty {
+            if src_ty >= self.scissor_tiles.min.y && src_ty < self.scissor_tiles.max.y
+                && src_tx >= self.scissor_tiles.min.x && src_tx < self.scissor_tiles.max.x
+            {
+                let offset_x = (src_tx * UNITS_PER_TILE) as f32;
+                let offset_y = (src_ty * UNITS_PER_TILE) as f32;
+                let local_x0 = ((edge.from.x * COORD_SCALE) - offset_x).min(255.0) as u8;
+                let local_y0 = ((edge.from.y * COORD_SCALE) - offset_y).min(255.0) as u8;
+                let local_x1 = ((edge.to.x * COORD_SCALE) - offset_x).min(255.0) as u8;
+                let local_y1 = ((edge.to.y * COORD_SCALE) - offset_y).min(255.0) as u8;
+                self.events[src_ty as usize % EVENT_BUCKETS].push(Event::edge(
+                    src_tx as u16, src_ty as u16,
+                    [local_x0, local_y0, local_x1, local_y1],
+                ));
+            }
+            return;
+        }
+
         let dx = edge.to.x - edge.from.x;
         let dy = edge.to.y - edge.from.y;
         let dx_dy = dx/dy;
