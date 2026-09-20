@@ -370,12 +370,15 @@ impl Tiler {
         // Fast path for segments contained in a single tile (the vast
         // majority of flattened curve segments). No tile boundary is
         // crossed so there is no backdrop or auxiliary edge to add,
-        // and the edge fits in a single event. The scissor test below
-        // also takes care of culling, so the culling rect check further
-        // down is only needed for the multi-tile code path.
+        // and the edge fits in a single event. The scissor tile test
+        // below subsumes the culling rect check for the top, bottom and
+        // left sides, but not the right side: the last tile column can
+        // extend past the scissor rect, so segments there still need the
+        // horizontal culling test.
         if src_tx == dst_tx && src_ty == dst_ty {
             if src_ty >= self.scissor_tiles.min.y && src_ty < self.scissor_tiles.max.y
                 && src_tx >= self.scissor_tiles.min.x && src_tx < self.scissor_tiles.max.x
+                && !(edge.from.x.min(edge.to.x) > self.culling_rect.max.x + 1.0)
             {
                 // Both endpoints are in this tile so the local coordinates
                 // are the low bits of the fixed-point coordinates.
