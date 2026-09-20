@@ -1,4 +1,6 @@
+use crate::tiler::TILE_SIZE;
 
+/// One byte per tile, indexed in tile coordinates.
 pub struct OcclusionBuffer {
     disabled: bool,
     data: Vec<u8>,
@@ -37,10 +39,11 @@ impl OcclusionBuffer {
         self.data.is_empty()
     } 
 
+    /// Takes the surface size in pixels, rounded up to a whole number of tiles.
     pub fn init(&mut self, w: u32, h: u32) {
         self.disabled = false;
-        let w = w as usize;
-        let h = h as usize;
+        let w = (w as usize + TILE_SIZE as usize - 1) / TILE_SIZE as usize;
+        let h = (h as usize + TILE_SIZE as usize - 1) / TILE_SIZE as usize;
         if self.data.len() < w * h {
             self.data = vec![0; w * h];
         } else {
