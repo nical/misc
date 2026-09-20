@@ -213,6 +213,9 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
             i32(edge_idx % EDGE_TEXTURE_WIDTH),
             i32(edge_idx / EDGE_TEXTURE_WIDTH),
         );
+        // The edge texture holds the two endpoints as tile-local coordinates, one
+        // unorm byte each, with 0 at the tile's origin and 1 at its far side. See
+        // encode_local_coord in tiler.rs.
         var edge = textureLoad(edge_texture, edge_uv, 0) * TILE_SIZE;
 
         edge_idx = edge_idx + 1u;

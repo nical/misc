@@ -21,6 +21,30 @@ const LOCAL_COORD_MASK: i32 = 255;
 const LOCAL_COORD_BITS: i32 = 8;
 const COORD_SCALE: f32 = UNITS_PER_TILE_F32 / TILE_SIZE_F32;
 
+/// Rescale a tile-local coordinate from the tiler's fixed point units into the
+/// range stored in the edge texture.
+///
+/// The tiler works in units of 1/256th of a tile because a power of two lets the
+/// tile and the local coordinates be sliced out of the same fixed point number
+/// with a shift and a mask. The edge texture is rgba8 unorm, so the shader reads
+/// a byte back as `byte / 255`, which means the far side of the tile has to be
+/// stored as 255 rather than 256. The two scales differ by one part in 256, so
+/// leaving the conversion out shifts edges away from the tile's origin by up to
+/// 1/16th of a pixel.
+#[inline]
+fn encode_local_coord(units: i32) -> u8 {
+    debug_assert!(units >= 0 && units <= UNITS_PER_TILE, "{units}");
+    // Rounds to nearest. 256 maps to 255 and 0 maps to 0.
+    ((units * 255 + 128) >> 8) as u8
+}
+
+/// `encode_local_coord` for coordinates that are still in floating point and may
+/// land slightly outside of the tile.
+#[inline]
+fn encode_local_coord_f32(units: f32) -> u8 {
+    encode_local_coord(units.clamp(0.0, UNITS_PER_TILE_F32) as i32)
+}
+
 struct TileUnit;
 type TilePoint = core::geom::euclid::Point2D<u16, TileUnit>;
 
@@ -407,13 +431,14 @@ impl Tiler {
             {
                 // Both endpoints are in this tile so the local coordinates
                 // are the low bits of the fixed-point coordinates.
-                let local_x0 = (from_i32_x & LOCAL_COORD_MASK) as u8;
-                let local_y0 = (from_i32_y & LOCAL_COORD_MASK) as u8;
-                let local_x1 = (to_i32_x & LOCAL_COORD_MASK) as u8;
-                let local_y1 = (to_i32_y & LOCAL_COORD_MASK) as u8;
                 self.events[src_ty as usize % EVENT_BUCKETS].push(Event::edge(
                     src_tx as u16, src_ty as u16,
-                    [local_x0, local_y0, local_x1, local_y1],
+                    [
+                        encode_local_coord(from_i32_x & LOCAL_COORD_MASK),
+                        encode_local_coord(from_i32_y & LOCAL_COORD_MASK),
+                        encode_local_coord(to_i32_x & LOCAL_COORD_MASK),
+                        encode_local_coord(to_i32_y & LOCAL_COORD_MASK),
+                    ],
                 ));
             }
             return;
@@ -516,13 +541,13 @@ impl Tiler {
 
                 if !row_occluded {
                     let offset_y = (ty * UNITS_PER_TILE) as f32;
-                    let local_y0 = ((h_y0 * COORD_SCALE) - offset_y).min(255.0) as u8;
+                    let local_y0 = encode_local_coord_f32((h_y0 * COORD_SCALE) - offset_y);
 
                     if !occluded {
                         let offset_x = (tx * UNITS_PER_TILE) as f32; // TODO: multiply with overflow.
-                        let local_x0 = ((h_x0 * COORD_SCALE) - offset_x).min(255.0) as u8;
-                        let local_x1 = ((h_x1 * COORD_SCALE) - offset_x).min(255.0) as u8;
-                        let local_y1 = ((h_y1 * COORD_SCALE) - offset_y).min(255.0) as u8;
+                        let local_x0 = encode_local_coord_f32((h_x0 * COORD_SCALE) - offset_x);
+                        let local_x1 = encode_local_coord_f32((h_x1 * COORD_SCALE) - offset_x);
+                        let local_y1 = encode_local_coord_f32((h_y1 * COORD_SCALE) - offset_y);
 
                         assert!(tx < self.scissor_tiles.max.x);
                         //println!("   - edge tile {tx} {ty}, step {x_step}, [{h_x0}, {h_y0}, {h_x1}, {h_y1}], offset {offset_x} {offset_y} local {:?}", [local_x0, local_y0, local_x1, local_y1]);
@@ -542,6 +567,9 @@ impl Tiler {
                         let aux_occluded = aux_tx < self.scissor_tiles.min.x || aux_tx >= self.scissor_tiles.max.x;
 
                         if !aux_occluded {
+                            // The auxiliary edge runs along the left side of the tile
+                            // between the crossing and the bottom of the tile. 255 is
+                            // the bottom of the tile, see encode_local_coord.
                             let (y0, y1) = if tx < src_tx {
                                 (local_y0, 255)
                             } else {
@@ -1118,6 +1146,31 @@ impl<'l, T: std::fmt::Debug> Drop for PanicLogger<'l, T> {
 #[test]
 fn size_of() {
     assert_eq!(std::mem::size_of::<TileInstance>(), 16);
+}
+
+#[test]
+fn local_coord_round_trip() {
+    // How tile.wgsl reads a coordinate back out of the rgba8 unorm edge texture.
+    fn decode(byte: u8) -> f32 {
+        byte as f32 / 255.0 * TILE_SIZE_F32
+    }
+
+    // The two sides of the tile are exact.
+    assert_eq!(decode(encode_local_coord(0)), 0.0);
+    assert_eq!(decode(encode_local_coord(UNITS_PER_TILE)), TILE_SIZE_F32);
+
+    // Everything in between lands on the nearest of the 256 positions a byte can
+    // represent, so it is off by at most half of the spacing between them. Before
+    // the rescaling, the error grew with the distance to the tile's origin and
+    // reached a full tiler unit, 1/16th of a pixel.
+    let tiler_unit = TILE_SIZE_F32 / UNITS_PER_TILE_F32;
+    // Half the spacing, plus a little slack: a position exactly halfway between two
+    // representable ones sits right on the bound.
+    let max_error = TILE_SIZE_F32 / 255.0 * 0.5 + 1e-5;
+    for units in 0..=UNITS_PER_TILE {
+        let error = (decode(encode_local_coord(units)) - units as f32 * tiler_unit).abs();
+        assert!(error <= max_error, "{units} units: off by {error} px");
+    }
 }
 /*
 #[test]
