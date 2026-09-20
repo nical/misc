@@ -581,7 +581,7 @@ impl Tiler {
                 continue;
             }
 
-            events.sort_unstable_by_key(|e| e.sort_key);
+            events.sort_unstable();
             // Push a dummy backdrop out of view that will cause the current tile to be flushed
             // at the last iteration without having to replicate the logic out of the loop.
             events.push(Event::backdrop(0, std::u16::MAX, false));
@@ -659,9 +659,9 @@ impl Tiler {
                 }
 
                 if evt.is_edge() {
-                    self.edge_buffer.push(unsafe { std::mem::transmute(evt.payload) });
+                    self.edge_buffer.push(evt.payload());
                 } else {
-                    let winding = if evt.payload == 0 { -1 } else { 1 };
+                    let winding = if evt.payload() == 0 { -1 } else { 1 };
                     backdrop += winding;
                     //println!("   * backdrop {winding:?} -> {backdrop:?}");
                 }
@@ -676,7 +676,7 @@ impl Tiler {
         let mut events = std::mem::take(&mut self.events);
 
         for events in &mut events {
-            events.sort_unstable_by_key(|e| e.sort_key);
+            events.sort_unstable();
             // Push a dummy backdrop out of view that will cause the current tile to be flushed
             // at the last iteration without having to replicate the logic out of the loop.
             events.push(Event::backdrop(0, std::u16::MAX, false));
@@ -748,9 +748,9 @@ impl Tiler {
                 }
 
                 if evt.is_edge() {
-                    self.edge_buffer.push(unsafe { std::mem::transmute(evt.payload) });
+                    self.edge_buffer.push(evt.payload());
                 } else {
-                    let winding = if evt.payload == 0 { -1 } else { 1 };
+                    let winding = if evt.payload() == 0 { -1 } else { 1 };
                     backdrop += winding;
                 }
             }
@@ -895,36 +895,39 @@ impl Scan {
     }
 }
 
-/// A sortable compressed event that encodes either a binned edge or a backdrop update
-#[derive(Copy, Clone, PartialEq, Eq)]
-struct Event {
-    sort_key: u32,
-    payload: u32,
-}
+/// A sortable compressed event that encodes either a binned edge or a backdrop update.
+///
+/// The sort key (tile coordinates and the edge/backdrop flag) lives in the
+/// high 32 bits and the payload in the low 32 bits, so sorting events as
+/// plain integers groups them by tile with backdrops before edges. The
+/// payload takes part in the comparison, which is fine: the relative order
+/// of edges within a tile and of backdrops on the same tile does not matter.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Event(u64);
 
 impl Event {
     fn edge(tx: u16, ty: u16, edge: [u8; 4]) -> Self {
-        Event {
-            sort_key: 1 | ((tx as u32) << 1) | ((ty as u32) << 11),
-            payload: u32::from_ne_bytes(edge),
-        }
+        let key = 1 | ((tx as u64) << 1) | ((ty as u64) << 11);
+        Event((key << 32) | u32::from_ne_bytes(edge) as u64)
     }
 
     fn backdrop(tx: u16, ty: u16, positive: bool) -> Self {
-        Event {
-            sort_key: 0 | ((tx as u32) << 1) | ((ty as u32) << 11),
-            payload: if positive { 1 } else { 0 },
-        }
+        let key = ((tx as u64) << 1) | ((ty as u64) << 11);
+        Event((key << 32) | positive as u64)
     }
 
     fn is_edge(&self) -> bool {
-        self.sort_key & 1 != 0
+        self.0 & (1 << 32) != 0
+    }
+
+    fn payload(&self) -> u32 {
+        self.0 as u32
     }
 
     fn tile(&self) -> TilePoint {
         TilePoint::new(
-            ((self.sort_key >> 1) & 0x3FF) as u16,
-            ((self.sort_key >> 11) & 0x3FF) as u16,
+            ((self.0 >> 33) & 0x3FF) as u16,
+            ((self.0 >> 43) & 0x3FF) as u16,
         )
     }
 }
@@ -953,7 +956,7 @@ fn event() {
     assert_eq!(b1.tile().to_tuple(), (1, 3));
     assert_eq!(b2.tile().to_tuple(), (2, 3));
     let mut v = vec![e3, e2, e1, b2, b1];
-    v.sort_unstable_by_key(|e| e.sort_key);
+    v.sort_unstable();
     assert_eq!(v, vec![b1, e1, b2, e2, e3]);
 }
 
