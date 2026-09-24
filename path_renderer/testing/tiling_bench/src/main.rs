@@ -182,6 +182,7 @@ fn run_svg(filename: &str, options: &Options) {
             mask_tiles: output.mask_tiles.len() as u32,
             edge_bytes: output.edges.pushed_bytes(),
             path_bytes: output.paths.pushed_bytes(),
+            mask_tile_hash: hash_tiles(&output.mask_tiles),
         };
         mask_tiles_scratch = std::mem::take(&mut output.mask_tiles);
         occlusion_scratch = std::mem::replace(&mut output.occlusion, OcclusionBuffer::disabled());
@@ -205,6 +206,19 @@ struct FrameStats {
     mask_tiles: u32,
     edge_bytes: u32,
     path_bytes: u32,
+    mask_tile_hash: u64,
+}
+
+// FNV-1a over the encoded mask tiles, to check that an optimization does
+// not change the output. Covers positions, backdrops and edge ranges, but
+// not the order of the edges within a tile.
+fn hash_tiles(tiles: &[EncodedTileInstance]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for word in tiles.iter().flatten() {
+        hash ^= *word as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn report(frame_times: &[Duration], stats: &FrameStats) {
@@ -216,8 +230,8 @@ fn report(frame_times: &[Duration], stats: &FrameStats) {
     let median = sorted[sorted.len() / 2];
     let p95 = sorted[p95_idx(sorted.len())];
 
-    println!("  tiles: {} opaque, {} masked; edges: {} bytes; paths: {} bytes",
-        stats.opaque_tiles, stats.mask_tiles, stats.edge_bytes, stats.path_bytes);
+    println!("  tiles: {} opaque, {} masked; edges: {} bytes; paths: {} bytes; mask tile hash {:016x}",
+        stats.opaque_tiles, stats.mask_tiles, stats.edge_bytes, stats.path_bytes, stats.mask_tile_hash);
     println!(
         "  frame cpu time (ms): min {:.3}  avg {:.3}  median {:.3}  p95 {:.3}  max {:.3}",
         ms(sorted[0]), ms(avg), ms(median), ms(p95), ms(*sorted.last().unwrap()),
