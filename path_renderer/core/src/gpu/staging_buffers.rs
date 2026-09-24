@@ -166,7 +166,7 @@ impl StagingBufferPool {
         let mut offset = self.current_chunks_offset;
         self.current_chunks_offset = offset + size;
 
-        if self.current_chunks_offset >= self.current_chunks.size {
+        if self.current_chunks_offset > self.current_chunks.size {
             self.current_chunks = self.get_mapped_staging_buffer();
             self.current_chunks_offset = size;
             offset = 0;
