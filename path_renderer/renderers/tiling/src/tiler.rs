@@ -69,6 +69,9 @@ pub struct Tiler {
     culling_rect: SurfaceRect,
     scissor_tiles: Box2D<i32>,
     edge_buffer: Vec<EncodedEdge>,
+    // Scratch space for sort_events.
+    sort_buffer: Vec<Event>,
+    sort_counts: Vec<u32>,
     // Whether segments of the current path can lie outside the culling
     // rect. False when the path's bounding rect is fully inside, which
     // lets the binning skip its per-segment culling tests.
@@ -108,6 +111,8 @@ impl Tiler {
                 max: point(0, 0),
             },
             edge_buffer: Vec::with_capacity(32),
+            sort_buffer: Vec::new(),
+            sort_counts: Vec::new(),
             cull_segments: true,
         }
     }
@@ -631,12 +636,13 @@ impl Tiler {
 
         profiling::scope!("Tiler::generate_tiles");
 
-        for events in &mut self.events {
+        for bucket in 0..EVENT_BUCKETS {
+            let events = &mut self.events[bucket];
             if events.is_empty() {
                 continue;
             }
 
-            events.sort_unstable();
+            sort_events(events, &mut self.sort_buffer, &mut self.sort_counts);
             // Push a dummy backdrop out of view that will cause the current tile to be flushed
             // at the last iteration without having to replicate the logic out of the loop.
             events.push(Event::backdrop(0, std::u16::MAX, false));
@@ -940,6 +946,73 @@ impl Tiler {
     }
 }
 
+/// Sort events by tile, with backdrops before edges within a tile.
+///
+/// Paths usually touch few tiles compared to their number of events, so
+/// when the tile bounds of the events are small this does a counting sort
+/// over the tiles of that rectangle instead of a comparison sort. Events
+/// that share a tile and a type keep their relative order.
+fn sort_events(events: &mut Vec<Event>, scratch: &mut Vec<Event>, counts: &mut Vec<u32>) {
+    let mut min_x = u32::MAX;
+    let mut max_x = 0;
+    let mut min_y = u32::MAX;
+    let mut max_y = 0;
+    for evt in events.iter() {
+        let key = (evt.0 >> 33) as u32;
+        let x = key & 0x3FF;
+        let y = key >> 10;
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+
+    let w = max_x - min_x + 1;
+    let h = max_y - min_y + 1;
+    // Two buckets per tile: backdrops, then edges.
+    let num_buckets = (w * h * 2) as usize;
+    if num_buckets > events.len() * 4 + 128 {
+        events.sort_unstable();
+        return;
+    }
+
+    let bucket = |evt: &Event| -> usize {
+        let key = (evt.0 >> 32) as u32;
+        let x = (key >> 1) & 0x3FF;
+        let y = key >> 11;
+        (((y - min_y) * w + (x - min_x)) * 2 + (key & 1)) as usize
+    };
+
+    counts.clear();
+    counts.resize(num_buckets, 0);
+    for evt in events.iter() {
+        counts[bucket(evt)] += 1;
+    }
+
+    let mut offset = 0;
+    for count in counts.iter_mut() {
+        let n = *count;
+        *count = offset;
+        offset += n;
+    }
+
+    scratch.clear();
+    scratch.reserve(events.len());
+    unsafe {
+        let dst = scratch.as_mut_ptr();
+        for evt in events.iter() {
+            let idx = &mut counts[bucket(evt)];
+            // The offsets are a prefix sum of the counts, so every index
+            // is in 0..events.len().
+            dst.add(*idx as usize).write(*evt);
+            *idx += 1;
+        }
+        scratch.set_len(events.len());
+    }
+
+    std::mem::swap(events, scratch);
+}
+
 struct Scan {
     is_opaque: bool,
 }
@@ -1013,6 +1086,45 @@ fn event() {
     let mut v = vec![e3, e2, e1, b2, b1];
     v.sort_unstable();
     assert_eq!(v, vec![b1, e1, b2, e2, e3]);
+}
+
+#[test]
+fn sort_events_matches_sort_unstable() {
+    // Small xorshift so that the test doesn't need a dependency.
+    let mut seed: u32 = 0x9E3779B9;
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+
+    let mut scratch = Vec::new();
+    let mut counts = Vec::new();
+    // Tile ranges small enough for the counting sort and large enough for
+    // the fallback.
+    for (range_x, range_y, len) in [(1, 1, 10), (3, 2, 30), (5, 5, 200), (40, 30, 20), (1000, 1000, 50)] {
+        let mut events = Vec::new();
+        for _ in 0..len {
+            let x = (100 + rand() % range_x) as u16 & 0x3FF;
+            let y = (50 + rand() % range_y) as u16 & 0x3FF;
+            events.push(if rand() % 4 == 0 {
+                Event::backdrop(x, y, rand() % 2 == 0)
+            } else {
+                Event::edge(x, y, rand().to_ne_bytes())
+            });
+        }
+
+        let mut expected = events.clone();
+        expected.sort_unstable();
+        sort_events(&mut events, &mut scratch, &mut counts);
+
+        // Only the order of the keys is guaranteed.
+        let keys = |v: &[Event]| v.iter().map(|e| e.0 >> 32).collect::<Vec<_>>();
+        assert_eq!(keys(&events), keys(&expected));
+        events.sort_unstable();
+        assert_eq!(events, expected);
+    }
 }
 
 pub struct TilerOutput<'l> {
