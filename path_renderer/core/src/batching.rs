@@ -66,6 +66,9 @@ struct Batch {
     scissor: Option<IntRect>,
 }
 
+/// The maximum number of item rects tracked per batch for intersection tests.
+const MAX_BATCH_ITEM_RECTS: usize = 64;
+
 struct BatchRects {
     batch: Rect,
     items: Vec<Rect>,
@@ -82,9 +85,18 @@ impl BatchRects {
     fn add_rect(&mut self, rect: &Rect) {
         let union = self.batch.union(rect);
 
-        if !self.items.is_empty() {
+        if self.items.len() >= MAX_BATCH_ITEM_RECTS {
+            // Past the limit, grow the last rect instead of adding one, so
+            // that intersection tests stay cheap. Items tend to be added in
+            // spatially coherent order, so this loses little precision.
+            let last = self.items.last_mut().unwrap();
+            *last = last.union(rect);
+        } else if !self.items.is_empty() {
             self.items.push(*rect);
-        } else if self.batch.area() + rect.area() > union.area() {
+        } else if self.batch.area() + rect.area() < union.area() {
+            // The batch's bounding rect would cover a lot of space that its
+            // items don't, making intersection tests overly conservative.
+            // Start tracking the items individually.
             self.items.reserve(16);
             self.items.push(self.batch);
             self.items.push(*rect);
@@ -622,5 +634,111 @@ impl<T, I> BatchList<T, I> {
             batches: std::mem::take(&mut self.batches),
             renderer: self.renderer,
         }
+    }
+}
+
+#[cfg(test)]
+fn test_scenarios(n: usize) -> Vec<(&'static str, Vec<(BatchKey, Rect)>)> {
+    use crate::units::point;
+    let r = |x: f32, y: f32, w: f32, h: f32| Rect { min: point(x, y), max: point(x + w, y + h) };
+
+    let mut scenarios = Vec::new();
+    // Image gallery: 8 columns of cards, an image and a caption per card.
+    let mut gallery = Vec::new();
+    for i in 0..n {
+        let (col, row) = ((i % 8) as f32, (i / 8) as f32);
+        gallery.push((0, r(col * 200.0, row * 250.0, 180.0, 180.0)));
+        gallery.push((1, r(col * 200.0, row * 250.0 + 190.0, 180.0, 40.0)));
+    }
+    scenarios.push(("gallery", gallery));
+    // List rows: a background, an icon and a label on top of it.
+    let mut list = Vec::new();
+    for i in 0..n {
+        let y = i as f32 * 30.0;
+        list.push((0, r(0.0, y, 1000.0, 28.0)));
+        list.push((1, r(4.0, y + 4.0, 20.0, 20.0)));
+        list.push((2, r(30.0, y + 6.0, 300.0, 16.0)));
+    }
+    scenarios.push(("list", list));
+    // Scattered overlapping squares with 3 batch keys.
+    let mut scatter = Vec::new();
+    let mut seed = 12345u32;
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for _ in 0..(n * 2) {
+        let x = (rand() % 1900) as f32;
+        let y = (rand() % (n as u32 * 5)) as f32;
+        let s = 10.0 + (rand() % 80) as f32;
+        scatter.push(((rand() % 3) as BatchKey, r(x, y, s, s)));
+    }
+    scenarios.push(("scatter", scatter));
+
+    scenarios
+}
+
+/// Assigns each item to a batch, like a renderer would. Batches are drawn
+/// in the order of their index.
+#[cfg(test)]
+fn run_batcher(items: &[(BatchKey, Rect)]) -> Vec<BatchIndex> {
+    use crate::units::point;
+    let task = RenderTask {
+        bounds: Rect { min: point(0.0, 0.0), max: point(1e6, 1e6) },
+        target_rect: IntRect { min: SurfaceIntPoint::new(0, 0), max: SurfaceIntPoint::new(1_000_000, 1_000_000) },
+        offset: SurfaceVector::new(0.0, 0.0),
+        gpu_address: RenderTaskAdress::NONE,
+    };
+    let mut batcher = Batcher::new();
+    batcher.begin(&task);
+    batcher.set_render_task(&task);
+
+    let mut next = 0;
+    items.iter().map(|(key, rect)| {
+        let idx = batcher.find_or_add_batch(0, next, key, rect, BatchFlags::empty());
+        if idx == next {
+            next += 1;
+        }
+        idx
+    }).collect()
+}
+
+#[test]
+fn batching_respects_paint_order() {
+    for (name, items) in test_scenarios(300) {
+        let batches = run_batcher(&items);
+        // An item painted later must not end up below an overlapping item
+        // painted earlier, which happens if it is placed in an earlier batch.
+        for j in 0..items.len() {
+            for i in 0..j {
+                if batches[i] > batches[j] {
+                    assert!(
+                        !items[i].1.intersects(&items[j].1),
+                        "{name}: item {j} in batch {} is drawn below overlapping item {i} in batch {}",
+                        batches[j], batches[i],
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn batching_scenarios() {
+    // Timing and batch counts, run with:
+    // cargo test --release -p core batching_scenarios -- --ignored --nocapture
+    for (name, items) in test_scenarios(4000) {
+        let mut best = f64::MAX;
+        let mut num_batches = 0;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            let batches = run_batcher(&items);
+            best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+            num_batches = batches.iter().max().map_or(0, |b| b + 1);
+        }
+        println!("{name}: {} items, {num_batches} batches, {best:.3} ms", items.len());
     }
 }
