@@ -472,6 +472,10 @@ impl Tiler {
             }
         }
 
+        if self.tile_segment_one_crossing(edge, src_tx, src_ty, dst_tx, dst_ty, min_x, max_x) {
+            return;
+        }
+
         let scissor_min_tx = self.scissor_tiles.min.x;
         let scissor_min_ty = self.scissor_tiles.min.y;
         let scissor_max_tx = self.scissor_tiles.max.x - 1;
@@ -617,6 +621,121 @@ impl Tiler {
             }
             ty += y_step;
         }
+    }
+
+    /// Bin a segment that crosses exactly one tile boundary, between two
+    /// visible tiles. Returns false without doing anything for other
+    /// segments.
+    ///
+    /// Most segments that don't fit in a single tile are in this case. It
+    /// produces the same events as the general walk in `tile_segment`,
+    /// using the same arithmetic, without the loops and most of the
+    /// bookkeeping.
+    #[inline]
+    fn tile_segment_one_crossing(
+        &mut self,
+        edge: &LineSegment<f32>,
+        src_tx: i32, src_ty: i32,
+        dst_tx: i32, dst_ty: i32,
+        min_x: f32, max_x: f32,
+    ) -> bool {
+        let tiles = &self.scissor_tiles;
+        let visible_x = |tx: i32| tx >= tiles.min.x && tx < tiles.max.x;
+        let visible_y = |ty: i32| ty >= tiles.min.y && ty < tiles.max.y;
+
+        let from = edge.from;
+        let to = edge.to;
+
+        if src_ty == dst_ty {
+            // Crossing a vertical tile boundary.
+            let x_step = dst_tx - src_tx;
+            if (x_step != 1 && x_step != -1)
+                || !visible_y(src_ty) || !visible_x(src_tx) || !visible_x(dst_tx)
+            {
+                return false;
+            }
+
+            let dx_dy = (to.x - from.x) / (to.y - from.y);
+            let dy_dx = 1.0 / dx_dy;
+            let ty = src_ty;
+            let offset_y = (ty * UNITS_PER_TILE) as f32;
+
+            // The crossing point.
+            let cx = (src_tx + x_step.max(0)) as f32 * TILE_SIZE_F32;
+            let cy = from.y + dy_dx * (cx - from.x);
+            let local_cy = encode_local_coord_f32(cy * COORD_SCALE - offset_y);
+
+            let offset_x = (src_tx * UNITS_PER_TILE) as f32;
+            let events = &mut self.events[0];
+            events.push(Event::edge(src_tx as u16, ty as u16, [
+                encode_local_coord_f32(from.x * COORD_SCALE - offset_x),
+                encode_local_coord_f32(from.y * COORD_SCALE - offset_y),
+                encode_local_coord_f32(cx * COORD_SCALE - offset_x),
+                local_cy,
+            ]));
+
+            let offset_x = (dst_tx * UNITS_PER_TILE) as f32;
+            events.push(Event::edge(dst_tx as u16, ty as u16, [
+                encode_local_coord_f32(cx * COORD_SCALE - offset_x),
+                local_cy,
+                encode_local_coord_f32(to.x * COORD_SCALE - offset_x),
+                encode_local_coord_f32(to.y * COORD_SCALE - offset_y),
+            ]));
+
+            // The auxiliary edge along the left side of the tile on the
+            // right of the boundary, see the general case.
+            let (y0, y1) = if dst_tx < src_tx { (local_cy, 255) } else { (255, local_cy) };
+            events.push(Event::edge(dst_tx.max(src_tx) as u16, ty as u16, [0, y0, 0, y1]));
+
+            return true;
+        }
+
+        if src_tx == dst_tx {
+            // Crossing a horizontal tile boundary.
+            let y_step = dst_ty - src_ty;
+            if (y_step != 1 && y_step != -1)
+                || !visible_x(src_tx) || !visible_y(src_ty) || !visible_y(dst_ty)
+            {
+                return false;
+            }
+
+            let dx_dy = (to.x - from.x) / (to.y - from.y);
+            let tx = src_tx;
+            let offset_x = (tx * UNITS_PER_TILE) as f32;
+
+            // The crossing point.
+            let cy = (src_ty + y_step.max(0)) as f32 * TILE_SIZE_F32;
+            let cx = (from.x + dx_dy * (cy - from.y)).max(min_x).min(max_x);
+            let local_cx = encode_local_coord_f32(cx * COORD_SCALE - offset_x);
+
+            let offset_y = (src_ty * UNITS_PER_TILE) as f32;
+            let events = &mut self.events[0];
+            events.push(Event::edge(tx as u16, src_ty as u16, [
+                encode_local_coord_f32(from.x * COORD_SCALE - offset_x),
+                encode_local_coord_f32(from.y * COORD_SCALE - offset_y),
+                local_cx,
+                encode_local_coord_f32(cy * COORD_SCALE - offset_y),
+            ]));
+
+            // The backdrop goes on the lower of the two rows.
+            let positive = y_step > 0;
+            let row = src_ty.max(dst_ty);
+            if tx + 1 < tiles.max.x {
+                events.push(Event::backdrop((tx + 1).max(tiles.min.x) as u16, row as u16, positive));
+            }
+
+            let offset_y = (dst_ty * UNITS_PER_TILE) as f32;
+            events.push(Event::edge(tx as u16, dst_ty as u16, [
+                local_cx,
+                encode_local_coord_f32(cy * COORD_SCALE - offset_y),
+                encode_local_coord_f32(to.x * COORD_SCALE - offset_x),
+                encode_local_coord_f32(to.y * COORD_SCALE - offset_y),
+            ]));
+
+            return true;
+        }
+
+        false
     }
 
     fn tile_for_position(&mut self, pos: Point) -> (i32, i32) {
