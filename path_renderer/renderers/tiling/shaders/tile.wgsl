@@ -178,11 +178,6 @@ fn resolve_mask(winding_number: f32, fill_rule: u32) -> f32 {
         mask = non_zero(winding_number);
     }
 
-    // Invert mode.
-    if ((fill_rule & 2u) != 0u) {
-        mask = 1.0 - mask;
-    }
-
     return mask;
 }
 
@@ -376,6 +371,11 @@ fn geometry_fragment(uv: vec2f, edges: vec2u, backdrop: i32, fill_rule: u32, opa
         mask *= 0.125;
     } #else {
         var mask = resolve_mask(winding_number, fill_rule);
+    }
+
+    // Invert mode.
+    if ((fill_rule & 2u) != 0u) {
+        mask = 1.0 - mask;
     }
 
     // Debug: uncomment to see the grid in alpha tiles.
