@@ -239,6 +239,7 @@ fn normal(v: Vector) -> Vector {
 }
 
 pub mod offset {
+    use core::geom::arrayvec::ArrayVec;
     use core::geom::euclid;
     use core::geom::{point, vector, QuadraticBezierSegment, Scalar, Vector};
 
@@ -252,36 +253,68 @@ pub mod offset {
     {
         let tolerance = tolerance.max(S::value(0.001));
 
+        let mut splits: ArrayVec<S, 5> = ArrayVec::new();
         let (t1, t2) = critical_points(curve, dist);
+        splits.extend(t1);
+        splits.extend(t2);
+        splits.extend(turn_splits(curve));
+        splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         let mut t0 = S::ZERO;
-        if let Some(t1) = t1 {
-            for_each_offset_inner(curve, t0..t1, dist, tolerance, cb);
-            t0 = t1;
+        for t1 in splits.into_iter().chain(Some(S::ONE)) {
+            if t1 > t0 {
+                for_each_offset_inner(curve, t0..t1, dist, tolerance, cb);
+                t0 = t1;
+            }
         }
-
-        if let Some(t2) = t2 {
-            for_each_offset_inner(curve, t0..t2, dist, tolerance, cb);
-            t0 = t2;
-        }
-
-        for_each_offset_inner(curve, t0..S::ONE, dist, tolerance, cb);
-        /*
-                if let Some(t) = find_sharp_turn(curve) {
-                    let t0 = t * S::value(0.8);
-                    let t1 = t + (S::ONE - t) * S::value(0.8);
-                    for range in [S::ZERO..t0, t0..t, t..t1, t1..S::ONE] {
-                        let sub_curve = curve.split_range(range);
-                        for_each_offset_inner(&sub_curve, dist, tolerance, cb);
-                    }
-                } else {
-                    for_each_offset_inner(curve, dist, tolerance, cb);
-                }
-        */
     }
 
     fn normal<S: Scalar>(v: Vector<S>) -> Vector<S> {
         Vector::new(-v.y, v.x)
+    }
+
+    /// Maximum angle that the tangent of the curve turns by over each of the
+    /// ranges passed to for_each_offset_inner.
+    ///
+    /// for_each_offset_inner places the control point of each offset sub-curve
+    /// at dist / cos(turn / 2) from the curve, which grows without bound as the
+    /// turn gets close to 180 degrees. Bounding the turn also bounds the error of
+    /// the sub-curves that are accepted without meeting the tolerance (see
+    /// min_step): a quadratic bézier curve approximates a 45 degree arc within
+    /// 0.3% of its radius.
+    const MAX_TURN: f32 = std::f32::consts::FRAC_PI_4;
+
+    /// Parameters that split the curve into parts that turn by at most MAX_TURN.
+    fn turn_splits<S: Scalar>(curve: &QuadraticBezierSegment<S>) -> ArrayVec<S, 3> {
+        let mut splits = ArrayVec::new();
+
+        // The derivative is 2 (p + t q).
+        let p = curve.ctrl - curve.from;
+        let q = curve.from.to_vector() - curve.ctrl.to_vector() * S::TWO + curve.to.to_vector();
+        let p_end = p + q;
+        // Less than 180 degrees.
+        let turn = S::atan2(p.cross(p_end), p.dot(p_end));
+        let max_turn = S::value(MAX_TURN);
+        let count = (turn.abs() / max_turn).ceil();
+        if !(count > S::ONE) {
+            return splits;
+        }
+
+        let p_unit = p.normalize();
+        let mut i = S::ONE;
+        while i < count {
+            // Solve cross(p + t q, direction) = 0.
+            let angle = turn * i / count;
+            let (sin, cos) = euclid::Angle::radians(angle).sin_cos();
+            let direction = p_unit * cos + normal(p_unit) * sin;
+            let t = -p.cross(direction) / q.cross(direction);
+            if t > S::ZERO && t < S::ONE {
+                splits.push(t);
+            }
+            i = i + S::ONE;
+        }
+
+        splits
     }
 
     fn for_each_offset_inner<S: Scalar, F>(
@@ -320,6 +353,7 @@ pub mod offset {
             let v1 = tangent(range.end);
             let n1 = normal(v1);
             let n = normal((v0 + v1).normalize());
+            // At least cos(MAX_TURN / 2).
             let inv_len = n.dot(n1);
             if !(inv_len > S::ZERO) || !from.is_finite() {
                 // The derivative of the curve vanishes, which only happens for
