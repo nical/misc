@@ -919,6 +919,8 @@ pub struct OffsetBuilder<'l> {
     simplify_inner_joins: bool,
     skip_begin: bool,
     skip_end: bool,
+    /// Treat open sub-paths that end at their start point as closed.
+    close_if_end_at_start: bool,
     is_first_segment: bool,
     join: JoinBuilder,
 }
@@ -941,6 +943,7 @@ impl<'l> OffsetBuilder<'l> {
             is_first_segment: true,
             skip_begin: false,
             skip_end: false,
+            close_if_end_at_start: true,
             join: match options.join {
                 LineJoin::Bevel => bevel_join,
                 LineJoin::Miter => miter_join,
@@ -965,7 +968,7 @@ impl<'l> OffsetBuilder<'l> {
 
         let end_at_start = (self.prev_endpoint - self.first_endpoint).square_length()
             <= self.tolerance * self.tolerance;
-        let close = close || end_at_start;
+        let close = close || (self.close_if_end_at_start && end_at_start);
 
         if close {
             // Add the join between last and first segment.
@@ -1195,6 +1198,9 @@ impl<'l> StrokeToFillBuilder<'l> {
 
         let mut offset = OffsetBuilder::new(output, &offset_options);
         offset.skip_end = true;
+        // Open sub-paths get caps even if they end at their start point, and
+        // end() relies on the offsetter closing exactly when the caller asks.
+        offset.close_if_end_at_start = false;
 
         StrokeToFillBuilder {
             offsetter: offset,
@@ -1399,4 +1405,64 @@ fn deriv_dot_deriv2_1d(from: f32, ctrl1: f32, ctrl2: f32, to: f32) -> [f32; 4] {
     let c = to + 3.0 * (ctrl1 - ctrl2) - from;
 
     [c * c, 3.0 * b * c, 2.0 * b * b + c * a, a * b]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::units::point;
+
+    fn stroke_polyline(points: &[Point], close: bool, options: &StrokeOptions) -> Path {
+        let mut builder = Path::builder();
+        {
+            let mut stroker = StrokeToFillBuilder::new(&mut builder, options);
+            stroker.begin(points[0]);
+            for p in &points[1..] {
+                stroker.line_to(*p);
+            }
+            stroker.end(close);
+        }
+        builder.build()
+    }
+
+    #[test]
+    fn open_sub_path_ending_at_start() {
+        let options = StrokeOptions::line_with(10.0).with_line_cap(LineCap::Square);
+        let triangle = [
+            point(0.0, 0.0),
+            point(100.0, 0.0),
+            point(100.0, 100.0),
+            point(0.0, 0.0),
+        ];
+        let hairpin = [point(0.0, 0.0), point(100.0, 0.0), point(0.0, 0.0)];
+
+        for points in [&triangle[..], &hairpin[..]] {
+            let path = stroke_polyline(points, false, &options);
+
+            // A single contour that goes out and back, with a cap at each end.
+            let mut begins = 0;
+            let mut ends = 0;
+            for event in path.iter() {
+                match event {
+                    PathEvent::Begin { .. } => begins += 1,
+                    PathEvent::End { close, .. } => {
+                        assert!(close);
+                        ends += 1;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!((begins, ends), (1, 1));
+
+            // The square cap at the start point extends behind it.
+            let min_x = path
+                .iter()
+                .filter_map(|event| match event {
+                    PathEvent::Line { to, .. } => Some(to.x),
+                    _ => None,
+                })
+                .fold(f32::MAX, f32::min);
+            assert!(min_x < -4.9, "min_x = {min_x}");
+        }
+    }
 }
