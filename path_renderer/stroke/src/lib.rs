@@ -1268,23 +1268,27 @@ impl<'l> OffsetBuilder<'l> {
             return;
         }
 
-        let cusps = find_cubic_bezier_cusps(&curve);
-        //println!("-----");
+        // Leave a small gap around the cusps, where the tangent is undefined. The
+        // sub-curves on each side are connected with a join.
+        let cusps = find_cubic_bezier_cusps(&curve, self.tolerance);
         let mut t0 = 0.0;
         let eps = 0.0001;
         for cusp in cusps {
-            //println!("cusp at {:?}", cusp);
-            let sub_curve = curve.split_range(t0..(cusp - eps));
-            sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
-                self.quadratic_bezier_to(quad.ctrl, quad.to);
-            });
+            if cusp - eps > t0 {
+                let sub_curve = curve.split_range(t0..(cusp - eps));
+                sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
+                    self.quadratic_bezier_to(quad.ctrl, quad.to);
+                });
+            }
             t0 = cusp + eps;
         }
 
-        let sub_curve = curve.split_range(t0..1.0);
-        sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
-            self.quadratic_bezier_to(quad.ctrl, quad.to)
-        });
+        if t0 < 1.0 {
+            let sub_curve = curve.split_range(t0..1.0);
+            sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
+                self.quadratic_bezier_to(quad.ctrl, quad.to)
+            });
+        }
     }
 
     fn step_without_join(&mut self, segment: &Seg) {
@@ -1655,40 +1659,36 @@ fn cubic_bezier_turnarounds(curve: &CubicBezierSegment<f32>) -> ArrayVec<f32, 3>
     turnarounds
 }
 
-fn find_cubic_bezier_cusps(curve: &CubicBezierSegment<f32>) -> ArrayVec<f32, 4> {
+/// Parameters, in increasing order, at which a cubic bézier curve has a cusp,
+/// or turns so tightly that it is indistinguishable from one at this tolerance.
+fn find_cubic_bezier_cusps(curve: &CubicBezierSegment<f32>, tolerance: f32) -> ArrayVec<f32, 3> {
     let mut cusps = ArrayVec::new();
 
-    let x_deriv = deriv_dot_deriv2_1d(curve.from.x, curve.ctrl1.x, curve.ctrl2.x, curve.to.x);
-    let y_deriv = deriv_dot_deriv2_1d(curve.from.x, curve.ctrl1.x, curve.ctrl2.x, curve.to.x);
+    // F' = 3 (a + 2 b t + c t²) and F'' = 6 (b + c t).
+    let a = curve.ctrl1 - curve.from;
+    let b = curve.ctrl2.to_vector() - curve.ctrl1.to_vector() * 2.0 + curve.from.to_vector();
+    let c = curve.to.to_vector() + (curve.ctrl1 - curve.ctrl2) * 3.0 - curve.from.to_vector();
 
-    let a = x_deriv[0] + y_deriv[0];
-    let b = x_deriv[1] + y_deriv[1];
-    let c = x_deriv[2] + y_deriv[2];
-    let d = x_deriv[3] + y_deriv[3];
+    // The speed |F'| has its extrema where F'.F'' = 0, and cusps are among them.
+    // F'.F'' / 18 = c.c t³ + 3 b.c t² + (2 b.b + a.c) t + a.b
+    let roots = cubic_polynomial_roots(c.dot(c), 3.0 * b.dot(c), 2.0 * b.dot(b) + a.dot(c), a.dot(b));
+    for t in roots {
+        if !(t > 0.0 && t < 1.0) {
+            continue;
+        }
 
-    for root in cubic_polynomial_roots(a, b, c, d) {
-        if root > 0.0 && root < 1.0 {
-            cusps.push(root);
+        // F' and F'' are orthogonal at the extrema of the speed, so the radius
+        // of curvature there is |F'|² / |F''|.
+        let d1 = (a + b * (2.0 * t) + c * (t * t)) * 3.0;
+        let d2 = (b + c * t) * 6.0;
+        if d1.square_length() <= tolerance * d2.length() {
+            cusps.push(t);
         }
     }
 
-    cusps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    cusps.sort_by(|a, b| a.total_cmp(b));
 
     cusps
-}
-
-// Compute F' dot F''
-//
-// F' = 3ct^2 + 6bt + 3a
-// F'' = 6ct + 6b
-//
-// F' dot F'' = cct^3 + 3bct^2 + (2bb + ca)t + ab
-fn deriv_dot_deriv2_1d(from: f32, ctrl1: f32, ctrl2: f32, to: f32) -> [f32; 4] {
-    let a = ctrl1 - from;
-    let b = ctrl2 - 2.0 * ctrl1 + from;
-    let c = to + 3.0 * (ctrl1 - ctrl2) - from;
-
-    [c * c, 3.0 * b * c, 2.0 * b * b + c * a, a * b]
 }
 
 #[cfg(test)]
@@ -1973,5 +1973,49 @@ mod tests {
             }
             check(builder.build(), &|t| curve.sample(t));
         }
+    }
+
+    fn cubic(points: [(f32, f32); 4]) -> CubicBezierSegment<f32> {
+        let [from, ctrl1, ctrl2, to] = points.map(|(x, y)| point(x, y));
+        CubicBezierSegment { from, ctrl1, ctrl2, to }
+    }
+
+    #[test]
+    fn cubic_bezier_cusps() {
+        let tolerance = 0.25;
+        let cusp = cubic([(0.0, 0.0), (100.0, 100.0), (0.0, 100.0), (100.0, 0.0)]);
+        let cusps = find_cubic_bezier_cusps(&cusp, tolerance);
+        assert_eq!(cusps.len(), 1);
+        assert!((cusps[0] - 0.5).abs() < 1e-5, "{cusps:?}");
+
+        // The speed of these curves has extrema, but no cusps.
+        let arch = cubic([(0.0, 0.0), (0.0, 100.0), (100.0, 100.0), (100.0, 0.0)]);
+        let s_curve = cubic([(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
+        let with_loop = cubic([(0.0, 0.0), (150.0, 100.0), (-50.0, 100.0), (100.0, 0.0)]);
+        for curve in [arch, s_curve, with_loop] {
+            assert!(find_cubic_bezier_cusps(&curve, tolerance).is_empty(), "{curve:?}");
+        }
+
+        // Moving a control point of the cusp rounds its tip, with a radius of
+        // curvature of 0.093 and 0.37 respectively.
+        let tight = cubic([(0.0, 0.0), (100.0, 100.0), (10.0, 100.0), (100.0, 0.0)]);
+        let round = cubic([(0.0, 0.0), (100.0, 100.0), (20.0, 100.0), (100.0, 0.0)]);
+        assert_eq!(find_cubic_bezier_cusps(&tight, tolerance).len(), 1);
+        assert!(find_cubic_bezier_cusps(&tight, 0.05).is_empty());
+        assert!(find_cubic_bezier_cusps(&round, tolerance).is_empty());
+
+        // The stroke gets a round join at the cusp, whose tip is at y = 75.
+        let options = StrokeOptions::line_with(20.0)
+            .with_line_join(LineJoin::Round)
+            .with_line_cap(LineCap::Butt);
+        let mut builder = Path::builder();
+        {
+            let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);
+            stroker.begin(cusp.from);
+            stroker.cubic_bezier_to(cusp.ctrl1, cusp.ctrl2, cusp.to);
+            stroker.end(false);
+        }
+        let max_y = extent(&builder.build(), Vector::new(0.0, 1.0));
+        assert!((max_y - 85.0).abs() < 0.01, "{max_y}");
     }
 }
