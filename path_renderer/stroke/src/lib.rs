@@ -971,12 +971,20 @@ impl<'l> OffsetBuilder<'l> {
         let close = close || (self.close_if_end_at_start && end_at_start);
 
         if close {
-            // Add the join between last and first segment.
             self.line_to(self.first_endpoint);
+
+            // Add the join between the last and first segments by stepping into
+            // a stand-in for the first segment. It bypasses line_to so that it is
+            // never discarded for being shorter than the tolerance.
+            let d = normal(self.first_tangent) * self.offset;
+            let mut first = Seg::Line(LineSegment {
+                from: self.first_endpoint + d,
+                to: self.first_endpoint + self.first_tangent + d,
+            });
 
             let simplify = self.simplify_inner_joins;
             self.simplify_inner_joins = false;
-            self.line_to(self.first_endpoint + self.first_tangent);
+            self.step(&mut first, self.first_tangent);
             self.simplify_inner_joins = simplify;
 
             self.output.end(true);
@@ -1425,6 +1433,24 @@ mod tests {
         builder.build()
     }
 
+    /// Absolute area of each contour. Only supports line segments.
+    fn contour_areas(path: &Path) -> Vec<f32> {
+        let mut areas = Vec::new();
+        let mut area = 0.0;
+        for event in path.iter() {
+            match event {
+                PathEvent::Begin { .. } => area = 0.0,
+                PathEvent::Line { from, to } => area += from.to_vector().cross(to.to_vector()),
+                PathEvent::End { last, first, .. } => {
+                    area += last.to_vector().cross(first.to_vector());
+                    areas.push(area.abs() * 0.5);
+                }
+                _ => panic!("unexpected curve"),
+            }
+        }
+        areas
+    }
+
     #[test]
     fn open_sub_path_ending_at_start() {
         let options = StrokeOptions::line_with(10.0).with_line_cap(LineCap::Square);
@@ -1463,6 +1489,30 @@ mod tests {
                 })
                 .fold(f32::MAX, f32::min);
             assert!(min_x < -4.9, "min_x = {min_x}");
+        }
+    }
+
+    #[test]
+    fn closed_sub_path_with_coarse_tolerance() {
+        let square = [
+            point(0.0, 0.0),
+            point(100.0, 0.0),
+            point(100.0, 100.0),
+            point(0.0, 100.0),
+        ];
+
+        for tolerance in [0.25, 1.5] {
+            let options = StrokeOptions::line_with(10.0)
+                .with_line_join(LineJoin::Miter)
+                .with_tolerance(tolerance);
+            let path = stroke_polyline(&square, true, &options);
+
+            // The outer contour has miter corners, the inner one a small fold at
+            // the closing corner.
+            let areas = contour_areas(&path);
+            assert_eq!(areas.len(), 2);
+            assert!((areas[0] - 110.0 * 110.0).abs() < 1.0, "tolerance {tolerance}: {areas:?}");
+            assert!((areas[1] - 90.0 * 90.0).abs() < 50.0, "tolerance {tolerance}: {areas:?}");
         }
     }
 }
