@@ -256,19 +256,16 @@ pub mod offset {
 
         let mut t0 = S::ZERO;
         if let Some(t1) = t1 {
-            let sub_curve = curve.split_range(t0..t1);
-            for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+            for_each_offset_inner(curve, t0..t1, dist, tolerance, cb);
             t0 = t1;
         }
 
         if let Some(t2) = t2 {
-            let sub_curve = curve.split_range(t0..t2);
-            for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+            for_each_offset_inner(curve, t0..t2, dist, tolerance, cb);
             t0 = t2;
         }
 
-        let sub_curve = curve.split_range(t0..S::ONE);
-        for_each_offset_inner(&sub_curve, dist, tolerance, cb);
+        for_each_offset_inner(curve, t0..S::ONE, dist, tolerance, cb);
         /*
                 if let Some(t) = find_sharp_turn(curve) {
                     let t0 = t * S::value(0.8);
@@ -283,8 +280,13 @@ pub mod offset {
         */
     }
 
+    fn normal<S: Scalar>(v: Vector<S>) -> Vector<S> {
+        Vector::new(-v.y, v.x)
+    }
+
     fn for_each_offset_inner<S: Scalar, F>(
         curve: &QuadraticBezierSegment<S>,
+        range: std::ops::Range<S>,
         dist: S,
         tolerance: S,
         cb: &mut F,
@@ -294,21 +296,27 @@ pub mod offset {
         debug_assert!(curve.from.is_finite());
         debug_assert!(curve.ctrl.is_finite());
         debug_assert!(curve.to.is_finite());
-        let mut range = S::ZERO..S::ONE;
+
+        // Sub-curves are accepted regardless of the error below this parameter
+        // range.
+        let min_step = (range.end - range.start) * S::value(0.05);
+
         let end = range.end;
+        let mut range = range;
 
-        fn normal<S: Scalar>(v: Vector<S>) -> Vector<S> {
-            Vector::new(-v.y, v.x)
-        }
+        // Tangents are computed from the derivative of the curve rather than the
+        // control points of the sub-curves, which lose precision as the
+        // sub-curves get small.
+        let tangent = |t: S| curve.derivative(t).normalize();
 
-        let mut v0 = (curve.ctrl - curve.from).normalize();
-        let mut from = curve.from + normal(v0) * dist;
+        let mut v0 = tangent(range.start);
+        let mut from = curve.sample(range.start) + normal(v0) * dist;
 
-        while range.start < range.end {
+        while range.start < end {
             let sub_curve = curve.split_range(range.clone());
 
             // Offset the sub-curve
-            let v1 = (sub_curve.to - sub_curve.ctrl).normalize();
+            let v1 = tangent(range.end);
             let n1 = normal(v1);
             let n = normal((v0 + v1).normalize());
             let inv_len = n.dot(n1);
@@ -331,12 +339,12 @@ pub mod offset {
             let offset_curve = QuadraticBezierSegment { from, ctrl, to };
 
             // Evaluate the error.
-            let err = if range.end - range.start < S::value(0.05) {
-                S::ZERO
-            } else {
+            let step = range.end - range.start;
+            let mut err = S::ZERO;
+            if step > min_step {
                 let d = (sub_curve.sample(S::HALF) - offset_curve.sample(S::HALF)).length();
-                (d - dist.abs()).abs()
-            };
+                err = (d - dist.abs()).abs();
+            }
 
             if err <= tolerance {
                 cb(&offset_curve);
@@ -344,7 +352,7 @@ pub mod offset {
                 from = to;
                 v0 = v1;
             } else {
-                range.end = (range.start + range.end) * S::HALF;
+                range.end = range.start + step * S::HALF;
             }
         }
     }
