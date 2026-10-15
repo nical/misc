@@ -241,7 +241,7 @@ fn normal(v: Vector) -> Vector {
 pub mod offset {
     use core::geom::arrayvec::ArrayVec;
     use core::geom::euclid;
-    use core::geom::{point, vector, QuadraticBezierSegment, Scalar, Vector};
+    use core::geom::{point, vector, Point, QuadraticBezierSegment, Scalar, Vector};
 
     pub fn for_each_offset<S: Scalar, F>(
         curve: &QuadraticBezierSegment<S>,
@@ -343,6 +343,30 @@ pub mod offset {
         let tangent = |t: S| curve.derivative(t).normalize();
         let offset_point = |t: S| curve.sample(t) + normal(tangent(t)) * dist;
 
+        // Distance between a point and the offset curve, estimated from the
+        // closest point of the curve. It is found with Newton iterations on the
+        // derivative of the squared distance, starting at parameter t and
+        // staying within t_min..t_max.
+        let second_derivative = (curve.from.to_vector() - curve.ctrl.to_vector() * S::TWO
+            + curve.to.to_vector())
+            * S::TWO;
+        let offset_error = |p: Point<S>, mut t: S, t_min: S, t_max: S| {
+            for _ in 0..2 {
+                let v = curve.sample(t) - p;
+                let d1 = curve.derivative(t);
+                let g = v.dot(d1);
+                let dg = d1.square_length() + v.dot(second_derivative);
+                // Not a minimum of the distance, which is the case on the
+                // part of the offset curve that goes backwards between its
+                // cusps.
+                if !(dg > S::ZERO) {
+                    break;
+                }
+                t = (t - g / dg).max(t_min).min(t_max);
+            }
+            ((p - curve.sample(t)).dot(normal(tangent(t))) - dist).abs()
+        };
+
         let mut v0 = tangent(range.start);
         let mut from = curve.sample(range.start) + normal(v0) * dist;
 
@@ -374,8 +398,11 @@ pub mod offset {
             let step = range.end - range.start;
             let mut err = S::ZERO;
             if step > min_step {
-                let d = (sub_curve.sample(S::HALF) - offset_curve.sample(S::HALF)).length();
-                err = (d - dist.abs()).abs();
+                for s in [S::value(0.25), S::HALF, S::value(0.75)] {
+                    let t = range.start + step * s;
+                    let e = offset_error(offset_curve.sample(s), t, range.start, range.end);
+                    err = err.max(e);
+                }
             }
 
             if err <= tolerance {
@@ -530,24 +557,65 @@ pub mod offset {
         }
 
         #[test]
-        fn offset_stays_close_to_the_curve() {
+        fn offset_is_within_tolerance() {
             let tolerance = 0.25;
             for (from, ctrl, to) in CURVES {
                 let curve = quad(from, ctrl, to);
-                for offset in [1.0f32, -1.0, 5.0, -5.0, 20.0, -20.0] {
-                    // Points of the offset curve are at most `offset` away from the
-                    // curve: closer if they are past a cusp of the offset curve.
-                    let mut max_dist: f32 = 0.0;
-                    for_each_offset(&curve, offset, tolerance, &mut |sub_curve| {
+                for dist in [1.0f32, -1.0, 5.0, -5.0, 20.0, -20.0, 50.0, -50.0] {
+                    let exact = |t: f32| {
+                        let tangent = curve.derivative(t).normalize();
+                        curve.sample(t) + vector(-tangent.y, tangent.x) * dist
+                    };
+                    // Sample the exact offset curve uniformly in t and in tangent
+                    // angle, so that sharp turns are sampled densely as well.
+                    let n = 2000;
+                    let p0 = curve.ctrl - curve.from;
+                    let q = curve.from.to_vector() - curve.ctrl.to_vector() * 2.0 + curve.to.to_vector();
+                    let turn = p0.angle_to(p0 + q).radians;
+                    let mut ts: Vec<f32> = (0..=n).map(|i| i as f32 / n as f32).collect();
+                    for i in 1..n {
+                        // The tangent is parallel to p0 + t q.
+                        let angle = turn * i as f32 / n as f32;
+                        let dir = p0.normalize() * angle.cos() + vector(-p0.y, p0.x).normalize() * angle.sin();
+                        let t = -p0.cross(dir) / q.cross(dir);
+                        if t > 0.0 && t < 1.0 {
+                            ts.push(t);
+                        }
+                    }
+                    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let samples: Vec<_> = ts.iter().map(|t| exact(*t)).collect();
+
+                    // Distance to the exact offset curve: closest sample, refined
+                    // with a ternary search between its neighbors.
+                    let distance = |p: Point<f32>| {
+                        let i = (0..samples.len())
+                            .min_by(|a, b| {
+                                let da = (samples[*a] - p).square_length();
+                                let db = (samples[*b] - p).square_length();
+                                da.partial_cmp(&db).unwrap()
+                            })
+                            .unwrap();
+                        let mut lo = ts[i.saturating_sub(1)];
+                        let mut hi = ts[(i + 1).min(ts.len() - 1)];
+                        for _ in 0..40 {
+                            let t1 = lo + (hi - lo) / 3.0;
+                            let t2 = hi - (hi - lo) / 3.0;
+                            if (exact(t1) - p).length() < (exact(t2) - p).length() {
+                                hi = t2;
+                            } else {
+                                lo = t1;
+                            }
+                        }
+                        (exact((lo + hi) * 0.5) - p).length()
+                    };
+
+                    let mut max_err: f32 = 0.0;
+                    for_each_offset(&curve, dist, tolerance, &mut |sub_curve| {
                         for i in 0..=16 {
-                            let p = sub_curve.sample(i as f32 / 16.0);
-                            let dist = (0..=10_000)
-                                .map(|j| (curve.sample(j as f32 / 10_000.0) - p).length())
-                                .fold(f32::MAX, f32::min);
-                            max_dist = max_dist.max(dist);
+                            max_err = max_err.max(distance(sub_curve.sample(i as f32 / 16.0)));
                         }
                     });
-                    assert!(max_dist < offset.abs() + 2.0 * tolerance, "{curve:?} {offset}: {max_dist}");
+                    assert!(max_err < tolerance * 1.2, "{curve:?} {dist}: {max_err}");
                 }
             }
         }
