@@ -1229,8 +1229,8 @@ impl<'l> OffsetBuilder<'l> {
                 self.line_to(to);
                 return;
             }
-            QuadType::Degenerate => {
-                self.line_to(curve.sample(0.5));
+            QuadType::Degenerate(t) => {
+                self.line_to(curve.sample(t));
                 self.line_to(curve.to);
                 return;
             }
@@ -1260,7 +1260,10 @@ impl<'l> OffsetBuilder<'l> {
             to,
         };
 
-        if curve.is_linear(self.tolerance) {
+        if cubic_bezier_is_linear(&curve, self.tolerance) {
+            for t in cubic_bezier_turnarounds(&curve) {
+                self.line_to(curve.sample(t));
+            }
             self.line_to(to);
             return;
         }
@@ -1572,7 +1575,8 @@ impl<'l> StrokeToFillBuilder<'l> {
 enum QuadType {
     Curve,
     Linear,
-    Degenerate,
+    /// The curve lies on a line and changes direction at the given parameter.
+    Degenerate(f32),
 }
 
 fn classify_quadratic_bezier(curve: &QuadraticBezierSegment<f32>, tolerance: f32) -> QuadType {
@@ -1580,12 +1584,75 @@ fn classify_quadratic_bezier(curve: &QuadraticBezierSegment<f32>, tolerance: f32
         return QuadType::Curve;
     }
 
-    let baseline = curve.to - curve.from;
-    if baseline.dot(curve.ctrl - curve.from) < 0.0 || (-baseline).dot(curve.ctrl - curve.to) < 0.0 {
-        return QuadType::Degenerate;
+    // The derivative is 2 (p + t q). On a line, it vanishes where the curve
+    // changes direction. This is where it is the shortest, which also gives the
+    // turning point of curves that are only close to a line.
+    let p = curve.ctrl - curve.from;
+    let q = curve.from.to_vector() - curve.ctrl.to_vector() * 2.0 + curve.to.to_vector();
+    // NaN if q is zero, which means that the curve goes straight from start to end.
+    let t = -p.dot(q) / q.square_length();
+    if t > 0.0 && t < 1.0 {
+        return QuadType::Degenerate(t);
     }
 
     QuadType::Linear
+}
+
+/// Direction of the line that a cubic bézier curve lies on, if it does. The
+/// longest vector from the start to another point still gives it when the
+/// endpoints are equal.
+fn cubic_bezier_direction(curve: &CubicBezierSegment<f32>) -> Vector {
+    [
+        curve.ctrl1 - curve.from,
+        curve.ctrl2 - curve.from,
+        curve.to - curve.from,
+    ]
+    .into_iter()
+    .max_by(|a, b| a.square_length().total_cmp(&b.square_length()))
+    .unwrap()
+}
+
+fn cubic_bezier_is_linear(curve: &CubicBezierSegment<f32>, tolerance: f32) -> bool {
+    if curve.from != curve.to {
+        return curve.is_linear(tolerance);
+    }
+
+    // CubicBezierSegment::is_linear measures the distance to the line that goes
+    // through the endpoints, which is not defined when they are equal.
+    let line = Line {
+        point: curve.from,
+        vector: cubic_bezier_direction(curve),
+    };
+    if line.vector == Vector::zero() {
+        return true;
+    }
+
+    let tolerance2 = tolerance * tolerance;
+    line.square_distance_to_point(curve.ctrl1) <= tolerance2
+        && line.square_distance_to_point(curve.ctrl2) <= tolerance2
+}
+
+/// Parameters, in increasing order, at which a cubic bézier curve that lies on
+/// a line changes direction.
+fn cubic_bezier_turnarounds(curve: &CubicBezierSegment<f32>) -> ArrayVec<f32, 3> {
+    let mut turnarounds = ArrayVec::new();
+
+    let direction = cubic_bezier_direction(curve);
+
+    // The derivative is 3 (a + 2 b t + c t²). Find where its projection on the
+    // line vanishes.
+    let a = curve.ctrl1 - curve.from;
+    let b = curve.ctrl2.to_vector() - curve.ctrl1.to_vector() * 2.0 + curve.from.to_vector();
+    let c = curve.to.to_vector() + (curve.ctrl1 - curve.ctrl2) * 3.0 - curve.from.to_vector();
+    let roots = cubic_polynomial_roots(0.0, c.dot(direction), 2.0 * b.dot(direction), a.dot(direction));
+    for t in roots {
+        if t > 0.0 && t < 1.0 {
+            turnarounds.push(t);
+        }
+    }
+    turnarounds.sort_by(|a, b| a.total_cmp(b));
+
+    turnarounds
 }
 
 fn find_cubic_bezier_cusps(curve: &CubicBezierSegment<f32>) -> ArrayVec<f32, 4> {
@@ -1836,5 +1903,75 @@ mod tests {
         let min = -extent(&path, Vector::new(-1.0, 0.0));
         assert!((max - 105.0).abs() < 0.01, "{max}");
         assert!((min + 5.0).abs() < 0.01, "{min}");
+    }
+
+    #[test]
+    fn collinear_curves_that_change_direction() {
+        let hw = 5.0;
+        let options = StrokeOptions::line_with(hw * 2.0)
+            .with_line_join(LineJoin::Round)
+            .with_line_cap(LineCap::Butt);
+        let quad = |ctrl: (f32, f32), to: (f32, f32)| {
+            QuadraticBezierSegment { from: point(0.0, 0.0), ctrl: point(ctrl.0, ctrl.1), to: point(to.0, to.1) }
+        };
+        let cubic = |ctrl1: (f32, f32), ctrl2: (f32, f32), to: (f32, f32)| CubicBezierSegment {
+            from: point(0.0, 0.0),
+            ctrl1: point(ctrl1.0, ctrl1.1),
+            ctrl2: point(ctrl2.0, ctrl2.1),
+            to: point(to.0, to.1),
+        };
+        let quads = [
+            // Goes out to x = 50 and back to the start.
+            quad((100.0, 0.0), (0.0, 0.0)),
+            // Goes past its end to x = 112.5.
+            quad((150.0, 0.0), (100.0, 0.0)),
+            // Goes back past its start.
+            quad((-100.0, 0.0), (10.0, 0.0)),
+        ];
+        let cubics = [
+            // Goes past both ends.
+            cubic((100.0, 0.0), (-100.0, 0.0), (10.0, 0.0)),
+            cubic((0.0, 0.0), (100.0, 0.0), (0.0, 0.0)),
+        ];
+
+        let check = |path: Path, sample: &dyn Fn(f32) -> Point| {
+            // The round joins at the turning points extend the stroke by the
+            // half width.
+            let n = 100_000;
+            let (min, max) = (0..=n)
+                .map(|i| sample(i as f32 / n as f32).x)
+                .fold((f32::MAX, f32::MIN), |(min, max), x| (min.min(x), max.max(x)));
+            let start = sample(0.0).x;
+            let end = sample(1.0).x;
+            let expected_max = if max > start.max(end) { max + hw } else { max };
+            let expected_min = if min < start.min(end) { min - hw } else { min };
+
+            let max_x = extent(&path, Vector::new(1.0, 0.0));
+            let min_x = -extent(&path, Vector::new(-1.0, 0.0));
+            assert!((max_x - expected_max).abs() < 0.01, "{max_x} != {expected_max}");
+            assert!((min_x - expected_min).abs() < 0.01, "{min_x} != {expected_min}");
+        };
+
+        for curve in quads {
+            let mut builder = Path::builder();
+            {
+                let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);
+                stroker.begin(curve.from);
+                stroker.quadratic_bezier_to(curve.ctrl, curve.to);
+                stroker.end(false);
+            }
+            check(builder.build(), &|t| curve.sample(t));
+        }
+
+        for curve in cubics {
+            let mut builder = Path::builder();
+            {
+                let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);
+                stroker.begin(curve.from);
+                stroker.cubic_bezier_to(curve.ctrl1, curve.ctrl2, curve.to);
+                stroker.end(false);
+            }
+            check(builder.build(), &|t| curve.sample(t));
+        }
     }
 }
