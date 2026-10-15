@@ -308,6 +308,7 @@ pub mod offset {
         // control points of the sub-curves, which lose precision as the
         // sub-curves get small.
         let tangent = |t: S| curve.derivative(t).normalize();
+        let offset_point = |t: S| curve.sample(t) + normal(tangent(t)) * dist;
 
         let mut v0 = tangent(range.start);
         let mut from = curve.sample(range.start) + normal(v0) * dist;
@@ -320,22 +321,19 @@ pub mod offset {
             let n1 = normal(v1);
             let n = normal((v0 + v1).normalize());
             let inv_len = n.dot(n1);
-            if !inv_len.is_finite() {
-                // This can be caused by tiny input curves that (almost)
-                // a point, causing v0 and other quantities to become NaN.
-                break;
+            if !(inv_len > S::ZERO) || !from.is_finite() {
+                // The derivative of the curve vanishes, which only happens for
+                // degenerate curves. Join the offset of the end of the curve
+                // with a straight line.
+                let to = offset_point(end);
+                if from.is_finite() && to.is_finite() {
+                    let ctrl = from.lerp(to, S::HALF);
+                    cb(&QuadraticBezierSegment { from, ctrl, to });
+                }
+                return;
             }
-            let ctrl_offset = if inv_len != S::ZERO {
-                dist / inv_len
-            } else {
-                dist
-            };
-            let ctrl = sub_curve.ctrl + n * ctrl_offset;
-
+            let ctrl = sub_curve.ctrl + n * (dist / inv_len);
             let to = sub_curve.to + n1 * dist;
-            debug_assert!(from.is_finite());
-            debug_assert!(ctrl.is_finite());
-            debug_assert!(to.is_finite());
             let offset_curve = QuadraticBezierSegment { from, ctrl, to };
 
             // Evaluate the error.
