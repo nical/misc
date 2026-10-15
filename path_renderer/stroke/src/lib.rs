@@ -331,7 +331,9 @@ pub mod offset {
         debug_assert!(curve.to.is_finite());
 
         // Sub-curves are accepted regardless of the error below this parameter
-        // range.
+        // range, to guarantee termination. This is reached near the cusps of the
+        // offset curve, or when the tolerance is too small for the precision of
+        // the coordinates.
         let min_step = (range.end - range.start) * S::value(0.05);
 
         let end = range.end;
