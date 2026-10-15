@@ -30,6 +30,7 @@ pub struct Stroke {
     pub line_width: f32,
     pub line_cap: LineCap,
     pub line_join: LineJoin,
+    pub miter_limit: f32,
 }
 
 fn build_gradient_stops(stops: &[usvg::Stop], output: &mut Vec<GradientStop>) {
@@ -115,6 +116,7 @@ pub fn load_svg(
                         usvg::LineJoin::Round => LineJoin::Round,
                         usvg::LineJoin::Bevel => LineJoin::Bevel,
                     },
+                    miter_limit: stroke.miterlimit.get(),
                 });
 
                 if fill_pattern.is_none() && stroke_pattern.is_none() {

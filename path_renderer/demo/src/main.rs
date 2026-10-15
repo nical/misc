@@ -1197,7 +1197,7 @@ fn paint_scene(
                             &StrokeOptions {
                                 tolerance: 0.25 / scale,
                                 offsets: (-w, w),
-                                miter_limit: 0.5,
+                                miter_limit: stroke.miter_limit,
                                 line_join: stroke.line_join,
                                 start_cap: stroke.line_cap,
                                 end_cap: stroke.line_cap,
