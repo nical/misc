@@ -390,28 +390,32 @@ pub mod offset {
         offset: S,
     ) -> (Option<S>, Option<S>) {
         // See https://blend2d.com/research/precise_offset_curves.pdf
-        let from = curve.from;
-        let ctrl = curve.ctrl;
-        let to = curve.to;
-        let v1 = from - ctrl;
-        let a = (ctrl - to) * S::TWO - v1;
-        let b = v1 * S::TWO;
+        //
+        // The offset curve has a cusp where the radius of curvature of the curve
+        // is equal to the offset distance d. With B'(t) = 2At + B and B'' = 2A,
+        // the radius of curvature is |B'|³ / |B' x B''| = |B'|³ / (2 |A x B|),
+        // so these points are the solutions of |B'(t)|² = cbrt(4 d² (A x B)²):
+        //
+        // 4 |A|² t² + 4 (A.B) t + |B|² - cbrt(4 d² (A x B)²) = 0
+        //
+        // Only the solutions on the concave side are cusps of the offset curve.
+        // Splitting at the others is harmless.
+        let from = curve.from.to_vector();
+        let ctrl = curve.ctrl.to_vector();
+        let to = curve.to.to_vector();
+        let a = from - ctrl * S::TWO + to;
+        let b = (ctrl - from) * S::TWO;
 
-        let axbx_ayby = a.x * b.x + a.y * b.y;
-        let axbx_ayby_2 = axbx_ayby * axbx_ayby;
-        let ax2_ay2 = a.x * a.x + a.y * a.y;
-        let bx2_by2 = b.x * b.x + b.y * b.y;
-        let dot_ab = b.x * a.y - a.x * b.y;
+        let a_dot_b = a.dot(b);
+        let a_len2 = a.square_length();
+        let a_cross_b = a.cross(b);
 
-        let r3 = (offset * offset * dot_ab * dot_ab).cbrt();
-        let r2 = (axbx_ayby_2 - ax2_ay2 * (bx2_by2 - r3)).sqrt();
+        let r = (S::FOUR * offset * offset * a_cross_b * a_cross_b).cbrt();
+        // NaN when there is no solution, in which case both comparisons below fail.
+        let sqrt_delta = (a_dot_b * a_dot_b - a_len2 * (b.square_length() - r)).sqrt();
 
-        let mut t1 = (-axbx_ayby + r2) / ax2_ay2;
-        let mut t2 = (-axbx_ayby - r2) / ax2_ay2;
-
-        if t2 < t1 {
-            std::mem::swap(&mut t1, &mut t2);
-        }
+        let t1 = (-a_dot_b - sqrt_delta) / (S::TWO * a_len2);
+        let t2 = (-a_dot_b + sqrt_delta) / (S::TWO * a_len2);
 
         // We don't want to split very close to the endpoints.
         let eps = S::value(0.05);
@@ -428,6 +432,85 @@ pub mod offset {
         };
 
         (t1, t2)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn quad(from: (f32, f32), ctrl: (f32, f32), to: (f32, f32)) -> QuadraticBezierSegment<f32> {
+            QuadraticBezierSegment {
+                from: point(from.0, from.1),
+                ctrl: point(ctrl.0, ctrl.1),
+                to: point(to.0, to.1),
+            }
+        }
+
+        const CURVES: [((f32, f32), (f32, f32), (f32, f32)); 4] = [
+            ((0.0, 0.0), (50.0, 100.0), (100.0, 0.0)),
+            ((0.0, 0.0), (100.0, 100.0), (20.0, 0.0)),
+            ((10.0, 30.0), (200.0, 0.0), (0.0, 90.0)),
+            ((0.0, 0.0), (1000.0, 1.0), (0.0, 2.0)),
+        ];
+
+        #[test]
+        fn critical_points_match_radius_of_curvature() {
+            for (from, ctrl, to) in CURVES {
+                let curve = quad(from, ctrl, to);
+                let b2 = (curve.from.to_vector() - curve.ctrl.to_vector() * 2.0 + curve.to.to_vector()) * 2.0;
+                let radius = |t: f32| {
+                    let b1 = curve.derivative(t);
+                    b1.length().powi(3) / b1.cross(b2).abs()
+                };
+
+                for offset in [1.0f32, 5.0, 20.0, 40.0, 80.0, -40.0] {
+                    // Find where the radius of curvature crosses the offset distance
+                    // by sampling, away from the endpoints where critical_points
+                    // discards solutions.
+                    let mut expected = Vec::new();
+                    let n = 100_000;
+                    let mut prev = radius(0.0) - offset.abs();
+                    for i in 1..=n {
+                        let t = i as f32 / n as f32;
+                        let r = radius(t) - offset.abs();
+                        if r.signum() != prev.signum() && t > 0.051 && t < 0.949 {
+                            expected.push(t);
+                        }
+                        prev = r;
+                    }
+
+                    let (t1, t2) = critical_points(&curve, offset);
+                    let found: Vec<f32> = [t1, t2].into_iter().flatten().collect();
+                    assert_eq!(found.len(), expected.len(), "{curve:?} {offset}: {found:?} != {expected:?}");
+                    for (a, b) in found.iter().zip(expected.iter()) {
+                        assert!((a - b).abs() < 1e-3, "{curve:?} {offset}: {found:?} != {expected:?}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn offset_stays_close_to_the_curve() {
+            let tolerance = 0.25;
+            for (from, ctrl, to) in CURVES {
+                let curve = quad(from, ctrl, to);
+                for offset in [1.0f32, -1.0, 5.0, -5.0, 20.0, -20.0] {
+                    // Points of the offset curve are at most `offset` away from the
+                    // curve: closer if they are past a cusp of the offset curve.
+                    let mut max_dist: f32 = 0.0;
+                    for_each_offset(&curve, offset, tolerance, &mut |sub_curve| {
+                        for i in 0..=16 {
+                            let p = sub_curve.sample(i as f32 / 16.0);
+                            let dist = (0..=10_000)
+                                .map(|j| (curve.sample(j as f32 / 10_000.0) - p).length())
+                                .fold(f32::MAX, f32::min);
+                            max_dist = max_dist.max(dist);
+                        }
+                    });
+                    assert!(max_dist < offset.abs() + 2.0 * tolerance, "{curve:?} {offset}: {max_dist}");
+                }
+            }
+        }
     }
 }
 
