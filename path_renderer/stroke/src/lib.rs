@@ -565,10 +565,18 @@ fn miter_clip_join(
         return;
     }
 
+    // A zero normal means that the segments go in (nearly) opposite directions,
+    // in which case the miter points forward, along the bisector.
+    let miter_direction = if normal == Vector::zero() {
+        start_tangent - end_tangent
+    } else {
+        normal * width.signum()
+    };
+
     let (v0, v1) = get_clip_intersections(
         start_offset,
         end_offset,
-        normal * width.signum(),
+        miter_direction,
         // Half of the miter length limit (miter_limit * stroke_width).
         miter_limit * width.abs(),
     );
@@ -795,8 +803,10 @@ fn triangle_inverted_cap(
 // miter, which are both normal.length() * half_width away from the join point.
 // miter_limit = miter_length / stroke_width
 // miter_limit = (2.0 * normal.length() * half_width) / (2.0 * half_width)
+//
+// compute_normal returns a zero vector when the miter length is infinite.
 fn miter_limit_is_exceeded(normal: Vector, miter_limit: f32) -> bool {
-    normal.square_length() > miter_limit * miter_limit
+    normal == Vector::zero() || normal.square_length() > miter_limit * miter_limit
 }
 
 /// Compute a normal vector at a point P such that ```x ---e1----> P ---e2---> x```
@@ -805,6 +815,7 @@ fn miter_limit_is_exceeded(normal: Vector, miter_limit: f32) -> bool {
 /// would yield parallel segments exactly 1 unit away from their original. (useful
 /// for generating strokes and vertex-aa).
 /// The normal points towards the positive side of e1.
+/// Returns a zero vector if v1 and v2 point in (nearly) opposite directions.
 ///
 /// v1 and v2 are expected to be normalized.
 pub fn compute_normal(v1: Vector, v2: Vector) -> Vector {
@@ -1101,10 +1112,13 @@ impl<'l> OffsetBuilder<'l> {
         } else {
             let t01 = unit_tangent - self.prev_tangent;
             let n01 = (normal(unit_tangent) + normal(self.prev_tangent)) * self.offset.signum();
+            // When the next segment goes back along the previous one, the offset
+            // segments end on opposite sides of the stroke on both sides, so both
+            // sides get an outer join to wrap around the tip.
+            let reversal = self.prev_tangent.dot(unit_tangent) < 0.0
+                && self.prev_tangent.cross(unit_tangent).abs() < 0.005;
             // We are a bit conserative about inner joins when the dot product is close to zero.
-            // That's when the next segment goes back along the previous one  and are close to
-            // parallel at which point it becomes difficult
-            let inner_join = t01.dot(n01) > -0.01;
+            let inner_join = !reversal && t01.dot(n01) > -0.01;
 
             //println!("> w:{:?} inner:{inner_join:?} t01:{t01:?} n01:{n01:?} t01.n01{:?} cross:{cross:?} dot:{dot:?} pt: {positive_turn:?} pos: {:?}", self.offset, t01.dot(n01), self.prev_endpoint);
 
@@ -1560,5 +1574,74 @@ mod tests {
             let expected = (ratio * hw).min(miter_limit * hw);
             assert!((clipped - expected).abs() < 1e-3, "{degrees} degrees: {clipped} != {expected}");
         }
+    }
+
+    /// Furthest extent of the outline along a direction, sampling curves.
+    fn extent(path: &Path, direction: Vector) -> f32 {
+        let mut extent = f32::MIN;
+        for event in path.iter() {
+            for i in 0..=32 {
+                let t = i as f32 / 32.0;
+                let p = match event {
+                    PathEvent::Begin { at } => at,
+                    PathEvent::Line { from, to } => from.lerp(to, t),
+                    PathEvent::Quadratic { from, ctrl, to } => {
+                        QuadraticBezierSegment { from, ctrl, to }.sample(t)
+                    }
+                    PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
+                        CubicBezierSegment { from, ctrl1, ctrl2, to }.sample(t)
+                    }
+                    PathEvent::End { .. } => continue,
+                };
+                extent = extent.max(p.to_vector().dot(direction));
+            }
+        }
+        extent
+    }
+
+    #[test]
+    fn hairpin_turns() {
+        let hw = 5.0;
+        let miter_limit = 4.0;
+        // Turning angles in degrees, up to a complete reversal.
+        for degrees in [179.0f32, 179.5, 179.6, 179.8, 179.95, 180.0] {
+            let a = (180.0 - degrees).to_radians();
+            let corner = point(100.0, 0.0);
+            let d_out = Vector::new(-a.cos(), a.sin());
+            let hairpin = [point(0.0, 0.0), corner, corner + d_out * 100.0];
+            // Distance past the corner along the outer bisector.
+            let bisector = (Vector::new(1.0, 0.0) - d_out).normalize();
+            let past_corner = |path: &Path| extent(path, bisector) - corner.to_vector().dot(bisector);
+            let stroke = |join| {
+                let options = StrokeOptions::line_with(hw * 2.0)
+                    .with_line_join(join)
+                    .with_miter_limit(miter_limit)
+                    .with_line_cap(LineCap::Butt);
+                stroke_polyline(&hairpin, false, &options)
+            };
+
+            // The round join wraps around the tip.
+            let round = past_corner(&stroke(LineJoin::Round));
+            assert!((round - hw).abs() < 0.01, "{degrees}: {round}");
+
+            // The miter limit is exceeded so miter joins are bevels.
+            let miter: Vec<PathEvent> = stroke(LineJoin::Miter).iter().collect();
+            let bevel: Vec<PathEvent> = stroke(LineJoin::Bevel).iter().collect();
+            assert_eq!(miter, bevel, "{degrees}");
+
+            // The miter is clipped half of the miter length limit past the corner.
+            let clipped = past_corner(&stroke(LineJoin::MiterClip));
+            assert!((clipped - miter_limit * hw).abs() < 0.01, "{degrees}: {clipped}");
+        }
+    }
+
+    #[test]
+    fn closed_two_point_sub_path() {
+        let options = StrokeOptions::line_with(10.0).with_line_join(LineJoin::Round);
+        let path = stroke_polyline(&[point(0.0, 0.0), point(100.0, 0.0)], true, &options);
+        let max = extent(&path, Vector::new(1.0, 0.0));
+        let min = -extent(&path, Vector::new(-1.0, 0.0));
+        assert!((max - 105.0).abs() < 0.01, "{max}");
+        assert!((min + 5.0).abs() < 0.01, "{min}");
     }
 }
