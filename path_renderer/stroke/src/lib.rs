@@ -569,7 +569,8 @@ fn miter_clip_join(
         start_offset,
         end_offset,
         normal * width.signum(),
-        miter_limit * width.abs() * 0.5,
+        // Half of the miter length limit (miter_limit * stroke_width).
+        miter_limit * width.abs(),
     );
 
     output.line_to(position + v0, NO_ATTRIBUTES);
@@ -790,11 +791,12 @@ fn triangle_inverted_cap(
     triangle_cap(output, pivot, -tangent, end, width, -sign, tolerance)
 }
 
-// Derived from:
+// The miter length is the distance between the inner corner and the tip of the
+// miter, which are both normal.length() * half_width away from the join point.
 // miter_limit = miter_length / stroke_width
-// miter_limit = (normal.length() * half_width) / (2.0 * half_width)
+// miter_limit = (2.0 * normal.length() * half_width) / (2.0 * half_width)
 fn miter_limit_is_exceeded(normal: Vector, miter_limit: f32) -> bool {
-    normal.square_length() > miter_limit * miter_limit * 4.0
+    normal.square_length() > miter_limit * miter_limit
 }
 
 /// Compute a normal vector at a point P such that ```x ---e1----> P ---e2---> x```
@@ -1513,6 +1515,50 @@ mod tests {
             assert_eq!(areas.len(), 2);
             assert!((areas[0] - 110.0 * 110.0).abs() < 1.0, "tolerance {tolerance}: {areas:?}");
             assert!((areas[1] - 90.0 * 90.0).abs() < 50.0, "tolerance {tolerance}: {areas:?}");
+        }
+    }
+
+    /// Distance that the join of a wedge reaches past the corner, along the outer
+    /// bisector. The two segments meet at the given angle.
+    fn wedge_join_extent(angle: f32, join: LineJoin, miter_limit: f32, half_width: f32) -> f32 {
+        let corner = point(100.0, 0.0);
+        let d_out = Vector::new(-angle.cos(), angle.sin());
+        let wedge = [point(0.0, 0.0), corner, corner + d_out * 100.0];
+        let options = StrokeOptions::line_with(half_width * 2.0)
+            .with_line_join(join)
+            .with_miter_limit(miter_limit)
+            .with_line_cap(LineCap::Butt);
+        let path = stroke_polyline(&wedge, false, &options);
+
+        let bisector = (Vector::new(1.0, 0.0) - d_out).normalize();
+        path.iter()
+            .filter_map(|event| match event {
+                PathEvent::Line { to, .. } => Some((to - corner).dot(bisector)),
+                _ => None,
+            })
+            .fold(f32::MIN, f32::max)
+    }
+
+    #[test]
+    fn miter_limit() {
+        let miter_limit = 4.0;
+        let hw = 5.0;
+        for degrees in (10..=60).step_by(2) {
+            let angle = (degrees as f32).to_radians();
+            // Ratio between the miter length and the stroke width.
+            let ratio = 1.0 / (angle * 0.5).sin();
+
+            let miter = wedge_join_extent(angle, LineJoin::Miter, miter_limit, hw);
+            if ratio <= miter_limit {
+                assert!((miter - ratio * hw).abs() < 1e-3, "{degrees} degrees: {miter}");
+            } else {
+                // Bevel.
+                assert!(miter < hw, "{degrees} degrees: {miter}");
+            }
+
+            let clipped = wedge_join_extent(angle, LineJoin::MiterClip, miter_limit, hw);
+            let expected = (ratio * hw).min(miter_limit * hw);
+            assert!((clipped - expected).abs() < 1e-3, "{degrees} degrees: {clipped} != {expected}");
         }
     }
 }
