@@ -402,14 +402,23 @@ pub mod offset {
             let to = sub_curve.to + n1 * dist;
             let offset_curve = QuadraticBezierSegment { from, ctrl, to };
 
-            // Evaluate the error.
+            // Evaluate the error. The sub-curve matches the offset curve's
+            // endpoints and tangents, so the error vanishes at both ends and
+            // peaks in between: near the middle, or up to about a quarter of the
+            // way from one end when the curvature changes a lot over the range.
+            // The peak is then up to about 1.5 times the error at the middle.
+            // The error is almost always far below the tolerance, so the other
+            // samples are only measured when the middle one is not.
             let step = range.end - range.start;
             let mut err = S::ZERO;
             if step > min_step {
-                for s in [S::value(0.25), S::HALF, S::value(0.75)] {
+                let error_at = |s: S| {
                     let t = range.start + step * s;
-                    let e = offset_error(offset_curve.sample(s), t, range.start, range.end);
-                    err = err.max(e);
+                    offset_error(offset_curve.sample(s), t, range.start, range.end)
+                };
+                err = error_at(S::HALF);
+                if err > tolerance * S::HALF {
+                    err = err.max(error_at(S::value(0.25))).max(error_at(S::value(0.75)));
                 }
             }
 
