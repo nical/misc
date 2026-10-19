@@ -366,9 +366,10 @@ pub mod offset {
         debug_assert!(curve.to.is_finite());
 
         // Sub-curves are accepted regardless of the error below this parameter
-        // range, to guarantee termination. This is reached near the cusps of the
-        // offset curve, or when the tolerance is too small for the precision of
-        // the coordinates.
+        // range, or when the range can't be halved within the precision of the
+        // parameters, to guarantee termination. This is reached near the cusps
+        // of the offset curve, or when the tolerance is too small for the
+        // precision of the coordinates.
         let min_step = (range.end - range.start) * S::value(0.05);
 
         let end = range.end;
@@ -453,7 +454,9 @@ pub mod offset {
                 error_bound = error_bound.max(offset_error_bound(&sub_curve, inv_len, dist));
             }
             let mut err = S::ZERO;
-            if step > min_step && !(error_bound <= tolerance) {
+            let half = range.start + step * S::HALF;
+            let can_split = step > min_step && half > range.start && half < range.end;
+            if can_split && !(error_bound <= tolerance) {
                 for (offset_curve, dist) in offset_curves.iter().zip(dists) {
                     let error_at = |s: S| {
                         let t = range.start + step * s;
@@ -752,6 +755,21 @@ pub mod offset {
                     assert!(max_err < tolerance * 1.2, "{curve:?} {dist}: {max_err}");
                 }
             }
+        }
+
+        #[test]
+        fn ranges_too_small_to_halve() {
+            // The range is the precision of its parameters, so halving it gives
+            // an empty range before reaching the minimum step. The offset is on
+            // the concave side, beyond the radius of curvature (about 1400), so
+            // the error is measured rather than bounded, and at these
+            // coordinates it can't be measured within the tolerance.
+            let curve = quad((1.0e7, 0.0), (1.0e7 + 1000.0, 2000.0), (1.0e7 + 2000.0, 0.0));
+            let start = 0.25f32;
+            let end = f32::from_bits(start.to_bits() + 1);
+            let mut count = 0;
+            for_each_offset_inner(&curve, start..end, [-3000.0], 0.0001, &mut |_| count += 1);
+            assert!(count > 0);
         }
 
         #[test]
