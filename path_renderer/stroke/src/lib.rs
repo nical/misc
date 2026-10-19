@@ -118,12 +118,16 @@ impl Default for StrokeOptions {
 }
 
 pub struct Stroker {
-    // TODO: recycle inner builder
+    /// Storage for StrokeToFillBuilder::opposite, kept between calls to avoid
+    /// reallocating it.
+    opposite: OppositeSide,
 }
 
 impl Stroker {
     pub fn new() -> Stroker {
-        Stroker {}
+        Stroker {
+            opposite: OppositeSide::default(),
+        }
     }
 
     pub fn stroke_to_fill(
@@ -135,6 +139,7 @@ impl Stroker {
 
         {
             let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);
+            stroker.opposite = std::mem::take(&mut self.opposite);
             for event in path {
                 match event {
                     PathEvent::Begin { at } => {
@@ -156,6 +161,7 @@ impl Stroker {
                     }
                 }
             }
+            self.opposite = std::mem::take(&mut stroker.opposite);
         }
 
         builder.build()
@@ -1543,10 +1549,58 @@ fn get_cap_fn(cap: LineCap) -> CapBuilder {
     }
 }
 
+#[derive(Copy, Clone)]
+enum RecordedSegment {
+    Line { to: Point },
+    Quadratic { ctrl: Point, to: Point },
+    Cubic { ctrl1: Point, ctrl2: Point, to: Point },
+}
+
+impl RecordedSegment {
+    fn to(&self) -> Point {
+        match *self {
+            RecordedSegment::Line { to }
+            | RecordedSegment::Quadratic { to, .. }
+            | RecordedSegment::Cubic { to, .. } => to,
+        }
+    }
+}
+
+/// The source segments of the current sub-path, recorded to be offset in
+/// reverse order for the opposite side of the stroke.
+#[derive(Default)]
+struct OppositeSide {
+    start: Point,
+    segments: Vec<RecordedSegment>,
+}
+
+impl OppositeSide {
+    fn begin(&mut self, at: Point) {
+        self.start = at;
+        self.segments.clear();
+    }
+
+    fn line_to(&mut self, to: Point) {
+        self.segments.push(RecordedSegment::Line { to });
+    }
+
+    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
+        self.segments.push(RecordedSegment::Quadratic { ctrl, to });
+    }
+
+    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
+        self.segments.push(RecordedSegment::Cubic { ctrl1, ctrl2, to });
+    }
+
+    fn last_point(&self) -> Point {
+        self.segments.last().map_or(self.start, RecordedSegment::to)
+    }
+}
+
 pub struct StrokeToFillBuilder<'l> {
     offsetter: OffsetBuilder<'l>,
     offsets: (f32, f32),
-    opposite: core::path::BuilderInner,
+    opposite: OppositeSide,
     start_cap: CapBuilder,
     end_cap: CapBuilder,
     add_empty_caps: bool,
@@ -1576,7 +1630,7 @@ impl<'l> StrokeToFillBuilder<'l> {
             offsets: (offset0, offset1),
             start_cap: get_cap_fn(options.start_cap),
             end_cap: get_cap_fn(options.end_cap),
-            opposite: core::path::PathInner::builder(),
+            opposite: OppositeSide::default(),
             add_empty_caps: options.add_empty_caps,
         }
     }
@@ -1631,7 +1685,7 @@ impl<'l> StrokeToFillBuilder<'l> {
             if self.add_empty_caps {
                 self.add_empty_cap();
             }
-            self.opposite = Default::default();
+            self.opposite.segments.clear();
             return;
         }
 
@@ -1642,13 +1696,8 @@ impl<'l> StrokeToFillBuilder<'l> {
 
         let need_caps = !close;
 
-        if close {
-            self.opposite.end(true);
-        }
-
         if need_caps {
             self.add_end_cap();
-            self.opposite.end(false);
         }
 
         // Swap the offset while replaying the opposite contour.
@@ -1656,29 +1705,29 @@ impl<'l> StrokeToFillBuilder<'l> {
         self.offsetter.offset = -self.offsets.1;
         self.offsetter.skip_begin = !close;
 
-        let rev = std::mem::take(&mut self.opposite).build();
-
-        for evt in rev.reversed() {
-            match evt {
-                PathEvent::Line { to, .. } => {
+        // Each segment, reversed, ends where the previous one starts. If the
+        // sub-path is closed, offsetter.end adds the closing segment.
+        let opposite = std::mem::take(&mut self.opposite);
+        self.offsetter.begin(opposite.last_point());
+        for (i, segment) in opposite.segments.iter().enumerate().rev() {
+            let to = match i {
+                0 => opposite.start,
+                _ => opposite.segments[i - 1].to(),
+            };
+            match *segment {
+                RecordedSegment::Line { .. } => {
                     self.offsetter.line_to(to);
                 }
-                PathEvent::Quadratic { ctrl, to, .. } => {
+                RecordedSegment::Quadratic { ctrl, .. } => {
                     self.offsetter.quadratic_bezier_to(ctrl, to);
                 }
-                PathEvent::Cubic {
-                    ctrl1, ctrl2, to, ..
-                } => {
-                    self.offsetter.cubic_bezier_to(ctrl1, ctrl2, to);
-                }
-                PathEvent::Begin { at } => {
-                    self.offsetter.begin(at);
-                }
-                PathEvent::End { close, .. } => {
-                    self.offsetter.end(close);
+                RecordedSegment::Cubic { ctrl1, ctrl2, .. } => {
+                    self.offsetter.cubic_bezier_to(ctrl2, ctrl1, to);
                 }
             }
         }
+        self.offsetter.end(close);
+        self.opposite = opposite;
 
         if need_caps {
             self.add_start_cap(start_endpoint, -start_tangent);
