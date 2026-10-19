@@ -122,13 +122,13 @@ impl Default for StrokeOptions {
 pub struct Stroker {
     /// Storage for StrokeToFillBuilder::opposite, kept between calls to avoid
     /// reallocating it.
-    opposite: OppositeSide,
+    opposite: SegmentBuffer,
 }
 
 impl Stroker {
     pub fn new() -> Stroker {
         Stroker {
-            opposite: OppositeSide::default(),
+            opposite: SegmentBuffer::default(),
         }
     }
 
@@ -259,19 +259,46 @@ pub mod offset {
     ) where
         F: FnMut(&QuadraticBezierSegment<S>),
     {
+        for_each_offsets(curve, [dist], tolerance, &mut |sub_curves| cb(&sub_curves[0]));
+    }
+
+    /// Offsets a curve by up to two distances at once.
+    ///
+    /// The offset curves are approximated over the same parameter ranges, so
+    /// that the analysis of the curve is shared: the curve is split at the
+    /// critical points of every distance, and a range is split further until
+    /// the offset sub-curves of every distance are within the tolerance. The
+    /// callback receives the offset sub-curves of each range, in the order of
+    /// `dists`.
+    pub fn for_each_offsets<S: Scalar, F, const N: usize>(
+        curve: &QuadraticBezierSegment<S>,
+        dists: [S; N],
+        tolerance: S,
+        cb: &mut F,
+    ) where
+        F: FnMut(&[QuadraticBezierSegment<S>; N]),
+    {
+        const { assert!(N >= 1 && N <= 2) };
+
         let tolerance = tolerance.max(S::value(0.001));
 
-        let mut splits: ArrayVec<S, 5> = ArrayVec::new();
-        let (t1, t2) = critical_points(curve, dist);
-        splits.extend(t1);
-        splits.extend(t2);
+        let mut splits: ArrayVec<S, 7> = ArrayVec::new();
+        for (i, dist) in dists.iter().enumerate() {
+            // The critical points only depend on the magnitude of the distance.
+            if dists[..i].iter().any(|d| d.abs() == dist.abs()) {
+                continue;
+            }
+            let (t1, t2) = critical_points(curve, *dist);
+            splits.extend(t1);
+            splits.extend(t2);
+        }
         splits.extend(turn_splits(curve));
         splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         let mut t0 = S::ZERO;
         for t1 in splits.into_iter().chain(Some(S::ONE)) {
             if t1 > t0 {
-                for_each_offset_inner(curve, t0..t1, dist, tolerance, cb);
+                for_each_offset_inner(curve, t0..t1, dists, tolerance, cb);
                 t0 = t1;
             }
         }
@@ -325,14 +352,14 @@ pub mod offset {
         splits
     }
 
-    fn for_each_offset_inner<S: Scalar, F>(
+    fn for_each_offset_inner<S: Scalar, F, const N: usize>(
         curve: &QuadraticBezierSegment<S>,
         range: std::ops::Range<S>,
-        dist: S,
+        dists: [S; N],
         tolerance: S,
         cb: &mut F,
     ) where
-        F: FnMut(&QuadraticBezierSegment<S>),
+        F: FnMut(&[QuadraticBezierSegment<S>; N]),
     {
         debug_assert!(curve.from.is_finite());
         debug_assert!(curve.ctrl.is_finite());
@@ -351,7 +378,7 @@ pub mod offset {
         // control points of the sub-curves, which lose precision as the
         // sub-curves get small.
         let tangent = |t: S| curve.derivative(t).normalize();
-        let offset_point = |t: S| curve.sample(t) + normal(tangent(t)) * dist;
+        let offset_point = |t: S, dist: S| curve.sample(t) + normal(tangent(t)) * dist;
 
         // Distance between a point and the offset curve, estimated from the
         // closest point of the curve. It is found with Newton iterations on the
@@ -360,7 +387,7 @@ pub mod offset {
         let second_derivative = (curve.from.to_vector() - curve.ctrl.to_vector() * S::TWO
             + curve.to.to_vector())
             * S::TWO;
-        let offset_error = |p: Point<S>, mut t: S, t_min: S, t_max: S| {
+        let offset_error = |p: Point<S>, dist: S, mut t: S, t_min: S, t_max: S| {
             for _ in 0..2 {
                 let v = curve.sample(t) - p;
                 let d1 = curve.derivative(t);
@@ -378,7 +405,7 @@ pub mod offset {
         };
 
         let mut v0 = tangent(range.start);
-        let mut from = curve.sample(range.start) + normal(v0) * dist;
+        let mut from = dists.map(|dist| offset_point(range.start, dist));
 
         while range.start < end {
             let sub_curve = curve.split_range(range.clone());
@@ -389,20 +416,26 @@ pub mod offset {
             let n = normal((v0 + v1).normalize());
             // At least cos(MAX_TURN / 2).
             let inv_len = n.dot(n1);
-            if !(inv_len > S::ZERO) || !from.is_finite() {
+            if !(inv_len > S::ZERO) || !from.iter().all(|p| p.is_finite()) {
                 // The derivative of the curve vanishes, which only happens for
                 // degenerate curves. Join the offset of the end of the curve
                 // with a straight line.
-                let to = offset_point(end);
-                if from.is_finite() && to.is_finite() {
-                    let ctrl = from.lerp(to, S::HALF);
-                    cb(&QuadraticBezierSegment { from, ctrl, to });
+                let to = dists.map(|dist| offset_point(end, dist));
+                if from.iter().chain(&to).all(|p| p.is_finite()) {
+                    cb(&std::array::from_fn(|i| QuadraticBezierSegment {
+                        from: from[i],
+                        ctrl: from[i].lerp(to[i], S::HALF),
+                        to: to[i],
+                    }));
                 }
                 return;
             }
-            let ctrl = sub_curve.ctrl + n * (dist / inv_len);
-            let to = sub_curve.to + n1 * dist;
-            let offset_curve = QuadraticBezierSegment { from, ctrl, to };
+            let offset_curves: [QuadraticBezierSegment<S>; N] =
+                std::array::from_fn(|i| QuadraticBezierSegment {
+                    from: from[i],
+                    ctrl: sub_curve.ctrl + n * (dists[i] / inv_len),
+                    to: sub_curve.to + n1 * dists[i],
+                });
 
             // Evaluate the error. The sub-curve matches the offset curve's
             // endpoints and tangents, so the error vanishes at both ends and
@@ -414,20 +447,23 @@ pub mod offset {
             let step = range.end - range.start;
             let mut err = S::ZERO;
             if step > min_step {
-                let error_at = |s: S| {
-                    let t = range.start + step * s;
-                    offset_error(offset_curve.sample(s), t, range.start, range.end)
-                };
-                err = error_at(S::HALF);
-                if err > tolerance * S::HALF {
-                    err = err.max(error_at(S::value(0.25))).max(error_at(S::value(0.75)));
+                for (offset_curve, dist) in offset_curves.iter().zip(dists) {
+                    let error_at = |s: S| {
+                        let t = range.start + step * s;
+                        offset_error(offset_curve.sample(s), dist, t, range.start, range.end)
+                    };
+                    let mut e = error_at(S::HALF);
+                    if e > tolerance * S::HALF {
+                        e = e.max(error_at(S::value(0.25))).max(error_at(S::value(0.75)));
+                    }
+                    err = err.max(e);
                 }
             }
 
             if err <= tolerance {
-                cb(&offset_curve);
+                cb(&offset_curves);
                 range = range.end..end;
-                from = to;
+                from = offset_curves.map(|c| c.to);
                 v0 = v1;
             } else {
                 range.end = range.start + step * S::HALF;
@@ -1090,8 +1126,6 @@ fn get_clip_intersections(
     (i1, i2)
 }
 
-pub type Output<'l> = &'l mut dyn PathBuilder;
-
 #[derive(Copy, Clone, Debug)]
 enum Seg {
     Line(LineSegment<f32>),
@@ -1129,10 +1163,27 @@ pub struct OffsetOptions {
     pub simplify_inner_joins: bool,
 }
 
-pub struct OffsetBuilder<'l> {
-    output: Output<'l>,
+/// One side of the offset path.
+#[derive(Copy, Clone)]
+struct Side {
+    offset: f32,
+    /// The last offset segment. It is added to the output once the join that
+    /// follows it is known, since an inner join can shorten it.
     prev: Seg,
-    /// End of the last segment added to the output.
+}
+
+/// Offsets a path by one or two distances, each one being a side of the
+/// offset path.
+///
+/// The source path is processed once for all sides: short segments are
+/// discarded, curves are split and approximated, and joins are classified as
+/// inner or outer. The sides can't disagree about any of these decisions.
+///
+/// Each side is written to its own output. The methods take the outputs in the
+/// order of the sides.
+struct Offsetter<const N: usize> {
+    sides: [Side; N],
+    /// End of the last segment added to the outputs.
     prev_endpoint: Point,
     /// End of the last segment of the source path, including the segments that
     /// were discarded for being too short. The next segment starts here, and is
@@ -1142,12 +1193,9 @@ pub struct OffsetBuilder<'l> {
     first_endpoint: Point,
     prev_tangent: Vector,
     first_tangent: Vector,
-    offset: f32,
     miter_limit: f32,
     tolerance: f32,
     simplify_inner_joins: bool,
-    skip_begin: bool,
-    skip_end: bool,
     /// Treat open sub-paths that end at their start point as closed.
     close_if_end_at_start: bool,
     is_first_segment: bool,
@@ -1157,46 +1205,52 @@ pub struct OffsetBuilder<'l> {
     /// Endpoints of the line segments discarded since the beginning of the
     /// sub-path, while no segment has been added yet.
     discarded: Vec<Point>,
-    /// Number of segments added to the output so far.
+    /// Number of segments added to the outputs so far.
     num_steps: u32,
     join: JoinBuilder,
 }
 
-impl<'l> OffsetBuilder<'l> {
-    pub fn new(output: &'l mut dyn PathBuilder, options: &OffsetOptions) -> Self {
-        OffsetBuilder {
-            output,
-            miter_limit: options.miter_limit.max(1.0),
-            tolerance: options.tolerance.max(0.0001),
-            offset: options.offset,
-            prev: Seg::Line(LineSegment {
-                from: Point::zero(),
-                to: Point::zero(),
+impl<const N: usize> Offsetter<N> {
+    fn new(
+        offsets: [f32; N],
+        join: LineJoin,
+        miter_limit: f32,
+        tolerance: f32,
+        simplify_inner_joins: bool,
+    ) -> Self {
+        let no_segment = Seg::Line(LineSegment {
+            from: Point::zero(),
+            to: Point::zero(),
+        });
+        Offsetter {
+            sides: offsets.map(|offset| Side {
+                offset,
+                prev: no_segment,
             }),
+            miter_limit: miter_limit.max(1.0),
+            tolerance: tolerance.max(0.0001),
             prev_endpoint: Point::zero(),
             position: Point::zero(),
             prev_tangent: Vector::zero(),
             first_endpoint: Point::zero(),
             first_tangent: Vector::zero(),
             is_first_segment: true,
-            min_segment_length: options.tolerance.max(0.0001) * 0.5,
+            min_segment_length: tolerance.max(0.0001) * 0.5,
             discarded: Vec::new(),
             num_steps: 0,
-            skip_begin: false,
-            skip_end: false,
             close_if_end_at_start: true,
-            join: match options.join {
+            join: match join {
                 LineJoin::Bevel => bevel_join,
                 LineJoin::Miter => miter_join,
                 LineJoin::MiterClip => miter_clip_join,
                 LineJoin::Round => round_join,
                 LineJoin::Quad => quad_join,
             },
-            simplify_inner_joins: options.simplify_inner_joins,
+            simplify_inner_joins,
         }
     }
 
-    pub fn begin(&mut self, at: Point) {
+    fn begin(&mut self, at: Point) {
         self.prev_endpoint = at;
         self.position = at;
         self.first_endpoint = at;
@@ -1221,27 +1275,28 @@ impl<'l> OffsetBuilder<'l> {
     /// Without this, sub-paths that fit within the tolerance would not produce
     /// any output, although their stroke can be much larger than the tolerance.
     /// The threshold stays reduced until the end of the sub-path.
-    ///
-    /// Returns whether the discarded segments were added back. They stay in
-    /// `self.discarded` until the next sub-path.
-    fn recover_discarded_segments(&mut self) -> bool {
+    fn recover_discarded_segments(&mut self, outputs: &mut [&mut dyn PathBuilder; N]) {
         if !self.is_first_segment || self.discarded.is_empty() {
-            return false;
+            return;
         }
         self.min_segment_length = self.tolerance * 0.001;
         let discarded = std::mem::take(&mut self.discarded);
         for to in &discarded {
-            self.line_to(*to);
+            self.line_to(*to, outputs);
         }
         self.discarded = discarded;
-        true
     }
 
-    pub fn end(&mut self, close: bool) {
-        self.recover_discarded_segments();
+    /// Ends the current sub-path.
+    ///
+    /// Returns `None` if nothing was added to the outputs, otherwise whether
+    /// the sub-path is closed. The sub-paths of the outputs are not ended. If
+    /// the sub-path is closed, they stop after the closing join.
+    fn end(&mut self, close: bool, outputs: &mut [&mut dyn PathBuilder; N]) -> Option<bool> {
+        self.recover_discarded_segments(outputs);
         if self.is_first_segment {
             self.min_segment_length = self.default_min_segment_length();
-            return;
+            return None;
         }
 
         let end_at_start = (self.prev_endpoint - self.first_endpoint).square_length()
@@ -1255,35 +1310,33 @@ impl<'l> OffsetBuilder<'l> {
             // 180 degrees.
             let min_segment_length = self.min_segment_length;
             self.min_segment_length = min_segment_length.min(self.tolerance * 0.001);
-            self.line_to(self.first_endpoint);
+            self.line_to(self.first_endpoint, outputs);
             self.min_segment_length = min_segment_length;
 
             // Add the join between the last and first segments by stepping into
             // a stand-in for the first segment. It bypasses line_to so that it is
             // never discarded for being too short.
-            let d = normal(self.first_tangent) * self.offset;
-            let mut first = Seg::Line(LineSegment {
-                from: self.first_endpoint + d,
-                to: self.first_endpoint + self.first_tangent + d,
+            let n = normal(self.first_tangent);
+            let mut first = self.sides.map(|side| {
+                let d = n * side.offset;
+                Seg::Line(LineSegment {
+                    from: self.first_endpoint + d,
+                    to: self.first_endpoint + self.first_tangent + d,
+                })
             });
-
-            let simplify = self.simplify_inner_joins;
-            self.simplify_inner_joins = false;
-            self.step(&mut first, self.first_tangent);
-            self.simplify_inner_joins = simplify;
-
-            self.output.end(true);
+            self.step(&mut first, self.first_tangent, false, outputs);
         } else {
-            self.add_prev_segment();
-            if !self.skip_end {
-                self.output.end(false);
+            for (side, output) in self.sides.iter().zip(outputs.iter_mut()) {
+                add_segment(&side.prev, *output);
             }
         }
 
         self.min_segment_length = self.default_min_segment_length();
+
+        Some(close)
     }
 
-    pub fn line_to(&mut self, to: Point) {
+    fn line_to(&mut self, to: Point, outputs: &mut [&mut dyn PathBuilder; N]) {
         self.position = to;
         if (to - self.prev_endpoint).square_length()
             < self.min_segment_length * self.min_segment_length
@@ -1295,14 +1348,16 @@ impl<'l> OffsetBuilder<'l> {
         }
 
         let unit_tangent = (to - self.prev_endpoint).normalize();
-        let d = normal(unit_tangent) * self.offset;
-
-        let mut segment = Seg::Line(LineSegment {
-            from: self.prev_endpoint + d,
-            to: to + d,
+        let n = normal(unit_tangent);
+        let mut segments = self.sides.map(|side| {
+            let d = n * side.offset;
+            Seg::Line(LineSegment {
+                from: self.prev_endpoint + d,
+                to: to + d,
+            })
         });
 
-        self.step(&mut segment, unit_tangent);
+        self.step(&mut segments, unit_tangent, self.simplify_inner_joins, outputs);
         self.prev_tangent = unit_tangent;
         self.prev_endpoint = to;
     }
@@ -1347,7 +1402,7 @@ impl<'l> OffsetBuilder<'l> {
         (ctrl1 + delta, ctrl2, to)
     }
 
-    pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
+    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point, outputs: &mut [&mut dyn PathBuilder; N]) {
         let (displaced_ctrl, displaced_to) = self.displace_quadratic_bezier(ctrl, to);
         let curve = QuadraticBezierSegment {
             from: self.prev_endpoint,
@@ -1355,7 +1410,7 @@ impl<'l> OffsetBuilder<'l> {
             to: displaced_to,
         };
         let num_steps = self.num_steps;
-        self.add_quadratic_bezier(&curve);
+        self.add_quadratic_bezier(&curve, outputs);
         if self.num_steps != num_steps {
             // See cubic_bezier_to.
             self.prev_endpoint = curve.to;
@@ -1363,36 +1418,37 @@ impl<'l> OffsetBuilder<'l> {
         self.position = to;
     }
 
-    fn add_quadratic_bezier(&mut self, curve: &QuadraticBezierSegment<f32>) {
+    fn add_quadratic_bezier(&mut self, curve: &QuadraticBezierSegment<f32>, outputs: &mut [&mut dyn PathBuilder; N]) {
         match classify_quadratic_bezier(curve, self.tolerance) {
             QuadType::Linear => {
-                self.line_to(curve.to);
+                self.line_to(curve.to, outputs);
                 return;
             }
             QuadType::Degenerate(t) => {
-                self.line_to(curve.sample(t));
-                self.line_to(curve.to);
+                self.line_to(curve.sample(t), outputs);
+                self.line_to(curve.to, outputs);
                 return;
             }
             QuadType::Curve => {}
         }
 
+        let offsets = self.sides.map(|side| side.offset);
         let mut first = true;
-        offset::for_each_offset(curve, self.offset, self.tolerance, &mut |sub_curve| {
-            let mut segment = Seg::Quadratic(*sub_curve);
+        offset::for_each_offsets(curve, offsets, self.tolerance, &mut |sub_curves| {
+            let mut segments = sub_curves.map(Seg::Quadratic);
             if first {
                 first = false;
                 let start_tangent = (curve.ctrl - curve.from).normalize();
-                self.step(&mut segment, start_tangent);
+                self.step(&mut segments, start_tangent, self.simplify_inner_joins, outputs);
             } else {
-                self.step_without_join(&segment)
+                self.step_without_join(&segments, outputs)
             }
         });
         self.prev_tangent = (curve.to - curve.ctrl).normalize();
         self.prev_endpoint = curve.to;
     }
 
-    pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
+    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point, outputs: &mut [&mut dyn PathBuilder; N]) {
         let (ctrl1, ctrl2, to) = self.displace_cubic_bezier(ctrl1, ctrl2, to);
         let curve = CubicBezierSegment {
             from: self.prev_endpoint,
@@ -1404,27 +1460,24 @@ impl<'l> OffsetBuilder<'l> {
         // start on the displaced curve.
         self.position = curve.from;
         let num_steps = self.num_steps;
-        self.add_cubic_bezier(&curve);
+        self.add_cubic_bezier(&curve, outputs);
 
-        // If the curve added segments to the output, it ends exactly at `to`, even
-        // where its last part does not: split_range has rounding errors, the last
-        // part can stop before a cusp, or be discarded for being too short. This
-        // keeps the end of the curve where the opposite side of the stroke
-        // records it. It also avoids tiny closing segments with arbitrary
-        // directions, which make the two sides of the stroke disagree about the
-        // closing join.
+        // If the curve added segments to the outputs, it ends exactly at `to`,
+        // even where its last part does not: split_range has rounding errors, the
+        // last part can stop before a cusp, or be discarded for being too short.
+        // This avoids tiny closing segments with arbitrary directions.
         if self.num_steps != num_steps {
             self.prev_endpoint = to;
         }
         self.position = to;
     }
 
-    fn add_cubic_bezier(&mut self, curve: &CubicBezierSegment<f32>) {
+    fn add_cubic_bezier(&mut self, curve: &CubicBezierSegment<f32>, outputs: &mut [&mut dyn PathBuilder; N]) {
         if cubic_bezier_is_linear(curve, self.tolerance) {
             for t in cubic_bezier_turnarounds(curve) {
-                self.line_to(curve.sample(t));
+                self.line_to(curve.sample(t), outputs);
             }
-            self.line_to(curve.to);
+            self.line_to(curve.to, outputs);
             return;
         }
 
@@ -1437,7 +1490,7 @@ impl<'l> OffsetBuilder<'l> {
             if cusp - eps > t0 {
                 let sub_curve = curve.split_range(t0..(cusp - eps));
                 sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
-                    self.quadratic_bezier_to(quad.ctrl, quad.to);
+                    self.quadratic_bezier_to(quad.ctrl, quad.to, outputs);
                 });
             }
             t0 = cusp + eps;
@@ -1446,62 +1499,93 @@ impl<'l> OffsetBuilder<'l> {
         if t0 < 1.0 {
             let sub_curve = curve.split_range(t0..1.0);
             sub_curve.for_each_quadratic_bezier(self.tolerance, &mut |quad| {
-                self.quadratic_bezier_to(quad.ctrl, quad.to)
+                self.quadratic_bezier_to(quad.ctrl, quad.to, outputs)
             });
         }
     }
 
-    fn step_without_join(&mut self, segment: &Seg) {
+    fn step_without_join(&mut self, segments: &[Seg; N], outputs: &mut [&mut dyn PathBuilder; N]) {
         debug_assert!(!self.is_first_segment);
         self.num_steps += 1;
-        self.add_prev_segment();
-        self.prev = *segment;
+        for ((side, segment), output) in self.sides.iter_mut().zip(segments).zip(outputs.iter_mut()) {
+            add_segment(&side.prev, *output);
+            side.prev = *segment;
+        }
     }
 
-    fn step(&mut self, segment: &mut Seg, unit_tangent: Vector) {
+    fn step(
+        &mut self,
+        segments: &mut [Seg; N],
+        unit_tangent: Vector,
+        simplify_inner_joins: bool,
+        outputs: &mut [&mut dyn PathBuilder; N],
+    ) {
         self.num_steps += 1;
-        let no_join =
-            (self.prev.to() - segment.from()).square_length() < self.tolerance * self.tolerance;
 
         if self.is_first_segment {
             self.first_tangent = unit_tangent;
             self.is_first_segment = false;
-            if !self.skip_begin {
-                self.output.begin(segment.from(), NO_ATTRIBUTES);
+            for ((side, segment), output) in self.sides.iter_mut().zip(segments).zip(outputs.iter_mut()) {
+                output.begin(segment.from(), NO_ATTRIBUTES);
+                side.prev = *segment;
             }
-        } else if no_join {
-            self.add_prev_segment();
-        } else {
-            let t01 = unit_tangent - self.prev_tangent;
-            let n01 = (normal(unit_tangent) + normal(self.prev_tangent)) * self.offset.signum();
-            // When the next segment goes back along the previous one, the offset
-            // segments end on opposite sides of the stroke on both sides, so both
-            // sides get an outer join to wrap around the tip.
-            let reversal = self.prev_tangent.dot(unit_tangent) < 0.0
-                && self.prev_tangent.cross(unit_tangent).abs() < 0.005;
-            // We are a bit conserative about inner joins when the dot product is close to zero.
-            let inner_join = !reversal && t01.dot(n01) > -0.01;
-
-            //println!("> w:{:?} inner:{inner_join:?} t01:{t01:?} n01:{n01:?} t01.n01{:?} cross:{cross:?} dot:{dot:?} pt: {positive_turn:?} pos: {:?}", self.offset, t01.dot(n01), self.prev_endpoint);
-
-            if inner_join {
-                self.inner_join(segment);
-            } else {
-                self.outer_join(segment, unit_tangent);
-            }
+            return;
         }
 
-        self.prev = *segment;
+        // Whether a join is inner or outer only depends on the sign of the
+        // offset of each side.
+        let t01 = unit_tangent - self.prev_tangent;
+        let n01 = normal(unit_tangent) + normal(self.prev_tangent);
+        let turn = t01.dot(n01);
+        // When the next segment goes back along the previous one, the offset
+        // segments end on opposite sides of the stroke on both sides, so both
+        // sides get an outer join to wrap around the tip.
+        let reversal = self.prev_tangent.dot(unit_tangent) < 0.0
+            && self.prev_tangent.cross(unit_tangent).abs() < 0.005;
+
+        for i in 0..N {
+            let output = &mut *outputs[i];
+            let segment = &mut segments[i];
+            let side = &mut self.sides[i];
+            let no_join =
+                (side.prev.to() - segment.from()).square_length() < self.tolerance * self.tolerance;
+            // We are a bit conserative about inner joins when the dot product is close to zero.
+            let inner_join = !reversal && turn * side.offset.signum() > -0.01;
+
+            if no_join {
+                add_segment(&side.prev, output);
+            } else if inner_join {
+                Self::inner_join(side, segment, simplify_inner_joins, output);
+            } else {
+                // If the previous segment is a line, the join adds its end.
+                if let Seg::Quadratic(curve) = side.prev {
+                    output.quadratic_bezier_to(curve.ctrl, curve.to, NO_ATTRIBUTES);
+                }
+                (self.join)(
+                    output,
+                    self.prev_endpoint,
+                    self.prev_tangent,
+                    unit_tangent,
+                    side.offset,
+                    self.miter_limit,
+                    self.tolerance,
+                    side.prev.is_line(),
+                    segment.is_line(),
+                );
+            }
+
+            side.prev = *segment;
+        }
     }
 
     // Inner joins are expected to be inside the shape so we simplify them into a
     // single line segment and even try to prevent the folding that happens where
     // the two offset segments intersect in the simple cases.
-    fn inner_join(&mut self, next: &mut Seg) {
+    fn inner_join(side: &mut Side, next: &mut Seg, simplify: bool, output: &mut dyn PathBuilder) {
         // If the two segments are lines unfold the join.
         let mut simplified = false;
-        if self.simplify_inner_joins {
-            if let (Seg::Line(l0), Seg::Line(l1)) = (&mut self.prev, &mut *next) {
+        if simplify {
+            if let (Seg::Line(l0), Seg::Line(l1)) = (&mut side.prev, &mut *next) {
                 if let Some(intersection) = l0.intersection(l1) {
                     l0.to = intersection;
                     l1.from = intersection;
@@ -1510,42 +1594,64 @@ impl<'l> OffsetBuilder<'l> {
             }
         }
 
-        self.add_prev_segment();
+        add_segment(&side.prev, output);
 
         if !simplified {
-            self.output.line_to(next.from(), NO_ATTRIBUTES);
+            output.line_to(next.from(), NO_ATTRIBUTES);
+        }
+    }
+}
+
+fn add_segment(segment: &Seg, output: &mut dyn PathBuilder) {
+    match segment {
+        Seg::Line(line) => {
+            output.line_to(line.to, NO_ATTRIBUTES);
+        }
+        Seg::Quadratic(curve) => {
+            output.quadratic_bezier_to(curve.ctrl, curve.to, NO_ATTRIBUTES);
+        }
+    }
+}
+
+pub struct OffsetBuilder<'l> {
+    output: &'l mut dyn PathBuilder,
+    offsetter: Offsetter<1>,
+}
+
+impl<'l> OffsetBuilder<'l> {
+    pub fn new(output: &'l mut dyn PathBuilder, options: &OffsetOptions) -> Self {
+        OffsetBuilder {
+            output,
+            offsetter: Offsetter::new(
+                [options.offset],
+                options.join,
+                options.miter_limit,
+                options.tolerance,
+                options.simplify_inner_joins,
+            ),
         }
     }
 
-    fn add_prev_segment(&mut self) {
-        match &self.prev {
-            Seg::Line(line) => {
-                self.output.line_to(line.to, NO_ATTRIBUTES);
-            }
-            Seg::Quadratic(curve) => {
-                self.output
-                    .quadratic_bezier_to(curve.ctrl, curve.to, NO_ATTRIBUTES);
-            }
+    pub fn begin(&mut self, at: Point) {
+        self.offsetter.begin(at);
+    }
+
+    pub fn end(&mut self, close: bool) {
+        if let Some(closed) = self.offsetter.end(close, &mut [&mut *self.output]) {
+            self.output.end(closed);
         }
     }
 
-    fn outer_join(&mut self, next: &Seg, unit_tangent: Vector) {
-        if let Seg::Quadratic(curve) = self.prev {
-            self.output
-                .quadratic_bezier_to(curve.ctrl, curve.to, NO_ATTRIBUTES);
-        }
+    pub fn line_to(&mut self, to: Point) {
+        self.offsetter.line_to(to, &mut [&mut *self.output]);
+    }
 
-        (self.join)(
-            self.output,
-            self.prev_endpoint,
-            self.prev_tangent,
-            unit_tangent,
-            self.offset,
-            self.miter_limit,
-            self.tolerance,
-            self.prev.is_line(),
-            next.is_line(),
-        );
+    pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
+        self.offsetter.quadratic_bezier_to(ctrl, to, &mut [&mut *self.output]);
+    }
+
+    pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
+        self.offsetter.cubic_bezier_to(ctrl1, ctrl2, to, &mut [&mut *self.output]);
     }
 }
 
@@ -1577,41 +1683,78 @@ impl RecordedSegment {
     }
 }
 
-/// The source segments of the current sub-path, recorded to be offset in
-/// reverse order for the opposite side of the stroke.
+/// Records a sub-path, to add it to another path in reverse order.
 #[derive(Default)]
-struct OppositeSide {
+struct SegmentBuffer {
     start: Point,
     segments: Vec<RecordedSegment>,
 }
 
-impl OppositeSide {
-    fn begin(&mut self, at: Point) {
-        self.start = at;
-        self.segments.clear();
-    }
-
-    fn line_to(&mut self, to: Point) {
-        self.segments.push(RecordedSegment::Line { to });
-    }
-
-    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
-        self.segments.push(RecordedSegment::Quadratic { ctrl, to });
-    }
-
-    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
-        self.segments.push(RecordedSegment::Cubic { ctrl1, ctrl2, to });
-    }
-
+impl SegmentBuffer {
     fn last_point(&self) -> Point {
         self.segments.last().map_or(self.start, RecordedSegment::to)
+    }
+
+    /// Adds the segments to `output` in reverse order, starting from the
+    /// current position of `output`.
+    fn add_reversed_to(&self, output: &mut dyn PathBuilder) {
+        // Each segment, reversed, ends where the previous one starts.
+        for (i, segment) in self.segments.iter().enumerate().rev() {
+            let to = match i {
+                0 => self.start,
+                _ => self.segments[i - 1].to(),
+            };
+            match *segment {
+                RecordedSegment::Line { .. } => {
+                    output.line_to(to, NO_ATTRIBUTES);
+                }
+                RecordedSegment::Quadratic { ctrl, .. } => {
+                    output.quadratic_bezier_to(ctrl, to, NO_ATTRIBUTES);
+                }
+                RecordedSegment::Cubic { ctrl1, ctrl2, .. } => {
+                    output.cubic_bezier_to(ctrl2, ctrl1, to, NO_ATTRIBUTES);
+                }
+            }
+        }
+    }
+}
+
+impl PathBuilder for SegmentBuffer {
+    fn num_attributes(&self) -> usize {
+        0
+    }
+
+    fn begin(&mut self, at: Point, _: Attributes) -> EndpointId {
+        self.start = at;
+        self.segments.clear();
+        EndpointId::INVALID
+    }
+
+    fn end(&mut self, _close: bool) {}
+
+    fn line_to(&mut self, to: Point, _: Attributes) -> EndpointId {
+        self.segments.push(RecordedSegment::Line { to });
+        EndpointId::INVALID
+    }
+
+    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point, _: Attributes) -> EndpointId {
+        self.segments.push(RecordedSegment::Quadratic { ctrl, to });
+        EndpointId::INVALID
+    }
+
+    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point, _: Attributes) -> EndpointId {
+        self.segments.push(RecordedSegment::Cubic { ctrl1, ctrl2, to });
+        EndpointId::INVALID
     }
 }
 
 pub struct StrokeToFillBuilder<'l> {
-    offsetter: OffsetBuilder<'l>,
+    output: &'l mut dyn PathBuilder,
+    /// The second side of the stroke, in the direction of the source path. It
+    /// is added to the output in reverse order at the end of each sub-path.
+    opposite: SegmentBuffer,
+    offsetter: Offsetter<2>,
     offsets: (f32, f32),
-    opposite: OppositeSide,
     start_cap: CapBuilder,
     end_cap: CapBuilder,
     add_empty_caps: bool,
@@ -1619,136 +1762,74 @@ pub struct StrokeToFillBuilder<'l> {
 
 impl<'l> StrokeToFillBuilder<'l> {
     pub fn new(output: &'l mut dyn PathBuilder, options: &StrokeOptions) -> Self {
-        let offset0 = options.offsets.0;
-        let offset1 = options.offsets.1;
-
-        let offset_options = OffsetOptions {
-            offset: offset0,
-            tolerance: options.tolerance,
-            miter_limit: options.miter_limit,
-            join: options.line_join,
-            simplify_inner_joins: true,
-        };
-
-        let mut offset = OffsetBuilder::new(output, &offset_options);
-        offset.skip_end = true;
-        // Open sub-paths get caps even if they end at their start point, and
-        // end() relies on the offsetter closing exactly when the caller asks.
-        offset.close_if_end_at_start = false;
+        let mut offsetter = Offsetter::new(
+            [options.offsets.0, options.offsets.1],
+            options.line_join,
+            options.miter_limit,
+            options.tolerance,
+            true,
+        );
+        // Open sub-paths get caps even if they end at their start point.
+        offsetter.close_if_end_at_start = false;
 
         StrokeToFillBuilder {
-            offsetter: offset,
-            offsets: (offset0, offset1),
+            output,
+            opposite: SegmentBuffer::default(),
+            offsetter,
+            offsets: options.offsets,
             start_cap: get_cap_fn(options.start_cap),
             end_cap: get_cap_fn(options.end_cap),
-            opposite: OppositeSide::default(),
             add_empty_caps: options.add_empty_caps,
         }
     }
 
     pub fn begin(&mut self, at: Point) {
         self.offsetter.begin(at);
-        self.opposite.begin(at);
     }
 
-    // The opposite side only records the segments that the offsetter did not
-    // discard for being too short. Otherwise each side would discard different
-    // segments (the reversed sub-path accumulates short segments in the other
-    // direction), and the two sides could disagree about which side of a join is
-    // the outer one. Curves are recorded as the offsetter
-    // displaced them, starting at the end of the last recorded segment.
-
     pub fn line_to(&mut self, to: Point) {
-        let num_steps = self.offsetter.num_steps;
-        self.offsetter.line_to(to);
-        if self.offsetter.num_steps != num_steps {
-            self.opposite.line_to(to);
-        }
+        let mut outputs: [&mut dyn PathBuilder; 2] = [&mut *self.output, &mut self.opposite];
+        self.offsetter.line_to(to, &mut outputs);
     }
 
     pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
-        let (displaced_ctrl, displaced_to) = self.offsetter.displace_quadratic_bezier(ctrl, to);
-        let num_steps = self.offsetter.num_steps;
-        self.offsetter.quadratic_bezier_to(ctrl, to);
-        if self.offsetter.num_steps != num_steps {
-            self.opposite.quadratic_bezier_to(displaced_ctrl, displaced_to);
-        }
+        let mut outputs: [&mut dyn PathBuilder; 2] = [&mut *self.output, &mut self.opposite];
+        self.offsetter.quadratic_bezier_to(ctrl, to, &mut outputs);
     }
 
     pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
-        let (displaced_ctrl1, displaced_ctrl2, displaced_to) =
-            self.offsetter.displace_cubic_bezier(ctrl1, ctrl2, to);
-        let num_steps = self.offsetter.num_steps;
-        self.offsetter.cubic_bezier_to(ctrl1, ctrl2, to);
-        if self.offsetter.num_steps != num_steps {
-            self.opposite.cubic_bezier_to(displaced_ctrl1, displaced_ctrl2, displaced_to);
-        }
+        let mut outputs: [&mut dyn PathBuilder; 2] = [&mut *self.output, &mut self.opposite];
+        self.offsetter.cubic_bezier_to(ctrl1, ctrl2, to, &mut outputs);
     }
 
     pub fn end(&mut self, close: bool) {
-        if self.offsetter.recover_discarded_segments() {
-            for to in &self.offsetter.discarded {
-                self.opposite.line_to(*to);
-            }
-        }
-        if self.offsetter.is_first_segment {
-            self.offsetter.min_segment_length = self.offsetter.default_min_segment_length();
+        let mut outputs: [&mut dyn PathBuilder; 2] = [&mut *self.output, &mut self.opposite];
+        let Some(closed) = self.offsetter.end(close, &mut outputs) else {
             if self.add_empty_caps {
                 self.add_empty_cap();
             }
-            self.opposite.segments.clear();
             return;
-        }
+        };
 
-        let start_endpoint = self.offsetter.first_endpoint;
-        let start_tangent = self.offsetter.first_tangent;
-
-        self.offsetter.end(close);
-
-        let need_caps = !close;
-
-        if need_caps {
+        if closed {
+            // Each side is a separate contour.
+            self.output.end(true);
+            self.output.begin(self.opposite.last_point(), NO_ATTRIBUTES);
+            self.opposite.add_reversed_to(&mut *self.output);
+            self.output.end(true);
+        } else {
+            // A single contour that goes along one side, around the end cap, back
+            // along the other side and around the start cap.
             self.add_end_cap();
+            self.opposite.add_reversed_to(&mut *self.output);
+            self.add_start_cap();
+            self.output.end(true);
         }
-
-        // Swap the offset while replaying the opposite contour.
-        // Invert the sign since we are going to replay in reverse order.
-        self.offsetter.offset = -self.offsets.1;
-        self.offsetter.skip_begin = !close;
-
-        // Each segment, reversed, ends where the previous one starts. If the
-        // sub-path is closed, offsetter.end adds the closing segment.
-        let opposite = std::mem::take(&mut self.opposite);
-        self.offsetter.begin(opposite.last_point());
-        for (i, segment) in opposite.segments.iter().enumerate().rev() {
-            let to = match i {
-                0 => opposite.start,
-                _ => opposite.segments[i - 1].to(),
-            };
-            match *segment {
-                RecordedSegment::Line { .. } => {
-                    self.offsetter.line_to(to);
-                }
-                RecordedSegment::Quadratic { ctrl, .. } => {
-                    self.offsetter.quadratic_bezier_to(ctrl, to);
-                }
-                RecordedSegment::Cubic { ctrl1, ctrl2, .. } => {
-                    self.offsetter.cubic_bezier_to(ctrl2, ctrl1, to);
-                }
-            }
-        }
-        self.offsetter.end(close);
-        self.opposite = opposite;
-
-        if need_caps {
-            self.add_start_cap(start_endpoint, -start_tangent);
-        }
-
-        self.offsetter.skip_begin = false;
-        self.offsetter.offset = self.offsets.0;
     }
 
-    fn add_start_cap(&mut self, endpoint: Point, tangent: Vector) {
+    fn add_start_cap(&mut self) {
+        let endpoint = self.offsetter.first_endpoint;
+        let tangent = -self.offsetter.first_tangent;
         let n = normal(tangent);
         let width = (self.offsets.0 - self.offsets.1).abs() * 0.5;
         let pivot_offset = (self.offsets.0 + self.offsets.1) * 0.5;
@@ -1756,7 +1837,7 @@ impl<'l> StrokeToFillBuilder<'l> {
         let end = endpoint - n * self.offsets.0;
         let sign = (self.offsets.0 - self.offsets.1).signum();
         (self.start_cap)(
-            self.offsetter.output,
+            &mut *self.output,
             pivot,
             tangent,
             end,
@@ -1764,7 +1845,6 @@ impl<'l> StrokeToFillBuilder<'l> {
             sign,
             self.offsetter.tolerance,
         );
-        self.offsetter.output.end(true);
     }
 
     fn add_end_cap(&mut self) {
@@ -1776,7 +1856,7 @@ impl<'l> StrokeToFillBuilder<'l> {
         let end = self.offsetter.prev_endpoint + n * self.offsets.1;
         let sign = (self.offsets.0 - self.offsets.1).signum();
         (self.end_cap)(
-            self.offsetter.output,
+            &mut *self.output,
             pivot,
             tangent,
             end,
@@ -1798,7 +1878,7 @@ impl<'l> StrokeToFillBuilder<'l> {
         let p1 = pivot - normal * width;
 
         let tolerance = self.offsetter.tolerance;
-        let output = &mut *self.offsetter.output;
+        let output = &mut *self.output;
         output.begin(p0, NO_ATTRIBUTES);
         (self.end_cap)(output, pivot, tangent, p1, width, 1.0, tolerance);
         (self.start_cap)(output, pivot, -tangent, p0, width, 1.0, tolerance);
