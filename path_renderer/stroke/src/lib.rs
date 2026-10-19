@@ -1115,7 +1115,13 @@ pub struct OffsetOptions {
 pub struct OffsetBuilder<'l> {
     output: Output<'l>,
     prev: Seg,
+    /// End of the last segment added to the output.
     prev_endpoint: Point,
+    /// End of the last segment of the source path, including the segments that
+    /// were discarded for being too short. The next segment starts here, and is
+    /// displaced to start at `prev_endpoint` instead (see
+    /// `displace_quadratic_bezier` and `displace_cubic_bezier`).
+    position: Point,
     first_endpoint: Point,
     prev_tangent: Vector,
     first_tangent: Vector,
@@ -1128,6 +1134,14 @@ pub struct OffsetBuilder<'l> {
     /// Treat open sub-paths that end at their start point as closed.
     close_if_end_at_start: bool,
     is_first_segment: bool,
+    /// Line segments shorter than this are discarded. See
+    /// `default_min_segment_length`.
+    min_segment_length: f32,
+    /// Endpoints of the line segments discarded since the beginning of the
+    /// sub-path, while no segment has been added yet.
+    discarded: Vec<Point>,
+    /// Number of segments added to the output so far.
+    num_steps: u32,
     join: JoinBuilder,
 }
 
@@ -1143,10 +1157,14 @@ impl<'l> OffsetBuilder<'l> {
                 to: Point::zero(),
             }),
             prev_endpoint: Point::zero(),
+            position: Point::zero(),
             prev_tangent: Vector::zero(),
             first_endpoint: Point::zero(),
             first_tangent: Vector::zero(),
             is_first_segment: true,
+            min_segment_length: options.tolerance.max(0.0001) * 0.5,
+            discarded: Vec::new(),
+            num_steps: 0,
             skip_begin: false,
             skip_end: false,
             close_if_end_at_start: true,
@@ -1163,12 +1181,49 @@ impl<'l> OffsetBuilder<'l> {
 
     pub fn begin(&mut self, at: Point) {
         self.prev_endpoint = at;
+        self.position = at;
         self.first_endpoint = at;
         self.is_first_segment = true;
+        self.discarded.clear();
+    }
+
+    /// Length below which line segments are discarded, outside of the special
+    /// cases that reduce it.
+    ///
+    /// The following curve is displaced by up to this distance to start where
+    /// the output stops (see `displace_cubic_bezier`), on top of the error of the
+    /// offset curves, which can reach the tolerance. Half of the tolerance keeps
+    /// the sum of both reasonably close to the tolerance.
+    fn default_min_segment_length(&self) -> f32 {
+        self.tolerance * 0.5
+    }
+
+    /// If all segments of the current sub-path were discarded for being too
+    /// short, adds them back with a much smaller length threshold.
+    ///
+    /// Without this, sub-paths that fit within the tolerance would not produce
+    /// any output, although their stroke can be much larger than the tolerance.
+    /// The threshold stays reduced until the end of the sub-path.
+    ///
+    /// Returns whether the discarded segments were added back. They stay in
+    /// `self.discarded` until the next sub-path.
+    fn recover_discarded_segments(&mut self) -> bool {
+        if !self.is_first_segment || self.discarded.is_empty() {
+            return false;
+        }
+        self.min_segment_length = self.tolerance * 0.001;
+        let discarded = std::mem::take(&mut self.discarded);
+        for to in &discarded {
+            self.line_to(*to);
+        }
+        self.discarded = discarded;
+        true
     }
 
     pub fn end(&mut self, close: bool) {
+        self.recover_discarded_segments();
         if self.is_first_segment {
+            self.min_segment_length = self.default_min_segment_length();
             return;
         }
 
@@ -1177,11 +1232,18 @@ impl<'l> OffsetBuilder<'l> {
         let close = close || (self.close_if_end_at_start && end_at_start);
 
         if close {
+            // The closing segment is kept even if it is too short.
+            // Discarding it would merge the joins at both of its ends into a single
+            // one, which turns the wrong way when their angles add up to more than
+            // 180 degrees.
+            let min_segment_length = self.min_segment_length;
+            self.min_segment_length = min_segment_length.min(self.tolerance * 0.001);
             self.line_to(self.first_endpoint);
+            self.min_segment_length = min_segment_length;
 
             // Add the join between the last and first segments by stepping into
             // a stand-in for the first segment. It bypasses line_to so that it is
-            // never discarded for being shorter than the tolerance.
+            // never discarded for being too short.
             let d = normal(self.first_tangent) * self.offset;
             let mut first = Seg::Line(LineSegment {
                 from: self.first_endpoint + d,
@@ -1200,10 +1262,18 @@ impl<'l> OffsetBuilder<'l> {
                 self.output.end(false);
             }
         }
+
+        self.min_segment_length = self.default_min_segment_length();
     }
 
     pub fn line_to(&mut self, to: Point) {
-        if (to - self.prev_endpoint).square_length() < self.tolerance * self.tolerance {
+        self.position = to;
+        if (to - self.prev_endpoint).square_length()
+            < self.min_segment_length * self.min_segment_length
+        {
+            if self.is_first_segment {
+                self.discarded.push(to);
+            }
             return;
         }
 
@@ -1220,13 +1290,66 @@ impl<'l> OffsetBuilder<'l> {
         self.prev_endpoint = to;
     }
 
-    pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
-        let from = self.prev_endpoint;
-        let curve = QuadraticBezierSegment { from, ctrl, to };
+    /// Control point and endpoint of a quadratic bézier curve that starts at
+    /// the current position, displaced so that the curve starts at
+    /// `prev_endpoint`.
+    ///
+    /// The control point moves with the start of the curve, weighted by how
+    /// close it is to the start along the largest axis of the curve's extent
+    /// between its endpoints. This keeps the tangent at the end the control
+    /// point is closest to. If the curve ends where it starts, the whole curve
+    /// moves, and the next segment absorbs the displacement.
+    fn displace_quadratic_bezier(&self, ctrl: Point, to: Point) -> (Point, Point) {
+        let from = self.position;
+        let delta = self.prev_endpoint - from;
+        if delta == Vector::zero() {
+            return (ctrl, to);
+        }
+        if to == from {
+            return (ctrl + delta, to + delta);
+        }
 
-        match classify_quadratic_bezier(&curve, self.tolerance) {
+        let v = to - from;
+        let weight = if v.x.abs() >= v.y.abs() {
+            (to.x - ctrl.x) / v.x
+        } else {
+            (to.y - ctrl.y) / v.y
+        };
+
+        (ctrl + delta * weight.max(0.0).min(1.0), to)
+    }
+
+    /// Control points and endpoint of a cubic bézier curve that starts at the
+    /// current position, displaced so that the curve starts at `prev_endpoint`.
+    ///
+    /// The first control point moves with the start of the curve, so the
+    /// tangents at both ends are unchanged and the curve moves by at most the
+    /// displacement.
+    fn displace_cubic_bezier(&self, ctrl1: Point, ctrl2: Point, to: Point) -> (Point, Point, Point) {
+        let delta = self.prev_endpoint - self.position;
+        (ctrl1 + delta, ctrl2, to)
+    }
+
+    pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
+        let (displaced_ctrl, displaced_to) = self.displace_quadratic_bezier(ctrl, to);
+        let curve = QuadraticBezierSegment {
+            from: self.prev_endpoint,
+            ctrl: displaced_ctrl,
+            to: displaced_to,
+        };
+        let num_steps = self.num_steps;
+        self.add_quadratic_bezier(&curve);
+        if self.num_steps != num_steps {
+            // See cubic_bezier_to.
+            self.prev_endpoint = curve.to;
+        }
+        self.position = to;
+    }
+
+    fn add_quadratic_bezier(&mut self, curve: &QuadraticBezierSegment<f32>) {
+        match classify_quadratic_bezier(curve, self.tolerance) {
             QuadType::Linear => {
-                self.line_to(to);
+                self.line_to(curve.to);
                 return;
             }
             QuadType::Degenerate(t) => {
@@ -1238,7 +1361,7 @@ impl<'l> OffsetBuilder<'l> {
         }
 
         let mut first = true;
-        offset::for_each_offset(&curve, self.offset, self.tolerance, &mut |sub_curve| {
+        offset::for_each_offset(curve, self.offset, self.tolerance, &mut |sub_curve| {
             let mut segment = Seg::Quadratic(*sub_curve);
             if first {
                 first = false;
@@ -1248,29 +1371,49 @@ impl<'l> OffsetBuilder<'l> {
                 self.step_without_join(&segment)
             }
         });
-        self.prev_tangent = (to - ctrl).normalize();
-        self.prev_endpoint = to;
+        self.prev_tangent = (curve.to - curve.ctrl).normalize();
+        self.prev_endpoint = curve.to;
     }
 
     pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
+        let (ctrl1, ctrl2, to) = self.displace_cubic_bezier(ctrl1, ctrl2, to);
         let curve = CubicBezierSegment {
             from: self.prev_endpoint,
             ctrl1,
             ctrl2,
             to,
         };
+        // The quadratic bézier curves that approximate the cubic bézier curve
+        // start on the displaced curve.
+        self.position = curve.from;
+        let num_steps = self.num_steps;
+        self.add_cubic_bezier(&curve);
 
-        if cubic_bezier_is_linear(&curve, self.tolerance) {
-            for t in cubic_bezier_turnarounds(&curve) {
+        // If the curve added segments to the output, it ends exactly at `to`, even
+        // where its last part does not: split_range has rounding errors, the last
+        // part can stop before a cusp, or be discarded for being too short. This
+        // keeps the end of the curve where the opposite side of the stroke
+        // records it. It also avoids tiny closing segments with arbitrary
+        // directions, which make the two sides of the stroke disagree about the
+        // closing join.
+        if self.num_steps != num_steps {
+            self.prev_endpoint = to;
+        }
+        self.position = to;
+    }
+
+    fn add_cubic_bezier(&mut self, curve: &CubicBezierSegment<f32>) {
+        if cubic_bezier_is_linear(curve, self.tolerance) {
+            for t in cubic_bezier_turnarounds(curve) {
                 self.line_to(curve.sample(t));
             }
-            self.line_to(to);
+            self.line_to(curve.to);
             return;
         }
 
         // Leave a small gap around the cusps, where the tangent is undefined. The
         // sub-curves on each side are connected with a join.
-        let cusps = find_cubic_bezier_cusps(&curve, self.tolerance);
+        let cusps = find_cubic_bezier_cusps(curve, self.tolerance);
         let mut t0 = 0.0;
         let eps = 0.0001;
         for cusp in cusps {
@@ -1293,11 +1436,13 @@ impl<'l> OffsetBuilder<'l> {
 
     fn step_without_join(&mut self, segment: &Seg) {
         debug_assert!(!self.is_first_segment);
+        self.num_steps += 1;
         self.add_prev_segment();
         self.prev = *segment;
     }
 
     fn step(&mut self, segment: &mut Seg, unit_tangent: Vector) {
+        self.num_steps += 1;
         let no_join =
             (self.prev.to() - segment.from()).square_length() < self.tolerance * self.tolerance;
 
@@ -1441,23 +1586,48 @@ impl<'l> StrokeToFillBuilder<'l> {
         self.opposite.begin(at);
     }
 
+    // The opposite side only records the segments that the offsetter did not
+    // discard for being too short. Otherwise each side would discard different
+    // segments (the reversed sub-path accumulates short segments in the other
+    // direction), and the two sides could disagree about which side of a join is
+    // the outer one. Curves are recorded as the offsetter
+    // displaced them, starting at the end of the last recorded segment.
+
     pub fn line_to(&mut self, to: Point) {
+        let num_steps = self.offsetter.num_steps;
         self.offsetter.line_to(to);
-        self.opposite.line_to(to);
+        if self.offsetter.num_steps != num_steps {
+            self.opposite.line_to(to);
+        }
     }
 
     pub fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) {
+        let (displaced_ctrl, displaced_to) = self.offsetter.displace_quadratic_bezier(ctrl, to);
+        let num_steps = self.offsetter.num_steps;
         self.offsetter.quadratic_bezier_to(ctrl, to);
-        self.opposite.quadratic_bezier_to(ctrl, to);
+        if self.offsetter.num_steps != num_steps {
+            self.opposite.quadratic_bezier_to(displaced_ctrl, displaced_to);
+        }
     }
 
     pub fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) {
+        let (displaced_ctrl1, displaced_ctrl2, displaced_to) =
+            self.offsetter.displace_cubic_bezier(ctrl1, ctrl2, to);
+        let num_steps = self.offsetter.num_steps;
         self.offsetter.cubic_bezier_to(ctrl1, ctrl2, to);
-        self.opposite.cubic_bezier_to(ctrl1, ctrl2, to);
+        if self.offsetter.num_steps != num_steps {
+            self.opposite.cubic_bezier_to(displaced_ctrl1, displaced_ctrl2, displaced_to);
+        }
     }
 
     pub fn end(&mut self, close: bool) {
+        if self.offsetter.recover_discarded_segments() {
+            for to in &self.offsetter.discarded {
+                self.opposite.line_to(*to);
+            }
+        }
         if self.offsetter.is_first_segment {
+            self.offsetter.min_segment_length = self.offsetter.default_min_segment_length();
             if self.add_empty_caps {
                 self.add_empty_cap();
             }
@@ -1906,6 +2076,118 @@ mod tests {
     }
 
     #[test]
+    fn sub_paths_smaller_than_the_tolerance() {
+        // A closed polygon about 0.18 units wide (from the paris-30k.svg test file).
+        let polygon = [
+            point(0.396, 0.975),
+            point(0.396, 0.916),
+            point(0.426, 0.878),
+            point(0.465, 0.857),
+            point(0.504, 0.857),
+            point(0.548, 0.881),
+            point(0.572, 0.935),
+            point(0.568, 0.985),
+            point(0.542, 1.014),
+            point(0.504, 1.034),
+            point(0.46, 1.034),
+            point(0.416, 1.009),
+        ];
+        let directions = [
+            Vector::new(1.0, 0.0),
+            Vector::new(-1.0, 0.0),
+            Vector::new(0.0, 1.0),
+            Vector::new(0.0, -1.0),
+        ];
+        let polygon_extents = directions.map(|d| {
+            polygon.iter().map(|p| p.to_vector().dot(d)).fold(f32::MIN, f32::max)
+        });
+
+        for join in [LineJoin::Round, LineJoin::Bevel, LineJoin::Miter] {
+            for close in [true, false] {
+                let options = StrokeOptions::line_with(1.0)
+                    .with_line_join(join)
+                    .with_line_cap(LineCap::Round)
+                    .with_tolerance(0.25);
+                let path = stroke_polyline(&polygon, close, &options);
+                for (d, polygon_extent) in directions.iter().zip(polygon_extents) {
+                    // The stroke extends at least the half width beyond the polygon,
+                    // and not much more (the miter limit is 4).
+                    let e = extent(&path, *d) - polygon_extent;
+                    assert!(e > 0.5 - 0.25 && e < 2.0, "{join:?} close:{close} {d:?}: {e}");
+                }
+            }
+        }
+
+        // Sub-paths made of a single point are still empty without add_empty_caps.
+        let options = StrokeOptions::line_with(1.0).with_line_join(LineJoin::Round);
+        let path = stroke_polyline(&[point(1.0, 1.0), point(1.0, 1.0), point(1.0, 1.0)], true, &options);
+        assert_eq!(path.iter().count(), 0);
+    }
+
+    #[test]
+    fn short_first_segment_of_closed_sub_path() {
+        // A thin closed shape (from the paris-30k.svg test file) whose first segment
+        // is short enough to be discarded. Both sides of the stroke must see the
+        // same simplified sub-path, otherwise neither side gets an outer join at
+        // the top.
+        let mut builder = Path::builder();
+        builder.begin(point(0.087, 10.391));
+        builder.line_to(point(0.3, 10.391));
+        builder.cubic_bezier_to(point(0.234, 10.257), point(0.196, 10.106), point(0.196, 9.947));
+        builder.line_to(point(0.196, 7.799));
+        builder.cubic_bezier_to(point(0.196, 7.52), point(0.31, 7.268), point(0.495, 7.086));
+        builder.cubic_bezier_to(point(0.31, 6.904), point(0.196, 6.652), point(0.196, 6.373));
+        builder.line_to(point(0.196, 4.635));
+        builder.cubic_bezier_to(point(0.196, 4.476), point(0.234, 4.324), point(0.3, 4.191));
+        builder.line_to(point(0.087, 4.191));
+        builder.end(true);
+        let source = builder.build();
+
+        let tolerance = 0.5;
+        for width in [1.0, 25.0] {
+            let options = StrokeOptions::line_with(width)
+                .with_line_join(LineJoin::Round)
+                .with_tolerance(tolerance);
+            let path = Stroker::new().stroke_to_fill(source.iter(), &options);
+            let top = extent(&path, Vector::new(0.0, 1.0));
+            let bottom = -extent(&path, Vector::new(0.0, -1.0));
+            let expected_top = 10.391 + width * 0.5;
+            let expected_bottom = 4.191 - width * 0.5;
+            assert!((top - expected_top).abs() < tolerance, "width {width}: top {top}");
+            assert!((bottom - expected_bottom).abs() < tolerance, "width {width}: bottom {bottom}");
+        }
+    }
+
+    #[test]
+    fn short_closing_segment() {
+        // A closed quadrilateral about 0.35 units wide (from the paris-30k.svg test
+        // file). Some of its segments, including the closing one, are short enough
+        // to be discarded, and the stroke is much wider than the shape.
+        let polygon = [
+            point(0.779, 0.176),
+            point(1.091, 0.084),
+            point(1.155, 0.289),
+            point(0.878, 0.381),
+        ];
+        let tolerance = 0.5;
+        let half_width = 12.5;
+        let options = StrokeOptions::line_with(half_width * 2.0)
+            .with_line_join(LineJoin::Round)
+            .with_tolerance(tolerance);
+        let path = stroke_polyline(&polygon, true, &options);
+
+        // The outer side of the stroke is a disk around the shape.
+        for i in 0..16 {
+            let a = i as f32 * std::f32::consts::TAU / 16.0;
+            let d = Vector::new(a.cos(), a.sin());
+            let ideal = polygon.iter().map(|p| p.to_vector().dot(d)).fold(f32::MIN, f32::max)
+                + half_width;
+            let e = extent(&path, d);
+            assert!((e - ideal).abs() < tolerance, "{d:?}: {e} (ideal {ideal})");
+        }
+    }
+
+    #[test]
     fn collinear_curves_that_change_direction() {
         let hw = 5.0;
         let options = StrokeOptions::line_with(hw * 2.0)
@@ -1972,6 +2254,161 @@ mod tests {
                 stroker.end(false);
             }
             check(builder.build(), &|t| curve.sample(t));
+        }
+    }
+
+    /// Winding number of the outline around a point, flattening curves.
+    fn winding_number(path: &Path, p: Point, tolerance: f32) -> i32 {
+        let mut winding = 0;
+        let mut add_edge = |from: Point, to: Point| {
+            let side = (to - from).cross(p - from);
+            if from.y <= p.y && to.y > p.y && side > 0.0 {
+                winding += 1;
+            } else if from.y > p.y && to.y <= p.y && side < 0.0 {
+                winding -= 1;
+            }
+        };
+        for event in path.iter() {
+            match event {
+                PathEvent::Begin { .. } => {}
+                PathEvent::Line { from, to } => add_edge(from, to),
+                PathEvent::Quadratic { from, ctrl, to } => QuadraticBezierSegment { from, ctrl, to }
+                    .for_each_flattened(tolerance, &mut |s| add_edge(s.from, s.to)),
+                PathEvent::Cubic { from, ctrl1, ctrl2, to } => CubicBezierSegment { from, ctrl1, ctrl2, to }
+                    .for_each_flattened(tolerance, &mut |s| add_edge(s.from, s.to)),
+                PathEvent::End { last, first, .. } => add_edge(last, first),
+            }
+        }
+        winding
+    }
+
+    #[test]
+    fn closing_join_after_cubic() {
+        // A closed shape made of two cubic bézier curves (from the tiger.svg test
+        // file). On the reversed side of the stroke, the quadratic bézier curves
+        // that approximate the last cubic bézier curve do not end exactly at the
+        // start of the sub-path. Both sides must still agree about the closing
+        // join.
+        let start = point(246.51247, 807.6567);
+        let mut builder = Path::builder();
+        builder.begin(start);
+        builder.cubic_bezier_to(start, point(266.99396, 768.10626), point(228.50287, 813.6599));
+        builder.cubic_bezier_to(point(228.50287, 813.6599), point(247.92499, 796.35657), start);
+        builder.end(true);
+        let source = builder.build();
+
+        let half_width = 12.5;
+        for tolerance in [0.25, 0.05, 0.01] {
+            let options = StrokeOptions::line_with(half_width * 2.0)
+                .with_line_join(LineJoin::Round)
+                .with_tolerance(tolerance);
+            let path = Stroker::new().stroke_to_fill(source.iter(), &options);
+
+            // The start point is on the source path, so the stroke covers a disk
+            // around it.
+            for i in 0..32 {
+                let a = i as f32 * std::f32::consts::TAU / 32.0;
+                let p = start + Vector::new(a.cos(), a.sin()) * (half_width - 2.0 * tolerance);
+                let winding = winding_number(&path, p, tolerance * 0.1);
+                assert!(winding != 0, "tolerance {tolerance}: {p:?} is not covered");
+            }
+        }
+    }
+
+    /// Extents of the outline in 32 directions.
+    fn extents(path: &Path) -> Vec<f32> {
+        (0..32)
+            .map(|i| {
+                let a = i as f32 * std::f32::consts::TAU / 32.0;
+                extent(path, Vector::new(a.cos(), a.sin()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn curve_after_discarded_segments() {
+        // Segments shorter than the tolerance that go back and sideways from the
+        // end of a line, followed by a curve that continues in the direction of
+        // the line. The curve is displaced to start at the end of the line, and
+        // the stroke is the same as without the short segments.
+        let tiny = [point(99.95, 0.05), point(99.92, 0.08)];
+        let from = tiny[1];
+        let curves: [&dyn Fn(&mut core::path::Builder, Point); 2] = [
+            &|builder, from| {
+                // The tangent at the start is given by the second control point.
+                builder.cubic_bezier_to(from, point(150.0, from.y), point(150.0, 50.0));
+            },
+            &|builder, from| {
+                builder.quadratic_bezier_to(from + Vector::new(0.05, 0.0), point(130.0, 10.0));
+            },
+        ];
+
+        for curve in curves {
+            for join in [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round] {
+                let options = StrokeOptions::line_with(10.0)
+                    .with_line_join(join)
+                    .with_line_cap(LineCap::Butt)
+                    .with_tolerance(0.25);
+                let stroke = |tiny: &[Point], from: Point| {
+                    let mut builder = Path::builder();
+                    builder.begin(point(0.0, 0.0));
+                    builder.line_to(point(100.0, 0.0));
+                    for p in tiny {
+                        builder.line_to(*p);
+                    }
+                    curve(&mut builder, from);
+                    builder.end(false);
+                    Stroker::new().stroke_to_fill(builder.build().iter(), &options)
+                };
+
+                let expected = extents(&stroke(&[], point(100.0, 0.0)));
+                let actual = extents(&stroke(&tiny, from));
+                for (a, e) in actual.iter().zip(expected.iter()) {
+                    assert!((a - e).abs() < 0.5, "{join:?}: {actual:?} != {expected:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn curve_ending_at_its_start_after_discarded_segments() {
+        // A quadratic bézier curve that ends where it starts (a line that goes to
+        // its turning point and back) cannot be stretched to start at the end of
+        // the previous segment, so it is moved as a whole. As the last segment of
+        // a closed sub-path, it does not end at the first point, and a line closes
+        // the sub-path.
+        let mut builder = Path::builder();
+        builder.begin(point(0.0, 0.0));
+        builder.line_to(point(100.0, 0.0));
+        builder.line_to(point(100.0, 100.0));
+        builder.line_to(point(0.1, 0.1));
+        builder.line_to(point(0.05, 0.12));
+        builder.quadratic_bezier_to(point(-30.0, 30.0), point(0.05, 0.12));
+        builder.end(true);
+        let source = builder.build();
+
+        let half_width = 5.0;
+        for join in [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round] {
+            let options = StrokeOptions::line_with(half_width * 2.0)
+                .with_line_join(join)
+                .with_tolerance(0.25);
+            let path = Stroker::new().stroke_to_fill(source.iter(), &options);
+
+            // The curve up to near its turning point, the corners and the middle
+            // of the sides are covered. The turning point itself is on the edge of
+            // the stroke with miter and bevel joins.
+            let tip = QuadraticBezierSegment {
+                from: point(0.05, 0.12),
+                ctrl: point(-30.0, 30.0),
+                to: point(0.05, 0.12),
+            }
+            .sample(0.45);
+            for p in [tip, point(0.0, 0.0), point(100.0, 0.0), point(100.0, 100.0), point(50.0, 0.0), point(50.0, 50.0)] {
+                for offset in [Vector::new(0.0, 0.0), Vector::new(3.0, 0.0), Vector::new(0.0, -3.0)] {
+                    let winding = winding_number(&path, p + offset, 0.01);
+                    assert!(winding != 0, "{join:?}: {:?} is not covered", p + offset);
+                }
+            }
         }
     }
 
