@@ -2098,6 +2098,18 @@ fn cubic_bezier_turnarounds(curve: &CubicBezierSegment<f32>) -> ArrayVec<f32, 3>
 
     let direction = cubic_bezier_direction(curve);
 
+    // The derivative is a quadratic bézier curve with control points 3 times
+    // the control vectors of the curve. If their projections on the line all
+    // have the same sign, so does the projection of the derivative, and the
+    // curve doesn't change direction. This is the common case, for example
+    // with lines written as cubic bézier curves.
+    let p0 = (curve.ctrl1 - curve.from).dot(direction);
+    let p1 = (curve.ctrl2 - curve.ctrl1).dot(direction);
+    let p2 = (curve.to - curve.ctrl2).dot(direction);
+    if (p0 >= 0.0 && p1 >= 0.0 && p2 >= 0.0) || (p0 <= 0.0 && p1 <= 0.0 && p2 <= 0.0) {
+        return turnarounds;
+    }
+
     // The derivative is 3 (a + 2 b t + c t²). Find where its projection on the
     // line vanishes.
     let a = curve.ctrl1 - curve.from;
@@ -2733,6 +2745,20 @@ mod tests {
     fn cubic(points: [(f32, f32); 4]) -> CubicBezierSegment<f32> {
         let [from, ctrl1, ctrl2, to] = points.map(|(x, y)| point(x, y));
         CubicBezierSegment { from, ctrl1, ctrl2, to }
+    }
+
+    #[test]
+    fn straight_cubic_bezier_turnarounds() {
+        // A short straight cubic bézier curve that doesn't change direction (from
+        // the paris-30k.svg test file). Its coefficients are small enough for
+        // the root finding to return noise.
+        let short = cubic([(797.399, 253.83398), (797.387, 253.84003), (797.376, 253.84497), (797.365, 253.85101)]);
+        assert!(cubic_bezier_is_linear(&short, 0.25));
+        assert!(cubic_bezier_turnarounds(&short).is_empty());
+
+        // Goes past its end and comes back.
+        let back = cubic([(0.0, 0.0), (100.0, 0.0), (150.0, 0.0), (100.0, 0.0)]);
+        assert_eq!(cubic_bezier_turnarounds(&back).len(), 1);
     }
 
     #[test]
