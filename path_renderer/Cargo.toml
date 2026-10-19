@@ -21,6 +21,7 @@ members = [
     "testing/utils",
     "testing/core_test",
     "testing/tiling_bench",
+    "testing/stroke_bench",
     "document",
     "demo",
     "renderers/slug",
