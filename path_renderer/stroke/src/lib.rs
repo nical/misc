@@ -138,6 +138,10 @@ impl Stroker {
         options: &StrokeOptions,
     ) -> Path {
         let mut builder = Path::builder();
+        // The output of most paths has tens of endpoints or more, which would
+        // otherwise take several reallocations to grow into. build() frees the
+        // unused space.
+        builder.reserve(64, 32);
 
         {
             let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);

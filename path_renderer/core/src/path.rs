@@ -90,6 +90,11 @@ impl Builder {
         WithSvg::new(self)
     }
 
+    /// Allocates memory for at least this many endpoints and control points.
+    pub fn reserve(&mut self, endpoints: usize, ctrl_points: usize) {
+        self.builder.reserve(endpoints, ctrl_points);
+    }
+
     pub fn segment_to(&mut self, p: Point) {
         self.aabb.min.x = self.aabb.min.x.min(p.x);
         self.aabb.min.y = self.aabb.min.y.min(p.y);
@@ -160,6 +165,9 @@ impl Builder {
 impl PathBuilder for Builder {
     fn num_attributes(&self) -> usize {
         0
+    }
+    fn reserve(&mut self, endpoints: usize, ctrl_points: usize) {
+        self.reserve(endpoints, ctrl_points)
     }
     fn begin(&mut self, at: Point, _: Attributes<'_>) -> EndpointId {
         self.begin(at)
