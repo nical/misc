@@ -444,9 +444,16 @@ pub mod offset {
             // The peak is then up to about 1.5 times the error at the middle.
             // The error is almost always far below the tolerance, so the other
             // samples are only measured when the middle one is not.
+            //
+            // The error is first bounded without measuring it (see
+            // offset_error_bound), which is enough for most ranges.
             let step = range.end - range.start;
+            let mut error_bound = S::ZERO;
+            for dist in dists {
+                error_bound = error_bound.max(offset_error_bound(&sub_curve, inv_len, dist));
+            }
             let mut err = S::ZERO;
-            if step > min_step {
+            if step > min_step && !(error_bound <= tolerance) {
                 for (offset_curve, dist) in offset_curves.iter().zip(dists) {
                     let error_at = |s: S| {
                         let t = range.start + step * s;
@@ -469,6 +476,78 @@ pub mod offset {
                 range.end = range.start + step * S::HALF;
             }
         }
+    }
+
+    /// Upper bound of the distance between the offset sub-curve that
+    /// for_each_offset_inner builds for `curve` and the exact offset curve.
+    /// `cos_half_turn` is the cosine of half of the angle θ between the
+    /// tangents at the ends of the curve, which must be less than 180 degrees.
+    ///
+    /// With a and b the control vectors of the curve, its derivative is
+    /// proportional to w(t) = (1 - t) a + t b, and the exact offset curve is
+    /// O(t) = B(t) + dist N(t) with N(t) the unit normal along w(t). The offset
+    /// sub-curve is Q(t) = B(t) + dist L(t), with L the quadratic bézier curve
+    /// with control points N(0), n / cos(θ/2) and N(1), where n is the normal of
+    /// the bisector of the tangents. L(t) is between 1 and
+    /// r = (cos(θ/2) + 1 / cos(θ/2)) / 2 away from the origin, and at an angle φ
+    /// from N(t). So Q(t) is O(t) moved by at most dist (r - 1 + φ² / 2) along
+    /// N(t) and dist r φ along the tangent of O. Moving along the tangent of a
+    /// curve by δ moves away from the curve by at most k δ² / 2, with k the
+    /// curvature of the curve.
+    ///
+    /// L(t) and N(t) are both positive combinations of the normals at the ends,
+    /// with ratios between the weights of N(1) and N(0) of u(t) and v(t). The
+    /// angle of such a combination changes by at most tan(θ/2) / 2 per unit of
+    /// ln(ratio), so φ is at most tan(θ/2) / 2 |ln(u / v)|. Since
+    /// u / v = (|a| / |b|) g(t) with g(t) between cos²(θ/2) and 1 / cos²(θ/2),
+    /// |ln(u / v)| is at most |ln(|b| / |a|)| - 2 ln(cos(θ/2)). Both logarithms
+    /// are bounded with |ln(x)| <= |x - 1 / x| / 2.
+    ///
+    /// The curvature of the curve is |a x b| / (2 |w(t)|³), and the curvature of
+    /// the offset curve is k / (1 + dist k) on the convex side and
+    /// k / (1 - dist k) on the concave side. On the concave side, the bound is
+    /// infinite if dist k reaches 1 in the range, where the offset curve can
+    /// have a cusp.
+    fn offset_error_bound<S: Scalar>(
+        curve: &QuadraticBezierSegment<S>,
+        cos_half_turn: S,
+        dist: S,
+    ) -> S {
+        let c = cos_half_turn;
+        let a = curve.ctrl - curve.from;
+        let b = curve.to - curve.ctrl;
+        let a2 = a.square_length();
+        let b2 = b.square_length();
+        // N is on the left of the curve, which is the concave side if the curve
+        // turns left.
+        let cross = a.cross(b);
+        let concave = (dist > S::ZERO) == (cross > S::ZERO);
+        let dist = dist.abs();
+
+        let max_radius = (c + S::ONE / c) * S::HALF;
+        let tan_half_turn = (S::ONE - c * c).max(S::ZERO).sqrt() / c;
+        let ln_ratio = (b2 - a2).abs() / (S::TWO * (a2 * b2).sqrt());
+        let ln_cos = (S::ONE / c - c) * S::HALF;
+        let angle = tan_half_turn * S::HALF * (ln_ratio + S::TWO * ln_cos);
+
+        // The curvature is the largest where w(t) is the shortest, which is the
+        // closest point to the origin on the segment from a to b.
+        let ab = b - a;
+        let t = (-a.dot(ab) / ab.square_length()).max(S::ZERO).min(S::ONE);
+        let min_w = (a + ab * t).length();
+        let k = cross.abs() / (S::TWO * min_w * min_w * min_w);
+        let offset_k = if concave {
+            if !(dist * k < S::ONE) {
+                return S::infinity();
+            }
+            k / (S::ONE - dist * k)
+        } else {
+            k / (S::ONE + dist * k)
+        };
+
+        let tangential = dist * max_radius * angle;
+        dist * (max_radius - S::ONE + angle * angle * S::HALF)
+            + offset_k * tangential * tangential * S::HALF
     }
 
     fn _find_sharp_turn<S: Scalar>(curve: &QuadraticBezierSegment<S>) -> Option<S> {
@@ -671,6 +750,50 @@ pub mod offset {
                         }
                     });
                     assert!(max_err < tolerance * 1.2, "{curve:?} {dist}: {max_err}");
+                }
+            }
+        }
+
+        #[test]
+        fn offset_error_bound_holds() {
+            for (from, ctrl, to) in CURVES {
+                let curve = quad(from, ctrl, to);
+                for dist in [0.5f32, -0.5, 5.0, -5.0, 20.0, -20.0] {
+                    let tangent = |t: f32| curve.derivative(t).normalize();
+                    let exact = |t: f32| curve.sample(t) + normal(tangent(t)) * dist;
+                    let n = 64;
+                    for i in 0..n {
+                        let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                        let sub_curve = curve.split_range(t0..t1);
+                        let (v0, v1) = (tangent(t0), tangent(t1));
+                        let bisector = normal((v0 + v1).normalize());
+                        let cos_half_turn = bisector.dot(normal(v1));
+                        if cos_half_turn < (MAX_TURN * 0.5).cos() {
+                            continue;
+                        }
+                        let offset_curve = QuadraticBezierSegment {
+                            from: exact(t0),
+                            ctrl: sub_curve.ctrl + bisector * (dist / cos_half_turn),
+                            to: exact(t1),
+                        };
+                        let bound = offset_error_bound(&sub_curve, cos_half_turn, dist);
+
+                        // Distance to the exact offset curve, sampled densely
+                        // around the range.
+                        let samples: Vec<Point<f32>> = (0..=400)
+                            .map(|j| exact((t0 + (t1 - t0) * (j as f32 / 200.0 - 0.5)).max(0.0).min(1.0)))
+                            .collect();
+                        let mut error: f32 = 0.0;
+                        for j in 0..=16 {
+                            let p = offset_curve.sample(j as f32 / 16.0);
+                            let d = samples
+                                .windows(2)
+                                .map(|s| core::geom::LineSegment { from: s[0], to: s[1] }.distance_to_point(p))
+                                .fold(f32::MAX, f32::min);
+                            error = error.max(d);
+                        }
+                        assert!(error <= bound + 1e-3, "{curve:?} {dist} {t0}: {error} > {bound}");
+                    }
                 }
             }
         }
