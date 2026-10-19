@@ -1979,9 +1979,42 @@ fn find_cubic_bezier_cusps(curve: &CubicBezierSegment<f32>, tolerance: f32) -> A
     let b = curve.ctrl2.to_vector() - curve.ctrl1.to_vector() * 2.0 + curve.from.to_vector();
     let c = curve.to.to_vector() + (curve.ctrl1 - curve.ctrl2) * 3.0 - curve.from.to_vector();
 
+    // Rule out cusps without solving the cubic polynomial below, which is
+    // comparatively expensive. F' is a quadratic bézier curve with control
+    // points h0, h1 and h2, and F'' = 2 ((1 - t) (h1 - h0) + t (h2 - h1)). If
+    // the control points of F' are all on the positive side of a direction u,
+    // so is F', and |F'| >= min(h.u) / |u|. |F''| is at most twice the longest
+    // of h1 - h0 and h2 - h1. Together, they bound the radius of curvature at
+    // the extrema of the speed from below.
+    let h0 = curve.ctrl1 - curve.from;
+    let h1 = curve.ctrl2 - curve.ctrl1;
+    let h2 = curve.to - curve.ctrl2;
+    let u = curve.to - curve.from;
+    let min_speed = h0.dot(u).min(h1.dot(u)).min(h2.dot(u));
+    if min_speed > 0.0 {
+        let max_d2 = (h1 - h0).square_length().max((h2 - h1).square_length()).sqrt() * 6.0;
+        // Both sides are multiplied by |u|² and divided by 9.
+        if min_speed * min_speed > tolerance * max_d2 * u.square_length() / 9.0 {
+            return cusps;
+        }
+    }
+
     // The speed |F'| has its extrema where F'.F'' = 0, and cusps are among them.
     // F'.F'' / 18 = c.c t³ + 3 b.c t² + (2 b.b + a.c) t + a.b
-    let roots = cubic_polynomial_roots(c.dot(c), 3.0 * b.dot(c), 2.0 * b.dot(b) + a.dot(c), a.dot(b));
+    let p3 = c.dot(c);
+    let p2 = 3.0 * b.dot(c);
+    let p1 = 2.0 * b.dot(b) + a.dot(c);
+    let p0 = a.dot(b);
+    // When a control point is on an endpoint, the speed vanishes there and the
+    // polynomial has a root at that end. Factoring it out leaves a quadratic
+    // polynomial, which is cheaper to solve. It is a common case in SVG files.
+    let roots = if h0 == Vector::zero() {
+        cubic_polynomial_roots(0.0, p3, p2, p1)
+    } else if h2 == Vector::zero() {
+        cubic_polynomial_roots(0.0, p3, p3 + p2, p3 + p2 + p1)
+    } else {
+        cubic_polynomial_roots(p3, p2, p1, p0)
+    };
     for t in roots {
         if !(t > 0.0 && t < 1.0) {
             continue;
@@ -2569,7 +2602,11 @@ mod tests {
         let arch = cubic([(0.0, 0.0), (0.0, 100.0), (100.0, 100.0), (100.0, 0.0)]);
         let s_curve = cubic([(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
         let with_loop = cubic([(0.0, 0.0), (150.0, 100.0), (-50.0, 100.0), (100.0, 0.0)]);
-        for curve in [arch, s_curve, with_loop] {
+        // The speed of these curves vanishes at one end, where a control point is
+        // on the endpoint. It is not a cusp within the curve.
+        let flat_start = cubic([(0.0, 0.0), (0.0, 0.0), (100.0, 100.0), (100.0, 0.0)]);
+        let flat_end = cubic([(0.0, 0.0), (0.0, 100.0), (30.0, 10.0), (30.0, 10.0)]);
+        for curve in [arch, s_curve, with_loop, flat_start, flat_end] {
             assert!(find_cubic_bezier_cusps(&curve, tolerance).is_empty(), "{curve:?}");
         }
 
