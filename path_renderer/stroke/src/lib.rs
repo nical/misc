@@ -255,6 +255,13 @@ pub mod offset {
     use core::geom::euclid;
     use core::geom::{point, vector, Point, QuadraticBezierSegment, Scalar, Vector};
 
+    /// Offsets a curve by a single distance.
+    ///
+    /// See [`for_each_offsets`] for the properties of the sub-curves. In
+    /// particular, they are contiguous in the parameter of the curve but are not
+    /// necessarily connected in space: at a cusp of the curve, where the tangent
+    /// reverses, the offset jumps to the other side of the cusp. Filling that
+    /// gap is left to the caller.
     pub fn for_each_offset<S: Scalar, F>(
         curve: &QuadraticBezierSegment<S>,
         dist: S,
@@ -274,6 +281,14 @@ pub mod offset {
     /// the offset sub-curves of every distance are within the tolerance. The
     /// callback receives the offset sub-curves of each range, in the order of
     /// `dists`.
+    ///
+    /// The sub-curves are contiguous in the parameter of the curve but are not
+    /// necessarily connected in space. In particular, the curve is split at its
+    /// cusps, where the tangent reverses and the offset jumps from one side of
+    /// the cusp to the other; the resulting gap is not filled. Joining
+    /// consecutive sub-curves is left to the caller, which is what lets the
+    /// stroker choose a join style there (a round join adds the arc around the
+    /// cusp).
     pub fn for_each_offsets<S: Scalar, F, const N: usize>(
         curve: &QuadraticBezierSegment<S>,
         dists: [S; N],
@@ -296,6 +311,10 @@ pub mod offset {
             splits.extend(t1);
             splits.extend(t2);
         }
+        // A tangent reversal (a cusp) turns by 180 degrees, so turn_splits places
+        // a split at it (within rounding). The critical points above do it as
+        // well for the cusps of collinear curves, but they may discard a point
+        // close to an end of the curve.
         splits.extend(turn_splits(curve));
         splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -383,7 +402,6 @@ pub mod offset {
         // control points of the sub-curves, which lose precision as the
         // sub-curves get small.
         let tangent = |t: S| curve.derivative(t).normalize();
-        let offset_point = |t: S, dist: S| curve.sample(t) + normal(tangent(t)) * dist;
 
         // Distance between a point and the offset curve, estimated from the
         // closest point of the curve. It is found with Newton iterations on the
@@ -392,6 +410,28 @@ pub mod offset {
         let second_derivative = (curve.from.to_vector() - curve.ctrl.to_vector() * S::TWO
             + curve.to.to_vector())
             * S::TWO;
+
+        // Unit tangent at an end of the range. The derivative vanishes at the
+        // turning point of degenerate curves, where the tangent is only defined
+        // as a one-sided limit: just inside the range B'(t + h) is proportional
+        // to h B''(t), so the direction is that of B'' towards increasing t and
+        // its opposite towards decreasing t (`toward`).
+        let boundary_tangent = |t: S, toward: S| {
+            let d = curve.derivative(t);
+            if d.square_length() > S::ZERO {
+                d.normalize()
+            } else {
+                let d2 = second_derivative * toward;
+                if d2.square_length() > S::ZERO {
+                    d2.normalize()
+                } else {
+                    Vector::zero()
+                }
+            }
+        };
+        let offset_point = |t: S, dist: S, toward: S| {
+            curve.sample(t) + normal(boundary_tangent(t, toward)) * dist
+        };
         let offset_error = |p: Point<S>, dist: S, mut t: S, t_min: S, t_max: S| {
             for _ in 0..2 {
                 let v = curve.sample(t) - p;
@@ -409,30 +449,23 @@ pub mod offset {
             ((p - curve.sample(t)).dot(normal(tangent(t))) - dist).abs()
         };
 
-        let mut v0 = tangent(range.start);
-        let mut from = dists.map(|dist| offset_point(range.start, dist));
+        let mut v0 = boundary_tangent(range.start, S::ONE);
+        let mut from = dists.map(|dist| offset_point(range.start, dist, S::ONE));
 
         while range.start < end {
             let sub_curve = curve.split_range(range.clone());
 
             // Offset the sub-curve
-            let v1 = tangent(range.end);
+            let v1 = boundary_tangent(range.end, -S::ONE);
             let n1 = normal(v1);
             let n = normal((v0 + v1).normalize());
             // At least cos(MAX_TURN / 2).
             let inv_len = n.dot(n1);
             if !(inv_len > S::ZERO) || !from.iter().all(|p| p.is_finite()) {
-                // The derivative of the curve vanishes, which only happens for
-                // degenerate curves. Join the offset of the end of the curve
-                // with a straight line.
-                let to = dists.map(|dist| offset_point(end, dist));
-                if from.iter().chain(&to).all(|p| p.is_finite()) {
-                    cb(&std::array::from_fn(|i| QuadraticBezierSegment {
-                        from: from[i],
-                        ctrl: from[i].lerp(to[i], S::HALF),
-                        to: to[i],
-                    }));
-                }
+                // The range spans a cusp of the curve, where the tangent turns
+                // by 180 degrees (or the curve is degenerate). The offset is
+                // discontinuous there, so no sub-curve is emitted for the range:
+                // the caller joins the sub-curves on each side of the cusp.
                 return;
             }
             let offset_curves: [QuadraticBezierSegment<S>; N] =
@@ -660,6 +693,61 @@ pub mod offset {
             ((10.0, 30.0), (200.0, 0.0), (0.0, 90.0)),
             ((0.0, 0.0), (1000.0, 1.0), (0.0, 2.0)),
         ];
+
+        #[test]
+        fn degenerate_curve_produces_offset_pieces() {
+            // A quadratic that goes out along a line and comes back. Its tangent
+            // is undefined at the turning point, where the offset is only
+            // defined as a one-sided limit. The two halves must still be offset.
+            let curve = quad((0.0, 0.0), (1.0, 0.0), (0.0, 0.0));
+
+            for (dist, expected) in [
+                (1.0f32, [(0.0, 1.0), (0.5, 1.0), (0.5, -1.0), (0.0, -1.0)]),
+                (-1.0f32, [(0.0, -1.0), (0.5, -1.0), (0.5, 1.0), (0.0, 1.0)]),
+            ] {
+                let mut endpoints = Vec::new();
+                for_each_offset(&curve, dist, 0.25, &mut |sub| {
+                    endpoints.push(sub.from);
+                    endpoints.push(sub.to);
+                });
+
+                // Two pieces, ending at the offsets on each side of the turning
+                // point.
+                assert_eq!(endpoints.len(), 4, "dist {dist}: {endpoints:?}");
+                for (i, &(x, y)) in expected.iter().enumerate() {
+                    assert!(
+                        (endpoints[i].x - x).abs() < 1e-4 && (endpoints[i].y - y).abs() < 1e-4,
+                        "dist {dist}: {endpoints:?} != {expected:?}",
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn degenerate_curve_with_cusp_near_an_end() {
+            // A collinear curve that overshoots its end, with the turning point
+            // at t = 1/102. critical_points discards it for being too close to an
+            // end, and turn_splits places a few splits around it rather than
+            // exactly on it. The offset must still be the two one-sided pieces,
+            // with no sub-curve across the cusp.
+            let curve = quad((0.0, 0.0), (1.0, 0.0), (-100.0, 0.0));
+            let tip = 1.0 / 102.0;
+
+            let mut endpoints = Vec::new();
+            for_each_offset(&curve, 1.0, 0.25, &mut |sub| {
+                endpoints.push(sub.from);
+                endpoints.push(sub.to);
+            });
+
+            let expected = [(0.0, 1.0), (tip, 1.0), (tip, -1.0), (-100.0, -1.0)];
+            assert_eq!(endpoints.len(), 4, "{endpoints:?}");
+            for (i, &(x, y)) in expected.iter().enumerate() {
+                assert!(
+                    (endpoints[i].x - x).abs() < 1e-4 && (endpoints[i].y - y).abs() < 1e-4,
+                    "{endpoints:?} != {expected:?}",
+                );
+            }
+        }
 
         #[test]
         fn critical_points_match_radius_of_curvature() {
