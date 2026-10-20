@@ -455,6 +455,7 @@ dependencies = [
  "header_buffer",
  "lru",
  "lyon",
+ "lyon_geom",
  "profiling",
  "rayon",
  "smallvec",
@@ -1325,9 +1326,9 @@ dependencies = [
 
 [[package]]
 name = "lyon_geom"
-version = "1.0.6"
+version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8af69edc087272df438b3ee436c4bb6d7c04aa8af665cfd398feae627dbd8570"
+checksum = "d82dd26aa4dc0b5b70b9115de59824842bcb43cf4a28e1b1e6d0ad148c93f93e"
 dependencies = [
  "arrayvec",
  "euclid",
