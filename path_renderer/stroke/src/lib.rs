@@ -1981,8 +1981,8 @@ pub struct StrokeToFillBuilder<'l> {
     opposite: SegmentBuffer,
     offsetter: Offsetter<2>,
     offsets: (f32, f32),
-    start_cap: CapBuilder,
-    end_cap: CapBuilder,
+    start_cap: LineCap,
+    end_cap: LineCap,
     add_empty_caps: bool,
 }
 
@@ -2003,8 +2003,8 @@ impl<'l> StrokeToFillBuilder<'l> {
             opposite: SegmentBuffer::default(),
             offsetter,
             offsets: options.offsets,
-            start_cap: get_cap_fn(options.start_cap),
-            end_cap: get_cap_fn(options.end_cap),
+            start_cap: options.start_cap,
+            end_cap: options.end_cap,
             add_empty_caps: options.add_empty_caps,
         }
     }
@@ -2062,7 +2062,7 @@ impl<'l> StrokeToFillBuilder<'l> {
         let pivot = endpoint - n * pivot_offset;
         let end = endpoint - n * self.offsets.0;
         let sign = (self.offsets.0 - self.offsets.1).signum();
-        (self.start_cap)(
+        get_cap_fn(self.start_cap)(
             &mut *self.output,
             pivot,
             tangent,
@@ -2081,7 +2081,7 @@ impl<'l> StrokeToFillBuilder<'l> {
         let pivot = self.offsetter.prev_endpoint + n * pivot_offset;
         let end = self.offsetter.prev_endpoint + n * self.offsets.1;
         let sign = (self.offsets.0 - self.offsets.1).signum();
-        (self.end_cap)(
+        get_cap_fn(self.end_cap)(
             &mut *self.output,
             pivot,
             tangent,
@@ -2093,6 +2093,21 @@ impl<'l> StrokeToFillBuilder<'l> {
     }
 
     fn add_empty_cap(&mut self) {
+        // Inverted caps carve into the stroke, and a zero-length sub-path has
+        // no stroke to carve into, so they act like butt caps here.
+        let empty_cap = |cap| match cap {
+            LineCap::RoundInverted | LineCap::TriangleInverted => LineCap::Butt,
+            cap => cap,
+        };
+        let start_cap = empty_cap(self.start_cap);
+        let end_cap = empty_cap(self.end_cap);
+
+        // Butt caps have no area, so a zero-length sub-path with them draws
+        // nothing.
+        if start_cap == LineCap::Butt && end_cap == LineCap::Butt {
+            return;
+        }
+
         let tangent = Vector::new(1.0, 0.0);
         let normal = normal(tangent);
 
@@ -2106,8 +2121,8 @@ impl<'l> StrokeToFillBuilder<'l> {
         let tolerance = self.offsetter.tolerance;
         let output = &mut *self.output;
         output.begin(p0, NO_ATTRIBUTES);
-        (self.end_cap)(output, pivot, tangent, p1, width, 1.0, tolerance);
-        (self.start_cap)(output, pivot, -tangent, p0, width, 1.0, tolerance);
+        get_cap_fn(end_cap)(output, pivot, tangent, p1, width, 1.0, tolerance);
+        get_cap_fn(start_cap)(output, pivot, -tangent, p0, width, 1.0, tolerance);
         output.end(true);
     }
 }
@@ -2448,6 +2463,39 @@ mod tests {
             let expected = 1.2 * std::f32::consts::SQRT_2 - 1.0;
             assert!((v0.y - 1.0).abs() < 1e-3 && (v0.x + expected).abs() < 1e-3, "{w}: {v0:?}");
             assert!((v1.x + 1.0).abs() < 1e-3 && (v1.y - expected).abs() < 1e-3, "{w}: {v1:?}");
+        }
+    }
+
+    #[test]
+    fn empty_sub_path_caps() {
+        // With add_empty_caps, a zero-length sub-path draws its caps around the
+        // point. Butt and inverted caps have no area there, so a sub-path with
+        // only those must draw nothing. A single cap with area still draws.
+        use LineCap::*;
+        let cases = [
+            (Butt, Butt, false),
+            (RoundInverted, RoundInverted, false),
+            (TriangleInverted, Butt, false),
+            (Butt, RoundInverted, false),
+            (Round, Round, true),
+            (Butt, Round, true),
+            (RoundInverted, Round, true),
+            (Square, TriangleInverted, true),
+        ];
+        for (start_cap, end_cap, draws) in cases {
+            let mut options = StrokeOptions::line_with(10.0)
+                .with_start_cap(start_cap)
+                .with_end_cap(end_cap);
+            options.add_empty_caps = true;
+
+            let mut builder = Path::builder();
+            {
+                let mut stroker = StrokeToFillBuilder::new(&mut builder, &options);
+                stroker.begin(point(3.0, 4.0));
+                stroker.end(false);
+            }
+            let count = builder.build().iter().count();
+            assert_eq!(count > 0, draws, "{start_cap:?} {end_cap:?}");
         }
     }
 
