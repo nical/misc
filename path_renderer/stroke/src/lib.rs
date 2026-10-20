@@ -1330,41 +1330,26 @@ fn get_clip_intersections(
     normal: Vector,
     clip_distance: f32,
 ) -> (Vector, Vector) {
-    let clip_line = Line {
-        point: normal.normalize().to_point() * clip_distance,
-        vector: tangent(normal),
+    // The clip line is the set of points p such that u.dot(p) == clip_distance.
+    let u = normal.normalize();
+
+    // Intersect the clip line with the offset edge o + t * tangent(o).
+    let intersect = |o: Vector| {
+        let d = tangent(o);
+        let distance_to_clip = clip_distance - u.dot(o);
+        let denom = u.dot(d);
+        // |denom| is |o| * sin(angle between the edge and the clip line), so the
+        // test is relative to the offset length and does not depend on the scale.
+        // A (nearly) parallel edge has no intersection, fall back to the closest
+        // point of the clip line.
+        if denom.abs() <= 1e-4 * o.length() {
+            o + u * distance_to_clip
+        } else {
+            o + d * (distance_to_clip / denom)
+        }
     };
 
-    let prev_line = Line {
-        point: start_offset.to_point(),
-        vector: tangent(start_offset),
-    };
-
-    let next_line = Line {
-        point: end_offset.to_point(),
-        vector: tangent(end_offset),
-    };
-
-    // An offset line can be (nearly) parallel to the clip line, in which case
-    // there is no intersection. Fall back to the closest point of the clip line.
-    let project_on_clip_line = |p: Point| {
-        let dir = clip_line.vector;
-        let n = tangent(dir);
-        p - n * (dir.cross(p - clip_line.point) / dir.square_length())
-    };
-
-    let i1 = clip_line
-        .intersection(&prev_line)
-        .map(|p| p.to_f32())
-        .unwrap_or_else(|| project_on_clip_line(prev_line.point))
-        .to_vector();
-    let i2 = clip_line
-        .intersection(&next_line)
-        .map(|p| p.to_f32())
-        .unwrap_or_else(|| project_on_clip_line(next_line.point))
-        .to_vector();
-
-    (i1, i2)
+    (intersect(start_offset), intersect(end_offset))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -2446,6 +2431,23 @@ mod tests {
 
         for v in [v0, v1] {
             assert!((v.x - 10.0).abs() < 1e-4 && v.y.abs() < 1e-4, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn miter_clip_intersections_with_a_small_width() {
+        // A 90 degree turn with a miter limit of 1.2, so the miter is clipped.
+        // The result must not depend on the scale of the stroke.
+        let t0 = Vector::new(1.0, 0.0);
+        let t1 = Vector::new(0.0, 1.0);
+        let n = compute_normal(t0, t1);
+        for w in [10.0, 1.0, 1e-3, 1e-4, 1e-5, 1e-6] {
+            let (v0, v1) = get_clip_intersections(normal(t0) * w, normal(t1) * w, n, 1.2 * w);
+            let (v0, v1) = (v0 / w, v1 / w);
+            // The intersections are on their offset edges, on the clip line.
+            let expected = 1.2 * std::f32::consts::SQRT_2 - 1.0;
+            assert!((v0.y - 1.0).abs() < 1e-3 && (v0.x + expected).abs() < 1e-3, "{w}: {v0:?}");
+            assert!((v1.x + 1.0).abs() < 1e-3 && (v1.y - expected).abs() < 1e-3, "{w}: {v1:?}");
         }
     }
 
