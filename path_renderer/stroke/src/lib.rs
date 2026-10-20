@@ -1,5 +1,3 @@
-// TODO: this doesn't belong in the core crate.
-
 use core::geom::{
     arrayvec::ArrayVec,
     utils::{cubic_polynomial_roots, tangent},
@@ -21,7 +19,7 @@ pub enum LineCap {
     TriangleInverted,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LineJoin {
     /// A sharp corner is to be used to join path segments.
     Miter,
@@ -253,7 +251,7 @@ fn normal(v: Vector) -> Vector {
 pub mod offset {
     use core::geom::arrayvec::ArrayVec;
     use core::geom::euclid;
-    use core::geom::{point, vector, Point, QuadraticBezierSegment, Scalar, Vector};
+    use core::geom::{Point, QuadraticBezierSegment, Scalar, Vector};
 
     /// Offsets a curve by a single distance.
     ///
@@ -590,42 +588,6 @@ pub mod offset {
             + offset_k * tangential * tangential * S::HALF
     }
 
-    fn _find_sharp_turn<S: Scalar>(curve: &QuadraticBezierSegment<S>) -> Option<S> {
-        // TODO: There's a better approach described in https://blend2d.com/research/precise_offset_curves.pdf
-        // TODO: The various thresholds here should take the line width into account.
-        let baseline = curve.to - curve.from;
-        let v = curve.ctrl - curve.from;
-        let n = vector(-baseline.y, baseline.x);
-        let v_dot_b = v.dot(baseline);
-        let v_dot_n = v.dot(n);
-
-        // If the projection of the control point on the baseline is between the endpoints, we
-        // can only get a sharp turn with a control point that is very far away.
-        let long_axis = if (v_dot_b >= S::ZERO && v_dot_b <= baseline.dot(baseline))
-            || v_dot_n.abs() * S::TWO >= v_dot_b.abs()
-        {
-            // The control point is far enough from the endpoints It can cause a sharp turn.
-            if baseline.square_length() * S::value(30.0) > v.square_length() {
-                return None;
-            }
-
-            v
-        } else {
-            baseline
-        };
-
-        // Rotate the curve to find its extremum along the long axis, where we should split to
-        // avoid the sharp turn.
-        let rot = euclid::Rotation2D::new(-long_axis.angle_from_x_axis());
-        let rotated = QuadraticBezierSegment {
-            from: point(S::ZERO, S::ZERO),
-            ctrl: rot.transform_vector(v).to_point(),
-            to: rot.transform_vector(baseline).to_point(),
-        };
-
-        rotated.local_x_extremum_t()
-    }
-
     fn critical_points<S: Scalar>(
         curve: &QuadraticBezierSegment<S>,
         offset: S,
@@ -677,6 +639,7 @@ pub mod offset {
 
     #[cfg(test)]
     mod tests {
+        use core::geom::{point, vector};
         use super::*;
 
         fn quad(from: (f32, f32), ctrl: (f32, f32), to: (f32, f32)) -> QuadraticBezierSegment<f32> {
@@ -908,13 +871,6 @@ pub mod offset {
             }
         }
     }
-}
-
-fn _quads_per_arc(angle: f32, radius: f32, tolerance: f32) -> f32 {
-    let e = tolerance / radius;
-    let n = 4.0 * ((2.0 + e - (e + (2.0 + e)).sqrt()).sqrt() / std::f32::consts::SQRT_2).acos();
-
-    (n * 0.5 * angle / std::f32::consts::PI).ceil()
 }
 
 pub type CapBuilder = fn(
@@ -1176,41 +1132,6 @@ fn square_cap(
     output.line_to(a, NO_ATTRIBUTES);
     output.line_to(b, NO_ATTRIBUTES);
     output.line_to(end, NO_ATTRIBUTES);
-}
-
-fn _round_cap_quad(
-    output: &mut dyn PathBuilder,
-    pivot: Point,
-    tangent: Vector,
-    end: Point,
-    width: f32,
-    sign: f32,
-    _tolerance: f32,
-) {
-    let tangent = tangent.normalize();
-    let tw = tangent * width;
-    let n = normal(tangent) * sign;
-    let mid = pivot + tw;
-
-    const SIN_FRACT_PI_4: f32 = 0.70710678118;
-    const SIN_FRACT_PI_8: f32 = SIN_FRACT_PI_4 * 0.5;
-    let d1 = SIN_FRACT_PI_4 * width;
-    let d2 = SIN_FRACT_PI_8 * width;
-
-    let start = pivot + n * width;
-
-    let p0 = start + tangent * d2;
-    let p1 = pivot + (tangent + n) * d1;
-    let p2 = mid + n * d2;
-
-    let p3 = mid - n * d2;
-    let p4 = pivot + (tangent - n) * d1;
-    let p5 = end + tangent * d2;
-
-    output.quadratic_bezier_to(p0, p1, NO_ATTRIBUTES);
-    output.quadratic_bezier_to(p2, mid, NO_ATTRIBUTES);
-    output.quadratic_bezier_to(p3, p4, NO_ATTRIBUTES);
-    output.quadratic_bezier_to(p5, end, NO_ATTRIBUTES);
 }
 
 fn round_cap_cubic(
