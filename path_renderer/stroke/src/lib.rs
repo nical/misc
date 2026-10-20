@@ -1345,15 +1345,23 @@ fn get_clip_intersections(
         vector: tangent(end_offset),
     };
 
+    // An offset line can be (nearly) parallel to the clip line, in which case
+    // there is no intersection. Fall back to the closest point of the clip line.
+    let project_on_clip_line = |p: Point| {
+        let dir = clip_line.vector;
+        let n = tangent(dir);
+        p - n * (dir.cross(p - clip_line.point) / dir.square_length())
+    };
+
     let i1 = clip_line
         .intersection(&prev_line)
         .map(|p| p.to_f32())
-        .unwrap_or_else(|| normal.to_point())
+        .unwrap_or_else(|| project_on_clip_line(prev_line.point))
         .to_vector();
     let i2 = clip_line
         .intersection(&next_line)
         .map(|p| p.to_f32())
-        .unwrap_or_else(|| normal.to_point())
+        .unwrap_or_else(|| project_on_clip_line(next_line.point))
         .to_vector();
 
     (i1, i2)
@@ -2421,6 +2429,23 @@ mod tests {
             let clipped = wedge_join_extent(angle, LineJoin::MiterClip, miter_limit, hw);
             let expected = (ratio * hw).min(miter_limit * hw);
             assert!((clipped - expected).abs() < 1e-3, "{degrees} degrees: {clipped} != {expected}");
+        }
+    }
+
+    #[test]
+    fn miter_clip_fallback_stays_on_the_clip_line() {
+        // Both offset lines are parallel to the clip line (x = 10), so there is
+        // no intersection to compute. The fallback must be on the clip line, at
+        // the clip distance.
+        let (v0, v1) = get_clip_intersections(
+            Vector::new(5.0, 0.0),
+            Vector::new(-5.0, 0.0),
+            Vector::new(1.0, 0.0),
+            10.0,
+        );
+
+        for v in [v0, v1] {
+            assert!((v.x - 10.0).abs() < 1e-4 && v.y.abs() < 1e-4, "{v:?}");
         }
     }
 
