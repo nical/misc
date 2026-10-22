@@ -38,6 +38,12 @@ pub fn fast_recip_sqrt(x: f32) -> f32 {
     unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(x))) }
 }
 
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn fast_recip_sqrt(x: f32) -> f32 {
+    1.0 / x.sqrt()
+}
+
 #[cfg(not(target_feature="fma"))]
 #[inline(always)]
 pub fn fma(val: f32, mul: f32, add: f32) -> f32 {
